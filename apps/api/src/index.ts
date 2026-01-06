@@ -24,6 +24,7 @@ import { websocketRoutes } from './routes/websocket.ts';
 import { terminalRoutes } from './routes/terminal.ts';
 import { gpuPoller } from './services/gpu-poller.ts';
 import { requireAuth } from './middleware/auth.ts';
+import { csrfSetToken, csrfValidate, csrfTokenEndpoint } from './middleware/csrf.ts';
 import { validateSecrets, auditLog } from './utils/security.ts';
 
 // Validate secrets on startup
@@ -126,7 +127,7 @@ async function main() {
     origin: getAllowedOrigins(),
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'X-Request-ID'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'X-Request-ID', 'X-CSRF-Token'],
     exposedHeaders: ['X-Request-ID', 'X-RateLimit-Limit', 'X-RateLimit-Remaining'],
     maxAge: 600, // 10 minutes
   });
@@ -153,6 +154,11 @@ async function main() {
       `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     request.headers['x-request-id'] = requestId as string;
     reply.header('X-Request-ID', requestId);
+  });
+
+  // CSRF token generation - set token cookie on responses
+  app.addHook('onSend', async (request, reply) => {
+    await csrfSetToken(request, reply);
   });
 
   // Global auth hook - protect all routes except public ones
@@ -190,6 +196,11 @@ async function main() {
 
     // Require auth for all other routes
     await requireAuth(request, reply);
+  });
+
+  // CSRF validation for state-changing requests
+  app.addHook('preHandler', async (request, reply) => {
+    await csrfValidate(request, reply);
   });
 
   // Audit logging for sensitive operations
@@ -253,6 +264,9 @@ async function main() {
     
     await authApp.register(authRoutes);
   }, { prefix: '/api/auth' });
+
+  // CSRF token endpoint
+  app.get('/api/csrf-token', csrfTokenEndpoint);
 
   await app.register(healthRoutes, { prefix: '/api' });
   await app.register(userRoutes, { prefix: '/api/users' });

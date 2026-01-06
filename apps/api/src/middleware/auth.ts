@@ -16,7 +16,7 @@ export async function requireAuth(request: FastifyRequest, reply: FastifyReply) 
     return reply.status(401).send({ error: 'Authentication required' });
   }
 
-  const payload = authService.verifyToken(token);
+  const payload = await authService.verifyToken(token);
   if (!payload) {
     return reply.status(401).send({ error: 'Invalid or expired token' });
   }
@@ -42,7 +42,7 @@ export async function optionalAuth(request: FastifyRequest, _reply: FastifyReply
   const token = request.cookies.token || request.headers.authorization?.replace('Bearer ', '');
 
   if (token) {
-    const payload = authService.verifyToken(token);
+    const payload = await authService.verifyToken(token);
     if (payload) {
       request.user = payload;
     }

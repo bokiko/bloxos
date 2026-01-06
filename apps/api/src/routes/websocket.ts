@@ -42,7 +42,7 @@ export async function websocketRoutes(app: FastifyInstance) {
         // Handle authentication
         if (message.type === 'auth') {
           const token = message.token;
-          const payload = authService.verifyToken(token);
+          const payload = await authService.verifyToken(token);
           
           if (!payload) {
             socket.send(JSON.stringify({ type: 'error', message: 'Invalid token' }));

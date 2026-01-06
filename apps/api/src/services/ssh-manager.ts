@@ -321,7 +321,8 @@ export class SSHManager {
     return this.executeInternalCommand(credentials, command);
   }
 
-  // Execute sudo command with proper escaping - Use SPARINGLY
+  // Execute sudo command using SSH pseudo-terminal for secure password entry
+  // This avoids having the password visible in process lists or command history
   async executeSudoCommandOnRig(rigId: string, command: string): Promise<string> {
     const credentials = await this.getCredentialsForRig(rigId);
     if (!credentials) {
@@ -331,34 +332,98 @@ export class SSHManager {
     // Validate the command part
     this.validateUserCommand(command);
 
-    // If we have a private key, try sudo without password first
+    // If we have a private key, try sudo without password first (assumes NOPASSWD or ssh-agent)
     if (credentials.privateKey) {
       try {
-        return await this.executeInternalCommand(credentials, `sudo ${command}`);
+        return await this.executeInternalCommand(credentials, `sudo -n ${command}`);
       } catch {
-        // Fallback to password if available
+        // -n flag failed, need password
       }
     }
 
-    if (!credentials.password) {
-      // Try without password (might work if NOPASSWD is configured)
-      return this.executeInternalCommand(credentials, `sudo ${command}`);
+    // Try passwordless sudo first (NOPASSWD configured)
+    try {
+      return await this.executeInternalCommand(credentials, `sudo -n ${command}`);
+    } catch {
+      // NOPASSWD not configured, need to use password
     }
 
-    // Use sudo with password via stdin (more secure than echo)
-    // Note: This is still visible in the SSH session but not in process lists
-    const escapedPassword = credentials.password.replace(/'/g, "'\\''");
-    const sudoCommand = `echo '${escapedPassword}' | sudo -S ${command} 2>&1`;
-    
-    auditLog({
-      action: 'ssh_sudo_command',
-      resource: 'rig',
-      resourceId: rigId,
-      details: { command: command.substring(0, 100) },
-      success: true,
-    });
+    if (!credentials.password) {
+      throw new Error('Sudo requires password but none provided. Configure NOPASSWD or provide password.');
+    }
 
-    return this.executeInternalCommand(credentials, sudoCommand);
+    // Use sudo with password via stdin using a here-string approach
+    // This is more secure as the password doesn't appear in the command line
+    // The password is sent via stdin to sudo -S
+    return new Promise((resolve, reject) => {
+      const conn = new Client();
+
+      conn.on('ready', () => {
+        // Request a PTY (pseudo-terminal) for sudo
+        conn.exec(`sudo -S ${command}`, { pty: true }, (err, stream) => {
+          if (err) {
+            conn.end();
+            reject(err);
+            return;
+          }
+
+          let output = '';
+          let errorOutput = '';
+          let passwordSent = false;
+
+          stream.on('data', (data: Buffer) => {
+            const text = data.toString();
+            
+            // Detect password prompt and send password via stdin
+            if (!passwordSent && (text.includes('[sudo]') || text.includes('password'))) {
+              stream.write(credentials.password + '\n');
+              passwordSent = true;
+            } else {
+              output += text;
+            }
+          });
+
+          stream.stderr.on('data', (data: Buffer) => {
+            const text = data.toString();
+            // Filter out password prompts from error output
+            if (!text.includes('[sudo]') && !text.includes('password')) {
+              errorOutput += text;
+            }
+          });
+
+          stream.on('close', () => {
+            conn.end();
+            
+            // Clean up output (remove any password prompt echoes)
+            const cleanOutput = output
+              .replace(/\[sudo\].*password.*:/gi, '')
+              .replace(/Password:/gi, '')
+              .trim();
+
+            if (errorOutput && !cleanOutput) {
+              reject(new Error(errorOutput));
+            } else {
+              resolve(cleanOutput);
+            }
+          });
+        });
+      });
+
+      conn.on('error', (err: Error) => {
+        reject(err);
+      });
+
+      conn.connect(this.getConnectConfig(credentials));
+    }).then((result) => {
+      auditLog({
+        action: 'ssh_sudo_command',
+        resource: 'rig',
+        resourceId: rigId,
+        details: { command: command.substring(0, 100) },
+        success: true,
+      });
+      return result as string;
+    });
   }
 
   // Refresh system info for a rig

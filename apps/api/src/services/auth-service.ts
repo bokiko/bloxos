@@ -2,6 +2,7 @@ import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import { prisma } from '@bloxos/database';
 import { validatePassword, validateEmail, auditLog, checkRateLimit } from '../utils/security.ts';
+import { blacklistToken, isTokenBlacklisted, createSession, deleteSession, deleteUserSessions, getUserSessions } from './session-store.ts';
 
 // JWT Configuration
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -30,9 +31,6 @@ export interface JWTPayload {
   role: string;
   type: 'access' | 'refresh';
 }
-
-// Token blacklist for logout (in production, use Redis)
-const tokenBlacklist = new Set<string>();
 
 export class AuthService {
   // Hash password with increased rounds
@@ -64,10 +62,10 @@ export class AuthService {
   }
 
   // Verify JWT token
-  verifyToken(token: string): JWTPayload | null {
+  async verifyToken(token: string): Promise<JWTPayload | null> {
     try {
       // Check if token is blacklisted
-      if (tokenBlacklist.has(token)) {
+      if (await isTokenBlacklisted(token)) {
         return null;
       }
       
@@ -85,9 +83,9 @@ export class AuthService {
   }
 
   // Verify refresh token
-  verifyRefreshToken(token: string): JWTPayload | null {
+  async verifyRefreshToken(token: string): Promise<JWTPayload | null> {
     try {
-      if (tokenBlacklist.has(token)) {
+      if (await isTokenBlacklisted(token)) {
         return null;
       }
       
@@ -104,14 +102,10 @@ export class AuthService {
   }
 
   // Blacklist token (for logout)
-  blacklistToken(token: string): void {
-    tokenBlacklist.add(token);
-    
-    // Clean up old tokens periodically (tokens expire anyway)
-    // In production, use Redis with TTL
-    if (tokenBlacklist.size > 10000) {
-      const oldTokens = Array.from(tokenBlacklist).slice(0, 5000);
-      oldTokens.forEach(t => tokenBlacklist.delete(t));
+  async blacklistTokens(token: string, refreshToken?: string): Promise<void> {
+    await blacklistToken(token, 4 * 60 * 60 * 1000); // 4 hours (access token TTL)
+    if (refreshToken) {
+      await blacklistToken(refreshToken, 7 * 24 * 60 * 60 * 1000); // 7 days (refresh token TTL)
     }
   }
 
@@ -267,16 +261,13 @@ export class AuthService {
   }
 
   // Logout - blacklist tokens
-  logout(token: string, refreshToken?: string): void {
-    this.blacklistToken(token);
-    if (refreshToken) {
-      this.blacklistToken(refreshToken);
-    }
+  async logout(token: string, refreshToken?: string): Promise<void> {
+    await this.blacklistTokens(token, refreshToken);
   }
 
   // Refresh access token
   async refreshAccessToken(refreshToken: string): Promise<{ token: string } | null> {
-    const payload = this.verifyRefreshToken(refreshToken);
+    const payload = await this.verifyRefreshToken(refreshToken);
     if (!payload) {
       return null;
     }
@@ -295,6 +286,16 @@ export class AuthService {
     });
 
     return { token: newToken };
+  }
+
+  // Force logout all sessions for a user
+  async logoutAllSessions(userId: string): Promise<number> {
+    return deleteUserSessions(userId);
+  }
+
+  // Get all active sessions for a user
+  async getActiveSessions(userId: string) {
+    return getUserSessions(userId);
   }
 
   // Get user by ID
