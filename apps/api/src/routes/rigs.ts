@@ -5,6 +5,8 @@ import { nanoid } from 'nanoid';
 import { gpuPoller } from '../services/gpu-poller.ts';
 import { minerControl } from '../services/miner-control.ts';
 import { ocService } from '../services/oc-service.ts';
+import { requireRigAccess, requireFarmAccess, getUserRigFilter } from '../middleware/authorization.ts';
+import { auditLog } from '../utils/security.ts';
 
 // Validation schemas
 const CreateRigSchema = z.object({
@@ -23,9 +25,17 @@ const UpdateRigSchema = z.object({
 });
 
 export async function rigRoutes(app: FastifyInstance) {
-  // List all rigs
+  // List all rigs (filtered by user's farm ownership)
   app.get('/', async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = request.user;
+    if (!user) {
+      return reply.status(401).send({ error: 'Authentication required' });
+    }
+
+    const filter = getUserRigFilter(user);
+    
     const rigs = await prisma.rig.findMany({
+      where: filter,
       include: {
         gpus: true,
         cpu: true,
@@ -39,8 +49,8 @@ export async function rigRoutes(app: FastifyInstance) {
     return reply.send(rigs);
   });
 
-  // Get single rig
-  app.get('/:id', async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+  // Get single rig (with authorization check)
+  app.get<{ Params: { id: string } }>('/:id', { preHandler: [requireRigAccess] }, async (request, reply) => {
     const { id } = request.params;
 
     const rig = await prisma.rig.findUnique({
@@ -73,8 +83,8 @@ export async function rigRoutes(app: FastifyInstance) {
     return reply.send(rig);
   });
 
-  // Create rig
-  app.post('/', async (request: FastifyRequest, reply: FastifyReply) => {
+  // Create rig (with farm authorization check)
+  app.post('/', { preHandler: [requireFarmAccess] }, async (request: FastifyRequest, reply: FastifyReply) => {
     const result = CreateRigSchema.safeParse(request.body);
 
     if (!result.success) {
@@ -97,11 +107,21 @@ export async function rigRoutes(app: FastifyInstance) {
       },
     });
 
+    auditLog({
+      userId: request.user?.userId,
+      action: 'create_rig',
+      resource: 'rig',
+      resourceId: rig.id,
+      details: { name, farmId },
+      ip: request.ip,
+      success: true,
+    });
+
     return reply.status(201).send(rig);
   });
 
-  // Update rig
-  app.patch('/:id', async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+  // Update rig (with authorization check)
+  app.patch<{ Params: { id: string } }>('/:id', { preHandler: [requireRigAccess] }, async (request, reply) => {
     const { id } = request.params;
     const result = UpdateRigSchema.safeParse(request.body);
 
@@ -115,26 +135,45 @@ export async function rigRoutes(app: FastifyInstance) {
         data: result.data,
       });
 
+      auditLog({
+        userId: request.user?.userId,
+        action: 'update_rig',
+        resource: 'rig',
+        resourceId: id,
+        ip: request.ip,
+        success: true,
+      });
+
       return reply.send(rig);
     } catch {
       return reply.status(404).send({ error: 'Rig not found' });
     }
   });
 
-  // Delete rig
-  app.delete('/:id', async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+  // Delete rig (with authorization check)
+  app.delete<{ Params: { id: string } }>('/:id', { preHandler: [requireRigAccess] }, async (request, reply) => {
     const { id } = request.params;
 
     try {
       await prisma.rig.delete({ where: { id } });
+      
+      auditLog({
+        userId: request.user?.userId,
+        action: 'delete_rig',
+        resource: 'rig',
+        resourceId: id,
+        ip: request.ip,
+        success: true,
+      });
+
       return reply.status(204).send();
     } catch {
       return reply.status(404).send({ error: 'Rig not found' });
     }
   });
 
-  // Get rig stats history
-  app.get('/:id/stats', async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+  // Get rig stats history (with authorization check)
+  app.get<{ Params: { id: string } }>('/:id/stats', { preHandler: [requireRigAccess] }, async (request, reply) => {
     const { id } = request.params;
 
     const stats = await prisma.rigStats.findMany({
@@ -146,8 +185,8 @@ export async function rigRoutes(app: FastifyInstance) {
     return reply.send(stats);
   });
 
-  // Get live GPU stats for a rig
-  app.get('/:id/gpu-stats', async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+  // Get live GPU stats for a rig (with authorization check)
+  app.get<{ Params: { id: string } }>('/:id/gpu-stats', { preHandler: [requireRigAccess] }, async (request, reply) => {
     const { id } = request.params;
 
     const rig = await prisma.rig.findUnique({
@@ -182,8 +221,8 @@ export async function rigRoutes(app: FastifyInstance) {
     });
   });
 
-  // Manually trigger GPU poll for a rig
-  app.post('/:id/poll', async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+  // Manually trigger GPU poll for a rig (with authorization check)
+  app.post<{ Params: { id: string } }>('/:id/poll', { preHandler: [requireRigAccess] }, async (request, reply) => {
     const { id } = request.params;
 
     const rig = await prisma.rig.findUnique({ where: { id } });
@@ -207,11 +246,8 @@ export async function rigRoutes(app: FastifyInstance) {
     });
   });
 
-  // Toggle CPU/GPU monitoring for a rig
-  app.patch('/:id/monitoring', async (request: FastifyRequest<{ 
-    Params: { id: string };
-    Body: { cpuMiningEnabled?: boolean; gpuMiningEnabled?: boolean };
-  }>, reply: FastifyReply) => {
+  // Toggle CPU/GPU monitoring for a rig (with authorization check)
+  app.patch<{ Params: { id: string } }>('/:id/monitoring', { preHandler: [requireRigAccess] }, async (request, reply) => {
     const { id } = request.params;
     const { cpuMiningEnabled, gpuMiningEnabled } = request.body as { cpuMiningEnabled?: boolean; gpuMiningEnabled?: boolean };
 
@@ -236,11 +272,8 @@ export async function rigRoutes(app: FastifyInstance) {
     });
   });
 
-  // Assign flight sheet to rig
-  app.patch('/:id/flight-sheet', async (request: FastifyRequest<{ 
-    Params: { id: string };
-    Body: { flightSheetId: string | null };
-  }>, reply: FastifyReply) => {
+  // Assign flight sheet to rig (with authorization check)
+  app.patch<{ Params: { id: string } }>('/:id/flight-sheet', { preHandler: [requireRigAccess] }, async (request, reply) => {
     const { id } = request.params;
     const { flightSheetId } = request.body as { flightSheetId: string | null };
 
@@ -273,8 +306,8 @@ export async function rigRoutes(app: FastifyInstance) {
     });
   });
 
-  // Start miner on rig
-  app.post('/:id/miner/start', async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+  // Start miner on rig (with authorization check)
+  app.post<{ Params: { id: string } }>('/:id/miner/start', { preHandler: [requireRigAccess] }, async (request, reply) => {
     const { id } = request.params;
     const result = await minerControl.startMiner(id);
     
@@ -285,8 +318,8 @@ export async function rigRoutes(app: FastifyInstance) {
     return reply.send(result);
   });
 
-  // Stop miner on rig
-  app.post('/:id/miner/stop', async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+  // Stop miner on rig (with authorization check)
+  app.post<{ Params: { id: string } }>('/:id/miner/stop', { preHandler: [requireRigAccess] }, async (request, reply) => {
     const { id } = request.params;
     const result = await minerControl.stopMiner(id);
     
@@ -297,15 +330,15 @@ export async function rigRoutes(app: FastifyInstance) {
     return reply.send(result);
   });
 
-  // Get miner status
-  app.get('/:id/miner/status', async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+  // Get miner status (with authorization check)
+  app.get<{ Params: { id: string } }>('/:id/miner/status', { preHandler: [requireRigAccess] }, async (request, reply) => {
     const { id } = request.params;
     const status = await minerControl.getMinerStatus(id);
     return reply.send(status);
   });
 
-  // Assign OC profile to rig
-  app.patch('/:id/oc-profile', async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+  // Assign OC profile to rig (with authorization check)
+  app.patch<{ Params: { id: string } }>('/:id/oc-profile', { preHandler: [requireRigAccess] }, async (request, reply) => {
     const { id } = request.params;
     const { ocProfileId } = request.body as { ocProfileId: string | null };
 
@@ -330,8 +363,8 @@ export async function rigRoutes(app: FastifyInstance) {
     return reply.send({ success: true, ocProfileId });
   });
 
-  // Apply OC profile to rig
-  app.post('/:id/oc-profile/apply', async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+  // Apply OC profile to rig (with authorization check)
+  app.post<{ Params: { id: string } }>('/:id/oc-profile/apply', { preHandler: [requireRigAccess] }, async (request, reply) => {
     const { id } = request.params;
     const result = await ocService.applyOCProfile(id);
     
@@ -342,8 +375,8 @@ export async function rigRoutes(app: FastifyInstance) {
     return reply.send(result);
   });
 
-  // Reset OC settings on rig
-  app.post('/:id/oc-profile/reset', async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+  // Reset OC settings on rig (with authorization check)
+  app.post<{ Params: { id: string } }>('/:id/oc-profile/reset', { preHandler: [requireRigAccess] }, async (request, reply) => {
     const { id } = request.params;
     const result = await ocService.resetOC(id);
     
@@ -354,8 +387,8 @@ export async function rigRoutes(app: FastifyInstance) {
     return reply.send(result);
   });
 
-  // Set rig groups (many-to-many)
-  app.patch('/:id/groups', async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+  // Set rig groups (with authorization check)
+  app.patch<{ Params: { id: string } }>('/:id/groups', { preHandler: [requireRigAccess] }, async (request, reply) => {
     const { id } = request.params;
     const { groupIds } = request.body as { groupIds: string[] };
 
@@ -383,8 +416,8 @@ export async function rigRoutes(app: FastifyInstance) {
     return reply.send({ success: true, groups: updated?.groups || [] });
   });
 
-  // Add rig to a group
-  app.post('/:id/groups/:groupId', async (request: FastifyRequest<{ Params: { id: string; groupId: string } }>, reply: FastifyReply) => {
+  // Add rig to a group (with authorization check)
+  app.post<{ Params: { id: string; groupId: string } }>('/:id/groups/:groupId', { preHandler: [requireRigAccess] }, async (request, reply) => {
     const { id, groupId } = request.params;
 
     await prisma.rig.update({
@@ -399,8 +432,8 @@ export async function rigRoutes(app: FastifyInstance) {
     return reply.send({ success: true });
   });
 
-  // Remove rig from a group
-  app.delete('/:id/groups/:groupId', async (request: FastifyRequest<{ Params: { id: string; groupId: string } }>, reply: FastifyReply) => {
+  // Remove rig from a group (with authorization check)
+  app.delete<{ Params: { id: string; groupId: string } }>('/:id/groups/:groupId', { preHandler: [requireRigAccess] }, async (request, reply) => {
     const { id, groupId } = request.params;
 
     await prisma.rig.update({

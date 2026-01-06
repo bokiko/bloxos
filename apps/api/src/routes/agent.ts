@@ -1,13 +1,15 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@bloxos/database';
+import { validateAgentToken } from '../middleware/authorization.ts';
+import { auditLog, checkRateLimit } from '../utils/security.ts';
 
 // Validation schemas
 const RegisterSchema = z.object({
-  token: z.string(),
-  hostname: z.string().optional(),
-  os: z.string().optional(),
-  osVersion: z.string().optional(),
+  token: z.string().min(10).max(100),
+  hostname: z.string().max(255).optional(),
+  os: z.string().max(100).optional(),
+  osVersion: z.string().max(50).optional(),
 });
 
 const GPUStatsSchema = z.object({
@@ -47,6 +49,26 @@ const HeartbeatSchema = z.object({
 });
 
 export async function agentRoutes(app: FastifyInstance) {
+  // Rate limit agent endpoints by IP
+  app.addHook('onRequest', async (request, reply) => {
+    const ip = request.ip || 'unknown';
+    const rateLimit = checkRateLimit(`agent:${ip}`, 60, 60000); // 60 requests per minute
+    
+    if (!rateLimit.allowed) {
+      auditLog({
+        action: 'agent_rate_limited',
+        resource: 'agent',
+        ip,
+        success: false,
+        error: 'Rate limit exceeded',
+      });
+      return reply.status(429).send({ 
+        error: 'Too many requests', 
+        retryAfter: Math.ceil(rateLimit.resetIn / 1000) 
+      });
+    }
+  });
+
   // Register/update rig
   app.post('/register', async (request: FastifyRequest, reply: FastifyReply) => {
     const result = RegisterSchema.safeParse(request.body);
@@ -56,9 +78,21 @@ export async function agentRoutes(app: FastifyInstance) {
 
     const { token, hostname, os, osVersion } = result.data;
 
-    // Find rig by token
+    // Validate token against database
+    const validation = await validateAgentToken(token);
+    if (!validation.valid || !validation.rig) {
+      auditLog({
+        action: 'agent_register_failed',
+        resource: 'agent',
+        ip: request.ip,
+        success: false,
+        error: validation.error || 'Invalid token',
+      });
+      return reply.status(401).send({ error: 'Invalid token' });
+    }
+
     const rig = await prisma.rig.findUnique({
-      where: { token },
+      where: { id: validation.rig.id },
     });
 
     if (!rig) {
@@ -78,6 +112,14 @@ export async function agentRoutes(app: FastifyInstance) {
       },
     });
 
+    auditLog({
+      action: 'agent_registered',
+      resource: 'rig',
+      resourceId: rig.id,
+      ip: request.ip,
+      success: true,
+    });
+
     return reply.send({ success: true, rigId: rig.id });
   });
 
@@ -90,9 +132,14 @@ export async function agentRoutes(app: FastifyInstance) {
 
     const { token, gpus, cpu } = result.data;
 
-    // Find rig by token
+    // Validate token against database
+    const validation = await validateAgentToken(token);
+    if (!validation.valid || !validation.rig) {
+      return reply.status(401).send({ error: 'Invalid token' });
+    }
+
     const rig = await prisma.rig.findUnique({
-      where: { token },
+      where: { id: validation.rig.id },
       include: { flightSheet: true },
     });
 
@@ -214,8 +261,14 @@ export async function agentRoutes(app: FastifyInstance) {
 
     const { token } = result.data;
 
+    // Validate token against database
+    const validation = await validateAgentToken(token);
+    if (!validation.valid || !validation.rig) {
+      return reply.status(401).send({ error: 'Invalid token' });
+    }
+
     const rig = await prisma.rig.findUnique({
-      where: { token },
+      where: { id: validation.rig.id },
     });
 
     if (!rig) {

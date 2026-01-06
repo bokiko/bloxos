@@ -25,7 +25,7 @@ async function requireAdmin(request: FastifyRequest, reply: FastifyReply) {
     return reply.status(401).send({ error: 'Not authenticated' });
   }
 
-  const payload = authService.verifyToken(token);
+  const payload = await authService.verifyToken(token);
   if (!payload) {
     return reply.status(401).send({ error: 'Invalid token' });
   }
