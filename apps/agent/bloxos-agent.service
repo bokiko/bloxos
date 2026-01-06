@@ -1,0 +1,14 @@
+[Unit]
+Description=BloxOs Mining Rig Agent
+After=network.target
+
+[Service]
+Type=simple
+User=root
+EnvironmentFile=/etc/bloxos/agent.env
+ExecStart=/usr/local/bin/bloxos-agent
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
