@@ -344,6 +344,122 @@ setInterval(() => {
 }, 60000); // Clean up every minute
 
 // ============================================
+// ACCOUNT LOCKOUT
+// ============================================
+
+// Account lockout configuration
+const LOCKOUT_CONFIG = {
+  maxAttempts: 5,           // Number of failed attempts before lockout
+  lockoutDuration: 15 * 60 * 1000, // 15 minutes lockout
+  attemptWindow: 15 * 60 * 1000,   // Window to count attempts (15 minutes)
+};
+
+// In-memory store for failed login attempts (use Redis in production)
+const failedAttempts = new Map<string, { count: number; firstAttempt: number; lockedUntil?: number }>();
+
+/**
+ * Record a failed login attempt for an account
+ * @param identifier - Email or user ID
+ * @returns Object indicating if account is now locked
+ */
+export function recordFailedLogin(identifier: string): { locked: boolean; attemptsRemaining: number; lockoutEndsAt?: Date } {
+  const now = Date.now();
+  const key = `login:${identifier.toLowerCase()}`;
+  const record = failedAttempts.get(key);
+  
+  // Check if currently locked
+  if (record?.lockedUntil && now < record.lockedUntil) {
+    return {
+      locked: true,
+      attemptsRemaining: 0,
+      lockoutEndsAt: new Date(record.lockedUntil),
+    };
+  }
+  
+  // If no record or window expired, start fresh
+  if (!record || now > record.firstAttempt + LOCKOUT_CONFIG.attemptWindow) {
+    failedAttempts.set(key, { count: 1, firstAttempt: now });
+    return {
+      locked: false,
+      attemptsRemaining: LOCKOUT_CONFIG.maxAttempts - 1,
+    };
+  }
+  
+  // Increment count
+  record.count++;
+  
+  // Check if should lock
+  if (record.count >= LOCKOUT_CONFIG.maxAttempts) {
+    record.lockedUntil = now + LOCKOUT_CONFIG.lockoutDuration;
+    return {
+      locked: true,
+      attemptsRemaining: 0,
+      lockoutEndsAt: new Date(record.lockedUntil),
+    };
+  }
+  
+  return {
+    locked: false,
+    attemptsRemaining: LOCKOUT_CONFIG.maxAttempts - record.count,
+  };
+}
+
+/**
+ * Check if an account is currently locked
+ */
+export function isAccountLocked(identifier: string): { locked: boolean; lockoutEndsAt?: Date } {
+  const now = Date.now();
+  const key = `login:${identifier.toLowerCase()}`;
+  const record = failedAttempts.get(key);
+  
+  if (!record?.lockedUntil) {
+    return { locked: false };
+  }
+  
+  if (now >= record.lockedUntil) {
+    // Lockout expired, clear it
+    failedAttempts.delete(key);
+    return { locked: false };
+  }
+  
+  return {
+    locked: true,
+    lockoutEndsAt: new Date(record.lockedUntil),
+  };
+}
+
+/**
+ * Clear failed login attempts after successful login
+ */
+export function clearFailedLogins(identifier: string): void {
+  const key = `login:${identifier.toLowerCase()}`;
+  failedAttempts.delete(key);
+}
+
+/**
+ * Manually unlock an account (admin function)
+ */
+export function unlockAccount(identifier: string): boolean {
+  const key = `login:${identifier.toLowerCase()}`;
+  return failedAttempts.delete(key);
+}
+
+// Clean up expired lockouts periodically
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, record] of failedAttempts.entries()) {
+    // Remove if no lockout and window expired
+    if (!record.lockedUntil && now > record.firstAttempt + LOCKOUT_CONFIG.attemptWindow) {
+      failedAttempts.delete(key);
+    }
+    // Remove if lockout expired
+    if (record.lockedUntil && now >= record.lockedUntil) {
+      failedAttempts.delete(key);
+    }
+  }
+}, 60000); // Clean up every minute
+
+// ============================================
 // AUDIT LOGGING
 // ============================================
 
@@ -417,4 +533,83 @@ export function generateSecureToken(length = 64): string {
 // Generate API key
 export function generateApiKey(): string {
   return `blx_${generateSecureToken(32)}`;
+}
+
+// ===========================================
+// OUTPUT SANITIZATION (XSS Prevention)
+// ===========================================
+
+/**
+ * Sanitize output for WebSocket/HTML to prevent XSS
+ * Escapes HTML special characters
+ */
+export function sanitizeOutput(input: unknown): unknown {
+  if (typeof input === 'string') {
+    return input
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#x27;')
+      .replace(/\//g, '&#x2F;');
+  }
+  
+  if (Array.isArray(input)) {
+    return input.map(sanitizeOutput);
+  }
+  
+  if (input !== null && typeof input === 'object') {
+    const sanitized: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(input)) {
+      // Don't sanitize certain fields that are used internally
+      if (['id', 'createdAt', 'updatedAt', 'timestamp'].includes(key)) {
+        sanitized[key] = value;
+      } else {
+        sanitized[key] = sanitizeOutput(value);
+      }
+    }
+    return sanitized;
+  }
+  
+  return input;
+}
+
+/**
+ * Create a safe JSON message for WebSocket
+ * Sanitizes all string values to prevent XSS
+ */
+export function createSafeWSMessage(type: string, data?: unknown): string {
+  const message: Record<string, unknown> = {
+    type,
+  };
+  if (data !== undefined) {
+    message.data = sanitizeOutput(data);
+  }
+  return JSON.stringify(message);
+}
+
+/**
+ * Validate WebSocket message structure
+ */
+export function validateWSMessage(rawMessage: string): { valid: boolean; message?: Record<string, unknown>; error?: string } {
+  try {
+    const message = JSON.parse(rawMessage);
+    
+    if (typeof message !== 'object' || message === null) {
+      return { valid: false, error: 'Message must be an object' };
+    }
+    
+    if (!message.type || typeof message.type !== 'string') {
+      return { valid: false, error: 'Message must have a type field' };
+    }
+    
+    // Validate type is alphanumeric/underscore only
+    if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(message.type)) {
+      return { valid: false, error: 'Invalid message type format' };
+    }
+    
+    return { valid: true, message };
+  } catch {
+    return { valid: false, error: 'Invalid JSON' };
+  }
 }

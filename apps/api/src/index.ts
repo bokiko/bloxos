@@ -103,7 +103,25 @@ async function main() {
       },
     } : false,
     crossOriginEmbedderPolicy: false,
+    // HSTS - Strict Transport Security (only in production)
+    hsts: isProduction ? {
+      maxAge: 31536000, // 1 year
+      includeSubDomains: true,
+      preload: true,
+    } : false,
   });
+
+  // HTTPS redirect in production
+  if (isProduction && process.env.FORCE_HTTPS === 'true') {
+    app.addHook('onRequest', async (request, reply) => {
+      const proto = request.headers['x-forwarded-proto'] || 'http';
+      if (proto !== 'https') {
+        const host = request.headers.host || request.hostname;
+        const url = `https://${host}${request.url}`;
+        return reply.status(301).redirect(url);
+      }
+    });
+  }
 
   // Rate limiting
   await app.register(rateLimit, {
