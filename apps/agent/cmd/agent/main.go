@@ -8,12 +8,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/bloxos/agent/internal/api"
 	"github.com/bloxos/agent/internal/collector"
 	"github.com/bloxos/agent/internal/config"
+	"github.com/bloxos/agent/internal/ws"
 )
 
-const version = "0.1.0"
+const version = "0.2.0"
 
 func main() {
 	fmt.Printf("BloxOs Agent v%s\n", version)
@@ -29,53 +29,70 @@ func main() {
 			cfg.ServerURL, cfg.PollInterval, cfg.GPUEnabled, cfg.CPUEnabled)
 	}
 
-	// Create components
+	// Create collector
 	coll := collector.New()
-	client := api.New(cfg.ServerURL, cfg.Token)
 
 	// Get initial system info
 	sysInfo, err := coll.GetSystemInfo()
 	if err != nil {
 		log.Fatalf("Failed to get system info: %v", err)
 	}
-
 	log.Printf("Hostname: %s, OS: %s %s", sysInfo.Hostname, sysInfo.OS, sysInfo.OSVersion)
 
-	// Register with server
-	log.Println("Registering with server...")
-	if err := client.Register(sysInfo); err != nil {
-		log.Printf("Warning: Failed to register: %v", err)
-	} else {
-		log.Println("Registered successfully")
+	// Create WebSocket client
+	wsClient := ws.NewClient(cfg.ServerURL, cfg.Token, cfg.Debug)
+
+	// Set up command handler
+	wsClient.SetCommandHandler(func(cmd *ws.Command) (bool, error) {
+		return handleCommand(cmd, cfg)
+	})
+
+	// Set up connect handler
+	wsClient.SetConnectHandler(func() {
+		log.Println("Connected to server")
+		// Send initial stats immediately
+		sendStats(wsClient, coll, cfg)
+	})
+
+	// Set up disconnect handler
+	wsClient.SetDisconnectHandler(func() {
+		log.Println("Disconnected from server")
+	})
+
+	// Start WebSocket connection (auto-reconnect is built-in)
+	log.Println("Connecting to server...")
+	if err := wsClient.Connect(); err != nil {
+		log.Fatalf("Failed to start WebSocket client: %v", err)
 	}
 
 	// Set up signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	// Start polling loop
+	// Start stats collection loop
 	ticker := time.NewTicker(time.Duration(cfg.PollInterval) * time.Second)
 	defer ticker.Stop()
 
-	log.Printf("Starting poll loop (every %ds)...", cfg.PollInterval)
-
-	// Run immediately
-	poll(cfg, coll, client)
+	log.Printf("Starting stats collection (every %ds)...", cfg.PollInterval)
 
 	// Main loop
 	for {
 		select {
 		case <-ticker.C:
-			poll(cfg, coll, client)
+			if wsClient.IsConnected() {
+				sendStats(wsClient, coll, cfg)
+			}
 		case sig := <-sigChan:
 			log.Printf("Received %v, shutting down...", sig)
+			wsClient.Close()
 			return
 		}
 	}
 }
 
-func poll(cfg *config.Config, coll *collector.Collector, client *api.Client) {
-	payload := &api.ReportPayload{}
+// sendStats collects and sends stats to the server
+func sendStats(client *ws.Client, coll *collector.Collector, cfg *config.Config) {
+	stats := make(map[string]interface{})
 
 	// Collect GPU stats
 	if cfg.GPUEnabled {
@@ -85,7 +102,7 @@ func poll(cfg *config.Config, coll *collector.Collector, client *api.Client) {
 				log.Printf("GPU stats error: %v", err)
 			}
 		} else {
-			payload.GPUs = gpus
+			stats["gpus"] = gpus
 			if cfg.Debug {
 				log.Printf("Collected %d GPU(s)", len(gpus))
 			}
@@ -100,27 +117,85 @@ func poll(cfg *config.Config, coll *collector.Collector, client *api.Client) {
 				log.Printf("CPU stats error: %v", err)
 			}
 		} else {
-			payload.CPU = cpu
+			stats["cpu"] = cpu
 			if cfg.Debug && cpu.Usage != nil {
 				log.Printf("CPU: %s, Usage: %.1f%%", cpu.Model, *cpu.Usage)
 			}
 		}
 	}
 
-	// Report to server
-	resp, err := client.ReportStats(payload)
-	if err != nil {
-		log.Printf("Failed to report stats: %v", err)
-		return
+	// Send stats via WebSocket
+	if err := client.SendStats(stats); err != nil {
+		log.Printf("Failed to send stats: %v", err)
+	} else if cfg.Debug {
+		log.Printf("Stats sent successfully")
 	}
+}
 
-	if cfg.Debug {
-		log.Printf("Report sent successfully")
-	}
+// handleCommand handles commands from the server
+func handleCommand(cmd *ws.Command, cfg *config.Config) (bool, error) {
+	log.Printf("Executing command: %s", cmd.Type)
 
-	// Handle server commands
-	if resp.Command != "" {
-		log.Printf("Received command: %s", resp.Command)
-		// TODO: Handle commands (start_miner, stop_miner, etc.)
+	switch cmd.Type {
+	case "start_miner":
+		return handleStartMiner(cmd.Payload, cfg)
+	case "stop_miner":
+		return handleStopMiner(cmd.Payload, cfg)
+	case "restart_miner":
+		return handleRestartMiner(cmd.Payload, cfg)
+	case "apply_oc":
+		return handleApplyOC(cmd.Payload, cfg)
+	case "apply_flight_sheet":
+		return handleApplyFlightSheet(cmd.Payload, cfg)
+	case "reboot":
+		return handleReboot(cfg)
+	case "shutdown":
+		return handleShutdown(cfg)
+	case "execute":
+		return handleExecute(cmd.Payload, cfg)
+	default:
+		return false, fmt.Errorf("unknown command type: %s", cmd.Type)
 	}
+}
+
+// Command handlers - these will be implemented in phase A2
+
+func handleStartMiner(payload interface{}, cfg *config.Config) (bool, error) {
+	log.Println("TODO: Implement start_miner")
+	return false, fmt.Errorf("not implemented")
+}
+
+func handleStopMiner(payload interface{}, cfg *config.Config) (bool, error) {
+	log.Println("TODO: Implement stop_miner")
+	return false, fmt.Errorf("not implemented")
+}
+
+func handleRestartMiner(payload interface{}, cfg *config.Config) (bool, error) {
+	log.Println("TODO: Implement restart_miner")
+	return false, fmt.Errorf("not implemented")
+}
+
+func handleApplyOC(payload interface{}, cfg *config.Config) (bool, error) {
+	log.Println("TODO: Implement apply_oc")
+	return false, fmt.Errorf("not implemented")
+}
+
+func handleApplyFlightSheet(payload interface{}, cfg *config.Config) (bool, error) {
+	log.Println("TODO: Implement apply_flight_sheet")
+	return false, fmt.Errorf("not implemented")
+}
+
+func handleReboot(cfg *config.Config) (bool, error) {
+	log.Println("TODO: Implement reboot")
+	return false, fmt.Errorf("not implemented")
+}
+
+func handleShutdown(cfg *config.Config) (bool, error) {
+	log.Println("TODO: Implement shutdown")
+	return false, fmt.Errorf("not implemented")
+}
+
+func handleExecute(payload interface{}, cfg *config.Config) (bool, error) {
+	log.Println("TODO: Implement execute")
+	return false, fmt.Errorf("not implemented")
 }
