@@ -31,7 +31,7 @@ export function broadcastToSubscribers(channel: string, event: string, data: unk
 }
 
 export async function websocketRoutes(app: FastifyInstance) {
-  app.get('/ws', { websocket: true }, (socket, request) => {
+  app.get('/ws', { websocket: true }, (socket, _request) => {
     let clientId: string | null = null;
     let userId: string | null = null;
 

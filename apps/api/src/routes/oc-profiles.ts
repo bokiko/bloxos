@@ -88,7 +88,7 @@ export async function ocProfileRoutes(app: FastifyInstance) {
       });
 
       return reply.send(profile);
-    } catch (error) {
+    } catch {
       return reply.status(404).send({ error: 'OC Profile not found' });
     }
   });
@@ -106,7 +106,7 @@ export async function ocProfileRoutes(app: FastifyInstance) {
 
       await prisma.oCProfile.delete({ where: { id } });
       return reply.status(204).send();
-    } catch (error) {
+    } catch {
       return reply.status(404).send({ error: 'OC Profile not found' });
     }
   });

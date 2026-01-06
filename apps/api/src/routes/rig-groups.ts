@@ -94,7 +94,7 @@ export async function rigGroupRoutes(app: FastifyInstance) {
       });
 
       return reply.send(group);
-    } catch (error) {
+    } catch {
       return reply.status(404).send({ error: 'Rig group not found' });
     }
   });
@@ -106,7 +106,7 @@ export async function rigGroupRoutes(app: FastifyInstance) {
     try {
       await prisma.rigGroup.delete({ where: { id } });
       return reply.status(204).send();
-    } catch (error) {
+    } catch {
       return reply.status(404).send({ error: 'Rig group not found' });
     }
   });

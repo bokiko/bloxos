@@ -1,4 +1,4 @@
-import { FastifyInstance, FastifyRequest } from 'fastify';
+import { FastifyInstance } from 'fastify';
 import { Client } from 'ssh2';
 import { prisma } from '@bloxos/database';
 import { authService } from '../services/auth-service.ts';

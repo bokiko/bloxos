@@ -1,15 +1,5 @@
 import { prisma } from '@bloxos/database';
 
-interface AlertData {
-  rigId: string;
-  rigName: string;
-  gpuTemps?: { index: number; temp: number }[];
-  cpuTemp?: number;
-  totalHashrate?: number;
-  previousHashrate?: number;
-  isOffline?: boolean;
-}
-
 // Store previous hashrates for comparison
 const previousHashrates: Map<string, number> = new Map();
 // Track last alert times to prevent spam
@@ -19,7 +9,7 @@ const ALERT_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes between same alerts
 export class AlertService {
   // Get or create alert config for a rig
   async getAlertConfig(rigId: string) {
-    let config = await prisma.alertConfig.findUnique({
+    const config = await prisma.alertConfig.findUnique({
       where: { rigId },
     });
 

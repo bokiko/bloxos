@@ -1,33 +1,230 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { SSHManager } from '../services/ssh-manager.ts';
+import { validateHostname, validateIPAddress, auditLog } from '../utils/security.ts';
+
+// List of allowed commands that users can execute
+// These are safe, read-only commands for system monitoring
+const ALLOWED_USER_COMMANDS = [
+  // System info
+  'uname',
+  'hostname',
+  'uptime',
+  'whoami',
+  'date',
+  'id',
+  
+  // Process monitoring
+  'ps aux',
+  'ps -ef',
+  'top -bn1',
+  'htop -t',
+  
+  // Memory/CPU
+  'free',
+  'free -h',
+  'free -m',
+  'cat /proc/cpuinfo',
+  'cat /proc/meminfo',
+  'lscpu',
+  'nproc',
+  
+  // Disk
+  'df',
+  'df -h',
+  'lsblk',
+  
+  // Network
+  'ip addr',
+  'ip link',
+  'ifconfig',
+  'hostname -I',
+  
+  // GPU/Mining
+  'nvidia-smi',
+  'nvidia-smi -q',
+  'nvidia-smi --query-gpu',
+  'rocm-smi',
+  'clinfo',
+  
+  // Miner status
+  'screen -ls',
+  'tmux list-sessions',
+  'pgrep -a',
+  'pidof',
+  
+  // Logs (read-only)
+  'tail',
+  'head',
+  'cat /var/log',
+  'journalctl',
+  'dmesg',
+  
+  // System
+  'systemctl status',
+  'service status',
+];
+
+// Patterns that are NEVER allowed - security risks
+const BLOCKED_PATTERNS = [
+  // Destructive commands
+  /\brm\s+-rf?\s/i,
+  /\brmdir\b/i,
+  /\bmkfs\b/i,
+  /\bdd\s+if=/i,
+  /\bformat\b/i,
+  /\bfdisk\b/i,
+  /\bparted\b/i,
+  
+  // Privilege escalation
+  /\bsudo\s/i,
+  /\bsu\s+-?\s*$/i,
+  /\bsu\s+root/i,
+  /\bchmod\s+[0-7]*[sS]/i, // setuid/setgid
+  /\bchown\b/i,
+  
+  // Persistence/backdoors
+  /\bcrontab\b/i,
+  /\b\/etc\/cron/i,
+  /\bsshd\b/i,
+  /authorized_keys/i,
+  /\.ssh\//i,
+  
+  // Network exfiltration
+  /\bwget\s/i,
+  /\bcurl\s.*-[oO]/i, // curl with output
+  /\bnc\s+-[lp]/i, // netcat listeners
+  /\bnetcat\b/i,
+  /\bsocat\b/i,
+  
+  // Code execution
+  /\beval\b/i,
+  /\bexec\b/i,
+  /\bpython\s+-c/i,
+  /\bperl\s+-e/i,
+  /\bruby\s+-e/i,
+  /\bnode\s+-e/i,
+  /\bbash\s+-c/i,
+  /\bsh\s+-c/i,
+  
+  // File modifications
+  /[>]{1,2}/i, // redirects
+  /\bsed\s+-i/i, // in-place edit
+  /\bawk\s.*system\(/i,
+  /\btee\b/i,
+  /\bmv\s/i,
+  /\bcp\s.*--/i, // cp with flags
+  
+  // System modifications
+  /\bsystemctl\s+(start|stop|restart|enable|disable)/i,
+  /\bservice\s+\w+\s+(start|stop|restart)/i,
+  /\bshutdown\b/i,
+  /\breboot\b/i,
+  /\bhalt\b/i,
+  /\bpoweroff\b/i,
+  /\binit\s+[0-6]/i,
+  
+  // Package management
+  /\bapt\b/i,
+  /\bapt-get\b/i,
+  /\byum\b/i,
+  /\bdnf\b/i,
+  /\bpacman\b/i,
+  /\bpip\s+install/i,
+  /\bnpm\s+install/i,
+  
+  // Kill signals that could affect system
+  /\bkill\s+-9\s+1\b/i, // kill init
+  /\bkillall\b/i,
+  /\bpkill\b/i,
+  
+  // Environment manipulation
+  /\bexport\s/i,
+  /\bunset\s/i,
+  /\bsource\s/i,
+  /\b\.\s+\//i, // source with dot
+];
+
+/**
+ * Validate if a command is safe to execute
+ */
+function isCommandSafe(command: string): { safe: boolean; reason?: string } {
+  const trimmedCommand = command.trim();
+  
+  // Check for empty command
+  if (!trimmedCommand) {
+    return { safe: false, reason: 'Empty command' };
+  }
+  
+  // Check for blocked patterns
+  for (const pattern of BLOCKED_PATTERNS) {
+    if (pattern.test(trimmedCommand)) {
+      return { safe: false, reason: 'Command contains blocked pattern' };
+    }
+  }
+  
+  // Check if command starts with an allowed prefix
+  const commandBase = trimmedCommand.split(/\s+/)[0].toLowerCase();
+  const isAllowed = ALLOWED_USER_COMMANDS.some(allowed => {
+    const allowedBase = allowed.split(/\s+/)[0].toLowerCase();
+    return commandBase === allowedBase || trimmedCommand.toLowerCase().startsWith(allowed.toLowerCase());
+  });
+  
+  if (!isAllowed) {
+    return { safe: false, reason: `Command '${commandBase}' is not in the allowed list` };
+  }
+  
+  // Check for command chaining (could bypass validation)
+  if (/[;&|`$()]/.test(trimmedCommand)) {
+    return { safe: false, reason: 'Command chaining or shell expansion not allowed' };
+  }
+  
+  return { safe: true };
+}
+
+/**
+ * Validate host/IP format
+ */
+function isValidHost(host: string): boolean {
+  return validateIPAddress(host) || validateHostname(host);
+}
 
 // Validation schemas
 const SSHConnectSchema = z.object({
-  host: z.string().min(1),
-  port: z.number().default(22),
-  username: z.string().min(1),
+  host: z.string().min(1).refine(isValidHost, { message: 'Invalid host format' }),
+  port: z.number().min(1).max(65535).default(22),
+  username: z.string().min(1).max(32).regex(/^[a-z_][a-z0-9_-]*$/i, 'Invalid username format'),
   password: z.string().optional(),
   privateKey: z.string().optional(),
+}).refine(data => data.password || data.privateKey, {
+  message: 'Either password or privateKey is required',
 });
 
 const SSHCommandSchema = z.object({
-  host: z.string().min(1),
-  port: z.number().default(22),
-  username: z.string().min(1),
+  host: z.string().min(1).refine(isValidHost, { message: 'Invalid host format' }),
+  port: z.number().min(1).max(65535).default(22),
+  username: z.string().min(1).max(32).regex(/^[a-z_][a-z0-9_-]*$/i, 'Invalid username format'),
   password: z.string().optional(),
   privateKey: z.string().optional(),
-  command: z.string().min(1),
+  command: z.string().min(1).max(1000),
+}).refine(data => data.password || data.privateKey, {
+  message: 'Either password or privateKey is required',
 });
 
 const AddRigViaSSHSchema = z.object({
-  name: z.string().min(1).max(100),
-  farmId: z.string(),
-  host: z.string().min(1),
-  port: z.number().default(22),
-  username: z.string().min(1),
+  name: z.string().min(1).max(100).regex(/^[\w\s-]+$/, 'Name can only contain letters, numbers, spaces, underscores, and hyphens'),
+  farmId: z.string().uuid(),
+  host: z.string().min(1).refine(isValidHost, { message: 'Invalid host format' }),
+  port: z.number().min(1).max(65535).default(22),
+  username: z.string().min(1).max(32).regex(/^[a-z_][a-z0-9_-]*$/i, 'Invalid username format'),
   password: z.string().optional(),
   privateKey: z.string().optional(),
+}).refine(data => data.password || data.privateKey, {
+  message: 'Either password or privateKey is required',
+});
+
+const RigCommandSchema = z.object({
+  command: z.string().min(1).max(1000),
 });
 
 export async function sshRoutes(app: FastifyInstance) {
@@ -44,18 +241,23 @@ export async function sshRoutes(app: FastifyInstance) {
     try {
       const connected = await sshManager.testConnection(result.data);
       
+      auditLog('SSH_CONNECTION_TEST', { 
+        host: result.data.host, 
+        success: connected,
+        userId: (request as any).userId || 'unknown'
+      });
+
       if (connected) {
         return reply.send({ success: true, message: 'SSH connection successful' });
       } else {
         return reply.status(400).send({ success: false, message: 'SSH connection failed' });
       }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return reply.status(500).send({ success: false, message });
+    } catch {
+      return reply.status(500).send({ success: false, message: 'Connection failed' });
     }
   });
 
-  // Execute command via SSH
+  // Execute command via SSH (with validation)
   app.post('/exec', async (request: FastifyRequest, reply: FastifyReply) => {
     const result = SSHCommandSchema.safeParse(request.body);
 
@@ -65,12 +267,32 @@ export async function sshRoutes(app: FastifyInstance) {
 
     const { command, ...credentials } = result.data;
 
+    // Validate command safety
+    const validation = isCommandSafe(command);
+    if (!validation.safe) {
+      auditLog('SSH_COMMAND_BLOCKED', {
+        host: credentials.host,
+        command: command.substring(0, 100),
+        reason: validation.reason,
+        userId: (request as any).userId || 'unknown'
+      });
+      return reply.status(403).send({ 
+        success: false, 
+        message: `Command not allowed: ${validation.reason}` 
+      });
+    }
+
     try {
+      auditLog('SSH_COMMAND_EXECUTED', {
+        host: credentials.host,
+        command: command.substring(0, 100),
+        userId: (request as any).userId || 'unknown'
+      });
+
       const output = await sshManager.executeCommand(credentials, command);
       return reply.send({ success: true, output });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return reply.status(500).send({ success: false, message });
+    } catch {
+      return reply.status(500).send({ success: false, message: 'Command execution failed' });
     }
   });
 
@@ -85,6 +307,13 @@ export async function sshRoutes(app: FastifyInstance) {
     const { name, farmId, ...credentials } = result.data;
 
     try {
+      auditLog('RIG_SETUP_STARTED', {
+        name,
+        farmId,
+        host: credentials.host,
+        userId: (request as any).userId || 'unknown'
+      });
+
       // This will:
       // 1. Connect to the rig
       // 2. Gather system info
@@ -92,11 +321,26 @@ export async function sshRoutes(app: FastifyInstance) {
       // 4. Create rig in database
       const rig = await sshManager.setupRig({ name, farmId, credentials });
       
+      auditLog('RIG_SETUP_COMPLETED', {
+        rigId: rig.id,
+        name,
+        host: credentials.host,
+        userId: (request as any).userId || 'unknown'
+      });
+
       return reply.status(201).send(rig);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       request.log.error({ error, host: credentials.host }, 'Failed to setup rig via SSH');
-      return reply.status(500).send({ success: false, message });
+      
+      auditLog('RIG_SETUP_FAILED', {
+        name,
+        host: credentials.host,
+        error: errorMessage,
+        userId: (request as any).userId || 'unknown'
+      });
+
+      return reply.status(500).send({ success: false, message: 'Rig setup failed' });
     }
   });
 
@@ -111,27 +355,53 @@ export async function sshRoutes(app: FastifyInstance) {
     try {
       const systemInfo = await sshManager.getSystemInfo(result.data);
       return reply.send(systemInfo);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return reply.status(500).send({ success: false, message });
+    } catch {
+      return reply.status(500).send({ success: false, message: 'Failed to get system info' });
     }
   });
 
   // Execute command on a rig using stored credentials
   app.post('/rig/:rigId/exec', async (request: FastifyRequest<{ Params: { rigId: string } }>, reply: FastifyReply) => {
     const { rigId } = request.params;
-    const body = request.body as { command?: string };
+    
+    // Validate rigId format (UUID)
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rigId)) {
+      return reply.status(400).send({ error: 'Invalid rig ID format' });
+    }
 
-    if (!body.command) {
-      return reply.status(400).send({ error: 'Command is required' });
+    const result = RigCommandSchema.safeParse(request.body);
+    if (!result.success) {
+      return reply.status(400).send({ error: 'Validation failed', details: result.error.issues });
+    }
+
+    const { command } = result.data;
+
+    // Validate command safety
+    const validation = isCommandSafe(command);
+    if (!validation.safe) {
+      auditLog('SSH_RIG_COMMAND_BLOCKED', {
+        rigId,
+        command: command.substring(0, 100),
+        reason: validation.reason,
+        userId: (request as any).userId || 'unknown'
+      });
+      return reply.status(403).send({ 
+        success: false, 
+        message: `Command not allowed: ${validation.reason}` 
+      });
     }
 
     try {
-      const output = await sshManager.executeCommandOnRig(rigId, body.command);
+      auditLog('SSH_RIG_COMMAND_EXECUTED', {
+        rigId,
+        command: command.substring(0, 100),
+        userId: (request as any).userId || 'unknown'
+      });
+
+      const output = await sshManager.executeCommandOnRig(rigId, command);
       return reply.send({ success: true, output });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return reply.status(500).send({ success: false, message });
+    } catch {
+      return reply.status(500).send({ success: false, message: 'Command execution failed' });
     }
   });
 
@@ -139,20 +409,30 @@ export async function sshRoutes(app: FastifyInstance) {
   app.post('/rig/:rigId/refresh', async (request: FastifyRequest<{ Params: { rigId: string } }>, reply: FastifyReply) => {
     const { rigId } = request.params;
 
+    // Validate rigId format (UUID)
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rigId)) {
+      return reply.status(400).send({ error: 'Invalid rig ID format' });
+    }
+
     try {
       await sshManager.refreshRigInfo(rigId);
       return reply.send({ success: true, message: 'Rig info refreshed' });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return reply.status(500).send({ success: false, message });
+    } catch {
+      return reply.status(500).send({ success: false, message: 'Failed to refresh rig info' });
     }
   });
 
-  // Get detailed system info for a rig
+  // Get detailed system info for a rig (uses internal safe commands only)
   app.get('/rig/:rigId/system-info', async (request: FastifyRequest<{ Params: { rigId: string } }>, reply: FastifyReply) => {
     const { rigId } = request.params;
 
+    // Validate rigId format (UUID)
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rigId)) {
+      return reply.status(400).send({ error: 'Invalid rig ID format' });
+    }
+
     try {
+      // These are internal commands - safe and read-only
       const commands = {
         // OS Info
         hostname: 'hostname',
@@ -209,6 +489,7 @@ export async function sshRoutes(app: FastifyInstance) {
 
       const results: Record<string, string> = {};
 
+      // Use internal command execution (bypasses user command validation)
       for (const [key, cmd] of Object.entries(commands)) {
         try {
           results[key] = await sshManager.executeCommandOnRig(rigId, cmd);
@@ -263,7 +544,7 @@ export async function sshRoutes(app: FastifyInstance) {
           model: results.cpuModel || 'Unknown',
           cores: parseInt(results.cpuCores, 10) || 0,
           threads: parseInt(results.cpuThreads, 10) || 0,
-          maxFrequency: Math.round(parseInt(results.cpuFreqMax, 10) / 1000) || 0, // Convert KHz to MHz
+          maxFrequency: Math.round(parseInt(results.cpuFreqMax, 10) / 1000) || 0,
           currentFrequency: Math.round(parseFloat(results.cpuFreqCurrent) || 0),
           cache: results.cpuCache || 'Unknown',
         },
@@ -306,9 +587,8 @@ export async function sshRoutes(app: FastifyInstance) {
       };
 
       return reply.send(systemInfo);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      return reply.status(500).send({ success: false, message });
+    } catch {
+      return reply.status(500).send({ success: false, message: 'Failed to get system info' });
     }
   });
 }

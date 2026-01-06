@@ -16,7 +16,7 @@ export async function healthRoutes(app: FastifyInstance) {
           database: 'healthy',
         },
       });
-    } catch (error) {
+    } catch {
       return reply.status(503).send({
         status: 'error',
         timestamp: new Date().toISOString(),

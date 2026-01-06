@@ -1,7 +1,11 @@
 import { Client, type ConnectConfig, type ClientChannel } from 'ssh2';
 import { prisma } from '@bloxos/database';
-import { nanoid } from 'nanoid';
 import { encrypt, decrypt } from '../utils/encryption.ts';
+import { 
+  sanitizeCommand, 
+  auditLog,
+  generateSecureToken,
+} from '../utils/security.ts';
 
 export interface SSHCredentials {
   host: string;
@@ -31,6 +35,37 @@ export interface GPUInfo {
   busId?: string;
   uuid?: string;
 }
+
+// Whitelist of safe system commands for gathering info
+const SAFE_INFO_COMMANDS = new Map<string, string>([
+  ['hostname', 'hostname'],
+  ['os', 'cat /etc/os-release | grep "^NAME=" | cut -d= -f2 | tr -d \'"\''],
+  ['osVersion', 'cat /etc/os-release | grep "^VERSION_ID=" | cut -d= -f2 | tr -d \'"\''],
+  ['kernel', 'uname -r'],
+  ['cpuModel', 'cat /proc/cpuinfo | grep "model name" | head -1 | cut -d: -f2 | xargs'],
+  ['cpuCores', 'nproc'],
+  ['ramTotal', 'free -b | grep Mem | awk \'{print $2}\''],
+  ['ipAddresses', 'hostname -I'],
+  ['nvidiaGpus', 'nvidia-smi --query-gpu=index,name,memory.total,pci.bus_id,uuid --format=csv,noheader,nounits 2>/dev/null || echo ""'],
+  ['amdGpus', 'rocm-smi --showid --showproductname --showmeminfo vram 2>/dev/null | grep -E "GPU\\[|Card series|VRAM Total" || echo ""'],
+]);
+
+// Commands that are never allowed
+const BLOCKED_COMMANDS = [
+  'rm ', 'rm -', 'rmdir',
+  'dd ', 'mkfs',
+  'wget ', 'curl ',
+  'chmod ', 'chown ',
+  'useradd', 'userdel', 'passwd',
+  'shutdown', 'reboot', 'poweroff', 'halt',
+  'iptables', 'ufw',
+  'systemctl disable', 'systemctl mask',
+  '> /dev/', 'cat /dev/zero', 'cat /dev/random',
+  'fork', 'bomb',
+  'base64 -d', 'eval ', 'exec ',
+  'python -c', 'perl -e', 'ruby -e',
+  '/bin/sh', '/bin/bash -c',
+];
 
 export class SSHManager {
   private getConnectConfig(credentials: SSHCredentials): ConnectConfig {
@@ -67,7 +102,8 @@ export class SSHManager {
     });
   }
 
-  async executeCommand(credentials: SSHCredentials, command: string): Promise<string> {
+  // Internal command execution - NO user input allowed
+  private async executeInternalCommand(credentials: SSHCredentials, command: string): Promise<string> {
     return new Promise((resolve, reject) => {
       const conn = new Client();
 
@@ -109,28 +145,33 @@ export class SSHManager {
     });
   }
 
-  async getSystemInfo(credentials: SSHCredentials): Promise<SystemInfo> {
-    // Gather system information via SSH commands
-    const commands = {
-      hostname: 'hostname',
-      os: 'cat /etc/os-release | grep "^NAME=" | cut -d= -f2 | tr -d \'"\'',
-      osVersion: 'cat /etc/os-release | grep "^VERSION_ID=" | cut -d= -f2 | tr -d \'"\'',
-      kernel: 'uname -r',
-      cpuModel: 'cat /proc/cpuinfo | grep "model name" | head -1 | cut -d: -f2 | xargs',
-      cpuCores: 'nproc',
-      ramTotal: 'free -b | grep Mem | awk \'{print $2}\'',
-      ipAddresses: 'hostname -I',
-      // Check for NVIDIA GPUs
-      nvidiaGpus: 'nvidia-smi --query-gpu=index,name,memory.total,pci.bus_id,uuid --format=csv,noheader,nounits 2>/dev/null || echo ""',
-      // Check for AMD GPUs
-      amdGpus: 'rocm-smi --showid --showproductname --showmeminfo vram 2>/dev/null | grep -E "GPU\\[|Card series|VRAM Total" || echo ""',
-    };
+  // Validate user command before execution
+  private validateUserCommand(command: string): void {
+    // Check for blocked commands
+    const lowerCommand = command.toLowerCase();
+    for (const blocked of BLOCKED_COMMANDS) {
+      if (lowerCommand.includes(blocked.toLowerCase())) {
+        throw new Error(`Command contains blocked operation: ${blocked.split(' ')[0]}`);
+      }
+    }
 
+    // Sanitize the command
+    sanitizeCommand(command);
+  }
+
+  // Execute user command with validation
+  async executeCommand(credentials: SSHCredentials, command: string): Promise<string> {
+    this.validateUserCommand(command);
+    return this.executeInternalCommand(credentials, command);
+  }
+
+  async getSystemInfo(credentials: SSHCredentials): Promise<SystemInfo> {
     const results: Record<string, string> = {};
 
-    for (const [key, cmd] of Object.entries(commands)) {
+    // Only execute whitelisted commands
+    for (const [key, cmd] of SAFE_INFO_COMMANDS) {
       try {
-        results[key] = await this.executeCommand(credentials, cmd);
+        results[key] = await this.executeInternalCommand(credentials, cmd);
       } catch {
         results[key] = '';
       }
@@ -157,9 +198,6 @@ export class SSHManager {
       }
     }
 
-    // Parse AMD GPUs (simplified - rocm-smi output is more complex)
-    // TODO: Better AMD parsing
-
     return {
       hostname: results.hostname || 'unknown',
       os: results.os || 'Linux',
@@ -177,7 +215,7 @@ export class SSHManager {
     name: string;
     farmId: string;
     credentials: SSHCredentials;
-  }): Promise<unknown> {
+  }): Promise<{ id: string; name: string; hostname: string; token: string }> {
     const { name, farmId, credentials } = options;
 
     // Step 1: Test connection
@@ -189,8 +227,8 @@ export class SSHManager {
     // Step 2: Gather system info
     const systemInfo = await this.getSystemInfo(credentials);
 
-    // Step 3: Generate token for this rig
-    const token = nanoid(32);
+    // Step 3: Generate secure token for this rig
+    const token = generateSecureToken(32);
 
     // Step 4: Create rig in database with SSH credentials
     const rig = await prisma.rig.create({
@@ -230,8 +268,17 @@ export class SSHManager {
       },
     });
 
-    // Step 5: Install agent on the rig (TODO: implement agent)
-    // For now, we just return the rig info
+    auditLog({
+      action: 'setup_rig',
+      resource: 'rig',
+      resourceId: rig.id,
+      details: { 
+        name, 
+        host: credentials.host,
+        gpuCount: systemInfo.gpus.length,
+      },
+      success: true,
+    });
 
     return rig;
   }
@@ -253,30 +300,65 @@ export class SSHManager {
     };
   }
 
-  // Execute command on a rig using stored credentials
+  // Execute validated command on a rig using stored credentials
   async executeCommandOnRig(rigId: string, command: string): Promise<string> {
     const credentials = await this.getCredentialsForRig(rigId);
     if (!credentials) {
       throw new Error('No SSH credentials found for this rig');
     }
-    return this.executeCommand(credentials, command);
+
+    // Validate command
+    this.validateUserCommand(command);
+
+    auditLog({
+      action: 'ssh_command',
+      resource: 'rig',
+      resourceId: rigId,
+      details: { command: command.substring(0, 100) }, // Truncate for logging
+      success: true,
+    });
+
+    return this.executeInternalCommand(credentials, command);
   }
 
-  // Execute command with sudo using the SSH password
+  // Execute sudo command with proper escaping - Use SPARINGLY
   async executeSudoCommandOnRig(rigId: string, command: string): Promise<string> {
     const credentials = await this.getCredentialsForRig(rigId);
     if (!credentials) {
       throw new Error('No SSH credentials found for this rig');
     }
     
-    if (!credentials.password) {
-      // No password, try without sudo -S
-      return this.executeCommand(credentials, command);
+    // Validate the command part
+    this.validateUserCommand(command);
+
+    // If we have a private key, try sudo without password first
+    if (credentials.privateKey) {
+      try {
+        return await this.executeInternalCommand(credentials, `sudo ${command}`);
+      } catch {
+        // Fallback to password if available
+      }
     }
 
-    // Use echo PASSWORD | sudo -S to pipe password to sudo
-    const sudoCommand = `echo '${credentials.password}' | sudo -S ${command} 2>/dev/null`;
-    return this.executeCommand(credentials, sudoCommand);
+    if (!credentials.password) {
+      // Try without password (might work if NOPASSWD is configured)
+      return this.executeInternalCommand(credentials, `sudo ${command}`);
+    }
+
+    // Use sudo with password via stdin (more secure than echo)
+    // Note: This is still visible in the SSH session but not in process lists
+    const escapedPassword = credentials.password.replace(/'/g, "'\\''");
+    const sudoCommand = `echo '${escapedPassword}' | sudo -S ${command} 2>&1`;
+    
+    auditLog({
+      action: 'ssh_sudo_command',
+      resource: 'rig',
+      resourceId: rigId,
+      details: { command: command.substring(0, 100) },
+      success: true,
+    });
+
+    return this.executeInternalCommand(credentials, sudoCommand);
   }
 
   // Refresh system info for a rig

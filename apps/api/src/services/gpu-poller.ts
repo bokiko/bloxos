@@ -247,7 +247,7 @@ export class GPUPoller {
           powerDraw: stats.powerDraw,
         },
       });
-    } catch (error) {
+    } catch {
       // Ignore errors - CPU might not exist yet
     }
   }
@@ -346,7 +346,9 @@ export class GPUPoller {
           where: { id: rigId },
           data: { status: 'OFFLINE' },
         });
-      } catch {}
+      } catch {
+        // Rig may have been deleted
+      }
 
       return {
         success: false,
