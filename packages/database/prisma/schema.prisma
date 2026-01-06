@@ -1,0 +1,443 @@
+// BloxOs Database Schema
+// Run: pnpm db:push to sync with database
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ===========================================
+// Core Entities
+// ===========================================
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  password  String   // Hashed
+  role      Role     @default(USER)
+  apiKeys   ApiKey[]
+  farms     Farm[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum Role {
+  ADMIN
+  USER
+  MONITOR
+}
+
+model ApiKey {
+  id        String   @id @default(cuid())
+  name      String
+  key       String   @unique // Hashed
+  prefix    String   // First 8 chars for identification
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lastUsed  DateTime?
+  expiresAt DateTime?
+  createdAt DateTime @default(now())
+}
+
+model Farm {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  ownerId     String
+  owner       User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  rigs        Rig[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// ===========================================
+// Rig Groups & Tags (Many-to-Many)
+// ===========================================
+
+model RigGroup {
+  id          String   @id @default(cuid())
+  name        String
+  color       String   @default("#6366f1") // Hex color for UI
+  description String?
+  rigs        Rig[]    @relation("RigToGroups")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// ===========================================
+// Rig & Hardware
+// ===========================================
+
+model Rig {
+  id             String        @id @default(cuid())
+  name           String
+  hostname       String
+  ipAddress      String?
+  macAddress     String?
+  os             String?
+  osVersion      String?
+  agentVersion   String?
+  token          String        @unique // Auth token for agent
+  status         RigStatus     @default(OFFLINE)
+  lastSeen       DateTime?
+  
+  // Monitoring toggles
+  cpuMiningEnabled Boolean     @default(false) // Enable CPU monitoring
+  gpuMiningEnabled Boolean     @default(true)  // Enable GPU monitoring
+  
+  farmId         String
+  farm           Farm          @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  groups         RigGroup[]    @relation("RigToGroups")
+  flightSheetId  String?
+  flightSheet    FlightSheet?  @relation(fields: [flightSheetId], references: [id])
+  ocProfileId    String?
+  ocProfile      OCProfile?    @relation(fields: [ocProfileId], references: [id])
+  sshCredential  SSHCredential?
+  cpu            CPU?
+  gpus           GPU[]
+  minerInstances MinerInstance[]
+  events         RigEvent[]
+  stats          RigStats[]
+  alertConfig    AlertConfig?
+  alerts         Alert[]
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  @@index([farmId])
+  @@index([status])
+}
+
+// SSH Credentials (encrypted)
+model SSHCredential {
+  id            String   @id @default(cuid())
+  rigId         String   @unique
+  rig           Rig      @relation(fields: [rigId], references: [id], onDelete: Cascade)
+  host          String
+  port          Int      @default(22)
+  username      String
+  authType      SSHAuthType @default(PASSWORD)
+  encryptedPassword  String?  // AES-256 encrypted
+  encryptedPrivateKey String? // AES-256 encrypted
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+enum SSHAuthType {
+  PASSWORD
+  KEY
+}
+
+enum RigStatus {
+  ONLINE
+  OFFLINE
+  WARNING
+  ERROR
+  REBOOTING
+}
+
+model GPU {
+  id           String   @id @default(cuid())
+  index        Int      // GPU index on the rig
+  name         String
+  vendor       GPUVendor
+  vram         Int      // MB
+  busId        String?  // PCI bus ID
+  uuid         String?  // GPU UUID
+  rigId        String
+  rig          Rig      @relation(fields: [rigId], references: [id], onDelete: Cascade)
+  
+  // Current stats (updated frequently)
+  temperature  Int?     // Celsius
+  memTemp      Int?     // Memory temp
+  fanSpeed     Int?     // Percent
+  powerDraw    Int?     // Watts
+  coreClock    Int?     // MHz
+  memoryClock  Int?     // MHz
+  hashrate     Float?   // MH/s
+  
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([rigId, index])
+  @@index([rigId])
+}
+
+enum GPUVendor {
+  NVIDIA
+  AMD
+  INTEL
+}
+
+model CPU {
+  id           String   @id @default(cuid())
+  rigId        String   @unique
+  rig          Rig      @relation(fields: [rigId], references: [id], onDelete: Cascade)
+  
+  // CPU Info
+  model        String   // e.g., "AMD Ryzen 9 5950X"
+  vendor       String   // AMD, Intel
+  cores        Int      // Physical cores
+  threads      Int      // Logical threads
+  
+  // Current stats (updated frequently)
+  temperature  Int?     // Celsius (package temp)
+  usage        Float?   // Percent (0-100)
+  frequency    Int?     // MHz (current)
+  maxFrequency Int?     // MHz (max)
+  powerDraw    Int?     // Watts (from RAPL)
+  hashrate     Float?   // H/s (for CPU mining)
+  
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+// ===========================================
+// Mining Configuration
+// ===========================================
+
+model Wallet {
+  id           String        @id @default(cuid())
+  name         String
+  coin         String        // BTC, ETH, KAS, etc.
+  address      String
+  source       String?       // Exchange name or "personal"
+  flightSheets FlightSheet[]
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  @@index([coin])
+}
+
+model Pool {
+  id           String        @id @default(cuid())
+  name         String
+  coin         String
+  url          String        // stratum+tcp://pool:port
+  url2         String?       // Backup
+  url3         String?       // Backup 2
+  user         String?       // Username template (use %WALLET%)
+  pass         String?       // Usually "x"
+  flightSheets FlightSheet[]
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  @@index([coin])
+}
+
+model MinerSoftware {
+  id             String        @id @default(cuid())
+  name           String        // T-Rex, TeamRedMiner, etc.
+  version        String
+  algo           String        // ethash, kawpow, etc.
+  supportedGpus  GPUVendor[]
+  apiPort        Int
+  apiType        String        // http, tcp
+  installUrl     String?       // Download URL
+  defaultArgs    String?       // Default command line args
+  flightSheets   FlightSheet[]
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  @@unique([name, version, algo])
+}
+
+model FlightSheet {
+  id            String         @id @default(cuid())
+  name          String
+  coin          String
+  walletId      String
+  wallet        Wallet         @relation(fields: [walletId], references: [id])
+  poolId        String
+  pool          Pool           @relation(fields: [poolId], references: [id])
+  minerId       String
+  miner         MinerSoftware  @relation(fields: [minerId], references: [id])
+  extraArgs     String?        // Additional miner arguments
+  rigs          Rig[]
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+}
+
+model OCProfile {
+  id          String   @id @default(cuid())
+  name        String
+  vendor      GPUVendor
+  
+  // NVIDIA settings
+  powerLimit  Int?     // Watts or percent
+  coreOffset  Int?     // MHz offset
+  memOffset   Int?     // MHz offset
+  coreLock    Int?     // Lock core clock MHz
+  memLock     Int?     // Lock mem clock MHz
+  fanSpeed    Int?     // Percent (0 = auto)
+  
+  // AMD settings
+  coreVddc    Int?     // Core voltage mV
+  memVddc     Int?     // Memory voltage mV
+  coreDpm     Int?     // Core DPM state
+  memDpm      Int?     // Memory DPM state
+  
+  rigs        Rig[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// ===========================================
+// Miner Instances & Stats
+// ===========================================
+
+model MinerInstance {
+  id          String   @id @default(cuid())
+  rigId       String
+  rig         Rig      @relation(fields: [rigId], references: [id], onDelete: Cascade)
+  minerName   String   // T-Rex, etc.
+  algo        String
+  pool        String
+  wallet      String
+  status      MinerStatus @default(STOPPED)
+  pid         Int?     // Process ID
+  hashrate    Float?   // Total MH/s
+  accepted    Int      @default(0)
+  rejected    Int      @default(0)
+  startedAt   DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([rigId])
+}
+
+enum MinerStatus {
+  RUNNING
+  STOPPED
+  ERROR
+  STARTING
+}
+
+model RigStats {
+  id          String   @id @default(cuid())
+  rigId       String
+  rig         Rig      @relation(fields: [rigId], references: [id], onDelete: Cascade)
+  hashrate    Float    // Total MH/s
+  power       Int      // Total watts
+  accepted    Int
+  rejected    Int
+  gpuData     Json     // Array of per-GPU stats
+  timestamp   DateTime @default(now())
+
+  @@index([rigId, timestamp])
+}
+
+// ===========================================
+// Events & Alerts
+// ===========================================
+
+model RigEvent {
+  id        String    @id @default(cuid())
+  rigId     String
+  rig       Rig       @relation(fields: [rigId], references: [id], onDelete: Cascade)
+  type      EventType
+  severity  Severity
+  message   String
+  data      Json?     // Additional event data
+  timestamp DateTime  @default(now())
+
+  @@index([rigId, timestamp])
+  @@index([type])
+}
+
+enum EventType {
+  RIG_ONLINE
+  RIG_OFFLINE
+  MINER_STARTED
+  MINER_STOPPED
+  MINER_ERROR
+  GPU_TEMP_HIGH
+  GPU_ERROR
+  HASHRATE_DROP
+  COMMAND_EXECUTED
+  CONFIG_CHANGED
+}
+
+enum Severity {
+  INFO
+  WARNING
+  ERROR
+  CRITICAL
+}
+
+model AlertRule {
+  id          String      @id @default(cuid())
+  name        String
+  enabled     Boolean     @default(true)
+  condition   AlertCondition
+  threshold   Float
+  duration    Int?        // Seconds before triggering
+  cooldown    Int         @default(300) // Seconds between alerts
+  notify      String[]    // ["telegram", "discord", "email"]
+  lastFired   DateTime?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+}
+
+enum AlertCondition {
+  TEMP_ABOVE
+  TEMP_BELOW
+  HASHRATE_BELOW
+  HASHRATE_DROP_PERCENT
+  RIG_OFFLINE
+  GPU_ERROR
+  REJECTED_PERCENT
+}
+
+// Per-rig alert configuration
+model AlertConfig {
+  id              String   @id @default(cuid())
+  rigId           String   @unique
+  rig             Rig      @relation(fields: [rigId], references: [id], onDelete: Cascade)
+  
+  // Enable/disable alert types
+  tempAlertEnabled      Boolean @default(true)
+  offlineAlertEnabled   Boolean @default(true)
+  hashrateAlertEnabled  Boolean @default(true)
+  
+  // Thresholds
+  gpuTempThreshold      Int     @default(80)  // Celsius
+  cpuTempThreshold      Int     @default(85)  // Celsius
+  offlineThreshold      Int     @default(300) // Seconds before offline alert
+  hashrateDropPercent   Int     @default(20)  // % drop to trigger alert
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// Triggered alerts (notifications)
+model Alert {
+  id          String      @id @default(cuid())
+  rigId       String
+  rig         Rig         @relation(fields: [rigId], references: [id], onDelete: Cascade)
+  type        AlertType
+  severity    Severity
+  title       String
+  message     String
+  data        Json?       // Additional data (temp value, hashrate, etc.)
+  read        Boolean     @default(false)
+  dismissed   Boolean     @default(false)
+  triggeredAt DateTime    @default(now())
+  readAt      DateTime?
+  
+  @@index([rigId, triggeredAt])
+  @@index([read, dismissed])
+}
+
+enum AlertType {
+  GPU_TEMP_HIGH
+  CPU_TEMP_HIGH
+  RIG_OFFLINE
+  HASHRATE_DROP
+  MINER_ERROR
+  GPU_ERROR
+}

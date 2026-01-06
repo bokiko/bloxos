@@ -1,0 +1,37 @@
+{
+  "name": "bloxos",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Open-source mining rig management system",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bokiko/bloxos"
+  },
+  "author": "Bokiko",
+  "license": "MIT",
+  "scripts": {
+    "dev": "turbo run dev",
+    "dev:clean": "pnpm clean:cache && turbo run dev",
+    "build": "turbo run build",
+    "build:clean": "pnpm clean:cache && turbo run build",
+    "start": "turbo run start",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "clean": "turbo run clean && rm -rf node_modules",
+    "clean:cache": "rm -rf apps/dashboard/.next apps/api/dist .turbo node_modules/.cache",
+    "db:push": "pnpm --filter database db:push",
+    "db:migrate": "pnpm --filter database db:migrate",
+    "db:studio": "pnpm --filter database db:studio",
+    "db:generate": "pnpm --filter database db:generate"
+  },
+  "devDependencies": {
+    "turbo": "^2.0.0",
+    "typescript": "^5.4.0",
+    "@types/node": "^20.0.0"
+  },
+  "packageManager": "pnpm@9.0.0",
+  "engines": {
+    "node": ">=22.0.0",
+    "pnpm": ">=9.0.0"
+  }
+}
