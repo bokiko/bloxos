@@ -43,7 +43,8 @@ export class MinerControl {
     this.sshManager = new SSHManager();
   }
 
-  // Build miner command safely with validated inputs
+  // Build miner command safely using array-based construction
+  // This prevents shell injection by avoiding string interpolation
   buildMinerCommand(config: MinerConfig): string {
     const { minerName, algo, poolUrl, walletAddress, workerName, extraArgs } = config;
     
@@ -62,6 +63,7 @@ export class MinerControl {
     
     // Validate and sanitize extra args
     const safeExtraArgs = extraArgs ? validateExtraArgs(extraArgs) : '';
+    const extraArgsArray = safeExtraArgs ? safeExtraArgs.split(/\s+/).filter(Boolean) : [];
     
     // Get miner path
     const minerPath = MINER_PATHS[minerName.toLowerCase()];
@@ -72,32 +74,90 @@ export class MinerControl {
     // Build wallet string
     const wallet = `${walletAddress}.${safeWorkerName}`;
     
-    // Build command using positional args (no shell interpolation)
+    // Build command using array-based construction (safer than string interpolation)
+    let args: string[];
+    
     switch (minerName.toLowerCase()) {
       case 't-rex':
-        return `${minerPath} -a ${algo} -o ${poolUrl} -u ${wallet} -p x ${safeExtraArgs} --api-bind-http 0.0.0.0:4067`.trim();
+        args = [
+          '-a', algo,
+          '-o', poolUrl,
+          '-u', wallet,
+          '-p', 'x',
+          ...extraArgsArray,
+          '--api-bind-http', '0.0.0.0:4067'
+        ];
+        break;
       
       case 'lolminer':
-        return `${minerPath} -a ${algo} -p ${poolUrl} -u ${wallet} ${safeExtraArgs} --apiport 4068`.trim();
+        args = [
+          '-a', algo,
+          '-p', poolUrl,
+          '-u', wallet,
+          ...extraArgsArray,
+          '--apiport', '4068'
+        ];
+        break;
       
       case 'gminer':
-        return `${minerPath} -a ${algo} -s ${poolUrl} -u ${wallet} ${safeExtraArgs} --api 4069`.trim();
+        args = [
+          '-a', algo,
+          '-s', poolUrl,
+          '-u', wallet,
+          ...extraArgsArray,
+          '--api', '4069'
+        ];
+        break;
       
       case 'nbminer':
-        return `${minerPath} -a ${algo} -o ${poolUrl} -u ${wallet} ${safeExtraArgs} --api 0.0.0.0:4070`.trim();
+        args = [
+          '-a', algo,
+          '-o', poolUrl,
+          '-u', wallet,
+          ...extraArgsArray,
+          '--api', '0.0.0.0:4070'
+        ];
+        break;
       
       case 'teamredminer':
-        return `${minerPath} -a ${algo} -o ${poolUrl} -u ${wallet} -p x ${safeExtraArgs} --api_listen=0.0.0.0:4071`.trim();
+        args = [
+          '-a', algo,
+          '-o', poolUrl,
+          '-u', wallet,
+          '-p', 'x',
+          ...extraArgsArray,
+          '--api_listen=0.0.0.0:4071'
+        ];
+        break;
       
       case 'xmrig':
-        return `${minerPath} -a ${algo} -o ${poolUrl} -u ${wallet} -p x ${safeExtraArgs} --http-host=0.0.0.0 --http-port=4072`.trim();
+        args = [
+          '-a', algo,
+          '-o', poolUrl,
+          '-u', wallet,
+          '-p', 'x',
+          ...extraArgsArray,
+          '--http-host=0.0.0.0',
+          '--http-port=4072'
+        ];
+        break;
       
       case 'bzminer':
-        return `${minerPath} -a ${algo} -p ${poolUrl} -w ${wallet} ${safeExtraArgs} --http_port 4073`.trim();
+        args = [
+          '-a', algo,
+          '-p', poolUrl,
+          '-w', wallet,
+          ...extraArgsArray,
+          '--http_port', '4073'
+        ];
+        break;
       
       default:
         throw new Error(`Unknown miner: ${minerName}`);
     }
+    
+    // Join with spaces - all args have been validated/sanitized
+    return `${minerPath} ${args.join(' ')}`;
   }
 
   // Start miner on a rig

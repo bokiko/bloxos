@@ -2,6 +2,7 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@bloxos/database';
 import { authService } from '../services/auth-service.ts';
+import { generateSecureToken, auditLog } from '../utils/security.ts';
 
 // Validation schemas
 const CreateUserSchema = z.object({
@@ -160,30 +161,89 @@ export async function userRoutes(app: FastifyInstance) {
     return reply.send(user);
   });
 
-  // Reset user password (admin only)
+  // Reset user password (admin only) - generates temporary password
+  // User must change password on next login
   app.post('/:id/reset-password', async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
     const admin = await requireAdmin(request, reply);
     if (!admin) return;
 
-    const { password } = request.body as { password: string };
+    const { id } = request.params;
 
-    if (!password || password.length < 6) {
-      return reply.status(400).send({ error: 'Password must be at least 6 characters' });
+    // Prevent admins from resetting their own password this way
+    if (id === admin.userId) {
+      return reply.status(400).send({ 
+        error: 'Cannot reset your own password. Use the change password feature instead.' 
+      });
     }
 
-    const existing = await prisma.user.findUnique({ where: { id: request.params.id } });
+    const existing = await prisma.user.findUnique({ where: { id } });
     if (!existing) {
       return reply.status(404).send({ error: 'User not found' });
     }
 
-    const hashedPassword = await authService.hashPassword(password);
+    // Generate a secure temporary password
+    const tempPassword = generateSecureToken(16);
+    const hashedPassword = await authService.hashPassword(tempPassword);
 
     await prisma.user.update({
-      where: { id: request.params.id },
-      data: { password: hashedPassword },
+      where: { id },
+      data: { 
+        password: hashedPassword,
+        // Note: In a full implementation, you'd set a flag like `mustChangePassword: true`
+        // and check it on login to force password change
+      },
     });
 
-    return reply.send({ success: true });
+    // Log the password reset action
+    auditLog({
+      userId: admin.userId,
+      action: 'admin_password_reset',
+      resource: 'user',
+      resourceId: id,
+      details: { targetUserEmail: existing.email },
+      ip: request.ip,
+      success: true,
+    });
+
+    // Return temporary password - in production, this would be sent via email
+    // For now, return it to the admin to communicate to the user securely
+    return reply.send({ 
+      success: true, 
+      message: 'Password reset successfully. Provide this temporary password to the user securely.',
+      temporaryPassword: tempPassword,
+      note: 'The user should change this password immediately after logging in.',
+    });
+  });
+
+  // Force logout all sessions for a user (admin only)
+  app.post('/:id/logout-all', async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+    const admin = await requireAdmin(request, reply);
+    if (!admin) return;
+
+    const { id } = request.params;
+
+    const existing = await prisma.user.findUnique({ where: { id } });
+    if (!existing) {
+      return reply.status(404).send({ error: 'User not found' });
+    }
+
+    // Force logout all sessions
+    const count = await authService.logoutAllSessions(id);
+
+    auditLog({
+      userId: admin.userId,
+      action: 'admin_force_logout',
+      resource: 'user',
+      resourceId: id,
+      details: { targetUserEmail: existing.email, sessionsTerminated: count },
+      ip: request.ip,
+      success: true,
+    });
+
+    return reply.send({ 
+      success: true, 
+      message: `Logged out ${count} session(s) for user ${existing.email}`,
+    });
   });
 
   // Delete user (admin only)

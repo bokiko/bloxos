@@ -1,7 +1,7 @@
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import { prisma } from '@bloxos/database';
-import { validatePassword, validateEmail, auditLog, checkRateLimit } from '../utils/security.ts';
+import { validatePassword, validateEmail, auditLog, checkRateLimit, recordFailedLogin, isAccountLocked, clearFailedLogins } from '../utils/security.ts';
 import { blacklistToken, isTokenBlacklisted, createSession, deleteSession, deleteUserSessions, getUserSessions } from './session-store.ts';
 
 // JWT Configuration
@@ -184,14 +184,33 @@ export class AuthService {
 
   // Login user with rate limiting
   async login(email: string, password: string, ip?: string) {
+    const normalizedEmail = email.toLowerCase();
+    
+    // Check if account is locked
+    const lockStatus = isAccountLocked(normalizedEmail);
+    if (lockStatus.locked) {
+      auditLog({
+        action: 'login',
+        resource: 'user',
+        details: { email: normalizedEmail, reason: 'account_locked' },
+        ip,
+        success: false,
+        error: 'Account locked',
+      });
+      const remainingTime = lockStatus.lockoutEndsAt 
+        ? Math.ceil((lockStatus.lockoutEndsAt.getTime() - Date.now()) / 60000)
+        : 15;
+      throw new Error(`Account is locked due to too many failed login attempts. Try again in ${remainingTime} minutes.`);
+    }
+
     // Rate limiting per IP
     if (ip) {
-      const rateLimit = checkRateLimit(`login:${ip}`, 5, 60000); // 5 attempts per minute
+      const rateLimit = checkRateLimit(`login:${ip}`, 10, 60000); // 10 attempts per minute per IP
       if (!rateLimit.allowed) {
         auditLog({
           action: 'login',
           resource: 'user',
-          details: { email: email.toLowerCase(), reason: 'rate_limited' },
+          details: { email: normalizedEmail, reason: 'rate_limited' },
           ip,
           success: false,
           error: 'Too many login attempts',
@@ -201,12 +220,14 @@ export class AuthService {
     }
 
     // Find user
-    const user = await prisma.user.findUnique({ where: { email: email.toLowerCase() } });
+    const user = await prisma.user.findUnique({ where: { email: normalizedEmail } });
     if (!user) {
+      // Record failed attempt even for non-existent users (prevent enumeration)
+      recordFailedLogin(normalizedEmail);
       auditLog({
         action: 'login',
         resource: 'user',
-        details: { email: email.toLowerCase(), reason: 'user_not_found' },
+        details: { email: normalizedEmail, reason: 'user_not_found' },
         ip,
         success: false,
         error: 'Invalid credentials',
@@ -217,18 +238,33 @@ export class AuthService {
     // Verify password
     const valid = await this.verifyPassword(password, user.password);
     if (!valid) {
+      // Record failed attempt and check if now locked
+      const lockResult = recordFailedLogin(normalizedEmail);
+      
       auditLog({
         userId: user.id,
         action: 'login',
         resource: 'user',
         resourceId: user.id,
-        details: { reason: 'invalid_password' },
+        details: { 
+          reason: 'invalid_password',
+          attemptsRemaining: lockResult.attemptsRemaining,
+          accountLocked: lockResult.locked,
+        },
         ip,
         success: false,
         error: 'Invalid credentials',
       });
-      throw new Error('Invalid email or password');
+      
+      if (lockResult.locked) {
+        throw new Error('Account has been locked due to too many failed login attempts. Try again in 15 minutes.');
+      }
+      
+      throw new Error(`Invalid email or password. ${lockResult.attemptsRemaining} attempts remaining before account lockout.`);
     }
+
+    // Successful login - clear any failed attempts
+    clearFailedLogins(normalizedEmail);
 
     // Generate tokens
     const tokenPayload = {
