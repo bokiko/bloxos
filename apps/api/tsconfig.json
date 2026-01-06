@@ -13,11 +13,10 @@
     "sourceMap": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "noEmit": false,
-    "lib": ["ES2022"],
-    "types": ["node"],
+    "noEmit": true,
     "allowImportingTsExtensions": true,
-    "noEmit": true
+    "lib": ["ES2022"],
+    "types": ["node"]
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist"]

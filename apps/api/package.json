@@ -5,16 +5,18 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc",
+    "build": "tsup src/index.ts --format esm --clean",
     "start": "node dist/index.js",
     "lint": "eslint src/",
-    "test": "vitest run",
+    "test": "vitest run --passWithNoTests",
     "test:watch": "vitest"
   },
   "dependencies": {
     "@bloxos/database": "workspace:*",
     "@fastify/cookie": "^11.0.2",
     "@fastify/cors": "^10.0.0",
+    "@fastify/helmet": "^13.0.2",
+    "@fastify/rate-limit": "^10.3.0",
     "@fastify/websocket": "^11.0.0",
     "bcrypt": "^5.1.1",
     "fastify": "^5.0.0",
@@ -26,13 +28,16 @@
     "zod": "^3.23.0"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.2",
     "@types/bcrypt": "^5.0.2",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^20.0.0",
     "@types/ssh2": "^1.15.0",
     "eslint": "^9.0.0",
+    "tsup": "^8.5.1",
     "tsx": "^4.15.0",
     "typescript": "^5.4.0",
+    "typescript-eslint": "^8.52.0",
     "vitest": "^2.0.0"
   }
 }

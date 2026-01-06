@@ -8,7 +8,7 @@
     "build": "next build",
     "build:clean": "rm -rf .next && next build",
     "start": "next start",
-    "lint": "next lint",
+    "lint": "eslint .",
     "clean": "rm -rf .next node_modules/.cache"
   },
   "dependencies": {
@@ -24,6 +24,7 @@
     "xterm": "^5.3.0"
   },
   "devDependencies": {
+    "@eslint/eslintrc": "^3.3.3",
     "@types/node": "^20.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",

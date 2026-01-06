@@ -116,7 +116,7 @@ export async function rigRoutes(app: FastifyInstance) {
       });
 
       return reply.send(rig);
-    } catch (error) {
+    } catch {
       return reply.status(404).send({ error: 'Rig not found' });
     }
   });
@@ -128,7 +128,7 @@ export async function rigRoutes(app: FastifyInstance) {
     try {
       await prisma.rig.delete({ where: { id } });
       return reply.status(204).send();
-    } catch (error) {
+    } catch {
       return reply.status(404).send({ error: 'Rig not found' });
     }
   });

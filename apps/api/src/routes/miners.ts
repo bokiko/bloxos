@@ -157,7 +157,7 @@ export async function minerRoutes(app: FastifyInstance) {
           data: miner as any,
         });
         created++;
-      } catch (err) {
+      } catch {
         // Unique constraint violation - already exists
         skipped++;
       }

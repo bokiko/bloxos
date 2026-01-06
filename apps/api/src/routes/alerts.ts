@@ -111,7 +111,7 @@ export async function alertRoutes(app: FastifyInstance) {
       });
 
       return reply.send(alert);
-    } catch (error) {
+    } catch {
       return reply.status(404).send({ error: 'Alert not found' });
     }
   });

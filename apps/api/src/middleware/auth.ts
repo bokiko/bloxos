@@ -38,7 +38,7 @@ export async function requireAdmin(request: FastifyRequest, reply: FastifyReply)
 }
 
 // Optional auth - attaches user if token present, but doesn't require it
-export async function optionalAuth(request: FastifyRequest, reply: FastifyReply) {
+export async function optionalAuth(request: FastifyRequest, _reply: FastifyReply) {
   const token = request.cookies.token || request.headers.authorization?.replace('Bearer ', '');
 
   if (token) {

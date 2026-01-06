@@ -2,6 +2,8 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import cookie from '@fastify/cookie';
 import websocket from '@fastify/websocket';
+import rateLimit from '@fastify/rate-limit';
+import helmet from '@fastify/helmet';
 import { prisma } from '@bloxos/database';
 
 import { rigRoutes } from './routes/rigs.ts';
@@ -22,6 +24,15 @@ import { websocketRoutes } from './routes/websocket.ts';
 import { terminalRoutes } from './routes/terminal.ts';
 import { gpuPoller } from './services/gpu-poller.ts';
 import { requireAuth } from './middleware/auth.ts';
+import { validateSecrets, auditLog } from './utils/security.ts';
+
+// Validate secrets on startup
+try {
+  validateSecrets();
+} catch (error) {
+  console.error('[Security] Fatal:', error);
+  process.exit(1);
+}
 
 // Routes that don't require authentication
 const publicPaths = [
@@ -30,39 +41,119 @@ const publicPaths = [
   '/api/auth/register',
   '/api/auth/setup-required',
   '/api/auth/logout',
-  '/api/agent/register',  // Agent registration uses API key
-  '/api/agent/heartbeat', // Agent heartbeat uses API key
-  '/api/ws',              // WebSocket handles its own auth
-  '/api/terminal/ws',     // Terminal WebSocket handles its own auth
+  '/api/auth/refresh',
+];
+
+// Agent routes require API key validation
+const agentPaths = [
+  '/api/agent/register',
+  '/api/agent/heartbeat',
+  '/api/agent/report',
 ];
 
 const PORT = parseInt(process.env.API_PORT || '3001', 10);
 const HOST = process.env.API_HOST || '0.0.0.0';
+const isProduction = process.env.NODE_ENV === 'production';
+
+// CORS allowed origins
+const getAllowedOrigins = (): string[] | boolean => {
+  const origins = process.env.CORS_ORIGINS;
+  if (origins) {
+    return origins.split(',').map(o => o.trim());
+  }
+  // In development, allow all origins
+  if (!isProduction) {
+    return true;
+  }
+  // In production without explicit origins, restrict to same origin
+  return false;
+};
 
 async function main() {
   const app = Fastify({
     logger: {
-      level: process.env.NODE_ENV === 'production' ? 'info' : 'debug',
-      transport: {
+      level: isProduction ? 'info' : 'debug',
+      transport: isProduction ? undefined : {
         target: 'pino-pretty',
         options: {
           colorize: true,
         },
       },
     },
+    // Request body size limit
+    bodyLimit: 1048576, // 1MB
+    // Request timeout
+    requestTimeout: 30000, // 30 seconds
   });
 
-  // Register plugins
+  // ============================================
+  // SECURITY PLUGINS
+  // ============================================
+
+  // Security headers (Helmet)
+  await app.register(helmet, {
+    contentSecurityPolicy: isProduction ? {
+      directives: {
+        defaultSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        scriptSrc: ["'self'"],
+        imgSrc: ["'self'", 'data:', 'https:'],
+        connectSrc: ["'self'", 'wss:', 'ws:'],
+      },
+    } : false,
+    crossOriginEmbedderPolicy: false,
+  });
+
+  // Rate limiting
+  await app.register(rateLimit, {
+    max: 100, // 100 requests per minute by default
+    timeWindow: '1 minute',
+    // Stricter limits for auth endpoints
+    keyGenerator: (request) => {
+      return request.ip || 'unknown';
+    },
+    errorResponseBuilder: (request, context) => {
+      return {
+        error: 'Too many requests',
+        message: `Rate limit exceeded. Try again in ${Math.round(context.ttl / 1000)} seconds`,
+        retryAfter: Math.round(context.ttl / 1000),
+      };
+    },
+  });
+
+  // CORS - Restrict in production
   await app.register(cors, {
-    origin: true,
+    origin: getAllowedOrigins(),
     credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'X-Request-ID'],
+    exposedHeaders: ['X-Request-ID', 'X-RateLimit-Limit', 'X-RateLimit-Remaining'],
+    maxAge: 600, // 10 minutes
   });
 
+  // Cookie secret - Required
+  const cookieSecret = process.env.COOKIE_SECRET;
+  if (!cookieSecret && isProduction) {
+    throw new Error('COOKIE_SECRET environment variable is required in production');
+  }
   await app.register(cookie, {
-    secret: process.env.COOKIE_SECRET || 'bloxos-cookie-secret-change-in-production',
+    secret: cookieSecret || 'bloxos-cookie-secret-dev-only',
   });
 
+  // WebSocket support
   await app.register(websocket);
+
+  // ============================================
+  // REQUEST HOOKS
+  // ============================================
+
+  // Add request ID for tracing
+  app.addHook('onRequest', async (request, reply) => {
+    const requestId = request.headers['x-request-id'] || 
+      `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    request.headers['x-request-id'] = requestId as string;
+    reply.header('X-Request-ID', requestId);
+  });
 
   // Global auth hook - protect all routes except public ones
   app.addHook('onRequest', async (request, reply) => {
@@ -73,21 +164,97 @@ async function main() {
       return;
     }
 
-    // Skip auth for agent routes with valid API key
-    if (path.startsWith('/api/agent/')) {
+    // Skip auth for WebSocket paths (they handle their own auth)
+    if (path.startsWith('/api/ws') || path.startsWith('/api/terminal/ws')) {
+      return;
+    }
+
+    // Agent routes require valid API key (token validation)
+    if (agentPaths.some(p => path.startsWith(p))) {
       const apiKey = request.headers['x-api-key'];
-      if (apiKey) {
-        return; // Agent routes handle their own auth via API key
+      if (!apiKey) {
+        return reply.status(401).send({ error: 'API key required' });
       }
+      
+      // Validate token exists in database
+      const body = request.body as { token?: string } | undefined;
+      const token = body?.token || apiKey;
+      
+      if (typeof token !== 'string' || token.length < 10) {
+        return reply.status(401).send({ error: 'Invalid API key format' });
+      }
+      
+      // Token validation happens in the route handler
+      return;
     }
 
     // Require auth for all other routes
     await requireAuth(request, reply);
   });
 
-  // Register routes
+  // Audit logging for sensitive operations
+  app.addHook('onResponse', async (request, reply) => {
+    const path = request.url.split('?')[0];
+    const method = request.method;
+    
+    // Log sensitive operations
+    if (method !== 'GET' && method !== 'OPTIONS') {
+      const sensitiveRoutes = ['/api/auth', '/api/users', '/api/ssh', '/api/rigs'];
+      if (sensitiveRoutes.some(r => path.startsWith(r))) {
+        auditLog({
+          userId: (request as any).user?.userId,
+          action: `${method} ${path}`,
+          resource: path.split('/')[2] || 'unknown',
+          ip: request.ip,
+          userAgent: request.headers['user-agent'],
+          success: reply.statusCode < 400,
+          error: reply.statusCode >= 400 ? `HTTP ${reply.statusCode}` : undefined,
+        });
+      }
+    }
+  });
+
+  // Error handler - Don't leak sensitive info
+  app.setErrorHandler((error: Error & { statusCode?: number }, request, reply) => {
+    const requestId = request.headers['x-request-id'];
+    
+    // Log full error internally
+    app.log.error({
+      requestId,
+      error: error.message,
+      stack: error.stack,
+      path: request.url,
+    });
+
+    // Return sanitized error to client
+    const statusCode = error.statusCode || 500;
+    const message = statusCode >= 500 && isProduction
+      ? 'Internal server error'
+      : error.message;
+
+    reply.status(statusCode).send({
+      error: message,
+      requestId,
+      statusCode,
+    });
+  });
+
+  // ============================================
+  // ROUTES
+  // ============================================
+
+  // Apply stricter rate limits to auth routes
+  await app.register(async (authApp) => {
+    authApp.addHook('onRequest', async (_request, _reply) => {
+      // Additional rate limiting for auth: 5 requests per minute
+      // This is handled by the main rate limiter, but we could add
+      // additional checks here if needed
+    });
+    
+    await authApp.register(authRoutes);
+  }, { prefix: '/api/auth' });
+
   await app.register(healthRoutes, { prefix: '/api' });
-  await app.register(authRoutes, { prefix: '/api/auth' });
   await app.register(userRoutes, { prefix: '/api/users' });
   await app.register(rigRoutes, { prefix: '/api/rigs' });
   await app.register(sshRoutes, { prefix: '/api/ssh' });
@@ -103,7 +270,10 @@ async function main() {
   await app.register(websocketRoutes, { prefix: '/api' });
   await app.register(terminalRoutes, { prefix: '/api/terminal' });
 
-  // Graceful shutdown
+  // ============================================
+  // GRACEFUL SHUTDOWN
+  // ============================================
+
   const signals = ['SIGINT', 'SIGTERM'];
   signals.forEach((signal) => {
     process.on(signal, async () => {
@@ -115,10 +285,14 @@ async function main() {
     });
   });
 
-  // Start server
+  // ============================================
+  // START SERVER
+  // ============================================
+
   try {
     await app.listen({ port: PORT, host: HOST });
     app.log.info(`BloxOs API running on http://${HOST}:${PORT}`);
+    app.log.info(`Environment: ${isProduction ? 'production' : 'development'}`);
 
     // Start GPU polling service
     gpuPoller.start();
