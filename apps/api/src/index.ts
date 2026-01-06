@@ -22,6 +22,7 @@ import { authRoutes } from './routes/auth.ts';
 import { userRoutes } from './routes/users.ts';
 import { websocketRoutes } from './routes/websocket.ts';
 import { terminalRoutes } from './routes/terminal.ts';
+import { agentWebsocketRoutes } from './routes/agent-websocket.ts';
 import { gpuPoller } from './services/gpu-poller.ts';
 import { requireAuth } from './middleware/auth.ts';
 import { csrfSetToken, csrfValidate, csrfTokenEndpoint } from './middleware/csrf.ts';
@@ -189,7 +190,7 @@ async function main() {
     }
 
     // Skip auth for WebSocket paths (they handle their own auth)
-    if (path.startsWith('/api/ws') || path.startsWith('/api/terminal/ws')) {
+    if (path.startsWith('/api/ws') || path.startsWith('/api/terminal/ws') || path.startsWith('/api/agent/ws')) {
       return;
     }
 
@@ -296,6 +297,7 @@ async function main() {
   await app.register(flightSheetRoutes, { prefix: '/api/flight-sheets' });
   await app.register(alertRoutes, { prefix: '/api/alerts' });
   await app.register(agentRoutes, { prefix: '/api/agent' });
+  await app.register(agentWebsocketRoutes, { prefix: '/api/agent' });
   await app.register(ocProfileRoutes, { prefix: '/api/oc-profiles' });
   await app.register(rigGroupRoutes, { prefix: '/api/rig-groups' });
   await app.register(bulkActionsRoutes, { prefix: '/api/bulk' });
