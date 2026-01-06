@@ -7,6 +7,7 @@ import { minerControl } from '../services/miner-control.ts';
 import { ocService } from '../services/oc-service.ts';
 import { requireRigAccess, requireFarmAccess, getUserRigFilter } from '../middleware/authorization.ts';
 import { auditLog } from '../utils/security.ts';
+import { sendCommandToRig, isAgentConnected } from './agent-websocket.ts';
 
 // Validation schemas
 const CreateRigSchema = z.object({
@@ -446,5 +447,218 @@ export async function rigRoutes(app: FastifyInstance) {
     });
 
     return reply.send({ success: true });
+  });
+
+  // ============================================
+  // WebSocket-based Agent Commands
+  // ============================================
+
+  // Check if agent is connected
+  app.get<{ Params: { id: string } }>('/:id/agent/status', { preHandler: [requireRigAccess] }, async (request, reply) => {
+    const { id } = request.params;
+    const connected = isAgentConnected(id);
+    return reply.send({ connected });
+  });
+
+  // Start miner via WebSocket agent
+  app.post<{ Params: { id: string } }>('/:id/command/start-miner', { preHandler: [requireRigAccess] }, async (request, reply) => {
+    const { id } = request.params;
+
+    // Get rig with flight sheet
+    const rig = await prisma.rig.findUnique({
+      where: { id },
+      include: {
+        flightSheet: {
+          include: { wallet: true, pool: true, miner: true },
+        },
+      },
+    });
+
+    if (!rig) {
+      return reply.status(404).send({ error: 'Rig not found' });
+    }
+
+    if (!rig.flightSheet) {
+      return reply.status(400).send({ error: 'No flight sheet assigned' });
+    }
+
+    const { flightSheet } = rig;
+
+    // Build miner config for agent
+    const minerConfig = {
+      name: flightSheet.miner.name,
+      algorithm: flightSheet.miner.algo,
+      pool: flightSheet.pool.url,
+      wallet: flightSheet.wallet.address,
+      worker: rig.name.replace(/[^a-zA-Z0-9_-]/g, '_'),
+      extraArgs: flightSheet.extraArgs?.split(/\s+/).filter(Boolean) || [],
+    };
+
+    const commandId = sendCommandToRig(id, {
+      type: 'start_miner',
+      payload: minerConfig,
+    });
+
+    auditLog({
+      userId: request.user?.userId,
+      action: 'command_start_miner',
+      resource: 'rig',
+      resourceId: id,
+      details: { commandId, miner: minerConfig.name },
+      ip: request.ip,
+      success: true,
+    });
+
+    return reply.send({
+      success: true,
+      commandId,
+      queued: !isAgentConnected(id),
+      message: isAgentConnected(id) ? 'Command sent to agent' : 'Command queued (agent offline)',
+    });
+  });
+
+  // Stop miner via WebSocket agent
+  app.post<{ Params: { id: string } }>('/:id/command/stop-miner', { preHandler: [requireRigAccess] }, async (request, reply) => {
+    const { id } = request.params;
+
+    const commandId = sendCommandToRig(id, { type: 'stop_miner' });
+
+    auditLog({
+      userId: request.user?.userId,
+      action: 'command_stop_miner',
+      resource: 'rig',
+      resourceId: id,
+      details: { commandId },
+      ip: request.ip,
+      success: true,
+    });
+
+    return reply.send({
+      success: true,
+      commandId,
+      queued: !isAgentConnected(id),
+    });
+  });
+
+  // Restart miner via WebSocket agent
+  app.post<{ Params: { id: string } }>('/:id/command/restart-miner', { preHandler: [requireRigAccess] }, async (request, reply) => {
+    const { id } = request.params;
+
+    const commandId = sendCommandToRig(id, { type: 'restart_miner' });
+
+    auditLog({
+      userId: request.user?.userId,
+      action: 'command_restart_miner',
+      resource: 'rig',
+      resourceId: id,
+      details: { commandId },
+      ip: request.ip,
+      success: true,
+    });
+
+    return reply.send({
+      success: true,
+      commandId,
+      queued: !isAgentConnected(id),
+    });
+  });
+
+  // Apply OC via WebSocket agent
+  app.post<{ Params: { id: string } }>('/:id/command/apply-oc', { preHandler: [requireRigAccess] }, async (request, reply) => {
+    const { id } = request.params;
+
+    // Get rig with OC profile
+    const rig = await prisma.rig.findUnique({
+      where: { id },
+      include: { ocProfile: true },
+    });
+
+    if (!rig) {
+      return reply.status(404).send({ error: 'Rig not found' });
+    }
+
+    if (!rig.ocProfile) {
+      return reply.status(400).send({ error: 'No OC profile assigned' });
+    }
+
+    const { ocProfile } = rig;
+
+    // Build OC config for agent
+    const ocConfig = {
+      gpuIndex: -1, // Apply to all GPUs
+      powerLimit: ocProfile.powerLimit,
+      coreOffset: ocProfile.coreOffset,
+      memOffset: ocProfile.memOffset,
+      coreLock: ocProfile.coreLock,
+      memLock: ocProfile.memLock,
+      fanSpeed: ocProfile.fanSpeed,
+    };
+
+    const commandId = sendCommandToRig(id, {
+      type: 'apply_oc',
+      payload: ocConfig,
+    });
+
+    auditLog({
+      userId: request.user?.userId,
+      action: 'command_apply_oc',
+      resource: 'rig',
+      resourceId: id,
+      details: { commandId, profile: ocProfile.name },
+      ip: request.ip,
+      success: true,
+    });
+
+    return reply.send({
+      success: true,
+      commandId,
+      queued: !isAgentConnected(id),
+    });
+  });
+
+  // Reboot rig via WebSocket agent
+  app.post<{ Params: { id: string } }>('/:id/command/reboot', { preHandler: [requireRigAccess] }, async (request, reply) => {
+    const { id } = request.params;
+
+    const commandId = sendCommandToRig(id, { type: 'reboot' });
+
+    auditLog({
+      userId: request.user?.userId,
+      action: 'command_reboot',
+      resource: 'rig',
+      resourceId: id,
+      details: { commandId },
+      ip: request.ip,
+      success: true,
+    });
+
+    return reply.send({
+      success: true,
+      commandId,
+      queued: !isAgentConnected(id),
+    });
+  });
+
+  // Shutdown rig via WebSocket agent
+  app.post<{ Params: { id: string } }>('/:id/command/shutdown', { preHandler: [requireRigAccess] }, async (request, reply) => {
+    const { id } = request.params;
+
+    const commandId = sendCommandToRig(id, { type: 'shutdown' });
+
+    auditLog({
+      userId: request.user?.userId,
+      action: 'command_shutdown',
+      resource: 'rig',
+      resourceId: id,
+      details: { commandId },
+      ip: request.ip,
+      success: true,
+    });
+
+    return reply.send({
+      success: true,
+      commandId,
+      queued: !isAgentConnected(id),
+    });
   });
 }

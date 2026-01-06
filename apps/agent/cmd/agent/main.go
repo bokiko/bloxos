@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -10,10 +11,13 @@ import (
 
 	"github.com/bloxos/agent/internal/collector"
 	"github.com/bloxos/agent/internal/config"
+	"github.com/bloxos/agent/internal/executor"
 	"github.com/bloxos/agent/internal/ws"
 )
 
-const version = "0.2.0"
+const version = "0.3.0"
+
+var exec *executor.Executor
 
 func main() {
 	fmt.Printf("BloxOs Agent v%s\n", version)
@@ -29,8 +33,9 @@ func main() {
 			cfg.ServerURL, cfg.PollInterval, cfg.GPUEnabled, cfg.CPUEnabled)
 	}
 
-	// Create collector
+	// Create components
 	coll := collector.New()
+	exec = executor.New(cfg.Debug)
 
 	// Get initial system info
 	sysInfo, err := coll.GetSystemInfo()
@@ -52,6 +57,8 @@ func main() {
 		log.Println("Connected to server")
 		// Send initial stats immediately
 		sendStats(wsClient, coll, cfg)
+		// Send miner status
+		sendMinerStatus(wsClient)
 	})
 
 	// Set up disconnect handler
@@ -73,6 +80,10 @@ func main() {
 	ticker := time.NewTicker(time.Duration(cfg.PollInterval) * time.Second)
 	defer ticker.Stop()
 
+	// Miner status ticker (every 10 seconds)
+	minerTicker := time.NewTicker(10 * time.Second)
+	defer minerTicker.Stop()
+
 	log.Printf("Starting stats collection (every %ds)...", cfg.PollInterval)
 
 	// Main loop
@@ -81,6 +92,10 @@ func main() {
 		case <-ticker.C:
 			if wsClient.IsConnected() {
 				sendStats(wsClient, coll, cfg)
+			}
+		case <-minerTicker.C:
+			if wsClient.IsConnected() {
+				sendMinerStatus(wsClient)
 			}
 		case sig := <-sigChan:
 			log.Printf("Received %v, shutting down...", sig)
@@ -132,6 +147,14 @@ func sendStats(client *ws.Client, coll *collector.Collector, cfg *config.Config)
 	}
 }
 
+// sendMinerStatus sends current miner status to the server
+func sendMinerStatus(client *ws.Client) {
+	status := exec.GetMinerStatus()
+	if err := client.SendMinerStatus(status); err != nil {
+		log.Printf("Failed to send miner status: %v", err)
+	}
+}
+
 // handleCommand handles commands from the server
 func handleCommand(cmd *ws.Command, cfg *config.Config) (bool, error) {
 	log.Printf("Executing command: %s", cmd.Type)
@@ -145,57 +168,89 @@ func handleCommand(cmd *ws.Command, cfg *config.Config) (bool, error) {
 		return handleRestartMiner(cmd.Payload, cfg)
 	case "apply_oc":
 		return handleApplyOC(cmd.Payload, cfg)
-	case "apply_flight_sheet":
-		return handleApplyFlightSheet(cmd.Payload, cfg)
 	case "reboot":
 		return handleReboot(cfg)
 	case "shutdown":
 		return handleShutdown(cfg)
-	case "execute":
-		return handleExecute(cmd.Payload, cfg)
 	default:
 		return false, fmt.Errorf("unknown command type: %s", cmd.Type)
 	}
 }
 
-// Command handlers - these will be implemented in phase A2
-
 func handleStartMiner(payload interface{}, cfg *config.Config) (bool, error) {
-	log.Println("TODO: Implement start_miner")
-	return false, fmt.Errorf("not implemented")
+	if payload == nil {
+		return false, fmt.Errorf("miner config required")
+	}
+
+	// Convert payload to MinerConfig
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return false, fmt.Errorf("invalid payload: %w", err)
+	}
+
+	var config executor.MinerConfig
+	if err := json.Unmarshal(data, &config); err != nil {
+		return false, fmt.Errorf("invalid miner config: %w", err)
+	}
+
+	if err := exec.StartMiner(&config); err != nil {
+		return false, err
+	}
+
+	return true, nil
 }
 
 func handleStopMiner(payload interface{}, cfg *config.Config) (bool, error) {
-	log.Println("TODO: Implement stop_miner")
-	return false, fmt.Errorf("not implemented")
+	if err := exec.StopMiner(); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func handleRestartMiner(payload interface{}, cfg *config.Config) (bool, error) {
-	log.Println("TODO: Implement restart_miner")
-	return false, fmt.Errorf("not implemented")
+	if err := exec.RestartMiner(); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func handleApplyOC(payload interface{}, cfg *config.Config) (bool, error) {
-	log.Println("TODO: Implement apply_oc")
-	return false, fmt.Errorf("not implemented")
-}
+	if payload == nil {
+		return false, fmt.Errorf("OC config required")
+	}
 
-func handleApplyFlightSheet(payload interface{}, cfg *config.Config) (bool, error) {
-	log.Println("TODO: Implement apply_flight_sheet")
-	return false, fmt.Errorf("not implemented")
+	// Convert payload to OCConfig
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return false, fmt.Errorf("invalid payload: %w", err)
+	}
+
+	var config executor.OCConfig
+	if err := json.Unmarshal(data, &config); err != nil {
+		return false, fmt.Errorf("invalid OC config: %w", err)
+	}
+
+	if err := exec.ApplyOC(&config); err != nil {
+		return false, err
+	}
+
+	return true, nil
 }
 
 func handleReboot(cfg *config.Config) (bool, error) {
-	log.Println("TODO: Implement reboot")
-	return false, fmt.Errorf("not implemented")
+	// Start reboot in background so we can respond first
+	go func() {
+		time.Sleep(2 * time.Second)
+		exec.Reboot()
+	}()
+	return true, nil
 }
 
 func handleShutdown(cfg *config.Config) (bool, error) {
-	log.Println("TODO: Implement shutdown")
-	return false, fmt.Errorf("not implemented")
-}
-
-func handleExecute(payload interface{}, cfg *config.Config) (bool, error) {
-	log.Println("TODO: Implement execute")
-	return false, fmt.Errorf("not implemented")
+	// Start shutdown in background so we can respond first
+	go func() {
+		time.Sleep(2 * time.Second)
+		exec.Shutdown()
+	}()
+	return true, nil
 }
