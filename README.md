@@ -21,6 +21,7 @@
   <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"/>
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg" alt="Platform"/>
   <img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome"/>
+  <img src="https://img.shields.io/badge/status-alpha-orange.svg" alt="Status: Alpha"/>
 </p>
 
 ---
@@ -59,10 +60,47 @@
 - [Project Structure](#project-structure)
 - [Development](#development)
 - [API Reference](#api-reference)
+- [Security](#security)
 - [Troubleshooting](#troubleshooting)
 - [Contributing](#contributing)
 - [License](#license)
 - [Acknowledgments](#acknowledgments)
+
+---
+
+## Current Status
+
+> **Note:** BloxOS is currently in **alpha** development. The core features are implemented but the system is not yet production-ready.
+
+### Implemented Features
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| API Server | Done | Fastify with full route coverage |
+| Dashboard UI | Done | Next.js 15 with all pages |
+| Authentication | Done | JWT + refresh tokens, strong passwords |
+| Rig Management | Done | CRUD, groups, monitoring |
+| SSH Integration | Done | Command execution, system info |
+| Flight Sheets | Done | Wallet + Pool + Miner config |
+| OC Profiles | Done | NVIDIA/AMD overclock settings |
+| Alerts System | Done | Temperature, offline, hashrate alerts |
+| Multi-user | Done | Roles: Admin, User, Monitor |
+| Security Hardening | Done | Rate limiting, CSRF, RBAC |
+| Agent (Go) | Partial | Skeleton implemented |
+| WebSocket Updates | Partial | Basic implementation |
+| Docker Deployment | Partial | Compose file ready |
+
+### What's Working Now
+
+- Full API with 20+ route files
+- Dashboard with 12 pages
+- User registration/login with secure auth
+- Add rigs via SSH auto-discovery
+- Assign flight sheets and OC profiles
+- Execute SSH commands on rigs
+- View GPU/CPU stats
+- Alert configuration per rig
+- Bulk actions on multiple rigs
 
 ---
 
@@ -563,37 +601,122 @@ BloxOS includes full support for CPU mining!
 
 ---
 
+## Security
+
+BloxOS has been designed with security in mind. The following security measures are implemented:
+
+### Authentication & Authorization
+
+| Feature | Implementation |
+|---------|----------------|
+| Password Requirements | 12+ chars, uppercase, lowercase, numbers, special chars |
+| Password Hashing | bcrypt with 12 rounds |
+| JWT Tokens | 4-hour access tokens + 7-day refresh tokens |
+| Session Management | Token blacklisting, secure logout |
+| Rate Limiting | Per-IP limits on all endpoints, stricter on auth |
+| CSRF Protection | Double-submit cookie pattern |
+| RBAC | Farm-based access control (users only see their rigs) |
+
+### Data Protection
+
+| Feature | Implementation |
+|---------|----------------|
+| SSH Credentials | AES-256-GCM encryption with PBKDF2 key derivation |
+| Command Injection | Whitelist-based command validation |
+| Input Validation | Zod schemas on all API inputs |
+| SQL Injection | Prisma ORM with parameterized queries |
+
+### Security Headers
+
+| Header | Value |
+|--------|-------|
+| Helmet | Full security headers enabled |
+| CORS | Configurable origins (strict in production) |
+| Cookies | SameSite=strict, HttpOnly, Secure |
+
+### Operational Security
+
+| Feature | Implementation |
+|---------|----------------|
+| Secret Validation | Fails fast if secrets missing in production |
+| Audit Logging | All sensitive operations logged |
+| Request Tracing | X-Request-ID on all requests |
+| Error Handling | Sanitized error messages in production |
+
+### Environment Variables (Required in Production)
+
+```bash
+JWT_SECRET=<random-64-char-string>
+ENCRYPTION_KEY=<random-64-char-string>
+COOKIE_SECRET=<random-32-char-string>
+CORS_ORIGINS=https://yourdomain.com
+```
+
+Generate secure secrets:
+```bash
+openssl rand -base64 48
+```
+
+---
+
 ## Project Structure
 
 ```
 bloxos/
 ├── apps/
-│   ├── api/              # Fastify API server
+│   ├── api/                    # Fastify API server
 │   │   ├── src/
-│   │   │   ├── routes/   # API endpoints
-│   │   │   ├── services/ # Business logic
-│   │   │   └── middleware/
+│   │   │   ├── routes/         # API endpoints (20+ files)
+│   │   │   │   ├── auth.ts     # Authentication
+│   │   │   │   ├── rigs.ts     # Rig management
+│   │   │   │   ├── ssh.ts      # SSH commands
+│   │   │   │   ├── miners.ts   # Miner control
+│   │   │   │   └── ...
+│   │   │   ├── services/       # Business logic
+│   │   │   │   ├── auth-service.ts
+│   │   │   │   ├── ssh-manager.ts
+│   │   │   │   ├── miner-control.ts
+│   │   │   │   ├── oc-service.ts
+│   │   │   │   └── ...
+│   │   │   ├── middleware/     # Auth, CSRF, RBAC
+│   │   │   │   ├── auth.ts
+│   │   │   │   ├── authorization.ts
+│   │   │   │   └── csrf.ts
+│   │   │   └── utils/          # Helpers
+│   │   │       ├── security.ts
+│   │   │       └── encryption.ts
 │   │   └── package.json
-│   ├── dashboard/        # Next.js web UI
+│   ├── dashboard/              # Next.js web UI
 │   │   ├── src/
-│   │   │   ├── app/      # Pages (App Router)
+│   │   │   ├── app/            # Pages (App Router)
+│   │   │   │   ├── rigs/       # Rig pages
+│   │   │   │   ├── wallets/
+│   │   │   │   ├── pools/
+│   │   │   │   ├── flight-sheets/
+│   │   │   │   ├── oc-profiles/
+│   │   │   │   ├── alerts/
+│   │   │   │   ├── users/
+│   │   │   │   └── settings/
 │   │   │   ├── components/
 │   │   │   └── context/
 │   │   └── package.json
-│   └── agent/            # Go agent for rigs
+│   └── agent/                  # Go agent for rigs
 │       ├── cmd/agent/
 │       └── internal/
+│           ├── api/
+│           ├── collector/
+│           └── config/
 ├── packages/
-│   ├── database/         # Prisma schema & client
-│   └── shared/           # Shared TypeScript types
-├── docker/               # Docker Compose configs
-├── docs/                 # Documentation
-├── scripts/              # Setup scripts
-├── .env.example          # Environment template
-├── docker-compose.yml    # Main Docker config
-├── package.json          # Root package.json
-├── pnpm-workspace.yaml   # Workspace config
-└── turbo.json            # Turborepo config
+│   └── database/               # Prisma schema & client
+│       └── prisma/
+│           └── schema.prisma   # 20+ models
+├── docker/
+│   └── docker-compose.yml
+├── thoughts/                   # Continuity ledgers
+│   └── ledgers/
+├── .env.example
+├── AGENTS.md                   # AI agent guidelines
+└── turbo.json
 ```
 
 ---
@@ -683,7 +806,23 @@ GOOS=linux GOARCH=arm64 go build -o bloxos-agent-linux-arm64 ./cmd/agent
 | `/api/rig-groups` | GET/POST | Manage rig groups |
 | `/api/alerts` | GET | List alerts |
 
-Full API documentation: [docs/API.md](docs/API.md)
+### SSH Operations
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/ssh/test` | POST | Test SSH connection |
+| `/api/ssh/add-rig` | POST | Add rig via SSH discovery |
+| `/api/ssh/rig/:id/exec` | POST | Execute command on rig |
+| `/api/ssh/rig/:id/system-info` | GET | Get detailed system info |
+
+### Security
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/csrf-token` | GET | Get CSRF token |
+| `/api/auth/refresh` | POST | Refresh access token |
+
+**Note:** All state-changing requests require `X-CSRF-Token` header.
 
 ---
 
