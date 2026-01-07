@@ -58,7 +58,7 @@ func main() {
 		// Send initial stats immediately
 		sendStats(wsClient, coll, cfg)
 		// Send miner status
-		sendMinerStatus(wsClient)
+		sendMinerStatus(wsClient, coll)
 	})
 
 	// Set up disconnect handler
@@ -95,7 +95,7 @@ func main() {
 			}
 		case <-minerTicker.C:
 			if wsClient.IsConnected() {
-				sendMinerStatus(wsClient)
+				sendMinerStatus(wsClient, coll)
 			}
 		case sig := <-sigChan:
 			log.Printf("Received %v, shutting down...", sig)
@@ -148,7 +148,36 @@ func sendStats(client *ws.Client, coll *collector.Collector, cfg *config.Config)
 }
 
 // sendMinerStatus sends current miner status to the server
-func sendMinerStatus(client *ws.Client) {
+func sendMinerStatus(client *ws.Client, coll *collector.Collector) {
+	// First try to get detailed stats from miner API
+	minerStats := coll.DetectRunningMiner()
+	
+	if minerStats != nil && minerStats.Running {
+		status := map[string]interface{}{
+			"name":      minerStats.Name,
+			"version":   minerStats.Version,
+			"running":   true,
+			"algorithm": minerStats.Algorithm,
+			"pool":      minerStats.Pool,
+			"hashrate":  minerStats.Hashrate,
+			"uptime":    minerStats.Uptime,
+			"shares": map[string]int{
+				"accepted": minerStats.Shares.Accepted,
+				"rejected": minerStats.Shares.Rejected,
+			},
+		}
+		
+		if len(minerStats.GPUStats) > 0 {
+			status["gpuStats"] = minerStats.GPUStats
+		}
+		
+		if err := client.SendMinerStatus(status); err != nil {
+			log.Printf("Failed to send miner status: %v", err)
+		}
+		return
+	}
+	
+	// Fallback to basic executor status
 	status := exec.GetMinerStatus()
 	if err := client.SendMinerStatus(status); err != nil {
 		log.Printf("Failed to send miner status: %v", err)

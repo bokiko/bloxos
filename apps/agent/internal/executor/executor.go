@@ -158,13 +158,63 @@ func (e *Executor) RestartMiner() error {
 	return e.StartMiner(config)
 }
 
-// ApplyOC applies overclocking settings
+// ApplyOC applies overclocking settings (NVIDIA or AMD)
 func (e *Executor) ApplyOC(config *OCConfig) error {
-	// Check if nvidia-smi is available
-	if _, err := exec.LookPath("nvidia-smi"); err != nil {
-		return fmt.Errorf("nvidia-smi not found: %w", err)
+	// Try NVIDIA first, then AMD
+	hasNvidia := false
+	hasAMD := false
+
+	if _, err := exec.LookPath("nvidia-smi"); err == nil {
+		hasNvidia = true
+	}
+	if _, err := exec.LookPath("rocm-smi"); err == nil {
+		hasAMD = true
 	}
 
+	// Check sysfs for AMD GPUs
+	if !hasAMD {
+		if entries, err := os.ReadDir("/sys/class/drm"); err == nil {
+			for _, entry := range entries {
+				if strings.HasPrefix(entry.Name(), "card") && !strings.Contains(entry.Name(), "-") {
+					vendorPath := fmt.Sprintf("/sys/class/drm/%s/device/vendor", entry.Name())
+					if data, err := os.ReadFile(vendorPath); err == nil {
+						if strings.TrimSpace(string(data)) == "0x1002" {
+							hasAMD = true
+							break
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if !hasNvidia && !hasAMD {
+		return fmt.Errorf("no supported GPU tools found (nvidia-smi or rocm-smi)")
+	}
+
+	var errors []string
+
+	if hasNvidia {
+		if err := e.applyNvidiaOC(config); err != nil {
+			errors = append(errors, fmt.Sprintf("nvidia: %v", err))
+		}
+	}
+
+	if hasAMD {
+		if err := e.applyAMDOC(config); err != nil {
+			errors = append(errors, fmt.Sprintf("amd: %v", err))
+		}
+	}
+
+	if len(errors) > 0 {
+		return fmt.Errorf("some OC settings failed: %s", strings.Join(errors, "; "))
+	}
+
+	return nil
+}
+
+// applyNvidiaOC applies overclocking for NVIDIA GPUs
+func (e *Executor) applyNvidiaOC(config *OCConfig) error {
 	gpuArg := fmt.Sprintf("%d", config.GPUIndex)
 	if config.GPUIndex < 0 {
 		gpuArg = "" // Apply to all GPUs
@@ -180,26 +230,6 @@ func (e *Executor) ApplyOC(config *OCConfig) error {
 		}
 		if err := e.runNvidiaSmi(args...); err != nil {
 			errors = append(errors, fmt.Sprintf("power limit: %v", err))
-		}
-	}
-
-	// Apply core offset (requires X server or persistence mode)
-	if config.CoreOffset != nil {
-		args := []string{"-i", gpuArg, "--gom=COMPUTE", fmt.Sprintf("--lock-gpu-clocks=%d,%d", 
-			*config.CoreOffset, *config.CoreOffset)}
-		if err := e.runNvidiaSmi(args...); err != nil {
-			// Try nvidia-settings instead
-			if e.debug {
-				fmt.Printf("nvidia-smi core offset failed: %v\n", err)
-			}
-		}
-	}
-
-	// Apply memory offset
-	if config.MemOffset != nil {
-		// Memory offset typically requires nvidia-settings
-		if e.debug {
-			fmt.Printf("Memory offset requires nvidia-settings, skipping\n")
 		}
 	}
 
@@ -225,20 +255,136 @@ func (e *Executor) ApplyOC(config *OCConfig) error {
 		}
 	}
 
-	// Apply fan speed (requires nvidia-settings)
-	if config.FanSpeed != nil && *config.FanSpeed > 0 {
-		// Fan control typically requires nvidia-settings
+	// Core/mem offsets require nvidia-settings which needs X server
+	if config.CoreOffset != nil || config.MemOffset != nil {
 		if e.debug {
-			fmt.Printf("Fan speed control requires nvidia-settings\n")
+			fmt.Println("Core/mem offsets require nvidia-settings (X server)")
+		}
+	}
+
+	// Fan speed requires nvidia-settings
+	if config.FanSpeed != nil && *config.FanSpeed > 0 {
+		if e.debug {
+			fmt.Println("Fan speed control requires nvidia-settings")
 		}
 	}
 
 	if len(errors) > 0 {
-		return fmt.Errorf("some OC settings failed: %s", strings.Join(errors, "; "))
+		return fmt.Errorf("%s", strings.Join(errors, "; "))
 	}
 
 	return nil
 }
+
+// applyAMDOC applies overclocking for AMD GPUs
+func (e *Executor) applyAMDOC(config *OCConfig) error {
+	var errors []string
+
+	// Determine GPU indices
+	gpuIndices := []int{}
+	if config.GPUIndex < 0 {
+		// Find all AMD GPUs
+		entries, _ := os.ReadDir("/sys/class/drm")
+		for _, entry := range entries {
+			if strings.HasPrefix(entry.Name(), "card") && !strings.Contains(entry.Name(), "-") {
+				vendorPath := fmt.Sprintf("/sys/class/drm/%s/device/vendor", entry.Name())
+				if data, err := os.ReadFile(vendorPath); err == nil {
+					if strings.TrimSpace(string(data)) == "0x1002" {
+						idx, _ := strconv.Atoi(strings.TrimPrefix(entry.Name(), "card"))
+						gpuIndices = append(gpuIndices, idx)
+					}
+				}
+			}
+		}
+	} else {
+		gpuIndices = []int{config.GPUIndex}
+	}
+
+	for _, idx := range gpuIndices {
+		cardPath := fmt.Sprintf("/sys/class/drm/card%d/device", idx)
+
+		// Apply power limit via pp_power_profile_mode or power_cap
+		if config.PowerLimit != nil {
+			hwmonPath := fmt.Sprintf("%s/hwmon", cardPath)
+			if entries, err := os.ReadDir(hwmonPath); err == nil && len(entries) > 0 {
+				powerCapPath := fmt.Sprintf("%s/%s/power1_cap", hwmonPath, entries[0].Name())
+				// Convert watts to microwatts
+				power := *config.PowerLimit * 1000000
+				if err := os.WriteFile(powerCapPath, []byte(fmt.Sprintf("%d", power)), 0644); err != nil {
+					errors = append(errors, fmt.Sprintf("gpu%d power: %v", idx, err))
+				} else if e.debug {
+					fmt.Printf("Set GPU%d power limit to %dW\n", idx, *config.PowerLimit)
+				}
+			}
+		}
+
+		// Apply core clock via pp_od_clk_voltage
+		if config.CoreLock != nil {
+			odPath := fmt.Sprintf("%s/pp_od_clk_voltage", cardPath)
+			// Write "s 1 <freq>" to set max core clock
+			cmd := fmt.Sprintf("s 1 %d", *config.CoreLock)
+			if err := os.WriteFile(odPath, []byte(cmd), 0644); err != nil {
+				if e.debug {
+					fmt.Printf("GPU%d core lock failed: %v\n", idx, err)
+				}
+			} else {
+				// Commit changes
+				os.WriteFile(odPath, []byte("c"), 0644)
+				if e.debug {
+					fmt.Printf("Set GPU%d core clock to %dMHz\n", idx, *config.CoreLock)
+				}
+			}
+		}
+
+		// Apply memory clock via pp_od_clk_voltage
+		if config.MemLock != nil {
+			odPath := fmt.Sprintf("%s/pp_od_clk_voltage", cardPath)
+			// Write "m 1 <freq>" to set max mem clock
+			cmd := fmt.Sprintf("m 1 %d", *config.MemLock)
+			if err := os.WriteFile(odPath, []byte(cmd), 0644); err != nil {
+				if e.debug {
+					fmt.Printf("GPU%d mem lock failed: %v\n", idx, err)
+				}
+			} else {
+				os.WriteFile(odPath, []byte("c"), 0644)
+				if e.debug {
+					fmt.Printf("Set GPU%d memory clock to %dMHz\n", idx, *config.MemLock)
+				}
+			}
+		}
+
+		// Apply fan speed
+		if config.FanSpeed != nil {
+			hwmonPath := fmt.Sprintf("%s/hwmon", cardPath)
+			if entries, err := os.ReadDir(hwmonPath); err == nil && len(entries) > 0 {
+				hwmon := fmt.Sprintf("%s/%s", hwmonPath, entries[0].Name())
+
+				if *config.FanSpeed == 0 {
+					// Auto fan control
+					os.WriteFile(fmt.Sprintf("%s/pwm1_enable", hwmon), []byte("2"), 0644)
+				} else {
+					// Manual fan control
+					os.WriteFile(fmt.Sprintf("%s/pwm1_enable", hwmon), []byte("1"), 0644)
+					// Convert percentage to PWM (0-255)
+					pwm := (*config.FanSpeed * 255) / 100
+					if err := os.WriteFile(fmt.Sprintf("%s/pwm1", hwmon), []byte(fmt.Sprintf("%d", pwm)), 0644); err != nil {
+						errors = append(errors, fmt.Sprintf("gpu%d fan: %v", idx, err))
+					} else if e.debug {
+						fmt.Printf("Set GPU%d fan to %d%%\n", idx, *config.FanSpeed)
+					}
+				}
+			}
+		}
+	}
+
+	if len(errors) > 0 {
+		return fmt.Errorf("%s", strings.Join(errors, "; "))
+	}
+
+	return nil
+}
+
+
 
 // Reboot reboots the system
 func (e *Executor) Reboot() error {
