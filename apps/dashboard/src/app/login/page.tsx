@@ -8,6 +8,7 @@ export default function LoginPage() {
   const { login, isLoading } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [rememberMe, setRememberMe] = useState(false);
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -17,7 +18,7 @@ export default function LoginPage() {
     setIsSubmitting(true);
 
     try {
-      await login(email, password);
+      await login(email, password, rememberMe);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');
     } finally {
@@ -84,6 +85,19 @@ export default function LoginPage() {
                 required
                 autoComplete="current-password"
               />
+            </div>
+
+            <div className="flex items-center">
+              <input
+                id="rememberMe"
+                type="checkbox"
+                checked={rememberMe}
+                onChange={(e) => setRememberMe(e.target.checked)}
+                className="w-4 h-4 rounded border-slate-600 bg-slate-700 text-blox-500 focus:ring-blox-500 focus:ring-offset-0 cursor-pointer"
+              />
+              <label htmlFor="rememberMe" className="ml-2 text-sm text-slate-300 cursor-pointer select-none">
+                Keep me signed in for 30 days
+              </label>
             </div>
 
             <button
