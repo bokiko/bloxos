@@ -189,7 +189,7 @@ export async function authRoutes(app: FastifyInstance) {
     return reply.send({ success: true });
   });
 
-  // Get current user (requires auth)
+  // Get current user (requires auth) - includes farms
   app.get('/me', async (request: FastifyRequest, reply: FastifyReply) => {
     const token = request.cookies.token || request.headers.authorization?.replace('Bearer ', '');
 
@@ -207,7 +207,26 @@ export async function authRoutes(app: FastifyInstance) {
       return reply.status(401).send({ error: 'User not found' });
     }
 
-    return reply.send({ user });
+    // Get user's farms
+    const { prisma } = await import('@bloxos/database');
+    const farms = await prisma.farm.findMany({
+      where: { ownerId: payload.userId },
+      select: { id: true, name: true },
+    });
+
+    // If user has no farms, create a default one
+    if (farms.length === 0) {
+      const defaultFarm = await prisma.farm.create({
+        data: {
+          name: 'My Farm',
+          ownerId: payload.userId,
+        },
+        select: { id: true, name: true },
+      });
+      farms.push(defaultFarm);
+    }
+
+    return reply.send({ user, farms });
   });
 
   // Update profile

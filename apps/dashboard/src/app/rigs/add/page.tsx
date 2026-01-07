@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 
@@ -9,15 +9,30 @@ const getApiUrl = () => {
   return `http://${window.location.hostname}:3001`;
 };
 
+// Helper to get CSRF token from cookie
+function getCsrfToken(): string | null {
+  if (typeof document === 'undefined') return null;
+  const match = document.cookie.match(/csrf_token=([^;]+)/);
+  return match ? match[1] : null;
+}
+
+interface Farm {
+  id: string;
+  name: string;
+}
+
 export default function AddRigPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [testing, setTesting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [farms, setFarms] = useState<Farm[]>([]);
+  const [loadingFarms, setLoadingFarms] = useState(true);
 
   const [formData, setFormData] = useState({
     name: '',
+    farmId: '',
     host: '',
     port: '22',
     username: 'root',
@@ -25,6 +40,56 @@ export default function AddRigPage() {
     privateKey: '',
     authType: 'password' as 'password' | 'key',
   });
+
+  // Fetch farms on mount
+  useEffect(() => {
+    async function fetchFarms() {
+      try {
+        const res = await fetch(`${getApiUrl()}/api/rigs`, {
+          credentials: 'include',
+        });
+        
+        if (res.ok) {
+          // Get unique farms from rigs or fetch farms directly
+          // For now, we'll create a default farm if none exists
+          const farmsRes = await fetch(`${getApiUrl()}/api/auth/me`, {
+            credentials: 'include',
+          });
+          
+          if (farmsRes.ok) {
+            const userData = await farmsRes.json();
+            // Check if user has farms
+            if (userData.farms && userData.farms.length > 0) {
+              setFarms(userData.farms);
+              setFormData(prev => ({ ...prev, farmId: userData.farms[0].id }));
+            } else {
+              // Create default farm for user
+              const createFarmRes = await fetch(`${getApiUrl()}/api/farms`, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'X-CSRF-Token': getCsrfToken() || '',
+                },
+                credentials: 'include',
+                body: JSON.stringify({ name: 'My Farm' }),
+              });
+              
+              if (createFarmRes.ok) {
+                const newFarm = await createFarmRes.json();
+                setFarms([newFarm]);
+                setFormData(prev => ({ ...prev, farmId: newFarm.id }));
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Failed to fetch farms:', err);
+      } finally {
+        setLoadingFarms(false);
+      }
+    }
+    fetchFarms();
+  }, []);
 
   async function handleTestConnection() {
     setTesting(true);
@@ -34,7 +99,11 @@ export default function AddRigPage() {
     try {
       const res = await fetch(`${getApiUrl()}/api/ssh/test`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': getCsrfToken() || '',
+        },
+        credentials: 'include',
         body: JSON.stringify({
           host: formData.host,
           port: parseInt(formData.port),
@@ -47,10 +116,10 @@ export default function AddRigPage() {
 
       const data = await res.json();
 
-      if (data.success) {
+      if (res.ok && data.success) {
         setTestResult({ success: true, message: 'Connection successful!' });
       } else {
-        setTestResult({ success: false, message: data.message || 'Connection failed' });
+        setTestResult({ success: false, message: data.error || data.message || 'Connection failed' });
       }
     } catch (err) {
       setTestResult({ success: false, message: 'Failed to test connection' });
@@ -64,13 +133,23 @@ export default function AddRigPage() {
     setLoading(true);
     setError(null);
 
+    if (!formData.farmId) {
+      setError('No farm available. Please refresh the page.');
+      setLoading(false);
+      return;
+    }
+
     try {
       const res = await fetch(`${getApiUrl()}/api/ssh/add-rig`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': getCsrfToken() || '',
+        },
+        credentials: 'include',
         body: JSON.stringify({
           name: formData.name,
-          farmId: 'default-farm',
+          farmId: formData.farmId,
           host: formData.host,
           port: parseInt(formData.port),
           username: formData.username,
@@ -85,17 +164,25 @@ export default function AddRigPage() {
       if (res.ok) {
         router.push('/rigs');
       } else {
-        setError(data.message || 'Failed to add rig');
+        setError(data.error || data.message || 'Failed to add rig');
       }
     } catch (err) {
-      setError('Failed to add rig');
+      setError('Failed to add rig. Please check your connection.');
     } finally {
       setLoading(false);
     }
   }
 
-  const isFormValid = formData.name && formData.host && formData.username && 
+  const isFormValid = formData.name && formData.host && formData.username && formData.farmId &&
     (formData.authType === 'password' ? formData.password : formData.privateKey);
+
+  if (loadingFarms) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blox-500"></div>
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-2xl mx-auto">
@@ -155,7 +242,7 @@ export default function AddRigPage() {
             </div>
           </div>
 
-          <div className="p-5">
+          <div className="p-5 space-y-4">
             <label className="block">
               <span className="text-sm font-medium text-slate-300 mb-1.5 block">Rig Name</span>
               <input
@@ -168,6 +255,21 @@ export default function AddRigPage() {
               />
               <p className="text-xs text-slate-500 mt-1.5">A friendly name to identify this rig</p>
             </label>
+
+            {farms.length > 1 && (
+              <label className="block">
+                <span className="text-sm font-medium text-slate-300 mb-1.5 block">Farm</span>
+                <select
+                  value={formData.farmId}
+                  onChange={(e) => setFormData({ ...formData, farmId: e.target.value })}
+                  className="w-full px-4 py-2.5 bg-slate-900/50 border border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blox-500 focus:border-transparent transition-all"
+                >
+                  {farms.map(farm => (
+                    <option key={farm.id} value={farm.id}>{farm.name}</option>
+                  ))}
+                </select>
+              </label>
+            )}
           </div>
         </div>
 
@@ -290,7 +392,7 @@ export default function AddRigPage() {
             <button
               type="button"
               onClick={handleTestConnection}
-              disabled={testing || !formData.host || !formData.username}
+              disabled={testing || !formData.host || !formData.username || (formData.authType === 'password' ? !formData.password : !formData.privateKey)}
               className="inline-flex items-center gap-2 px-4 py-2.5 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {testing ? (
