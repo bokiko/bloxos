@@ -7,6 +7,13 @@ const getApiUrl = () => {
   return `http://${window.location.hostname}:3001`;
 };
 
+// Helper to get CSRF token from cookie
+function getCsrfToken(): string | null {
+  if (typeof document === 'undefined') return null;
+  const match = document.cookie.match(/csrf_token=([^;]+)/);
+  return match ? match[1] : null;
+}
+
 interface Pool {
   id: string;
   name: string;
@@ -16,10 +23,16 @@ interface Pool {
   url3: string | null;
   user: string | null;
   pass: string | null;
+  farmId: string;
   createdAt: string;
-  _count: {
+  _count?: {
     flightSheets: number;
   };
+}
+
+interface Farm {
+  id: string;
+  name: string;
 }
 
 // Icons
@@ -57,6 +70,7 @@ const coinColors: Record<string, string> = {
   ERGO: 'bg-red-500',
   FLUX: 'bg-blue-400',
   XMR: 'bg-orange-400',
+  VRSC: 'bg-blue-600',
   DEFAULT: 'bg-slate-500',
 };
 
@@ -66,6 +80,7 @@ function getCoinColor(coin: string) {
 
 export default function PoolsPage() {
   const [pools, setPools] = useState<Pool[]>([]);
+  const [farms, setFarms] = useState<Farm[]>([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [editingPool, setEditingPool] = useState<Pool | null>(null);
@@ -80,11 +95,33 @@ export default function PoolsPage() {
     url3: '',
     user: '',
     pass: '',
+    farmId: '',
   });
 
   useEffect(() => {
-    fetchPools();
+    fetchData();
   }, []);
+
+  async function fetchData() {
+    try {
+      // Fetch user data to get farms
+      const meRes = await fetch(`${getApiUrl()}/api/auth/me`, {
+        credentials: 'include',
+      });
+      if (meRes.ok) {
+        const meData = await meRes.json();
+        if (meData.farms && meData.farms.length > 0) {
+          setFarms(meData.farms);
+          setFormData(prev => ({ ...prev, farmId: meData.farms[0].id }));
+        }
+      }
+      
+      // Fetch pools
+      await fetchPools();
+    } catch (err) {
+      setError('Failed to load data');
+    }
+  }
 
   async function fetchPools() {
     try {
@@ -105,7 +142,7 @@ export default function PoolsPage() {
 
   function openCreateModal() {
     setEditingPool(null);
-    setFormData({ name: '', coin: '', url: '', url2: '', url3: '', user: '', pass: '' });
+    setFormData({ name: '', coin: '', url: '', url2: '', url3: '', user: '', pass: '', farmId: farms[0]?.id || '' });
     setShowModal(true);
   }
 
@@ -119,6 +156,7 @@ export default function PoolsPage() {
       url3: pool.url3 || '',
       user: pool.user || '',
       pass: pool.pass || '',
+      farmId: pool.farmId,
     });
     setShowModal(true);
   }
@@ -127,6 +165,11 @@ export default function PoolsPage() {
     e.preventDefault();
     setError(null);
 
+    if (!formData.farmId) {
+      setError('No farm available. Please refresh the page.');
+      return;
+    }
+
     try {
       const url = editingPool
         ? `${getApiUrl()}/api/pools/${editingPool.id}`
@@ -134,14 +177,17 @@ export default function PoolsPage() {
       
       const res = await fetch(url, {
         method: editingPool ? 'PATCH' : 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': getCsrfToken() || '',
+        },
         credentials: 'include',
         body: JSON.stringify(formData),
       });
 
       if (!res.ok) {
         const data = await res.json();
-        throw new Error(data.message || 'Failed to save pool');
+        throw new Error(data.error || data.message || 'Failed to save pool');
       }
 
       setShowModal(false);
@@ -157,12 +203,15 @@ export default function PoolsPage() {
     try {
       const res = await fetch(`${getApiUrl()}/api/pools/${pool.id}`, {
         method: 'DELETE',
+        headers: {
+          'X-CSRF-Token': getCsrfToken() || '',
+        },
         credentials: 'include',
       });
 
       if (!res.ok) {
         const data = await res.json();
-        throw new Error(data.message || 'Failed to delete pool');
+        throw new Error(data.error || data.message || 'Failed to delete pool');
       }
 
       fetchPools();
@@ -245,7 +294,7 @@ export default function PoolsPage() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  {pool._count.flightSheets > 0 && (
+                  {pool._count && pool._count.flightSheets > 0 && (
                     <span className="text-xs text-slate-500 mr-2">
                       {pool._count.flightSheets} flight sheet{pool._count.flightSheets > 1 ? 's' : ''}
                     </span>
