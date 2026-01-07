@@ -1,6 +1,7 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@bloxos/database';
+import { auditLog } from '../utils/security.ts';
 
 // Validation schemas
 const CreateMinerSchema = z.object({
@@ -123,8 +124,25 @@ export async function minerRoutes(app: FastifyInstance) {
     return reply.send({ success: true });
   });
 
-  // Seed default miners
+  // Seed default miners (admin only)
   app.post('/seed', async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = request.user;
+    if (!user) {
+      return reply.status(401).send({ error: 'Authentication required' });
+    }
+
+    // Only admins can seed miners
+    if (user.role !== 'ADMIN') {
+      auditLog({
+        userId: user.userId,
+        action: 'unauthorized_seed_miners',
+        resource: 'minerSoftware',
+        ip: request.ip,
+        success: false,
+      });
+      return reply.status(403).send({ error: 'Admin access required' });
+    }
+
     const defaultMiners = [
       // NVIDIA miners
       { name: 'T-Rex', version: '0.26.8', algo: 'ethash', supportedGpus: ['NVIDIA'], apiPort: 4067, apiType: 'http', defaultArgs: '--no-watchdog' },
@@ -162,6 +180,15 @@ export async function minerRoutes(app: FastifyInstance) {
         skipped++;
       }
     }
+
+    auditLog({
+      userId: user.userId,
+      action: 'seed_miners',
+      resource: 'minerSoftware',
+      ip: request.ip,
+      success: true,
+      details: { created, skipped },
+    });
 
     return reply.send({
       success: true,
