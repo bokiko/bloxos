@@ -191,21 +191,21 @@ function isValidHost(host: string): boolean {
 
 // Validation schemas
 const SSHConnectSchema = z.object({
-  host: z.string().min(1).refine(isValidHost, { message: 'Invalid host format' }),
+  host: z.string().min(1).max(253).refine(isValidHost, { message: 'Invalid host format' }),
   port: z.number().min(1).max(65535).default(22),
   username: z.string().min(1).max(32).regex(/^[a-z_][a-z0-9_-]*$/i, 'Invalid username format'),
-  password: z.string().optional(),
-  privateKey: z.string().optional(),
+  password: z.string().max(256).optional(),
+  privateKey: z.string().max(16384).optional(), // Max ~16KB for private keys
 }).refine(data => data.password || data.privateKey, {
   message: 'Either password or privateKey is required',
 });
 
 const SSHCommandSchema = z.object({
-  host: z.string().min(1).refine(isValidHost, { message: 'Invalid host format' }),
+  host: z.string().min(1).max(253).refine(isValidHost, { message: 'Invalid host format' }),
   port: z.number().min(1).max(65535).default(22),
   username: z.string().min(1).max(32).regex(/^[a-z_][a-z0-9_-]*$/i, 'Invalid username format'),
-  password: z.string().optional(),
-  privateKey: z.string().optional(),
+  password: z.string().max(256).optional(),
+  privateKey: z.string().max(16384).optional(),
   command: z.string().min(1).max(1000),
 }).refine(data => data.password || data.privateKey, {
   message: 'Either password or privateKey is required',
@@ -213,12 +213,12 @@ const SSHCommandSchema = z.object({
 
 const AddRigViaSSHSchema = z.object({
   name: z.string().min(1).max(100).regex(/^[\w\s-]+$/, 'Name can only contain letters, numbers, spaces, underscores, and hyphens'),
-  farmId: z.string().uuid(),
-  host: z.string().min(1).refine(isValidHost, { message: 'Invalid host format' }),
+  farmId: z.string().max(50),
+  host: z.string().min(1).max(253).refine(isValidHost, { message: 'Invalid host format' }),
   port: z.number().min(1).max(65535).default(22),
   username: z.string().min(1).max(32).regex(/^[a-z_][a-z0-9_-]*$/i, 'Invalid username format'),
-  password: z.string().optional(),
-  privateKey: z.string().optional(),
+  password: z.string().max(256).optional(),
+  privateKey: z.string().max(16384).optional(),
 }).refine(data => data.password || data.privateKey, {
   message: 'Either password or privateKey is required',
 });

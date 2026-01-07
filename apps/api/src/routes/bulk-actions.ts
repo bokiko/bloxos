@@ -8,25 +8,37 @@ import { auditLog } from '../utils/security.ts';
 
 const minerControl = new MinerControl();
 
-// Validation schemas
+// Constants for bulk operations
+const MAX_BULK_RIGS = 100; // Maximum rigs per bulk operation
+const BULK_OPERATION_TIMEOUT = 120000; // 2 minutes timeout for bulk operations
+
+// Validation schemas with limits
 const BulkRigIdsSchema = z.object({
-  rigIds: z.array(z.string()).min(1),
+  rigIds: z.array(z.string().max(50)).min(1).max(MAX_BULK_RIGS),
 });
 
 const BulkFlightSheetSchema = z.object({
-  rigIds: z.array(z.string()).min(1),
-  flightSheetId: z.string().nullable(),
+  rigIds: z.array(z.string().max(50)).min(1).max(MAX_BULK_RIGS),
+  flightSheetId: z.string().max(50).nullable(),
 });
 
 const BulkOCProfileSchema = z.object({
-  rigIds: z.array(z.string()).min(1),
-  ocProfileId: z.string().nullable(),
+  rigIds: z.array(z.string().max(50)).min(1).max(MAX_BULK_RIGS),
+  ocProfileId: z.string().max(50).nullable(),
 });
 
 const BulkGroupSchema = z.object({
-  rigIds: z.array(z.string()).min(1),
-  groupIds: z.array(z.string()),  // Array for many-to-many
+  rigIds: z.array(z.string().max(50)).min(1).max(MAX_BULK_RIGS),
+  groupIds: z.array(z.string().max(50)).max(20),  // Max 20 groups
 });
+
+// Helper for timeout wrapper
+async function withTimeout<T>(promise: Promise<T>, ms: number, operation: string): Promise<T> {
+  const timeout = new Promise<never>((_, reject) => {
+    setTimeout(() => reject(new Error(`${operation} timed out after ${ms}ms`)), ms);
+  });
+  return Promise.race([promise, timeout]);
+}
 
 export async function bulkActionsRoutes(app: FastifyInstance) {
   // Bulk start miners

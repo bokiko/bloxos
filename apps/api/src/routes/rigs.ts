@@ -12,17 +12,17 @@ import { sendCommandToRig, isAgentConnected } from './agent-websocket.ts';
 // Validation schemas
 const CreateRigSchema = z.object({
   name: z.string().min(1).max(100),
-  farmId: z.string(),
-  hostname: z.string().optional(),
-  ipAddress: z.string().optional(),
+  farmId: z.string().max(50),
+  hostname: z.string().max(253).optional(), // Max DNS hostname length
+  ipAddress: z.string().max(45).optional(),  // Max IPv6 length
 });
 
 const UpdateRigSchema = z.object({
   name: z.string().min(1).max(100).optional(),
-  hostname: z.string().optional(),
-  ipAddress: z.string().optional(),
-  flightSheetId: z.string().nullable().optional(),
-  ocProfileId: z.string().nullable().optional(),
+  hostname: z.string().max(253).optional(),
+  ipAddress: z.string().max(45).optional(),
+  flightSheetId: z.string().max(50).nullable().optional(),
+  ocProfileId: z.string().max(50).nullable().optional(),
 });
 
 export async function rigRoutes(app: FastifyInstance) {

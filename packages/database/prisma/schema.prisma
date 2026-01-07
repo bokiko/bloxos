@@ -24,6 +24,9 @@ model User {
   farms     Farm[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([role])
+  @@index([createdAt])
 }
 
 enum Role {
@@ -42,6 +45,10 @@ model ApiKey {
   lastUsed  DateTime?
   expiresAt DateTime?
   createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([prefix])
+  @@index([expiresAt])
 }
 
 model Farm {
@@ -58,6 +65,8 @@ model Farm {
   flightSheets FlightSheet[]
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
+
+  @@index([ownerId])
 }
 
 // ===========================================
@@ -331,6 +340,8 @@ model MinerInstance {
   updatedAt   DateTime @updatedAt
 
   @@index([rigId])
+  @@index([status])
+  @@index([rigId, status])
 }
 
 enum MinerStatus {

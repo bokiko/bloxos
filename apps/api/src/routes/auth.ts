@@ -14,24 +14,24 @@ const passwordSchema = z.string().refine(
 
 // Validation schemas
 const RegisterSchema = z.object({
-  email: z.string().email(),
+  email: z.string().email().max(254),
   password: passwordSchema,
   name: z.string().min(1).max(100).optional(),
 });
 
 const LoginSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(1),
+  email: z.string().email().max(254),
+  password: z.string().min(1).max(128),
 });
 
 const ChangePasswordSchema = z.object({
-  currentPassword: z.string().min(1),
+  currentPassword: z.string().min(1).max(128),
   newPassword: passwordSchema,
 });
 
 const UpdateProfileSchema = z.object({
   name: z.string().min(1).max(100).optional(),
-  email: z.string().email().optional(),
+  email: z.string().email().max(254).optional(),
 });
 
 // Token expiry aligned with auth-service (4 hours for access, 7 days for refresh)
