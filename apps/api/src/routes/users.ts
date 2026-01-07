@@ -6,15 +6,15 @@ import { generateSecureToken, auditLog } from '../utils/security.ts';
 
 // Validation schemas
 const CreateUserSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(6),
-  name: z.string().min(1).optional(),
+  email: z.string().email().max(254), // Max email length per RFC
+  password: z.string().min(12).max(128), // Stronger min password requirement
+  name: z.string().min(1).max(100).optional(),
   role: z.enum(['ADMIN', 'USER', 'MONITOR']).optional(),
 });
 
 const UpdateUserSchema = z.object({
-  email: z.string().email().optional(),
-  name: z.string().min(1).optional(),
+  email: z.string().email().max(254).optional(),
+  name: z.string().min(1).max(100).optional(),
   role: z.enum(['ADMIN', 'USER', 'MONITOR']).optional(),
 });
 
