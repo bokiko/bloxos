@@ -7,16 +7,29 @@ const getApiUrl = () => {
   return `http://${window.location.hostname}:3001`;
 };
 
+// Helper to get CSRF token from cookie
+function getCsrfToken(): string | null {
+  if (typeof document === 'undefined') return null;
+  const match = document.cookie.match(/csrf_token=([^;]+)/);
+  return match ? match[1] : null;
+}
+
 interface Wallet {
   id: string;
   name: string;
   coin: string;
   address: string;
   source: string | null;
+  farmId: string;
   createdAt: string;
-  _count: {
+  _count?: {
     flightSheets: number;
   };
+}
+
+interface Farm {
+  id: string;
+  name: string;
 }
 
 // Icons
@@ -63,6 +76,7 @@ function getCoinColor(coin: string) {
 
 export default function WalletsPage() {
   const [wallets, setWallets] = useState<Wallet[]>([]);
+  const [farms, setFarms] = useState<Farm[]>([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [editingWallet, setEditingWallet] = useState<Wallet | null>(null);
@@ -74,11 +88,33 @@ export default function WalletsPage() {
     coin: '',
     address: '',
     source: '',
+    farmId: '',
   });
 
   useEffect(() => {
-    fetchWallets();
+    fetchData();
   }, []);
+
+  async function fetchData() {
+    try {
+      // Fetch user data to get farms
+      const meRes = await fetch(`${getApiUrl()}/api/auth/me`, {
+        credentials: 'include',
+      });
+      if (meRes.ok) {
+        const meData = await meRes.json();
+        if (meData.farms && meData.farms.length > 0) {
+          setFarms(meData.farms);
+          setFormData(prev => ({ ...prev, farmId: meData.farms[0].id }));
+        }
+      }
+      
+      // Fetch wallets
+      await fetchWallets();
+    } catch (err) {
+      setError('Failed to load data');
+    }
+  }
 
   async function fetchWallets() {
     try {
@@ -99,7 +135,7 @@ export default function WalletsPage() {
 
   function openCreateModal() {
     setEditingWallet(null);
-    setFormData({ name: '', coin: '', address: '', source: '' });
+    setFormData({ name: '', coin: '', address: '', source: '', farmId: farms[0]?.id || '' });
     setShowModal(true);
   }
 
@@ -110,6 +146,7 @@ export default function WalletsPage() {
       coin: wallet.coin,
       address: wallet.address,
       source: wallet.source || '',
+      farmId: wallet.farmId,
     });
     setShowModal(true);
   }
@@ -118,6 +155,11 @@ export default function WalletsPage() {
     e.preventDefault();
     setError(null);
 
+    if (!formData.farmId) {
+      setError('No farm available. Please refresh the page.');
+      return;
+    }
+
     try {
       const url = editingWallet
         ? `${getApiUrl()}/api/wallets/${editingWallet.id}`
@@ -125,14 +167,17 @@ export default function WalletsPage() {
       
       const res = await fetch(url, {
         method: editingWallet ? 'PATCH' : 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': getCsrfToken() || '',
+        },
         credentials: 'include',
         body: JSON.stringify(formData),
       });
 
       if (!res.ok) {
         const data = await res.json();
-        throw new Error(data.message || 'Failed to save wallet');
+        throw new Error(data.error || data.message || 'Failed to save wallet');
       }
 
       setShowModal(false);
@@ -148,12 +193,15 @@ export default function WalletsPage() {
     try {
       const res = await fetch(`${getApiUrl()}/api/wallets/${wallet.id}`, {
         method: 'DELETE',
+        headers: {
+          'X-CSRF-Token': getCsrfToken() || '',
+        },
         credentials: 'include',
       });
 
       if (!res.ok) {
         const data = await res.json();
-        throw new Error(data.message || 'Failed to delete wallet');
+        throw new Error(data.error || data.message || 'Failed to delete wallet');
       }
 
       fetchWallets();
@@ -233,7 +281,7 @@ export default function WalletsPage() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  {wallet._count.flightSheets > 0 && (
+                  {wallet._count && wallet._count.flightSheets > 0 && (
                     <span className="text-xs text-slate-500 mr-2">
                       {wallet._count.flightSheets} flight sheet{wallet._count.flightSheets > 1 ? 's' : ''}
                     </span>
