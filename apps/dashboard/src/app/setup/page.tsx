@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '../../context/auth';
 
@@ -8,6 +8,70 @@ const getApiUrl = () => {
   if (typeof window === 'undefined') return 'http://localhost:3001';
   return `http://${window.location.hostname}:3001`;
 };
+
+// Password requirements
+const PASSWORD_REQUIREMENTS = {
+  minLength: 12,
+  requireUppercase: true,
+  requireLowercase: true,
+  requireNumbers: true,
+  requireSpecial: true,
+};
+
+interface PasswordCheck {
+  label: string;
+  passed: boolean;
+}
+
+function usePasswordValidation(password: string): PasswordCheck[] {
+  return useMemo(() => {
+    return [
+      {
+        label: `At least ${PASSWORD_REQUIREMENTS.minLength} characters`,
+        passed: password.length >= PASSWORD_REQUIREMENTS.minLength,
+      },
+      {
+        label: 'One uppercase letter (A-Z)',
+        passed: /[A-Z]/.test(password),
+      },
+      {
+        label: 'One lowercase letter (a-z)',
+        passed: /[a-z]/.test(password),
+      },
+      {
+        label: 'One number (0-9)',
+        passed: /\d/.test(password),
+      },
+      {
+        label: 'One special character (!@#$%^&*)',
+        passed: /[!@#$%^&*()_+\-=[\]{};:'",.<>?/\\|`~]/.test(password),
+      },
+    ];
+  }, [password]);
+}
+
+function PasswordChecklist({ checks }: { checks: PasswordCheck[] }) {
+  return (
+    <div className="mt-2 space-y-1">
+      {checks.map((check, index) => (
+        <div key={index} className="flex items-center gap-2 text-xs">
+          {check.passed ? (
+            <svg className="w-4 h-4 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+            </svg>
+          ) : (
+            <svg className="w-4 h-4 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <circle cx="12" cy="12" r="10" strokeWidth={2} />
+            </svg>
+          )}
+          <span className={check.passed ? 'text-green-400' : 'text-slate-400'}>
+            {check.label}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 export default function SetupPage() {
   const { register, isLoading } = useAuth();
@@ -19,6 +83,10 @@ export default function SetupPage() {
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [checkingSetup, setCheckingSetup] = useState(true);
+
+  const passwordChecks = usePasswordValidation(password);
+  const allChecksPassed = passwordChecks.every(check => check.passed);
+  const passwordsMatch = password === confirmPassword && confirmPassword.length > 0;
 
   // Check if setup is actually required
   useEffect(() => {
@@ -44,13 +112,13 @@ export default function SetupPage() {
     setError('');
 
     // Validation
-    if (password !== confirmPassword) {
-      setError('Passwords do not match');
+    if (!allChecksPassed) {
+      setError('Password does not meet all requirements');
       return;
     }
 
-    if (password.length < 6) {
-      setError('Password must be at least 6 characters');
+    if (password !== confirmPassword) {
+      setError('Passwords do not match');
       return;
     }
 
@@ -139,10 +207,11 @@ export default function SetupPage() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 className="w-full px-4 py-2.5 bg-slate-700/50 border border-slate-600/50 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blox-500/50 focus:border-blox-500 transition-colors"
-                placeholder="Minimum 6 characters"
+                placeholder="Create a strong password"
                 required
                 autoComplete="new-password"
               />
+              <PasswordChecklist checks={passwordChecks} />
             </div>
 
             <div>
@@ -154,16 +223,41 @@ export default function SetupPage() {
                 type="password"
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
-                className="w-full px-4 py-2.5 bg-slate-700/50 border border-slate-600/50 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blox-500/50 focus:border-blox-500 transition-colors"
+                className={`w-full px-4 py-2.5 bg-slate-700/50 border rounded-lg text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blox-500/50 transition-colors ${
+                  confirmPassword.length > 0
+                    ? passwordsMatch
+                      ? 'border-green-500/50'
+                      : 'border-red-500/50'
+                    : 'border-slate-600/50'
+                }`}
                 placeholder="Re-enter your password"
                 required
                 autoComplete="new-password"
               />
+              {confirmPassword.length > 0 && (
+                <div className="mt-1 flex items-center gap-1 text-xs">
+                  {passwordsMatch ? (
+                    <>
+                      <svg className="w-4 h-4 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                      </svg>
+                      <span className="text-green-400">Passwords match</span>
+                    </>
+                  ) : (
+                    <>
+                      <svg className="w-4 h-4 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                      <span className="text-red-400">Passwords do not match</span>
+                    </>
+                  )}
+                </div>
+              )}
             </div>
 
             <button
               type="submit"
-              disabled={isSubmitting}
+              disabled={isSubmitting || !allChecksPassed || !passwordsMatch}
               className="w-full py-2.5 px-4 bg-gradient-to-r from-blox-500 to-blox-600 hover:from-blox-600 hover:to-blox-700 text-white font-medium rounded-lg transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {isSubmitting ? 'Creating account...' : 'Create Admin Account'}

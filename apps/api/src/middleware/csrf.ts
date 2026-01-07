@@ -40,8 +40,13 @@ export function generateCSRFToken(): string {
  * CSRF token generation hook - sets cookie on responses
  */
 export async function csrfSetToken(request: FastifyRequest, reply: FastifyReply) {
+  // Skip OPTIONS requests (CORS preflight)
+  if (request.method === 'OPTIONS') {
+    return;
+  }
+
   // Only set token if not already present
-  const existingToken = request.cookies[CSRF_COOKIE_NAME];
+  const existingToken = request.cookies?.[CSRF_COOKIE_NAME];
   
   if (!existingToken) {
     const token = generateCSRFToken();
@@ -62,6 +67,11 @@ export async function csrfSetToken(request: FastifyRequest, reply: FastifyReply)
 export async function csrfValidate(request: FastifyRequest, reply: FastifyReply) {
   const method = request.method;
   const path = request.url.split('?')[0];
+
+  // Skip OPTIONS requests (CORS preflight)
+  if (method === 'OPTIONS') {
+    return;
+  }
 
   // Skip non-protected methods
   if (!PROTECTED_METHODS.includes(method)) {
