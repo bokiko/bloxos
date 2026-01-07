@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
+import { useWebSocket } from '../../hooks/useWebSocket';
 
 const getApiUrl = () => {
   if (typeof window === 'undefined') return 'http://localhost:3001';
@@ -75,14 +76,29 @@ export default function RigsPage() {
   const [bulkAssignType, setBulkAssignType] = useState<'flightsheet' | 'oc' | 'group' | null>(null);
   const REFRESH_INTERVAL = 30000;
 
+  // WebSocket handler for real-time rig updates
+  const handleRigsUpdate = useCallback((data: unknown) => {
+    if (Array.isArray(data)) {
+      setRigs(data as Rig[]);
+      setLastUpdated(new Date());
+      setLoading(false);
+    }
+  }, []);
+
+  // Connect to WebSocket for real-time updates
+  const { isConnected } = useWebSocket({
+    onRigsUpdate: handleRigsUpdate,
+  });
+
   useEffect(() => {
     fetchRigs();
     fetchFlightSheets();
     fetchOcProfiles();
     fetchRigGroups();
 
+    // Only use polling as fallback when WebSocket is not connected
     let intervalId: NodeJS.Timeout | null = null;
-    if (autoRefresh) {
+    if (autoRefresh && !isConnected) {
       intervalId = setInterval(() => {
         fetchRigs();
       }, REFRESH_INTERVAL);
@@ -91,7 +107,7 @@ export default function RigsPage() {
     return () => {
       if (intervalId) clearInterval(intervalId);
     };
-  }, [autoRefresh]);
+  }, [autoRefresh, isConnected]);
 
   async function fetchRigs() {
     try {
@@ -447,18 +463,25 @@ export default function RigsPage() {
           <p className="text-slate-400 text-sm mt-1">Manage your mining rigs</p>
         </div>
         <div className="flex items-center gap-4">
-          {/* Auto-refresh indicator */}
+          {/* Live connection indicator */}
           <div className="flex items-center gap-2 text-sm">
             <button
               onClick={() => setAutoRefresh(!autoRefresh)}
               className={`flex items-center gap-2 px-3 py-1.5 rounded-lg transition-all ${
-                autoRefresh
+                isConnected
                   ? 'bg-green-500/20 text-green-400'
+                  : autoRefresh
+                  ? 'bg-yellow-500/20 text-yellow-400'
                   : 'bg-slate-700 text-slate-400'
               }`}
+              title={isConnected ? 'WebSocket connected' : autoRefresh ? 'Polling mode' : 'Updates paused'}
             >
-              <span className={`w-2 h-2 rounded-full ${autoRefresh ? 'bg-green-400 animate-pulse' : 'bg-slate-500'}`}></span>
-              {autoRefresh ? 'Live' : 'Paused'}
+              <span className={`w-2 h-2 rounded-full ${
+                isConnected ? 'bg-green-400 animate-pulse' : 
+                autoRefresh ? 'bg-yellow-400 animate-pulse' : 
+                'bg-slate-500'
+              }`}></span>
+              {isConnected ? 'Live' : autoRefresh ? 'Polling' : 'Paused'}
             </button>
             {lastUpdated && (
               <span className="text-slate-500 text-xs">

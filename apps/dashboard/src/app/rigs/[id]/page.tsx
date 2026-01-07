@@ -1,9 +1,10 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import dynamic from 'next/dynamic';
+import { useWebSocket } from '../../../hooks/useWebSocket';
 
 // Dynamic import for Terminal to avoid SSR issues
 const Terminal = dynamic(() => import('../../../components/Terminal'), { ssr: false });
@@ -34,10 +35,13 @@ interface MinerInstance {
   minerName: string;
   algo: string;
   pool: string;
+  wallet: string;
   status: string;
   hashrate: number | null;
   accepted: number;
   rejected: number;
+  startedAt: string | null;
+  pid: number | null;
 }
 
 interface RigEvent {
@@ -501,6 +505,23 @@ export default function RigDetailPage() {
   const [showTerminal, setShowTerminal] = useState(false);
   const REFRESH_INTERVAL = 30000; // 30 seconds
 
+  // WebSocket handler for real-time rig updates
+  const handleRigsUpdate = useCallback((data: unknown) => {
+    if (Array.isArray(data)) {
+      const updatedRig = (data as Rig[]).find(r => r.id === params.id);
+      if (updatedRig) {
+        setRig(updatedRig);
+        setLastUpdated(new Date());
+        setLoading(false);
+      }
+    }
+  }, [params.id]);
+
+  // Connect to WebSocket for real-time updates
+  const { isConnected } = useWebSocket({
+    onRigsUpdate: handleRigsUpdate,
+  });
+
   useEffect(() => {
     if (params.id) {
       fetchRig(params.id as string);
@@ -510,9 +531,9 @@ export default function RigDetailPage() {
       fetchMinerStatus(params.id as string);
       fetchAlertConfig(params.id as string);
 
-      // Auto-refresh interval
+      // Only use polling as fallback when WebSocket is not connected
       let intervalId: NodeJS.Timeout | null = null;
-      if (autoRefresh) {
+      if (autoRefresh && !isConnected) {
         intervalId = setInterval(() => {
           fetchRig(params.id as string);
           fetchMinerStatus(params.id as string);
@@ -523,7 +544,7 @@ export default function RigDetailPage() {
         if (intervalId) clearInterval(intervalId);
       };
     }
-  }, [params.id, autoRefresh]);
+  }, [params.id, autoRefresh, isConnected]);
 
   async function fetchFlightSheets() {
     try {
@@ -951,6 +972,20 @@ export default function RigDetailPage() {
     return new Date(dateString).toLocaleString();
   }
 
+  function formatMinerUptime(startedAt: string) {
+    const diff = Date.now() - new Date(startedAt).getTime();
+    const hours = Math.floor(diff / 3600000);
+    const mins = Math.floor((diff % 3600000) / 60000);
+    if (hours > 24) {
+      const days = Math.floor(hours / 24);
+      return `${days}d ${hours % 24}h`;
+    }
+    if (hours > 0) {
+      return `${hours}h ${mins}m`;
+    }
+    return `${mins}m`;
+  }
+
   function formatLastSeen(lastSeen: string | null) {
     if (!lastSeen) return 'Never';
     const diff = Date.now() - new Date(lastSeen).getTime();
@@ -1086,17 +1121,24 @@ export default function RigDetailPage() {
             </div>
           </div>
           <div className="flex items-center gap-3">
-            {/* Auto-refresh toggle */}
+            {/* Live connection toggle */}
             <button
               onClick={() => setAutoRefresh(!autoRefresh)}
               className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all ${
-                autoRefresh
+                isConnected
                   ? 'bg-green-500/20 text-green-400'
+                  : autoRefresh
+                  ? 'bg-yellow-500/20 text-yellow-400'
                   : 'bg-slate-700 text-slate-400'
               }`}
+              title={isConnected ? 'WebSocket connected' : autoRefresh ? 'Polling mode' : 'Updates paused'}
             >
-              <span className={`w-2 h-2 rounded-full ${autoRefresh ? 'bg-green-400 animate-pulse' : 'bg-slate-500'}`}></span>
-              {autoRefresh ? 'Live' : 'Paused'}
+              <span className={`w-2 h-2 rounded-full ${
+                isConnected ? 'bg-green-400 animate-pulse' : 
+                autoRefresh ? 'bg-yellow-400 animate-pulse' : 
+                'bg-slate-500'
+              }`}></span>
+              {isConnected ? 'Live' : autoRefresh ? 'Polling' : 'Paused'}
             </button>
             {lastUpdated && (
               <span className="text-slate-500 text-xs hidden md:inline">
@@ -1492,7 +1534,14 @@ export default function RigDetailPage() {
                   )}
                 </div>
 
-                <div className="grid grid-cols-3 md:grid-cols-6 gap-3">
+                <div className="grid grid-cols-4 md:grid-cols-7 gap-3">
+                  {/* Hashrate gets special treatment */}
+                  <div className="bg-purple-500/10 rounded-lg p-2.5 border border-purple-500/20">
+                    <p className="text-xs text-purple-400">Hashrate</p>
+                    <p className="font-bold text-purple-400">
+                      {gpu.hashrate !== null ? `${gpu.hashrate.toFixed(2)} MH/s` : 'N/A'}
+                    </p>
+                  </div>
                   {[
                     { label: 'Temp', value: gpu.temperature !== null ? `${gpu.temperature}°C` : 'N/A', color: getTempColor(gpu.temperature) },
                     { label: 'Fan', value: gpu.fanSpeed !== null ? `${gpu.fanSpeed}%` : 'N/A', color: '' },
@@ -1532,22 +1581,39 @@ export default function RigDetailPage() {
               {rig.minerInstances.map((miner) => (
                 <div key={miner.id} className="p-4">
                   <div className="flex items-center justify-between mb-2">
-                    <h3 className="font-medium">{miner.minerName}</h3>
-                    <span className={`px-2 py-0.5 rounded text-xs font-medium ${getStatusBadge(miner.status)}`}>
-                      {miner.status}
-                    </span>
-                  </div>
-                  <p className="text-sm text-slate-400 mb-3">{miner.algo} • {miner.pool}</p>
-                  <div className="flex items-center gap-4 text-sm">
-                    <div>
-                      <span className="text-slate-500">Hashrate: </span>
-                      <span className="font-medium text-purple-400">{miner.hashrate?.toFixed(2) || 0} MH/s</span>
+                    <div className="flex items-center gap-3">
+                      <h3 className="font-medium">{miner.minerName}</h3>
+                      <span className={`px-2 py-0.5 rounded text-xs font-medium ${getStatusBadge(miner.status)}`}>
+                        {miner.status}
+                      </span>
+                      {miner.pid && (
+                        <span className="text-xs text-slate-500 font-mono">PID: {miner.pid}</span>
+                      )}
                     </div>
-                    <div>
-                      <span className="text-slate-500">Shares: </span>
-                      <span className="text-green-400">{miner.accepted}</span>
-                      <span className="text-slate-500">/</span>
-                      <span className="text-red-400">{miner.rejected}</span>
+                    {miner.hashrate !== null && miner.hashrate > 0 && (
+                      <div className="text-right">
+                        <p className="text-lg font-bold text-purple-400">{miner.hashrate.toFixed(2)} MH/s</p>
+                      </div>
+                    )}
+                  </div>
+                  <p className="text-sm text-slate-400 mb-3">
+                    <span className="text-slate-500">Algo:</span> {miner.algo} | 
+                    <span className="text-slate-500 ml-2">Pool:</span> {miner.pool.split('/')[0]}
+                    {miner.startedAt && (
+                      <span className="ml-2">| <span className="text-slate-500">Running:</span> {formatMinerUptime(miner.startedAt)}</span>
+                    )}
+                  </p>
+                  <div className="flex items-center gap-4 text-sm">
+                    <div className="flex items-center gap-2">
+                      <span className="text-slate-500">Shares:</span>
+                      <span className="text-green-400 font-medium">{miner.accepted}</span>
+                      <span className="text-slate-600">/</span>
+                      <span className="text-red-400 font-medium">{miner.rejected}</span>
+                      {miner.accepted + miner.rejected > 0 && (
+                        <span className="text-slate-500 text-xs">
+                          ({((miner.accepted / (miner.accepted + miner.rejected)) * 100).toFixed(1)}% efficiency)
+                        </span>
+                      )}
                     </div>
                   </div>
                 </div>
