@@ -170,6 +170,20 @@ export default function PoolsPage() {
       return;
     }
 
+    // Build payload, excluding empty optional fields
+    const payload: Record<string, string> = {
+      name: formData.name,
+      coin: formData.coin,
+      url: formData.url,
+      farmId: formData.farmId,
+    };
+    
+    // Only include optional fields if they have values
+    if (formData.url2) payload.url2 = formData.url2;
+    if (formData.url3) payload.url3 = formData.url3;
+    if (formData.user) payload.user = formData.user;
+    if (formData.pass) payload.pass = formData.pass;
+
     try {
       const url = editingPool
         ? `${getApiUrl()}/api/pools/${editingPool.id}`
@@ -182,7 +196,7 @@ export default function PoolsPage() {
           'X-CSRF-Token': getCsrfToken() || '',
         },
         credentials: 'include',
-        body: JSON.stringify(formData),
+        body: JSON.stringify(payload),
       });
 
       if (!res.ok) {
