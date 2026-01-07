@@ -22,6 +22,7 @@ const RegisterSchema = z.object({
 const LoginSchema = z.object({
   email: z.string().email().max(254),
   password: z.string().min(1).max(128),
+  rememberMe: z.boolean().optional().default(false),
 });
 
 const ChangePasswordSchema = z.object({
@@ -34,9 +35,13 @@ const UpdateProfileSchema = z.object({
   email: z.string().email().max(254).optional(),
 });
 
-// Token expiry aligned with auth-service (4 hours for access, 7 days for refresh)
+// Token expiry settings
 const ACCESS_TOKEN_MAX_AGE = 4 * 60 * 60; // 4 hours in seconds
 const REFRESH_TOKEN_MAX_AGE = 7 * 24 * 60 * 60; // 7 days in seconds
+
+// Extended session for "Keep me signed in"
+const EXTENDED_ACCESS_TOKEN_MAX_AGE = 30 * 24 * 60 * 60; // 30 days in seconds
+const EXTENDED_REFRESH_TOKEN_MAX_AGE = 90 * 24 * 60 * 60; // 90 days in seconds
 
 export async function authRoutes(app: FastifyInstance) {
   // Check if setup is needed (no users exist)
@@ -105,6 +110,11 @@ export async function authRoutes(app: FastifyInstance) {
     }
 
     const clientIp = request.ip || request.headers['x-forwarded-for'] || 'unknown';
+    const rememberMe = result.data.rememberMe || false;
+
+    // Use extended expiry if "Remember Me" is checked
+    const accessMaxAge = rememberMe ? EXTENDED_ACCESS_TOKEN_MAX_AGE : ACCESS_TOKEN_MAX_AGE;
+    const refreshMaxAge = rememberMe ? EXTENDED_REFRESH_TOKEN_MAX_AGE : REFRESH_TOKEN_MAX_AGE;
 
     try {
       const { user, token: accessToken, refreshToken } = await authService.login(
@@ -119,7 +129,7 @@ export async function authRoutes(app: FastifyInstance) {
         secure: process.env.NODE_ENV === 'production',
         sameSite: 'strict',
         path: '/',
-        maxAge: ACCESS_TOKEN_MAX_AGE,
+        maxAge: accessMaxAge,
       });
 
       // Set refresh token cookie
@@ -127,8 +137,8 @@ export async function authRoutes(app: FastifyInstance) {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
         sameSite: 'strict',
-        path: '/auth/refresh',
-        maxAge: REFRESH_TOKEN_MAX_AGE,
+        path: '/api/auth/refresh',
+        maxAge: refreshMaxAge,
       });
 
       return reply.send({ user, token: accessToken });
