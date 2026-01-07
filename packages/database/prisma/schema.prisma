@@ -45,14 +45,19 @@ model ApiKey {
 }
 
 model Farm {
-  id          String   @id @default(cuid())
+  id          String      @id @default(cuid())
   name        String
   description String?
   ownerId     String
-  owner       User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  owner       User        @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   rigs        Rig[]
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  rigGroups   RigGroup[]
+  wallets     Wallet[]
+  pools       Pool[]
+  ocProfiles  OCProfile[]
+  flightSheets FlightSheet[]
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
 }
 
 // ===========================================
@@ -64,9 +69,13 @@ model RigGroup {
   name        String
   color       String   @default("#6366f1") // Hex color for UI
   description String?
+  farmId      String
+  farm        Farm     @relation(fields: [farmId], references: [id], onDelete: Cascade)
   rigs        Rig[]    @relation("RigToGroups")
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+
+  @@index([farmId])
 }
 
 // ===========================================
@@ -206,11 +215,14 @@ model Wallet {
   coin         String        // BTC, ETH, KAS, etc.
   address      String
   source       String?       // Exchange name or "personal"
+  farmId       String
+  farm         Farm          @relation(fields: [farmId], references: [id], onDelete: Cascade)
   flightSheets FlightSheet[]
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
 
   @@index([coin])
+  @@index([farmId])
 }
 
 model Pool {
@@ -222,11 +234,14 @@ model Pool {
   url3         String?       // Backup 2
   user         String?       // Username template (use %WALLET%)
   pass         String?       // Usually "x"
+  farmId       String
+  farm         Farm          @relation(fields: [farmId], references: [id], onDelete: Cascade)
   flightSheets FlightSheet[]
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
 
   @@index([coin])
+  @@index([farmId])
 }
 
 model MinerSoftware {
@@ -257,33 +272,41 @@ model FlightSheet {
   minerId       String
   miner         MinerSoftware  @relation(fields: [minerId], references: [id])
   extraArgs     String?        // Additional miner arguments
+  farmId        String
+  farm          Farm           @relation(fields: [farmId], references: [id], onDelete: Cascade)
   rigs          Rig[]
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
+
+  @@index([farmId])
 }
 
 model OCProfile {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   name        String
   vendor      GPUVendor
   
   // NVIDIA settings
-  powerLimit  Int?     // Watts or percent
-  coreOffset  Int?     // MHz offset
-  memOffset   Int?     // MHz offset
-  coreLock    Int?     // Lock core clock MHz
-  memLock     Int?     // Lock mem clock MHz
-  fanSpeed    Int?     // Percent (0 = auto)
+  powerLimit  Int?      // Watts or percent
+  coreOffset  Int?      // MHz offset
+  memOffset   Int?      // MHz offset
+  coreLock    Int?      // Lock core clock MHz
+  memLock     Int?      // Lock mem clock MHz
+  fanSpeed    Int?      // Percent (0 = auto)
   
   // AMD settings
-  coreVddc    Int?     // Core voltage mV
-  memVddc     Int?     // Memory voltage mV
-  coreDpm     Int?     // Core DPM state
-  memDpm      Int?     // Memory DPM state
+  coreVddc    Int?      // Core voltage mV
+  memVddc     Int?      // Memory voltage mV
+  coreDpm     Int?      // Core DPM state
+  memDpm      Int?      // Memory DPM state
   
+  farmId      String
+  farm        Farm      @relation(fields: [farmId], references: [id], onDelete: Cascade)
   rigs        Rig[]
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([farmId])
 }
 
 // ===========================================
