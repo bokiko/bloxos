@@ -1,6 +1,7 @@
 import { prisma } from '@bloxos/database';
 import { SSHManager } from './ssh-manager.ts';
 import { alertService } from './alert-service.ts';
+import { broadcastToSubscribers, getSystemStats, clients } from '../routes/websocket.ts';
 
 interface GPUStats {
   index: number;
@@ -435,6 +436,9 @@ export class GPUPoller {
 
       // Check for offline rigs and create alerts
       await alertService.checkOfflineRigs();
+
+      // Broadcast real-time updates to dashboard clients
+      await this.broadcastUpdates();
     } catch (error) {
       console.error('[Poller] Poll cycle error:', error);
     } finally {
@@ -472,6 +476,42 @@ export class GPUPoller {
   // Check if poller is running
   isRunning(): boolean {
     return this.intervalId !== null;
+  }
+
+  // Broadcast updates to all connected dashboard clients
+  async broadcastUpdates(): Promise<void> {
+    try {
+      // Only broadcast if there are connected clients
+      if (clients.size === 0) {
+        return;
+      }
+
+      // Get updated rig data
+      const rigs = await prisma.rig.findMany({
+        include: {
+          gpus: true,
+          cpu: true,
+          groups: true,
+        },
+      });
+
+      // Broadcast rig updates
+      broadcastToSubscribers('rigs', 'rig-update', rigs);
+
+      // Get and broadcast system stats for each user
+      // For simplicity, broadcast to all - the websocket route handles filtering
+      for (const [, client] of clients) {
+        if (client.subscriptions.has('stats')) {
+          const stats = await getSystemStats({ userId: client.userId, role: client.role });
+          broadcastToSubscribers('stats', 'stats-update', stats);
+          break; // Stats are the same for now, just send once
+        }
+      }
+
+      console.log(`[Poller] Broadcasted updates to ${clients.size} client(s)`);
+    } catch (error) {
+      console.error('[Poller] Failed to broadcast updates:', error);
+    }
   }
 }
 
