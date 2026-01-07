@@ -27,6 +27,7 @@ function sanitizeTerminalOutput(data: string): string {
     .replace(/<object/gi, '&lt;object')
     .replace(/<embed/gi, '&lt;embed')
     // Remove null bytes which can be used for attacks
+    // eslint-disable-next-line no-control-regex
     .replace(/\x00/g, '');
 }
 
