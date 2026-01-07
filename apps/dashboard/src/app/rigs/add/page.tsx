@@ -45,45 +45,23 @@ export default function AddRigPage() {
   useEffect(() => {
     async function fetchFarms() {
       try {
-        const res = await fetch(`${getApiUrl()}/api/rigs`, {
+        // Get user data with farms (auto-creates default farm if none)
+        const res = await fetch(`${getApiUrl()}/api/auth/me`, {
           credentials: 'include',
         });
         
         if (res.ok) {
-          // Get unique farms from rigs or fetch farms directly
-          // For now, we'll create a default farm if none exists
-          const farmsRes = await fetch(`${getApiUrl()}/api/auth/me`, {
-            credentials: 'include',
-          });
-          
-          if (farmsRes.ok) {
-            const userData = await farmsRes.json();
-            // Check if user has farms
-            if (userData.farms && userData.farms.length > 0) {
-              setFarms(userData.farms);
-              setFormData(prev => ({ ...prev, farmId: userData.farms[0].id }));
-            } else {
-              // Create default farm for user
-              const createFarmRes = await fetch(`${getApiUrl()}/api/farms`, {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  'X-CSRF-Token': getCsrfToken() || '',
-                },
-                credentials: 'include',
-                body: JSON.stringify({ name: 'My Farm' }),
-              });
-              
-              if (createFarmRes.ok) {
-                const newFarm = await createFarmRes.json();
-                setFarms([newFarm]);
-                setFormData(prev => ({ ...prev, farmId: newFarm.id }));
-              }
-            }
+          const data = await res.json();
+          if (data.farms && data.farms.length > 0) {
+            setFarms(data.farms);
+            setFormData(prev => ({ ...prev, farmId: data.farms[0].id }));
           }
+        } else {
+          setError('Please log in to add rigs');
         }
       } catch (err) {
         console.error('Failed to fetch farms:', err);
+        setError('Failed to load user data');
       } finally {
         setLoadingFarms(false);
       }
@@ -173,8 +151,13 @@ export default function AddRigPage() {
     }
   }
 
-  const isFormValid = formData.name && formData.host && formData.username && formData.farmId &&
-    (formData.authType === 'password' ? formData.password : formData.privateKey);
+  const isFormValid = Boolean(
+    formData.name && 
+    formData.host && 
+    formData.username && 
+    formData.farmId &&
+    (formData.authType === 'password' ? formData.password : formData.privateKey)
+  );
 
   if (loadingFarms) {
     return (

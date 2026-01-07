@@ -209,7 +209,7 @@ export async function authRoutes(app: FastifyInstance) {
 
     // Get user's farms
     const { prisma } = await import('@bloxos/database');
-    const farms = await prisma.farm.findMany({
+    let farms = await prisma.farm.findMany({
       where: { ownerId: payload.userId },
       select: { id: true, name: true },
     });
@@ -223,7 +223,7 @@ export async function authRoutes(app: FastifyInstance) {
         },
         select: { id: true, name: true },
       });
-      farms.push(defaultFarm);
+      farms = [defaultFarm];
     }
 
     return reply.send({ user, farms });
