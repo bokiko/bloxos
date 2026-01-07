@@ -2,7 +2,7 @@ import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import { prisma } from '@bloxos/database';
 import { validatePassword, validateEmail, auditLog, checkRateLimit, recordFailedLogin, isAccountLocked, clearFailedLogins } from '../utils/security.ts';
-import { blacklistToken, isTokenBlacklisted, createSession, deleteSession, deleteUserSessions, getUserSessions } from './session-store.ts';
+import { blacklistToken, isTokenBlacklisted, deleteUserSessions, getUserSessions } from './session-store.ts';
 
 // JWT Configuration
 const JWT_SECRET = process.env.JWT_SECRET;
