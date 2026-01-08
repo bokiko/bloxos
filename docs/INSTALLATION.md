@@ -27,9 +27,11 @@
 
 ### Agent Requirements (Mining Rigs)
 
-- **OS:** Ubuntu 20.04+, HiveOS, or any Linux
+- **OS:** Ubuntu 20.04+, HiveOS, Debian 11+, or any Linux with systemd
 - **GPU:** NVIDIA (with nvidia-smi) or AMD (with rocm-smi)
 - **Network:** Outbound access to server on port 3001
+
+> **Important:** Mining rigs must run native Linux, not Windows. WSL2 is not supported for mining rigs due to limited GPU passthrough and systemd support. If you're currently mining on Windows, install Ubuntu directly on your mining hardware.
 
 ---
 

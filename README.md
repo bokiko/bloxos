@@ -209,9 +209,14 @@ The server is where you run the dashboard. This can be:
 ### For Mining Rigs
 
 Your mining rigs need:
-- Linux operating system (Ubuntu, HiveOS, etc.)
+- **Linux operating system** (Ubuntu 20.04+, HiveOS, Debian, etc.)
+- NVIDIA or AMD GPU with proper drivers installed
 - SSH enabled (usually already is)
 - Network connection to your server
+
+> **Windows users:** Mining rigs must run Linux, not Windows. If you're currently mining on Windows, you'll need to install Ubuntu or another Linux distro on your mining rigs. The BloxOS *server* (dashboard) can run on Windows via Docker, but the *rigs* themselves need Linux.
+>
+> **WSL2 is not recommended** for mining rigs - it lacks proper GPU passthrough and systemd support. Install Ubuntu directly on your mining hardware for best results.
 
 ---
 
