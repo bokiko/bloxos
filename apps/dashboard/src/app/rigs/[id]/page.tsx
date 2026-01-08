@@ -503,6 +503,16 @@ export default function RigDetailPage() {
   });
   const [alertConfigLoading, setAlertConfigLoading] = useState(false);
   const [showTerminal, setShowTerminal] = useState(false);
+  const [availableMiners, setAvailableMiners] = useState<{
+    id: string;
+    name: string;
+    version: string;
+    algo: string;
+    githubRepo: string | null;
+    latestVersion: string | null;
+  }[]>([]);
+  const [installedMiners, setInstalledMiners] = useState<string[]>([]);
+  const [minerInstalling, setMinerInstalling] = useState<string | null>(null);
   const REFRESH_INTERVAL = 30000; // 30 seconds
 
   // WebSocket handler for real-time rig updates
@@ -530,6 +540,8 @@ export default function RigDetailPage() {
       fetchRigGroups();
       fetchMinerStatus(params.id as string);
       fetchAlertConfig(params.id as string);
+      fetchAvailableMiners();
+      fetchInstalledMiners(params.id as string);
 
       // Only use polling as fallback when WebSocket is not connected
       let intervalId: NodeJS.Timeout | null = null;
@@ -633,6 +645,91 @@ export default function RigDetailPage() {
       setAlertConfig(data);
     } catch (err) {
       console.error('Failed to fetch alert config');
+    }
+  }
+
+  async function fetchAvailableMiners() {
+    try {
+      const res = await fetch(`${getApiUrl()}/api/miners/available`, {
+        credentials: 'include',
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (Array.isArray(data)) {
+        setAvailableMiners(data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch available miners');
+    }
+  }
+
+  async function fetchInstalledMiners(rigId: string) {
+    try {
+      const res = await fetch(`${getApiUrl()}/api/rigs/${rigId}/miners/installed`, {
+        credentials: 'include',
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (Array.isArray(data)) {
+        setInstalledMiners(data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch installed miners');
+    }
+  }
+
+  async function handleInstallMiner(minerName: string) {
+    if (!rig) return;
+    setMinerInstalling(minerName);
+    setError(null);
+
+    try {
+      const res = await fetch(`${getApiUrl()}/api/miners/install`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ rigId: rig.id, minerName }),
+      });
+
+      const data = await res.json();
+      if (res.ok) {
+        // Refresh installed miners list
+        await fetchInstalledMiners(rig.id);
+      } else {
+        setError(data.message || 'Failed to install miner');
+      }
+    } catch (err) {
+      setError('Failed to install miner');
+    } finally {
+      setMinerInstalling(null);
+    }
+  }
+
+  async function handleUninstallMiner(minerName: string) {
+    if (!rig) return;
+    if (!confirm(`Uninstall ${minerName}?`)) return;
+    setMinerInstalling(minerName);
+    setError(null);
+
+    try {
+      const res = await fetch(`${getApiUrl()}/api/miners/uninstall`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ rigId: rig.id, minerName }),
+      });
+
+      const data = await res.json();
+      if (res.ok) {
+        // Refresh installed miners list
+        await fetchInstalledMiners(rig.id);
+      } else {
+        setError(data.message || 'Failed to uninstall miner');
+      }
+    } catch (err) {
+      setError('Failed to uninstall miner');
+    } finally {
+      setMinerInstalling(null);
     }
   }
 
@@ -1560,6 +1657,116 @@ export default function RigDetailPage() {
             ))}
           </div>
         )}
+      </CollapsibleSection>
+
+      {/* Miner Software Management */}
+      <CollapsibleSection
+        title="Miner Software"
+        subtitle={`${installedMiners.length} installed`}
+        icon={<svg className="w-4 h-4 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>}
+        iconBg="bg-cyan-500/20"
+        defaultExpanded={false}
+      >
+        <div className="p-5">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {availableMiners.map((miner) => {
+              const isInstalled = installedMiners.includes(miner.name.toLowerCase());
+              const isProcessing = minerInstalling === miner.name;
+              return (
+                <div 
+                  key={miner.id}
+                  className={`bg-slate-900/50 rounded-lg p-4 border ${
+                    isInstalled ? 'border-green-500/30' : 'border-slate-700'
+                  }`}
+                >
+                  <div className="flex items-start justify-between mb-2">
+                    <div>
+                      <h4 className="font-semibold">{miner.name}</h4>
+                      <p className="text-xs text-slate-400">{miner.algo}</p>
+                    </div>
+                    {isInstalled && (
+                      <span className="px-2 py-0.5 bg-green-500/20 text-green-400 rounded text-xs">
+                        Installed
+                      </span>
+                    )}
+                  </div>
+                  
+                  <div className="text-xs text-slate-500 mb-3 space-y-1">
+                    <p>Current: v{miner.version}</p>
+                    {miner.latestVersion && miner.latestVersion !== miner.version && (
+                      <p className="text-yellow-400">Update: v{miner.latestVersion}</p>
+                    )}
+                    {miner.githubRepo && (
+                      <a 
+                        href={`https://github.com/${miner.githubRepo}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blox-400 hover:text-blox-300"
+                      >
+                        GitHub
+                      </a>
+                    )}
+                  </div>
+                  
+                  <div className="flex gap-2">
+                    {isInstalled ? (
+                      <>
+                        {miner.latestVersion && miner.latestVersion !== miner.version && (
+                          <button
+                            onClick={() => handleInstallMiner(miner.name)}
+                            disabled={isProcessing}
+                            className="flex-1 px-3 py-1.5 bg-yellow-600 hover:bg-yellow-700 disabled:bg-slate-700 rounded text-xs font-medium transition-colors flex items-center justify-center gap-1"
+                          >
+                            {isProcessing ? (
+                              <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                            ) : (
+                              <>
+                                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                                </svg>
+                                Update
+                              </>
+                            )}
+                          </button>
+                        )}
+                        <button
+                          onClick={() => handleUninstallMiner(miner.name)}
+                          disabled={isProcessing}
+                          className="px-3 py-1.5 bg-red-600/20 hover:bg-red-600/30 text-red-400 disabled:bg-slate-700 disabled:text-slate-500 rounded text-xs font-medium transition-colors"
+                        >
+                          {isProcessing ? '...' : 'Uninstall'}
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        onClick={() => handleInstallMiner(miner.name)}
+                        disabled={isProcessing}
+                        className="flex-1 px-3 py-1.5 bg-blox-600 hover:bg-blox-700 disabled:bg-slate-700 rounded text-xs font-medium transition-colors flex items-center justify-center gap-1"
+                      >
+                        {isProcessing ? (
+                          <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                        ) : (
+                          <>
+                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                            </svg>
+                            Install
+                          </>
+                        )}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {availableMiners.length === 0 && (
+            <div className="text-center py-8 text-slate-400">
+              <p>No miners available</p>
+            </div>
+          )}
+        </div>
       </CollapsibleSection>
 
       {/* Two Column Layout: Miners & Events */}
