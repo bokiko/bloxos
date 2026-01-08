@@ -46,6 +46,23 @@ export default function SettingsPage() {
   const [updatesLoading, setUpdatesLoading] = useState(false);
   const [refreshingUpdates, setRefreshingUpdates] = useState(false);
 
+  // Notification settings
+  const [notificationSettings, setNotificationSettings] = useState({
+    emailEnabled: false,
+    emailAddress: '',
+    telegramEnabled: false,
+    telegramChatId: '',
+    notifyOnOffline: true,
+    notifyOnHighTemp: true,
+    notifyOnLowHashrate: true,
+    notifyOnMinerError: true,
+    tempThreshold: 85,
+    hashrateDropPercent: 20,
+  });
+  const [notificationMessage, setNotificationMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [notificationLoading, setNotificationLoading] = useState(false);
+  const [testingNotification, setTestingNotification] = useState<'email' | 'telegram' | null>(null);
+
   const fetchUpdates = useCallback(async (refresh = false) => {
     if (refresh) {
       setRefreshingUpdates(true);
@@ -76,7 +93,72 @@ export default function SettingsPage() {
 
   useEffect(() => {
     fetchUpdates();
+    fetchNotificationSettings();
   }, [fetchUpdates]);
+
+  async function fetchNotificationSettings() {
+    try {
+      const res = await fetch(`${getApiUrl()}/api/settings/notifications`, {
+        credentials: 'include',
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setNotificationSettings(prev => ({ ...prev, ...data }));
+      }
+    } catch (err) {
+      console.error('Failed to fetch notification settings');
+    }
+  }
+
+  async function handleSaveNotifications() {
+    setNotificationMessage(null);
+    setNotificationLoading(true);
+
+    try {
+      const res = await fetch(`${getApiUrl()}/api/settings/notifications`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(notificationSettings),
+      });
+
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || 'Failed to save settings');
+      }
+
+      setNotificationMessage({ type: 'success', text: 'Notification settings saved' });
+    } catch (err) {
+      setNotificationMessage({ type: 'error', text: err instanceof Error ? err.message : 'Save failed' });
+    } finally {
+      setNotificationLoading(false);
+    }
+  }
+
+  async function handleTestNotification(type: 'email' | 'telegram') {
+    setTestingNotification(type);
+    setNotificationMessage(null);
+
+    try {
+      const res = await fetch(`${getApiUrl()}/api/settings/notifications/test`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ type }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Test failed');
+      }
+
+      setNotificationMessage({ type: 'success', text: `Test ${type} notification sent!` });
+    } catch (err) {
+      setNotificationMessage({ type: 'error', text: err instanceof Error ? err.message : 'Test failed' });
+    } finally {
+      setTestingNotification(null);
+    }
+  }
 
   const handleProfileUpdate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -382,6 +464,232 @@ export default function SettingsPage() {
             )}
           </div>
         )}
+      </div>
+
+      {/* Notification Settings */}
+      <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-700/50 rounded-xl p-6">
+        <h2 className="text-lg font-semibold mb-4">Notification Settings</h2>
+        <p className="text-sm text-slate-400 mb-6">Configure how you receive alerts about your rigs</p>
+
+        {notificationMessage && (
+          <div className={`px-4 py-3 rounded-lg text-sm mb-6 ${
+            notificationMessage.type === 'success' 
+              ? 'bg-green-500/10 border border-green-500/50 text-green-400'
+              : 'bg-red-500/10 border border-red-500/50 text-red-400'
+          }`}>
+            {notificationMessage.text}
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Email Notifications */}
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="font-medium">Email Notifications</h3>
+                <p className="text-sm text-slate-400">Receive alerts via email</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setNotificationSettings(prev => ({ ...prev, emailEnabled: !prev.emailEnabled }))}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                  notificationSettings.emailEnabled ? 'bg-blox-600' : 'bg-slate-600'
+                }`}
+              >
+                <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                  notificationSettings.emailEnabled ? 'translate-x-6' : 'translate-x-1'
+                }`} />
+              </button>
+            </div>
+
+            {notificationSettings.emailEnabled && (
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-sm text-slate-400 mb-1">Email Address</label>
+                  <div className="flex gap-2">
+                    <input
+                      type="email"
+                      value={notificationSettings.emailAddress}
+                      onChange={(e) => setNotificationSettings(prev => ({ ...prev, emailAddress: e.target.value }))}
+                      className="flex-1 px-3 py-2 bg-slate-700/50 border border-slate-600/50 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-blox-500/50"
+                      placeholder="alerts@example.com"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => handleTestNotification('email')}
+                      disabled={testingNotification === 'email' || !notificationSettings.emailAddress}
+                      className="px-3 py-2 bg-slate-600 hover:bg-slate-500 rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
+                    >
+                      {testingNotification === 'email' ? 'Sending...' : 'Test'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Telegram Notifications */}
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="font-medium">Telegram Notifications</h3>
+                <p className="text-sm text-slate-400">Receive alerts via Telegram</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setNotificationSettings(prev => ({ ...prev, telegramEnabled: !prev.telegramEnabled }))}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                  notificationSettings.telegramEnabled ? 'bg-blox-600' : 'bg-slate-600'
+                }`}
+              >
+                <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                  notificationSettings.telegramEnabled ? 'translate-x-6' : 'translate-x-1'
+                }`} />
+              </button>
+            </div>
+
+            {notificationSettings.telegramEnabled && (
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-sm text-slate-400 mb-1">Telegram Chat ID</label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={notificationSettings.telegramChatId}
+                      onChange={(e) => setNotificationSettings(prev => ({ ...prev, telegramChatId: e.target.value }))}
+                      className="flex-1 px-3 py-2 bg-slate-700/50 border border-slate-600/50 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-blox-500/50"
+                      placeholder="Your chat ID"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => handleTestNotification('telegram')}
+                      disabled={testingNotification === 'telegram' || !notificationSettings.telegramChatId}
+                      className="px-3 py-2 bg-slate-600 hover:bg-slate-500 rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
+                    >
+                      {testingNotification === 'telegram' ? 'Sending...' : 'Test'}
+                    </button>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Message @BloxOsBot on Telegram to get your Chat ID
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Alert Types */}
+        <div className="mt-6 pt-6 border-t border-slate-700/50">
+          <h3 className="font-medium mb-4">Alert Types</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <label className="flex items-center gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={notificationSettings.notifyOnOffline}
+                onChange={(e) => setNotificationSettings(prev => ({ ...prev, notifyOnOffline: e.target.checked }))}
+                className="w-4 h-4 rounded border-slate-600 bg-slate-700 text-blox-600 focus:ring-blox-500/50"
+              />
+              <div>
+                <span className="text-sm font-medium">Rig Offline</span>
+                <p className="text-xs text-slate-400">Alert when a rig goes offline</p>
+              </div>
+            </label>
+
+            <label className="flex items-center gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={notificationSettings.notifyOnHighTemp}
+                onChange={(e) => setNotificationSettings(prev => ({ ...prev, notifyOnHighTemp: e.target.checked }))}
+                className="w-4 h-4 rounded border-slate-600 bg-slate-700 text-blox-600 focus:ring-blox-500/50"
+              />
+              <div>
+                <span className="text-sm font-medium">High Temperature</span>
+                <p className="text-xs text-slate-400">Alert when GPU exceeds threshold</p>
+              </div>
+            </label>
+
+            <label className="flex items-center gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={notificationSettings.notifyOnLowHashrate}
+                onChange={(e) => setNotificationSettings(prev => ({ ...prev, notifyOnLowHashrate: e.target.checked }))}
+                className="w-4 h-4 rounded border-slate-600 bg-slate-700 text-blox-600 focus:ring-blox-500/50"
+              />
+              <div>
+                <span className="text-sm font-medium">Low Hashrate</span>
+                <p className="text-xs text-slate-400">Alert on significant hashrate drop</p>
+              </div>
+            </label>
+
+            <label className="flex items-center gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={notificationSettings.notifyOnMinerError}
+                onChange={(e) => setNotificationSettings(prev => ({ ...prev, notifyOnMinerError: e.target.checked }))}
+                className="w-4 h-4 rounded border-slate-600 bg-slate-700 text-blox-600 focus:ring-blox-500/50"
+              />
+              <div>
+                <span className="text-sm font-medium">Miner Errors</span>
+                <p className="text-xs text-slate-400">Alert on miner crashes or errors</p>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        {/* Thresholds */}
+        <div className="mt-6 pt-6 border-t border-slate-700/50">
+          <h3 className="font-medium mb-4">Thresholds</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div>
+              <label className="block text-sm text-slate-400 mb-2">
+                Temperature Threshold: <span className="text-white font-medium">{notificationSettings.tempThreshold}C</span>
+              </label>
+              <input
+                type="range"
+                min="60"
+                max="100"
+                value={notificationSettings.tempThreshold}
+                onChange={(e) => setNotificationSettings(prev => ({ ...prev, tempThreshold: parseInt(e.target.value) }))}
+                className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blox-500"
+              />
+              <div className="flex justify-between text-xs text-slate-500 mt-1">
+                <span>60C</span>
+                <span>100C</span>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-sm text-slate-400 mb-2">
+                Hashrate Drop: <span className="text-white font-medium">{notificationSettings.hashrateDropPercent}%</span>
+              </label>
+              <input
+                type="range"
+                min="5"
+                max="50"
+                step="5"
+                value={notificationSettings.hashrateDropPercent}
+                onChange={(e) => setNotificationSettings(prev => ({ ...prev, hashrateDropPercent: parseInt(e.target.value) }))}
+                className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blox-500"
+              />
+              <div className="flex justify-between text-xs text-slate-500 mt-1">
+                <span>5%</span>
+                <span>50%</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Save Button */}
+        <div className="mt-6 pt-6 border-t border-slate-700/50">
+          <button
+            type="button"
+            onClick={handleSaveNotifications}
+            disabled={notificationLoading}
+            className="px-6 py-2.5 bg-blox-600 hover:bg-blox-700 text-white font-medium rounded-lg transition-colors disabled:opacity-50"
+          >
+            {notificationLoading ? 'Saving...' : 'Save Notification Settings'}
+          </button>
+        </div>
       </div>
 
       {/* Account Info */}

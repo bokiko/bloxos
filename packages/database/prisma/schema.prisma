@@ -109,6 +109,7 @@ model User {
   role      Role     @default(USER)
   apiKeys   ApiKey[]
   farms     Farm[]
+  notificationSettings NotificationSettings?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -573,4 +574,35 @@ enum AlertType {
   HASHRATE_DROP
   MINER_ERROR
   GPU_ERROR
+}
+
+// ===========================================
+// Notification Settings (per-user)
+// ===========================================
+
+model NotificationSettings {
+  id                  String   @id @default(cuid())
+  userId              String   @unique
+  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Email notifications
+  emailEnabled        Boolean  @default(false)
+  emailAddress        String?
+  
+  // Telegram notifications
+  telegramEnabled     Boolean  @default(false)
+  telegramChatId      String?
+  
+  // Alert type toggles
+  notifyOnOffline     Boolean  @default(true)
+  notifyOnHighTemp    Boolean  @default(true)
+  notifyOnLowHashrate Boolean  @default(true)
+  notifyOnMinerError  Boolean  @default(true)
+  
+  // Thresholds
+  tempThreshold       Int      @default(85)  // Celsius
+  hashrateDropPercent Int      @default(20)  // Percent
+  
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 }
