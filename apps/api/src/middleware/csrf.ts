@@ -51,10 +51,14 @@ export async function csrfSetToken(request: FastifyRequest, reply: FastifyReply)
   if (!existingToken) {
     const token = generateCSRFToken();
     
+    // Use 'lax' in development for cross-port requests (dashboard:3000 -> api:3001)
+    // Use 'strict' in production where they should be same-origin
+    const isProduction = process.env.NODE_ENV === 'production';
+    
     reply.setCookie(CSRF_COOKIE_NAME, token, {
       httpOnly: false, // Must be readable by JS to include in header
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
+      secure: isProduction,
+      sameSite: isProduction ? 'strict' : 'lax',
       path: '/',
       maxAge: 24 * 60 * 60, // 24 hours
     });
@@ -144,11 +148,12 @@ export async function csrfValidate(request: FastifyRequest, reply: FastifyReply)
  */
 export async function csrfTokenEndpoint(request: FastifyRequest, reply: FastifyReply) {
   const token = generateCSRFToken();
+  const isProduction = process.env.NODE_ENV === 'production';
   
   reply.setCookie(CSRF_COOKIE_NAME, token, {
     httpOnly: false,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'strict',
+    secure: isProduction,
+    sameSite: isProduction ? 'strict' : 'lax',
     path: '/',
     maxAge: 24 * 60 * 60,
   });

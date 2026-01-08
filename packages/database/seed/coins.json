@@ -1,0 +1,202 @@
+{
+  "coins": [
+    {
+      "ticker": "ETC",
+      "name": "Ethereum Classic",
+      "algorithm": "Etchash",
+      "type": "GPU",
+      "logoPath": "/logos/etc.png",
+      "coingeckoId": "ethereum-classic",
+      "addressRegex": "^0x[a-fA-F0-9]{40}$"
+    },
+    {
+      "ticker": "RVN",
+      "name": "Ravencoin",
+      "algorithm": "KawPow",
+      "type": "GPU",
+      "logoPath": "/logos/rvn.png",
+      "coingeckoId": "ravencoin",
+      "addressRegex": "^[Rr][a-zA-Z0-9]{33}$"
+    },
+    {
+      "ticker": "ERG",
+      "name": "Ergo",
+      "algorithm": "Autolykos2",
+      "type": "GPU",
+      "logoPath": "/logos/erg.png",
+      "coingeckoId": "ergo",
+      "addressRegex": "^9[a-zA-Z0-9]{50,}$"
+    },
+    {
+      "ticker": "NEOXA",
+      "name": "Neoxa",
+      "algorithm": "KawPow",
+      "type": "GPU",
+      "logoPath": "/logos/neoxa.png",
+      "coingeckoId": "neoxa",
+      "addressRegex": "^[GN][a-zA-Z0-9]{33}$"
+    },
+    {
+      "ticker": "MEOW",
+      "name": "MeowCoin",
+      "algorithm": "KawPow",
+      "type": "GPU",
+      "logoPath": "/logos/meow.png",
+      "coingeckoId": "meowcoin",
+      "addressRegex": "^[Mm][a-zA-Z0-9]{33}$"
+    },
+    {
+      "ticker": "XNA",
+      "name": "Neurai",
+      "algorithm": "KawPow",
+      "type": "GPU",
+      "logoPath": "/logos/xna.png",
+      "coingeckoId": "neurai",
+      "addressRegex": "^[Nn][a-zA-Z0-9]{33}$"
+    },
+    {
+      "ticker": "CFX",
+      "name": "Conflux",
+      "algorithm": "Octopus",
+      "type": "GPU",
+      "logoPath": "/logos/cfx.png",
+      "coingeckoId": "conflux-token",
+      "addressRegex": "^cfx:[a-z0-9]{42}$"
+    },
+    {
+      "ticker": "BEAM",
+      "name": "Beam",
+      "algorithm": "BeamHashIII",
+      "type": "GPU",
+      "logoPath": "/logos/beam.png",
+      "coingeckoId": "beam",
+      "addressRegex": "^[a-f0-9]{64,}$"
+    },
+    {
+      "ticker": "FIRO",
+      "name": "Firo",
+      "algorithm": "FiroPoW",
+      "type": "GPU",
+      "logoPath": "/logos/firo.png",
+      "coingeckoId": "zcoin",
+      "addressRegex": "^[aZ][a-zA-Z0-9]{33}$"
+    },
+    {
+      "ticker": "IRON",
+      "name": "Iron Fish",
+      "algorithm": "FishHash",
+      "type": "GPU",
+      "logoPath": "/logos/iron.png",
+      "coingeckoId": "iron-fish",
+      "addressRegex": "^[a-f0-9]{64}$"
+    },
+    {
+      "ticker": "DNX",
+      "name": "Dynex",
+      "algorithm": "DynexSolve",
+      "type": "GPU",
+      "logoPath": "/logos/dnx.png",
+      "coingeckoId": "dynex",
+      "addressRegex": "^Xw[a-zA-Z0-9]{95}$"
+    },
+    {
+      "ticker": "FLUX",
+      "name": "Flux",
+      "algorithm": "ZelHash",
+      "type": "GPU",
+      "logoPath": "/logos/flux.png",
+      "coingeckoId": "zelcash",
+      "addressRegex": "^t1[a-zA-Z0-9]{33}$"
+    },
+    {
+      "ticker": "CTXC",
+      "name": "Cortex",
+      "algorithm": "CuckooCortex",
+      "type": "GPU",
+      "logoPath": "/logos/ctxc.png",
+      "coingeckoId": "cortex",
+      "addressRegex": "^0x[a-fA-F0-9]{40}$"
+    },
+    {
+      "ticker": "KAS",
+      "name": "Kaspa",
+      "algorithm": "kHeavyHash",
+      "type": "GPU",
+      "logoPath": "/logos/kas.png",
+      "coingeckoId": "kaspa",
+      "addressRegex": "^kaspa:(q|p)[a-z0-9]{50,70}$"
+    },
+    {
+      "ticker": "XMR",
+      "name": "Monero",
+      "algorithm": "RandomX",
+      "type": "CPU",
+      "logoPath": "/logos/xmr.png",
+      "coingeckoId": "monero",
+      "addressRegex": "^[48][0-9AB][1-9A-HJ-NP-Za-km-z]{93}$"
+    },
+    {
+      "ticker": "VRSC",
+      "name": "Verus Coin",
+      "algorithm": "VerusHash",
+      "type": "CPU",
+      "logoPath": "/logos/vrsc.png",
+      "coingeckoId": "verus-coin",
+      "addressRegex": "^R[a-zA-Z0-9]{33}$"
+    },
+    {
+      "ticker": "ZEPH",
+      "name": "Zephyr",
+      "algorithm": "RandomX",
+      "type": "CPU",
+      "logoPath": "/logos/zeph.png",
+      "coingeckoId": "zephyr-protocol",
+      "addressRegex": "^ZEPH[1-9A-HJ-NP-Za-km-z]{95}$"
+    },
+    {
+      "ticker": "RTM",
+      "name": "Raptoreum",
+      "algorithm": "GhostRider",
+      "type": "CPU",
+      "logoPath": "/logos/rtm.png",
+      "coingeckoId": "raptoreum",
+      "addressRegex": "^R[a-zA-Z0-9]{33}$"
+    },
+    {
+      "ticker": "SAL",
+      "name": "Salvium",
+      "algorithm": "RandomX",
+      "type": "CPU",
+      "logoPath": "/logos/sal.png",
+      "coingeckoId": "salvium",
+      "addressRegex": "^Salv[1-9A-HJ-NP-Za-km-z]{95}$"
+    },
+    {
+      "ticker": "QUBIC",
+      "name": "Qubic",
+      "algorithm": "AIGARTH",
+      "type": "CPU",
+      "logoPath": "/logos/qubic.png",
+      "coingeckoId": "qubic-network",
+      "addressRegex": "^[A-Z]{60}$"
+    },
+    {
+      "ticker": "XTR",
+      "name": "Tari",
+      "algorithm": "RandomX",
+      "type": "CPU",
+      "logoPath": "/logos/xtr.png",
+      "coingeckoId": "tari",
+      "addressRegex": "^[a-f0-9]{64}$"
+    },
+    {
+      "ticker": "KCN",
+      "name": "Kylacoin",
+      "algorithm": "VerusHash",
+      "type": "CPU",
+      "logoPath": "/logos/kcn.png",
+      "coingeckoId": "kylacoin",
+      "addressRegex": "^K[a-zA-Z0-9]{33}$"
+    }
+  ]
+}

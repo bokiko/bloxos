@@ -23,7 +23,11 @@ import { userRoutes } from './routes/users.ts';
 import { websocketRoutes } from './routes/websocket.ts';
 import { terminalRoutes } from './routes/terminal.ts';
 import { agentWebsocketRoutes } from './routes/agent-websocket.ts';
+import { coinsRoutes } from './routes/coins.ts';
+import { templatesRoutes } from './routes/templates.ts';
+import { updatesRoutes } from './routes/updates.ts';
 import { gpuPoller } from './services/gpu-poller.ts';
+import { startUpdateChecker, stopUpdateChecker } from './services/update-checker.ts';
 import { requireAuth } from './middleware/auth.ts';
 import { csrfSetToken, csrfValidate, csrfTokenEndpoint } from './middleware/csrf.ts';
 import { validateSecrets, auditLog } from './utils/security.ts';
@@ -124,11 +128,10 @@ async function main() {
     });
   }
 
-  // Rate limiting
+  // Rate limiting - higher limits in development
   await app.register(rateLimit, {
-    max: 100, // 100 requests per minute by default
+    max: isProduction ? 100 : 1000, // 1000 requests per minute in dev
     timeWindow: '1 minute',
-    // Stricter limits for auth endpoints
     keyGenerator: (request) => {
       return request.ip || 'unknown';
     },
@@ -218,9 +221,12 @@ async function main() {
   });
 
   // CSRF validation for state-changing requests
-  app.addHook('preHandler', async (request, reply) => {
-    await csrfValidate(request, reply);
-  });
+  // Disabled in development for easier testing - enable in production
+  if (isProduction) {
+    app.addHook('preHandler', async (request, reply) => {
+      await csrfValidate(request, reply);
+    });
+  }
 
   // Audit logging for sensitive operations
   app.addHook('onResponse', async (request, reply) => {
@@ -303,6 +309,9 @@ async function main() {
   await app.register(bulkActionsRoutes, { prefix: '/api/bulk' });
   await app.register(websocketRoutes, { prefix: '/api' });
   await app.register(terminalRoutes, { prefix: '/api/terminal' });
+  await app.register(coinsRoutes, { prefix: '/api' });
+  await app.register(templatesRoutes, { prefix: '/api' });
+  await app.register(updatesRoutes, { prefix: '/api/updates' });
 
   // ============================================
   // GRACEFUL SHUTDOWN
@@ -313,6 +322,7 @@ async function main() {
     process.on(signal, async () => {
       app.log.info(`Received ${signal}, shutting down...`);
       gpuPoller.stop();
+      stopUpdateChecker();
       await app.close();
       await prisma.$disconnect();
       process.exit(0);
@@ -331,6 +341,10 @@ async function main() {
     // Start GPU polling service
     gpuPoller.start();
     app.log.info('GPU polling service started');
+
+    // Start miner update checker (checks every 12 hours)
+    startUpdateChecker();
+    app.log.info('Miner update checker started');
   } catch (err) {
     app.log.error(err);
     process.exit(1);

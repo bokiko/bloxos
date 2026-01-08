@@ -8,6 +8,17 @@ const getApiUrl = () => {
   return `http://${window.location.hostname}:3001`;
 };
 
+// Helper to get CSRF token from cookie
+function getCsrfToken(): string {
+  const match = document.cookie.match(/(?:^|;\s*)csrf_token=([^;]*)/);
+  return match ? decodeURIComponent(match[1]) : '';
+}
+
+interface Farm {
+  id: string;
+  name: string;
+}
+
 interface Rig {
   id: string;
   name: string;
@@ -39,10 +50,11 @@ const COLORS = [
 
 export default function RigGroupsPage() {
   const [groups, setGroups] = useState<RigGroup[]>([]);
+  const [farms, setFarms] = useState<Farm[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [editingGroup, setEditingGroup] = useState<RigGroup | null>(null);
-  const [formData, setFormData] = useState({ name: '', color: '#6366f1', description: '' });
+  const [formData, setFormData] = useState({ name: '', color: '#6366f1', description: '', farmId: '' });
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -51,13 +63,23 @@ export default function RigGroupsPage() {
 
   async function fetchGroups() {
     try {
-      const res = await fetch(`${getApiUrl()}/api/rig-groups`, {
-        credentials: 'include',
-      });
-      if (!res.ok) return;
-      const data = await res.json();
-      if (Array.isArray(data)) {
-        setGroups(data);
+      const [groupsRes, userRes] = await Promise.all([
+        fetch(`${getApiUrl()}/api/rig-groups`, { credentials: 'include' }),
+        fetch(`${getApiUrl()}/api/auth/me`, { credentials: 'include' }),
+      ]);
+      
+      if (groupsRes.ok) {
+        const data = await groupsRes.json();
+        if (Array.isArray(data)) {
+          setGroups(data);
+        }
+      }
+      
+      if (userRes.ok) {
+        const userData = await userRes.json();
+        if (userData.farms && Array.isArray(userData.farms)) {
+          setFarms(userData.farms);
+        }
       }
     } catch (error) {
       console.error('Failed to fetch rig groups:', error);
@@ -73,15 +95,23 @@ export default function RigGroupsPage() {
     try {
       const res = await fetch(`${getApiUrl()}/api/rig-groups`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'x-csrf-token': getCsrfToken(),
+        },
         credentials: 'include',
-        body: JSON.stringify(formData),
+        body: JSON.stringify({
+          name: formData.name,
+          color: formData.color,
+          description: formData.description || undefined,
+          farmId: formData.farmId || farms[0]?.id,
+        }),
       });
 
       if (res.ok) {
         await fetchGroups();
         setShowCreateModal(false);
-        setFormData({ name: '', color: '#6366f1', description: '' });
+        setFormData({ name: '', color: '#6366f1', description: '', farmId: farms[0]?.id || '' });
       }
     } catch (error) {
       console.error('Failed to create group:', error);
@@ -97,15 +127,22 @@ export default function RigGroupsPage() {
     try {
       const res = await fetch(`${getApiUrl()}/api/rig-groups/${editingGroup.id}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'x-csrf-token': getCsrfToken(),
+        },
         credentials: 'include',
-        body: JSON.stringify(formData),
+        body: JSON.stringify({
+          name: formData.name,
+          color: formData.color,
+          description: formData.description || undefined,
+        }),
       });
 
       if (res.ok) {
         await fetchGroups();
         setEditingGroup(null);
-        setFormData({ name: '', color: '#6366f1', description: '' });
+        setFormData({ name: '', color: '#6366f1', description: '', farmId: farms[0]?.id || '' });
       }
     } catch (error) {
       console.error('Failed to update group:', error);
@@ -120,6 +157,9 @@ export default function RigGroupsPage() {
     try {
       const res = await fetch(`${getApiUrl()}/api/rig-groups/${id}`, {
         method: 'DELETE',
+        headers: {
+          'x-csrf-token': getCsrfToken(),
+        },
         credentials: 'include',
       });
 
@@ -137,6 +177,7 @@ export default function RigGroupsPage() {
       name: group.name,
       color: group.color,
       description: group.description || '',
+      farmId: farms[0]?.id || '',
     });
   }
 
@@ -312,7 +353,7 @@ export default function RigGroupsPage() {
                 onClick={() => {
                   setShowCreateModal(false);
                   setEditingGroup(null);
-                  setFormData({ name: '', color: '#6366f1', description: '' });
+                  setFormData({ name: '', color: '#6366f1', description: '', farmId: farms[0]?.id || '' });
                 }}
                 className="flex-1 px-4 py-2.5 bg-slate-700 hover:bg-slate-600 rounded-lg font-medium transition-colors"
               >

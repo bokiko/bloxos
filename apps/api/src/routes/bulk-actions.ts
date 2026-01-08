@@ -10,7 +10,7 @@ const minerControl = new MinerControl();
 
 // Constants for bulk operations
 const MAX_BULK_RIGS = 100; // Maximum rigs per bulk operation
-const BULK_OPERATION_TIMEOUT = 120000; // 2 minutes timeout for bulk operations
+// const BULK_OPERATION_TIMEOUT = 120000; // 2 minutes timeout for bulk operations (reserved for future use)
 
 // Validation schemas with limits
 const BulkRigIdsSchema = z.object({
@@ -32,13 +32,13 @@ const BulkGroupSchema = z.object({
   groupIds: z.array(z.string().max(50)).max(20),  // Max 20 groups
 });
 
-// Helper for timeout wrapper
-async function withTimeout<T>(promise: Promise<T>, ms: number, operation: string): Promise<T> {
-  const timeout = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error(`${operation} timed out after ${ms}ms`)), ms);
-  });
-  return Promise.race([promise, timeout]);
-}
+// Helper for timeout wrapper (reserved for future use with long-running bulk operations)
+// async function withTimeout<T>(promise: Promise<T>, ms: number, operation: string): Promise<T> {
+//   const timeout = new Promise<never>((_, reject) => {
+//     setTimeout(() => reject(new Error(`${operation} timed out after ${ms}ms`)), ms);
+//   });
+//   return Promise.race([promise, timeout]);
+// }
 
 export async function bulkActionsRoutes(app: FastifyInstance) {
   // Bulk start miners

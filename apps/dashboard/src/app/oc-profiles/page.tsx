@@ -7,6 +7,17 @@ const getApiUrl = () => {
   return `http://${window.location.hostname}:3001`;
 };
 
+// Helper to get CSRF token from cookie
+function getCsrfToken(): string {
+  const match = document.cookie.match(/(?:^|;\s*)csrf_token=([^;]*)/);
+  return match ? decodeURIComponent(match[1]) : '';
+}
+
+interface Farm {
+  id: string;
+  name: string;
+}
+
 interface OCProfile {
   id: string;
   name: string;
@@ -42,6 +53,7 @@ const EditIcon = () => (
 
 export default function OCProfilesPage() {
   const [profiles, setProfiles] = useState<OCProfile[]>([]);
+  const [farms, setFarms] = useState<Farm[]>([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [editingProfile, setEditingProfile] = useState<OCProfile | null>(null);
@@ -54,6 +66,7 @@ export default function OCProfilesPage() {
     coreLock: '',
     memLock: '',
     fanSpeed: '',
+    farmId: '',
   });
   const [saving, setSaving] = useState(false);
 
@@ -63,13 +76,23 @@ export default function OCProfilesPage() {
 
   async function fetchProfiles() {
     try {
-      const res = await fetch(`${getApiUrl()}/api/oc-profiles`, {
-        credentials: 'include',
-      });
-      if (!res.ok) return;
-      const data = await res.json();
-      if (Array.isArray(data)) {
-        setProfiles(data);
+      const [profilesRes, userRes] = await Promise.all([
+        fetch(`${getApiUrl()}/api/oc-profiles`, { credentials: 'include' }),
+        fetch(`${getApiUrl()}/api/auth/me`, { credentials: 'include' }),
+      ]);
+      
+      if (profilesRes.ok) {
+        const data = await profilesRes.json();
+        if (Array.isArray(data)) {
+          setProfiles(data);
+        }
+      }
+      
+      if (userRes.ok) {
+        const userData = await userRes.json();
+        if (userData.farms && Array.isArray(userData.farms)) {
+          setFarms(userData.farms);
+        }
       }
     } catch (err) {
       console.error('Failed to fetch OC profiles');
@@ -89,6 +112,7 @@ export default function OCProfilesPage() {
       coreLock: '',
       memLock: '',
       fanSpeed: '',
+      farmId: farms[0]?.id || '',
     });
     setShowModal(true);
   }
@@ -104,6 +128,7 @@ export default function OCProfilesPage() {
       coreLock: profile.coreLock?.toString() || '',
       memLock: profile.memLock?.toString() || '',
       fanSpeed: profile.fanSpeed?.toString() || '',
+      farmId: farms[0]?.id || '',
     });
     setShowModal(true);
   }
@@ -112,7 +137,7 @@ export default function OCProfilesPage() {
     e.preventDefault();
     setSaving(true);
 
-    const payload = {
+    const basePayload = {
       name: formData.name,
       vendor: formData.vendor,
       powerLimit: formData.powerLimit ? parseInt(formData.powerLimit) : null,
@@ -123,6 +148,9 @@ export default function OCProfilesPage() {
       fanSpeed: formData.fanSpeed ? parseInt(formData.fanSpeed) : null,
     };
 
+    // For create, include farmId; for update, don't
+    const payload = editingProfile ? basePayload : { ...basePayload, farmId: formData.farmId };
+
     try {
       const url = editingProfile
         ? `${getApiUrl()}/api/oc-profiles/${editingProfile.id}`
@@ -130,7 +158,10 @@ export default function OCProfilesPage() {
 
       const res = await fetch(url, {
         method: editingProfile ? 'PATCH' : 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'x-csrf-token': getCsrfToken(),
+        },
         credentials: 'include',
         body: JSON.stringify(payload),
       });
@@ -152,6 +183,9 @@ export default function OCProfilesPage() {
     try {
       const res = await fetch(`${getApiUrl()}/api/oc-profiles/${id}`, {
         method: 'DELETE',
+        headers: {
+          'x-csrf-token': getCsrfToken(),
+        },
         credentials: 'include',
       });
 

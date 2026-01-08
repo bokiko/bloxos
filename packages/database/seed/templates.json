@@ -1,0 +1,161 @@
+{
+  "templates": [
+    {
+      "coin": "ETC",
+      "templates": [
+        { "name": "ETC on 2Miners (NVIDIA)", "minerName": "t-rex", "poolName": "2Miners", "gpuType": "NVIDIA", "extraArgs": "-a etchash", "recommended": true },
+        { "name": "ETC on 2Miners (AMD)", "minerName": "lolminer", "poolName": "2Miners", "gpuType": "AMD", "extraArgs": "--algo ETCHASH", "recommended": true },
+        { "name": "ETC on Ethermine (NVIDIA)", "minerName": "t-rex", "poolName": "Ethermine", "gpuType": "NVIDIA", "extraArgs": "-a etchash" }
+      ]
+    },
+    {
+      "coin": "RVN",
+      "templates": [
+        { "name": "RVN on 2Miners (NVIDIA)", "minerName": "t-rex", "poolName": "2Miners", "gpuType": "NVIDIA", "extraArgs": "-a kawpow", "recommended": true },
+        { "name": "RVN on 2Miners (AMD)", "minerName": "teamredminer", "poolName": "2Miners", "gpuType": "AMD", "extraArgs": "-a kawpow", "recommended": true },
+        { "name": "RVN on Flypool (NVIDIA)", "minerName": "t-rex", "poolName": "Flypool", "gpuType": "NVIDIA", "extraArgs": "-a kawpow" }
+      ]
+    },
+    {
+      "coin": "ERG",
+      "templates": [
+        { "name": "ERG on 2Miners (NVIDIA)", "minerName": "t-rex", "poolName": "2Miners", "gpuType": "NVIDIA", "extraArgs": "-a autolykos2", "recommended": true },
+        { "name": "ERG on 2Miners (AMD)", "minerName": "lolminer", "poolName": "2Miners", "gpuType": "AMD", "extraArgs": "--algo AUTOLYKOS2", "recommended": true },
+        { "name": "ERG on HeroMiners (NVIDIA)", "minerName": "t-rex", "poolName": "HeroMiners", "gpuType": "NVIDIA", "extraArgs": "-a autolykos2" }
+      ]
+    },
+    {
+      "coin": "NEOXA",
+      "templates": [
+        { "name": "NEOXA on Rplant (NVIDIA)", "minerName": "t-rex", "poolName": "Rplant", "gpuType": "NVIDIA", "extraArgs": "-a kawpow", "recommended": true },
+        { "name": "NEOXA on Rplant (AMD)", "minerName": "teamredminer", "poolName": "Rplant", "gpuType": "AMD", "extraArgs": "-a kawpow", "recommended": true }
+      ]
+    },
+    {
+      "coin": "MEOW",
+      "templates": [
+        { "name": "MEOW on Rplant (NVIDIA)", "minerName": "t-rex", "poolName": "Rplant", "gpuType": "NVIDIA", "extraArgs": "-a kawpow", "recommended": true },
+        { "name": "MEOW on Rplant (AMD)", "minerName": "teamredminer", "poolName": "Rplant", "gpuType": "AMD", "extraArgs": "-a kawpow", "recommended": true }
+      ]
+    },
+    {
+      "coin": "XNA",
+      "templates": [
+        { "name": "XNA on Rplant (NVIDIA)", "minerName": "t-rex", "poolName": "Rplant", "gpuType": "NVIDIA", "extraArgs": "-a kawpow", "recommended": true },
+        { "name": "XNA on Rplant (AMD)", "minerName": "teamredminer", "poolName": "Rplant", "gpuType": "AMD", "extraArgs": "-a kawpow", "recommended": true }
+      ]
+    },
+    {
+      "coin": "CFX",
+      "templates": [
+        { "name": "CFX on F2Pool (NVIDIA)", "minerName": "t-rex", "poolName": "F2Pool", "gpuType": "NVIDIA", "extraArgs": "-a octopus", "recommended": true },
+        { "name": "CFX on Woolypooly (AMD)", "minerName": "bzminer", "poolName": "Woolypooly", "gpuType": "AMD", "extraArgs": "-a octopus", "recommended": true }
+      ]
+    },
+    {
+      "coin": "BEAM",
+      "templates": [
+        { "name": "BEAM on 2Miners (NVIDIA)", "minerName": "lolminer", "poolName": "2Miners", "gpuType": "NVIDIA", "extraArgs": "--algo BEAM-III", "recommended": true },
+        { "name": "BEAM on 2Miners (AMD)", "minerName": "lolminer", "poolName": "2Miners", "gpuType": "AMD", "extraArgs": "--algo BEAM-III", "recommended": true }
+      ]
+    },
+    {
+      "coin": "FIRO",
+      "templates": [
+        { "name": "FIRO on 2Miners (NVIDIA)", "minerName": "t-rex", "poolName": "2Miners", "gpuType": "NVIDIA", "extraArgs": "-a firopow", "recommended": true },
+        { "name": "FIRO on 2Miners (AMD)", "minerName": "teamredminer", "poolName": "2Miners", "gpuType": "AMD", "extraArgs": "-a firopow", "recommended": true }
+      ]
+    },
+    {
+      "coin": "IRON",
+      "templates": [
+        { "name": "IRON on HeroMiners (NVIDIA)", "minerName": "lolminer", "poolName": "HeroMiners", "gpuType": "NVIDIA", "extraArgs": "--algo FISHHASH", "recommended": true },
+        { "name": "IRON on HeroMiners (AMD)", "minerName": "lolminer", "poolName": "HeroMiners", "gpuType": "AMD", "extraArgs": "--algo FISHHASH", "recommended": true }
+      ]
+    },
+    {
+      "coin": "DNX",
+      "templates": [
+        { "name": "DNX on HeroMiners (NVIDIA)", "minerName": "bzminer", "poolName": "HeroMiners", "gpuType": "NVIDIA", "extraArgs": "-a dynex", "recommended": true },
+        { "name": "DNX on HeroMiners (AMD)", "minerName": "bzminer", "poolName": "HeroMiners", "gpuType": "AMD", "extraArgs": "-a dynex", "recommended": true }
+      ]
+    },
+    {
+      "coin": "FLUX",
+      "templates": [
+        { "name": "FLUX on 2Miners (NVIDIA)", "minerName": "lolminer", "poolName": "2Miners", "gpuType": "NVIDIA", "extraArgs": "--algo FLUX", "recommended": true },
+        { "name": "FLUX on 2Miners (AMD)", "minerName": "lolminer", "poolName": "2Miners", "gpuType": "AMD", "extraArgs": "--algo FLUX", "recommended": true }
+      ]
+    },
+    {
+      "coin": "CTXC",
+      "templates": [
+        { "name": "CTXC on HeroMiners (NVIDIA)", "minerName": "gminer", "poolName": "HeroMiners", "gpuType": "NVIDIA", "extraArgs": "-a cortex", "recommended": true }
+      ]
+    },
+    {
+      "coin": "KAS",
+      "templates": [
+        { "name": "KAS on HeroMiners (NVIDIA)", "minerName": "bzminer", "poolName": "HeroMiners", "gpuType": "NVIDIA", "extraArgs": "-a kaspa", "recommended": true },
+        { "name": "KAS on HeroMiners (AMD)", "minerName": "bzminer", "poolName": "HeroMiners", "gpuType": "AMD", "extraArgs": "-a kaspa", "recommended": true },
+        { "name": "KAS on Woolypooly (NVIDIA)", "minerName": "rigel", "poolName": "Woolypooly", "gpuType": "NVIDIA", "extraArgs": "-a kheavyhash" }
+      ]
+    },
+    {
+      "coin": "XMR",
+      "templates": [
+        { "name": "XMR on 2Miners (CPU)", "minerName": "xmrig", "poolName": "2Miners", "gpuType": "CPU", "extraArgs": "-a rx/0", "recommended": true },
+        { "name": "XMR on SupportXMR (CPU)", "minerName": "xmrig", "poolName": "SupportXMR", "gpuType": "CPU", "extraArgs": "-a rx/0" },
+        { "name": "XMR on HeroMiners (CPU)", "minerName": "xmrig", "poolName": "HeroMiners", "gpuType": "CPU", "extraArgs": "-a rx/0" }
+      ]
+    },
+    {
+      "coin": "VRSC",
+      "templates": [
+        { "name": "VRSC on Luckpool (CPU)", "minerName": "xmrig", "poolName": "Luckpool", "gpuType": "CPU", "extraArgs": "-a verushash", "recommended": true },
+        { "name": "VRSC on Luckpool (AMD)", "minerName": "srbminer", "poolName": "Luckpool", "gpuType": "AMD", "extraArgs": "-a verushash", "recommended": true }
+      ]
+    },
+    {
+      "coin": "ZEPH",
+      "templates": [
+        { "name": "ZEPH on HeroMiners (CPU)", "minerName": "xmrig", "poolName": "HeroMiners", "gpuType": "CPU", "extraArgs": "-a rx/0", "recommended": true },
+        { "name": "ZEPH on Miningocean (CPU)", "minerName": "xmrig", "poolName": "Miningocean", "gpuType": "CPU", "extraArgs": "-a rx/0" }
+      ]
+    },
+    {
+      "coin": "RTM",
+      "templates": [
+        { "name": "RTM on Rplant (CPU)", "minerName": "xmrig", "poolName": "Rplant", "gpuType": "CPU", "extraArgs": "-a gr", "recommended": true },
+        { "name": "RTM on Flockpool (CPU)", "minerName": "xmrig", "poolName": "Flockpool", "gpuType": "CPU", "extraArgs": "-a gr" }
+      ]
+    },
+    {
+      "coin": "SAL",
+      "templates": [
+        { "name": "SAL on HeroMiners (CPU)", "minerName": "xmrig", "poolName": "HeroMiners", "gpuType": "CPU", "extraArgs": "-a rx/0", "recommended": true },
+        { "name": "SAL on Miningocean (CPU)", "minerName": "xmrig", "poolName": "Miningocean", "gpuType": "CPU", "extraArgs": "-a rx/0" }
+      ]
+    },
+    {
+      "coin": "QUBIC",
+      "templates": [
+        { "name": "QUBIC on Apool (CPU)", "minerName": "bloxminer", "poolName": "Apool", "gpuType": "CPU", "extraArgs": "", "recommended": true }
+      ]
+    },
+    {
+      "coin": "XTR",
+      "templates": [
+        { "name": "XTR on HeroMiners (CPU)", "minerName": "xmrig", "poolName": "HeroMiners", "gpuType": "CPU", "extraArgs": "-a rx/0", "recommended": true },
+        { "name": "XTR on Miningocean (CPU)", "minerName": "xmrig", "poolName": "Miningocean", "gpuType": "CPU", "extraArgs": "-a rx/0" }
+      ]
+    },
+    {
+      "coin": "KCN",
+      "templates": [
+        { "name": "KCN on Rplant (CPU)", "minerName": "xmrig", "poolName": "Rplant", "gpuType": "CPU", "extraArgs": "-a verushash", "recommended": true },
+        { "name": "KCN on Luckpool (CPU)", "minerName": "xmrig", "poolName": "Luckpool", "gpuType": "CPU", "extraArgs": "-a verushash" }
+      ]
+    }
+  ]
+}

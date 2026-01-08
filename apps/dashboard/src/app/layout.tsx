@@ -124,24 +124,30 @@ function AppContent({ children }: { children: React.ReactNode }) {
   }, [pathname]);
 
   useEffect(() => {
-    if (isPublicRoute) return;
+    // Don't fetch alerts on public routes or when not authenticated
+    if (isPublicRoute || !user) return;
 
     async function fetchAlertCount() {
       try {
         const res = await fetch(`${getApiUrl()}/api/alerts/count`, {
           credentials: 'include',
         });
+        if (!res.ok) {
+          // Silently ignore auth errors - user might not be logged in yet
+          if (res.status === 401 || res.status === 403) return;
+          return;
+        }
         const data = await res.json();
         setAlertCount(data.count || 0);
-      } catch (err) {
-        console.error('Failed to fetch alert count');
+      } catch {
+        // Silently ignore network errors - don't spam console
       }
     }
 
     fetchAlertCount();
     const interval = setInterval(fetchAlertCount, 30000);
     return () => clearInterval(interval);
-  }, [isPublicRoute]);
+  }, [isPublicRoute, user]);
 
   const isActive = (href: string) => {
     if (href === '/') return pathname === '/';

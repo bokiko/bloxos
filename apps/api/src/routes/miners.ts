@@ -2,6 +2,7 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@bloxos/database';
 import { auditLog } from '../utils/security.ts';
+import { sendCommandToRig } from './agent-websocket.ts';
 
 // Validation schemas
 const CreateMinerSchema = z.object({
@@ -27,7 +28,7 @@ const UpdateMinerSchema = z.object({
 });
 
 export async function minerRoutes(app: FastifyInstance) {
-  // List all miners
+  // List all miners with install info
   app.get('/', async (request: FastifyRequest, reply: FastifyReply) => {
     const miners = await prisma.minerSoftware.findMany({
       include: {
@@ -39,6 +40,140 @@ export async function minerRoutes(app: FastifyInstance) {
     });
 
     return reply.send(miners);
+  });
+
+  // Get miners available for installation (with GitHub info)
+  app.get('/available', async (request: FastifyRequest, reply: FastifyReply) => {
+    const miners = await prisma.minerSoftware.findMany({
+      where: {
+        githubRepo: { not: null },
+      },
+      select: {
+        id: true,
+        name: true,
+        displayName: true,
+        version: true,
+        algorithms: true,
+        supportsNvidia: true,
+        supportsAmd: true,
+        supportsCpu: true,
+        githubRepo: true,
+        binaryName: true,
+        linuxAssetPattern: true,
+        apiPort: true,
+        defaultArgs: true,
+      },
+      orderBy: { displayName: 'asc' },
+    });
+
+    return reply.send(miners);
+  });
+
+  // Install miner on a rig
+  app.post('/install', async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = request.user;
+    if (!user) {
+      return reply.status(401).send({ error: 'Authentication required' });
+    }
+
+    const schema = z.object({
+      rigId: z.string(),
+      minerName: z.string(),
+    });
+
+    const { rigId, minerName } = schema.parse(request.body);
+
+    // Verify rig exists and user has access
+    const rig = await prisma.rig.findUnique({
+      where: { id: rigId },
+      include: { farm: { select: { ownerId: true } } },
+    });
+
+    if (!rig) {
+      return reply.status(404).send({ error: 'Rig not found' });
+    }
+
+    if (user.role !== 'ADMIN' && rig.farm.ownerId !== user.userId) {
+      return reply.status(403).send({ error: 'Access denied' });
+    }
+
+    // Send install command to rig via WebSocket
+    const commandId = sendCommandToRig(rigId, { type: 'install_miner', payload: { minerName } });
+
+    if (!commandId) {
+      return reply.status(503).send({ 
+        error: 'Rig is offline or command failed',
+        details: 'The rig must be online to install miners',
+      });
+    }
+
+    auditLog({
+      userId: user.userId,
+      action: 'install_miner',
+      resource: 'rig',
+      resourceId: rigId,
+      ip: request.ip,
+      success: true,
+      details: { minerName },
+    });
+
+    return reply.send({ 
+      success: true, 
+      message: `Installing ${minerName} on ${rig.name}...`,
+    });
+  });
+
+  // Uninstall miner from a rig
+  app.post('/uninstall', async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = request.user;
+    if (!user) {
+      return reply.status(401).send({ error: 'Authentication required' });
+    }
+
+    const schema = z.object({
+      rigId: z.string(),
+      minerName: z.string(),
+    });
+
+    const { rigId, minerName } = schema.parse(request.body);
+
+    // Verify rig exists and user has access
+    const rig = await prisma.rig.findUnique({
+      where: { id: rigId },
+      include: { farm: { select: { ownerId: true } } },
+    });
+
+    if (!rig) {
+      return reply.status(404).send({ error: 'Rig not found' });
+    }
+
+    if (user.role !== 'ADMIN' && rig.farm.ownerId !== user.userId) {
+      return reply.status(403).send({ error: 'Access denied' });
+    }
+
+    // Send uninstall command to rig via WebSocket
+    const commandId = sendCommandToRig(rigId, { type: 'uninstall_miner', payload: { minerName } });
+
+    if (!commandId) {
+      return reply.status(503).send({ 
+        error: 'Rig is offline or command failed',
+      });
+    }
+
+    auditLog({
+      userId: user.userId,
+      action: 'uninstall_miner',
+      resource: 'rig',
+      resourceId: rigId,
+      ip: request.ip,
+      success: true,
+      details: { minerName },
+    });
+
+    return reply.send({ 
+      success: true, 
+      message: `Uninstalling ${minerName} from ${rig.name}...`,
+    });
   });
 
   // Get single miner
@@ -161,6 +296,7 @@ export async function minerRoutes(app: FastifyInstance) {
       { name: 'TeamRedMiner', version: '0.10.14', algo: 'autolykos2', supportedGpus: ['AMD'], apiPort: 4071, apiType: 'http', defaultArgs: '' },
       // CPU miners
       { name: 'XMRig', version: '6.21.0', algo: 'randomx', supportedGpus: ['NVIDIA', 'AMD', 'INTEL'], apiPort: 4072, apiType: 'http', defaultArgs: '' },
+      { name: 'BloxMiner', version: '1.0.0', algo: 'verushash', supportedGpus: ['NVIDIA', 'AMD', 'INTEL'], apiPort: 4074, apiType: 'http', installUrl: 'https://raw.githubusercontent.com/bokiko/bloxminer/master/install.sh', defaultArgs: '' },
       // KAS miners
       { name: 'lolMiner', version: '1.76', algo: 'kaspa', supportedGpus: ['NVIDIA', 'AMD'], apiPort: 4068, apiType: 'http', defaultArgs: '' },
       { name: 'BzMiner', version: '19.3.0', algo: 'kaspa', supportedGpus: ['NVIDIA', 'AMD'], apiPort: 4073, apiType: 'http', defaultArgs: '' },

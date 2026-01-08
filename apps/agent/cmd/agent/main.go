@@ -12,12 +12,14 @@ import (
 	"github.com/bloxos/agent/internal/collector"
 	"github.com/bloxos/agent/internal/config"
 	"github.com/bloxos/agent/internal/executor"
+	"github.com/bloxos/agent/internal/installer"
 	"github.com/bloxos/agent/internal/ws"
 )
 
 const version = "0.3.0"
 
 var exec *executor.Executor
+var inst *installer.Installer
 
 func main() {
 	fmt.Printf("BloxOs Agent v%s\n", version)
@@ -36,6 +38,7 @@ func main() {
 	// Create components
 	coll := collector.New()
 	exec = executor.New(cfg.Debug)
+	inst = installer.New(cfg.Debug)
 
 	// Get initial system info
 	sysInfo, err := coll.GetSystemInfo()
@@ -195,6 +198,12 @@ func handleCommand(cmd *ws.Command, cfg *config.Config) (bool, error) {
 		return handleStopMiner(cmd.Payload, cfg)
 	case "restart_miner":
 		return handleRestartMiner(cmd.Payload, cfg)
+	case "install_miner":
+		return handleInstallMiner(cmd.Payload, cfg)
+	case "uninstall_miner":
+		return handleUninstallMiner(cmd.Payload, cfg)
+	case "list_miners":
+		return handleListMiners(cfg)
 	case "apply_oc":
 		return handleApplyOC(cmd.Payload, cfg)
 	case "reboot":
@@ -281,5 +290,84 @@ func handleShutdown(cfg *config.Config) (bool, error) {
 		time.Sleep(2 * time.Second)
 		exec.Shutdown()
 	}()
+	return true, nil
+}
+
+// handleInstallMiner installs a miner from GitHub releases
+func handleInstallMiner(payload interface{}, cfg *config.Config) (bool, error) {
+	if payload == nil {
+		return false, fmt.Errorf("miner name required")
+	}
+
+	// Extract miner name from payload
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return false, fmt.Errorf("invalid payload: %w", err)
+	}
+
+	var req struct {
+		MinerName string `json:"minerName"`
+	}
+	if err := json.Unmarshal(data, &req); err != nil {
+		return false, fmt.Errorf("invalid install request: %w", err)
+	}
+
+	if req.MinerName == "" {
+		return false, fmt.Errorf("miner name required")
+	}
+
+	log.Printf("Installing miner: %s", req.MinerName)
+
+	// Install the miner (this may take a while)
+	if err := inst.Install(req.MinerName); err != nil {
+		return false, fmt.Errorf("failed to install %s: %w", req.MinerName, err)
+	}
+
+	log.Printf("Miner %s installed successfully", req.MinerName)
+	return true, nil
+}
+
+// handleUninstallMiner removes an installed miner
+func handleUninstallMiner(payload interface{}, cfg *config.Config) (bool, error) {
+	if payload == nil {
+		return false, fmt.Errorf("miner name required")
+	}
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return false, fmt.Errorf("invalid payload: %w", err)
+	}
+
+	var req struct {
+		MinerName string `json:"minerName"`
+	}
+	if err := json.Unmarshal(data, &req); err != nil {
+		return false, fmt.Errorf("invalid uninstall request: %w", err)
+	}
+
+	if req.MinerName == "" {
+		return false, fmt.Errorf("miner name required")
+	}
+
+	log.Printf("Uninstalling miner: %s", req.MinerName)
+
+	if err := inst.Uninstall(req.MinerName); err != nil {
+		return false, fmt.Errorf("failed to uninstall %s: %w", req.MinerName, err)
+	}
+
+	log.Printf("Miner %s uninstalled successfully", req.MinerName)
+	return true, nil
+}
+
+// handleListMiners returns list of available and installed miners
+func handleListMiners(cfg *config.Config) (bool, error) {
+	installed, err := inst.ListInstalled()
+	if err != nil {
+		return false, fmt.Errorf("failed to list installed miners: %w", err)
+	}
+
+	available := inst.ListAvailable()
+	
+	log.Printf("Available miners: %d, Installed miners: %d", len(available), len(installed))
 	return true, nil
 }

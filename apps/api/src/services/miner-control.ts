@@ -27,6 +27,7 @@ const MINER_PATHS: Record<string, string> = {
   'teamredminer': '/opt/miners/teamredminer/teamredminer',
   'xmrig': '/opt/miners/xmrig/xmrig',
   'bzminer': '/opt/miners/bzminer/bzminer',
+  'bloxminer': '/opt/miners/bloxminer/bloxminer',
 };
 
 // Allowed algorithms (whitelist)
@@ -34,6 +35,7 @@ const ALLOWED_ALGOS = new Set([
   'ethash', 'etchash', 'kawpow', 'autolykos2', 'kheavyhash',
   'sha256', 'scrypt', 'x11', 'equihash', 'randomx', 'blake3',
   'octopus', 'ergo', 'flux', 'nexa', 'karlsen', 'pyrinhash',
+  'verushash', 'kaspa',
 ]);
 
 export class MinerControl {
@@ -149,6 +151,16 @@ export class MinerControl {
           '-w', wallet,
           ...extraArgsArray,
           '--http_port', '4073'
+        ];
+        break;
+      
+      case 'bloxminer':
+        // BloxMiner for VerusHash CPU mining
+        args = [
+          '-o', poolUrl,
+          '-u', wallet,
+          '-p', 'x',
+          ...extraArgsArray
         ];
         break;
       
