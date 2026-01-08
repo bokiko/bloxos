@@ -57,3 +57,7 @@ docker/data/
 
 # Continuous Claude cache (local only)
 .claude/cache/
+
+# AI assistant context files (local only)
+CLAUDE.md
+thoughts/
