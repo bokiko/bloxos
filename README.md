@@ -178,11 +178,10 @@ That's it! Your rig should start mining within a minute.
 
 | Coin | Algorithm | GPU | CPU |
 |------|-----------|-----|-----|
-| Kaspa (KAS) | kHeavyHash | Yes | No |
+| Quai (QUAI) | ProgPoW | Yes | No |
 | Ravencoin (RVN) | KawPow | Yes | No |
 | Ethereum Classic (ETC) | Etchash | Yes | No |
 | Ergo (ERG) | Autolykos2 | Yes | No |
-| Flux (FLUX) | ZelHash | Yes | No |
 | Monero (XMR) | RandomX | No | Yes |
 | Verus (VRSC) | VerusHash | No | Yes |
 | And 15+ more... | | | |
@@ -193,19 +192,22 @@ That's it! Your rig should start mining within a minute.
 
 ### For the BloxOS Server
 
-The server is where you run the dashboard. This can be:
+The server is where you run the dashboard.
+
+| Spec | Minimum | Optimal |
+|------|---------|---------|
+| RAM | 2GB | 4GB+ |
+| Storage | 10GB | 20GB+ |
+| CPU | 2 cores | 4 cores |
+
+**Example devices that work great:**
 
 | Device | Works? | Notes |
 |--------|--------|-------|
 | Old laptop | Yes | Perfect use for old hardware |
 | Desktop PC | Yes | Works great |
-| Raspberry Pi 4/5 | Yes | 4GB RAM minimum |
+| Raspberry Pi 4/5 | Yes | 4GB RAM model recommended |
 | Cloud server | Yes | Any VPS works |
-
-**Minimum specs:**
-- 2GB RAM
-- 10GB storage
-- Any modern processor
 
 ### For Mining Rigs
 
