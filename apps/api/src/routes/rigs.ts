@@ -487,7 +487,7 @@ export async function rigRoutes(app: FastifyInstance) {
     // Build miner config for agent
     const minerConfig = {
       name: flightSheet.miner.name,
-      algorithm: flightSheet.miner.algo,
+      algorithm: flightSheet.miner.algorithms[0] || 'unknown',
       pool: flightSheet.pool.url,
       wallet: flightSheet.wallet.address,
       worker: rig.name.replace(/[^a-zA-Z0-9_-]/g, '_'),

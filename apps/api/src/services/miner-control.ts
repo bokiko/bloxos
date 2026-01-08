@@ -203,7 +203,7 @@ export class MinerControl {
       // Build the miner command (validates inputs internally)
       const minerConfig: MinerConfig = {
         minerName: miner.name,
-        algo: miner.algo,
+        algo: miner.algorithms[0] || 'unknown',
         poolUrl: pool.url,
         walletAddress: wallet.address,
         workerName: rig.name.replace(/[^a-zA-Z0-9_-]/g, '_'),
@@ -227,6 +227,7 @@ export class MinerControl {
       const pid = await this.sshManager.executeCommandOnRig(rigId, startCmd);
 
       // Create or update miner instance record
+      const algo = miner.algorithms[0] || 'unknown';
       await prisma.minerInstance.upsert({
         where: { 
           id: `${rigId}-${miner.name}`,
@@ -235,7 +236,7 @@ export class MinerControl {
           id: `${rigId}-${miner.name}`,
           rigId,
           minerName: miner.name,
-          algo: miner.algo,
+          algo,
           pool: pool.url,
           wallet: wallet.address,
           status: 'RUNNING',
@@ -263,7 +264,7 @@ export class MinerControl {
         action: 'start_miner',
         resource: 'rig',
         resourceId: rigId,
-        details: { miner: miner.name, algo: miner.algo, pool: pool.name },
+        details: { miner: miner.name, algo, pool: pool.name },
         success: true,
       });
 

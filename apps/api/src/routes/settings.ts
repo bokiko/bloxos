@@ -38,7 +38,7 @@ export async function settingsRoutes(app: FastifyInstance) {
       return reply.status(401).send({ error: 'Not authenticated' });
     }
 
-    let settings = await prisma.notificationSettings.findUnique({
+    const settings = await prisma.notificationSettings.findUnique({
       where: { userId },
     });
 
