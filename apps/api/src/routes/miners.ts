@@ -7,23 +7,37 @@ import { sendCommandToRig } from './agent-websocket.ts';
 // Validation schemas
 const CreateMinerSchema = z.object({
   name: z.string().min(1).max(100),
+  displayName: z.string().min(1).max(100),
   version: z.string().min(1).max(50),
-  algo: z.string().min(1).max(50),
-  supportedGpus: z.array(z.enum(['NVIDIA', 'AMD', 'INTEL'])),
+  algorithms: z.array(z.string().min(1).max(50)),
+  supportsNvidia: z.boolean().default(false),
+  supportsAmd: z.boolean().default(false),
+  supportsCpu: z.boolean().default(false),
+  supportedGpus: z.array(z.enum(['NVIDIA', 'AMD', 'INTEL'])).optional(),
   apiPort: z.number().min(1).max(65535),
   apiType: z.string().min(1).max(20),
-  installUrl: z.string().max(500).optional(),
+  githubRepo: z.string().max(200).optional(),
+  binaryName: z.string().max(100).optional(),
+  linuxAssetPattern: z.string().max(200).optional(),
+  installPath: z.string().max(500).optional(),
   defaultArgs: z.string().max(1000).optional(),
 });
 
 const UpdateMinerSchema = z.object({
   name: z.string().min(1).max(100).optional(),
+  displayName: z.string().min(1).max(100).optional(),
   version: z.string().min(1).max(50).optional(),
-  algo: z.string().min(1).max(50).optional(),
+  algorithms: z.array(z.string().min(1).max(50)).optional(),
+  supportsNvidia: z.boolean().optional(),
+  supportsAmd: z.boolean().optional(),
+  supportsCpu: z.boolean().optional(),
   supportedGpus: z.array(z.enum(['NVIDIA', 'AMD', 'INTEL'])).optional(),
   apiPort: z.number().min(1).max(65535).optional(),
   apiType: z.string().min(1).max(20).optional(),
-  installUrl: z.string().max(500).nullable().optional(),
+  githubRepo: z.string().max(200).nullable().optional(),
+  binaryName: z.string().max(100).nullable().optional(),
+  linuxAssetPattern: z.string().max(200).nullable().optional(),
+  installPath: z.string().max(500).nullable().optional(),
   defaultArgs: z.string().max(1000).nullable().optional(),
 });
 
@@ -201,12 +215,19 @@ export async function minerRoutes(app: FastifyInstance) {
     const miner = await prisma.minerSoftware.create({
       data: {
         name: data.name,
+        displayName: data.displayName,
         version: data.version,
-        algo: data.algo.toLowerCase(),
-        supportedGpus: data.supportedGpus,
+        algorithms: data.algorithms.map(a => a.toLowerCase()),
+        supportsNvidia: data.supportsNvidia,
+        supportsAmd: data.supportsAmd,
+        supportsCpu: data.supportsCpu,
+        supportedGpus: data.supportedGpus || [],
         apiPort: data.apiPort,
         apiType: data.apiType,
-        installUrl: data.installUrl || null,
+        githubRepo: data.githubRepo || null,
+        binaryName: data.binaryName || null,
+        linuxAssetPattern: data.linuxAssetPattern || null,
+        installPath: data.installPath || null,
         defaultArgs: data.defaultArgs || null,
       },
     });
@@ -228,7 +249,7 @@ export async function minerRoutes(app: FastifyInstance) {
       where: { id },
       data: {
         ...data,
-        algo: data.algo?.toLowerCase(),
+        algorithms: data.algorithms?.map(a => a.toLowerCase()),
       },
     });
 
@@ -278,57 +299,19 @@ export async function minerRoutes(app: FastifyInstance) {
       return reply.status(403).send({ error: 'Admin access required' });
     }
 
-    const defaultMiners = [
-      // NVIDIA miners
-      { name: 'T-Rex', version: '0.26.8', algo: 'ethash', supportedGpus: ['NVIDIA'], apiPort: 4067, apiType: 'http', defaultArgs: '--no-watchdog' },
-      { name: 'T-Rex', version: '0.26.8', algo: 'kawpow', supportedGpus: ['NVIDIA'], apiPort: 4067, apiType: 'http', defaultArgs: '--no-watchdog' },
-      { name: 'T-Rex', version: '0.26.8', algo: 'autolykos2', supportedGpus: ['NVIDIA'], apiPort: 4067, apiType: 'http', defaultArgs: '--no-watchdog' },
-      { name: 'lolMiner', version: '1.76', algo: 'ethash', supportedGpus: ['NVIDIA', 'AMD'], apiPort: 4068, apiType: 'http', defaultArgs: '' },
-      { name: 'lolMiner', version: '1.76', algo: 'etchash', supportedGpus: ['NVIDIA', 'AMD'], apiPort: 4068, apiType: 'http', defaultArgs: '' },
-      { name: 'lolMiner', version: '1.76', algo: 'autolykos2', supportedGpus: ['NVIDIA', 'AMD'], apiPort: 4068, apiType: 'http', defaultArgs: '' },
-      { name: 'Gminer', version: '3.44', algo: 'ethash', supportedGpus: ['NVIDIA', 'AMD'], apiPort: 4069, apiType: 'http', defaultArgs: '' },
-      { name: 'Gminer', version: '3.44', algo: 'kawpow', supportedGpus: ['NVIDIA', 'AMD'], apiPort: 4069, apiType: 'http', defaultArgs: '' },
-      { name: 'NBMiner', version: '42.3', algo: 'ethash', supportedGpus: ['NVIDIA', 'AMD'], apiPort: 4070, apiType: 'http', defaultArgs: '' },
-      { name: 'NBMiner', version: '42.3', algo: 'kawpow', supportedGpus: ['NVIDIA', 'AMD'], apiPort: 4070, apiType: 'http', defaultArgs: '' },
-      // AMD miners
-      { name: 'TeamRedMiner', version: '0.10.14', algo: 'ethash', supportedGpus: ['AMD'], apiPort: 4071, apiType: 'http', defaultArgs: '' },
-      { name: 'TeamRedMiner', version: '0.10.14', algo: 'kawpow', supportedGpus: ['AMD'], apiPort: 4071, apiType: 'http', defaultArgs: '' },
-      { name: 'TeamRedMiner', version: '0.10.14', algo: 'autolykos2', supportedGpus: ['AMD'], apiPort: 4071, apiType: 'http', defaultArgs: '' },
-      // CPU miners
-      { name: 'XMRig', version: '6.21.0', algo: 'randomx', supportedGpus: ['NVIDIA', 'AMD', 'INTEL'], apiPort: 4072, apiType: 'http', defaultArgs: '' },
-      { name: 'BloxMiner', version: '1.0.0', algo: 'verushash', supportedGpus: ['NVIDIA', 'AMD', 'INTEL'], apiPort: 4074, apiType: 'http', installUrl: 'https://raw.githubusercontent.com/bokiko/bloxminer/master/install.sh', defaultArgs: '' },
-      // KAS miners
-      { name: 'lolMiner', version: '1.76', algo: 'kaspa', supportedGpus: ['NVIDIA', 'AMD'], apiPort: 4068, apiType: 'http', defaultArgs: '' },
-      { name: 'BzMiner', version: '19.3.0', algo: 'kaspa', supportedGpus: ['NVIDIA', 'AMD'], apiPort: 4073, apiType: 'http', defaultArgs: '' },
-    ];
-
-    let created = 0;
-    let skipped = 0;
-
-    for (const miner of defaultMiners) {
-      try {
-        await prisma.minerSoftware.create({
-          data: miner as any,
-        });
-        created++;
-      } catch {
-        // Unique constraint violation - already exists
-        skipped++;
-      }
-    }
-
+    // Note: Miners are now seeded via packages/database/seed/miners.json
+    // This endpoint is deprecated - use pnpm db:seed instead
     auditLog({
       userId: user.userId,
-      action: 'seed_miners',
+      action: 'seed_miners_deprecated',
       resource: 'minerSoftware',
       ip: request.ip,
       success: true,
-      details: { created, skipped },
     });
 
     return reply.send({
       success: true,
-      message: `Seeded ${created} miners, ${skipped} already existed`,
+      message: 'Miners are now seeded via pnpm db:seed. Run that command instead.',
     });
   });
 }
