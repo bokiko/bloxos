@@ -131,11 +131,24 @@ export default function WalletsPage() {
     return () => clearTimeout(timer);
   }, [formData.coin, formData.address, validateAddress]);
 
-  useEffect(() => {
-    fetchData();
+  const fetchWallets = useCallback(async () => {
+    try {
+      const res = await fetch(`${getApiUrl()}/api/wallets`, {
+        credentials: 'include',
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (Array.isArray(data)) {
+        setWallets(data);
+      }
+    } catch {
+      setError('Failed to fetch wallets');
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
-  async function fetchData() {
+  const fetchData = useCallback(async () => {
     try {
       // Fetch coins
       const coinsRes = await fetch(`${getApiUrl()}/api/coins`, {
@@ -163,24 +176,11 @@ export default function WalletsPage() {
     } catch {
       setError('Failed to load data');
     }
-  }
+  }, [fetchWallets]);
 
-  async function fetchWallets() {
-    try {
-      const res = await fetch(`${getApiUrl()}/api/wallets`, {
-        credentials: 'include',
-      });
-      if (!res.ok) return;
-      const data = await res.json();
-      if (Array.isArray(data)) {
-        setWallets(data);
-      }
-    } catch {
-      setError('Failed to fetch wallets');
-    } finally {
-      setLoading(false);
-    }
-  }
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
 
   function openCreateModal() {
     setEditingWallet(null);

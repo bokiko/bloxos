@@ -213,25 +213,7 @@ export default function DashboardPage() {
     setLoading(false);
   }
 
-  useEffect(() => {
-    fetchRigs();
-    fetchAlerts();
-
-    // Auto-refresh interval (fallback when WebSocket not connected)
-    let intervalId: NodeJS.Timeout | null = null;
-    if (autoRefresh && !isConnected) {
-      intervalId = setInterval(() => {
-        fetchRigs();
-        fetchAlerts();
-      }, REFRESH_INTERVAL);
-    }
-
-    return () => {
-      if (intervalId) clearInterval(intervalId);
-    };
-  }, [autoRefresh, isConnected]);
-
-  async function fetchRigs() {
+  const fetchRigs = useCallback(async () => {
     try {
       const res = await fetch(`${getApiUrl()}/api/rigs`, {
         credentials: 'include',
@@ -251,9 +233,9 @@ export default function DashboardPage() {
     } finally {
       setLoading(false);
     }
-  }
+  }, []);
 
-  async function fetchAlerts() {
+  const fetchAlerts = useCallback(async () => {
     try {
       const res = await fetch(`${getApiUrl()}/api/alerts?limit=5`, {
         credentials: 'include',
@@ -269,7 +251,25 @@ export default function DashboardPage() {
     } catch (error) {
       console.error('Failed to fetch alerts:', error);
     }
-  }
+  }, []);
+
+  useEffect(() => {
+    fetchRigs();
+    fetchAlerts();
+
+    // Auto-refresh interval (fallback when WebSocket not connected)
+    let intervalId: NodeJS.Timeout | null = null;
+    if (autoRefresh && !isConnected) {
+      intervalId = setInterval(() => {
+        fetchRigs();
+        fetchAlerts();
+      }, REFRESH_INTERVAL);
+    }
+
+    return () => {
+      if (intervalId) clearInterval(intervalId);
+    };
+  }, [autoRefresh, isConnected, fetchRigs, fetchAlerts]);
 
   function getStatusColor(status: string) {
     switch (status) {

@@ -244,7 +244,7 @@ export async function sshRoutes(app: FastifyInstance) {
       auditLog('SSH_CONNECTION_TEST', { 
         host: result.data.host, 
         success: connected,
-        userId: (request as any).userId || 'unknown'
+        userId: request.user?.userId || 'unknown'
       });
 
       if (connected) {
@@ -274,7 +274,7 @@ export async function sshRoutes(app: FastifyInstance) {
         host: credentials.host,
         command: command.substring(0, 100),
         reason: validation.reason,
-        userId: (request as any).userId || 'unknown'
+        userId: request.user?.userId || 'unknown'
       });
       return reply.status(403).send({ 
         success: false, 
@@ -286,7 +286,7 @@ export async function sshRoutes(app: FastifyInstance) {
       auditLog('SSH_COMMAND_EXECUTED', {
         host: credentials.host,
         command: command.substring(0, 100),
-        userId: (request as any).userId || 'unknown'
+        userId: request.user?.userId || 'unknown'
       });
 
       const output = await sshManager.executeCommand(credentials, command);
@@ -311,7 +311,7 @@ export async function sshRoutes(app: FastifyInstance) {
         name,
         farmId,
         host: credentials.host,
-        userId: (request as any).userId || 'unknown'
+        userId: request.user?.userId || 'unknown'
       });
 
       // This will:
@@ -325,7 +325,7 @@ export async function sshRoutes(app: FastifyInstance) {
         rigId: rig.id,
         name,
         host: credentials.host,
-        userId: (request as any).userId || 'unknown'
+        userId: request.user?.userId || 'unknown'
       });
 
       return reply.status(201).send(rig);
@@ -337,7 +337,7 @@ export async function sshRoutes(app: FastifyInstance) {
         name,
         host: credentials.host,
         error: errorMessage,
-        userId: (request as any).userId || 'unknown'
+        userId: request.user?.userId || 'unknown'
       });
 
       return reply.status(500).send({ success: false, message: 'Rig setup failed' });
@@ -383,7 +383,7 @@ export async function sshRoutes(app: FastifyInstance) {
         rigId,
         command: command.substring(0, 100),
         reason: validation.reason,
-        userId: (request as any).userId || 'unknown'
+        userId: request.user?.userId || 'unknown'
       });
       return reply.status(403).send({ 
         success: false, 
@@ -395,7 +395,7 @@ export async function sshRoutes(app: FastifyInstance) {
       auditLog('SSH_RIG_COMMAND_EXECUTED', {
         rigId,
         command: command.substring(0, 100),
-        userId: (request as any).userId || 'unknown'
+        userId: request.user?.userId || 'unknown'
       });
 
       const output = await sshManager.executeCommandOnRig(rigId, command);
