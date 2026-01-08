@@ -94,6 +94,12 @@ const CloseIcon = () => (
   </svg>
 );
 
+const UpdateIcon = () => (
+  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+  </svg>
+);
+
 const navItems = [
   { href: '/', label: 'Dashboard', icon: DashboardIcon },
   { href: '/rigs', label: 'Rigs', icon: RigsIcon },
@@ -104,7 +110,7 @@ const navItems = [
   { href: '/oc-profiles', label: 'OC Profiles', icon: OCIcon },
   { href: '/alerts', label: 'Alerts', icon: AlertIcon },
   { href: '/users', label: 'Users', icon: UsersIcon, adminOnly: true },
-  { href: '/settings', label: 'Settings', icon: SettingsIcon },
+  { href: '/settings', label: 'Settings', icon: SettingsIcon, showUpdates: true },
 ];
 
 // Public routes that don't need sidebar
@@ -114,6 +120,7 @@ function AppContent({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { user, logout, isLoading } = useAuth();
   const [alertCount, setAlertCount] = useState(0);
+  const [updateCount, setUpdateCount] = useState(0);
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const isPublicRoute = publicRoutes.includes(pathname);
@@ -144,9 +151,29 @@ function AppContent({ children }: { children: React.ReactNode }) {
       }
     }
 
+    async function fetchUpdateCount() {
+      try {
+        const res = await fetch(`${getApiUrl()}/api/updates/miners/available`, {
+          credentials: 'include',
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          setUpdateCount(data.length);
+        }
+      } catch {
+        // Silently ignore
+      }
+    }
+
     fetchAlertCount();
-    const interval = setInterval(fetchAlertCount, 30000);
-    return () => clearInterval(interval);
+    fetchUpdateCount();
+    const alertInterval = setInterval(fetchAlertCount, 30000);
+    const updateInterval = setInterval(fetchUpdateCount, 300000); // Check every 5 minutes
+    return () => {
+      clearInterval(alertInterval);
+      clearInterval(updateInterval);
+    };
   }, [isPublicRoute, user]);
 
   const isActive = (href: string) => {
@@ -203,7 +230,8 @@ function AppContent({ children }: { children: React.ReactNode }) {
             }
             const Icon = item.icon;
             const active = isActive(item.href);
-            const showBadge = item.href === '/alerts' && alertCount > 0;
+            const showAlertBadge = item.href === '/alerts' && alertCount > 0;
+            const showUpdateBadge = (item as { showUpdates?: boolean }).showUpdates && updateCount > 0;
             return (
               <li key={item.href}>
                 <Link
@@ -217,9 +245,14 @@ function AppContent({ children }: { children: React.ReactNode }) {
                 >
                   <Icon />
                   <span className="font-medium flex-1 text-sm lg:text-base">{item.label}</span>
-                  {showBadge && (
+                  {showAlertBadge && (
                     <span className="px-2 py-0.5 text-xs font-bold bg-red-500 text-white rounded-full min-w-[20px] text-center">
                       {alertCount > 99 ? '99+' : alertCount}
+                    </span>
+                  )}
+                  {showUpdateBadge && (
+                    <span className="px-2 py-0.5 text-xs font-bold bg-yellow-500 text-black rounded-full min-w-[20px] text-center" title="Miner updates available">
+                      {updateCount}
                     </span>
                   )}
                 </Link>
