@@ -395,5 +395,5 @@ MIT License - do whatever you want with it, just don't blame us if something goe
 </p>
 
 <p align="center">
-  Made by <a href="https://github.com/bokiko">@bokiko</a>
+  Made by <a href="https://x.com/bokiko">@bokiko</a>
 </p>
