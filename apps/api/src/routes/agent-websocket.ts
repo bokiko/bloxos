@@ -3,6 +3,7 @@ import { prisma } from '@bloxos/database';
 import { validateAgentToken } from '../middleware/authorization.ts';
 import { auditLog, sanitizeOutput } from '../utils/security.ts';
 import { broadcastToSubscribers } from './websocket.ts';
+import { notificationService } from '../services/notification-service.ts';
 
 // ============================================
 // TYPES
@@ -303,6 +304,8 @@ export async function agentWebsocketRoutes(app: FastifyInstance) {
       clearTimeout(authTimeout);
       
       if (rigId) {
+        const agent = agents.get(rigId);
+        const rigName = agent?.rigName || 'Unknown Rig';
         agents.delete(rigId);
         
         // Update rig status to offline
@@ -310,6 +313,12 @@ export async function agentWebsocketRoutes(app: FastifyInstance) {
           await prisma.rig.update({
             where: { id: rigId },
             data: { status: 'OFFLINE' },
+          });
+          
+          // Send notification about rig going offline
+          await notificationService.notifyRigEvent(rigId, 'offline', {
+            title: `Rig Offline: ${rigName}`,
+            message: `${rigName} has disconnected from the network.`,
           });
         } catch (error) {
           console.error('Failed to update rig status:', error);
@@ -516,13 +525,26 @@ async function handleMinerStatus(rigId: string, data: unknown) {
     hashrate?: number;
     shares?: { accepted?: number; rejected?: number };
     pid?: number;
+    error?: string;
   };
+
+  // Get rig name for notifications
+  const rig = await prisma.rig.findUnique({
+    where: { id: rigId },
+    select: { name: true },
+  });
+  const rigName = rig?.name || 'Unknown Rig';
 
   // Update or create MinerInstance
   const existingMiner = await prisma.minerInstance.findFirst({
     where: { rigId },
     orderBy: { updatedAt: 'desc' },
   });
+
+  // Detect miner crash or error
+  const wasRunning = existingMiner?.status === 'RUNNING';
+  const isNowStopped = !status.running;
+  const hasError = !!status.error;
 
   if (existingMiner) {
     await prisma.minerInstance.update({
@@ -557,6 +579,17 @@ async function handleMinerStatus(rigId: string, data: unknown) {
     });
   }
 
+  // Send notification if miner crashed or has error
+  if (hasError || (wasRunning && isNowStopped)) {
+    const minerName = status.name || existingMiner?.minerName || 'Unknown miner';
+    const errorMessage = status.error || 'Miner stopped unexpectedly';
+    
+    await notificationService.notifyRigEvent(rigId, 'miner_error', {
+      title: `Miner Error on ${rigName}`,
+      message: `${minerName}: ${errorMessage}`,
+    });
+  }
+
   // Broadcast to dashboard
   broadcastRigUpdate(rigId, { miner: status });
 }
@@ -574,6 +607,7 @@ setInterval(async () => {
     
     if (timeSinceHeartbeat > HEARTBEAT_TIMEOUT_MS) {
       console.log(`Agent ${rigId} heartbeat timeout, closing connection`);
+      const rigName = agent.rigName;
       agent.socket.close(4006, 'Heartbeat timeout');
       agents.delete(rigId);
       
@@ -582,6 +616,12 @@ setInterval(async () => {
         await prisma.rig.update({
           where: { id: rigId },
           data: { status: 'OFFLINE' },
+        });
+        
+        // Send notification about heartbeat timeout
+        await notificationService.notifyRigEvent(rigId, 'offline', {
+          title: `Rig Unresponsive: ${rigName}`,
+          message: `${rigName} stopped responding (heartbeat timeout after ${Math.round(HEARTBEAT_TIMEOUT_MS / 1000)} seconds).`,
         });
       } catch (error) {
         console.error('Failed to update rig status:', error);

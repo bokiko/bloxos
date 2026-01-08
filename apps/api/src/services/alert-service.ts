@@ -1,4 +1,5 @@
 import { prisma } from '@bloxos/database';
+import { notificationService } from './notification-service.ts';
 
 // Store previous hashrates for comparison
 const previousHashrates: Map<string, number> = new Map();
@@ -42,7 +43,25 @@ export class AlertService {
     return true;
   }
 
-  // Create an alert
+  // Map alert types to notification event types
+  private getNotificationEventType(
+    type: 'GPU_TEMP_HIGH' | 'CPU_TEMP_HIGH' | 'RIG_OFFLINE' | 'HASHRATE_DROP' | 'MINER_ERROR' | 'GPU_ERROR'
+  ): 'offline' | 'high_temp' | 'low_hashrate' | 'miner_error' {
+    switch (type) {
+      case 'RIG_OFFLINE':
+        return 'offline';
+      case 'GPU_TEMP_HIGH':
+      case 'CPU_TEMP_HIGH':
+        return 'high_temp';
+      case 'HASHRATE_DROP':
+        return 'low_hashrate';
+      case 'MINER_ERROR':
+      case 'GPU_ERROR':
+        return 'miner_error';
+    }
+  }
+
+  // Create an alert and send notification
   async createAlert(
     rigId: string,
     type: 'GPU_TEMP_HIGH' | 'CPU_TEMP_HIGH' | 'RIG_OFFLINE' | 'HASHRATE_DROP' | 'MINER_ERROR' | 'GPU_ERROR',
@@ -63,6 +82,13 @@ export class AlertService {
         },
       });
       console.log(`[AlertService] Created ${severity} alert: ${title}`);
+
+      // Send notification to rig owner
+      const eventType = this.getNotificationEventType(type);
+      await notificationService.notifyRigEvent(rigId, eventType, {
+        title,
+        message,
+      });
     } catch (error) {
       console.error('[AlertService] Failed to create alert:', error);
     }
