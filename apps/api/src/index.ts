@@ -26,6 +26,7 @@ import { agentWebsocketRoutes } from './routes/agent-websocket.ts';
 import { coinsRoutes } from './routes/coins.ts';
 import { templatesRoutes } from './routes/templates.ts';
 import { updatesRoutes } from './routes/updates.ts';
+import { settingsRoutes } from './routes/settings.ts';
 import { gpuPoller } from './services/gpu-poller.ts';
 import { startUpdateChecker, stopUpdateChecker } from './services/update-checker.ts';
 import { requireAuth } from './middleware/auth.ts';
@@ -312,6 +313,7 @@ async function main() {
   await app.register(coinsRoutes, { prefix: '/api' });
   await app.register(templatesRoutes, { prefix: '/api' });
   await app.register(updatesRoutes, { prefix: '/api/updates' });
+  await app.register(settingsRoutes, { prefix: '/api/settings' });
 
   // ============================================
   // GRACEFUL SHUTDOWN
