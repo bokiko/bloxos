@@ -33,7 +33,7 @@ services:
   # API Server
   api:
     build:
-      context: ..
+      context: .
       dockerfile: docker/Dockerfile.api
     container_name: bloxos-api
     restart: unless-stopped
@@ -70,7 +70,7 @@ services:
   # Dashboard (Next.js)
   dashboard:
     build:
-      context: ..
+      context: .
       dockerfile: docker/Dockerfile.dashboard
     container_name: bloxos-dashboard
     restart: unless-stopped
