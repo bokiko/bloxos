@@ -1,6 +1,6 @@
 'use client';
 
-import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import { saveTokenToStorage, removeTokenFromStorage } from '../hooks/useWebSocket';
 
@@ -38,49 +38,49 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const isPublicRoute = publicRoutes.includes(pathname);
 
   // Check if setup is required and fetch current user
-  useEffect(() => {
-    async function initAuth() {
-      try {
-        // First check if setup is required
-        const setupRes = await fetch(`${getApiUrl()}/api/auth/setup-required`, {
-          credentials: 'include',
-        });
-        const setupData = await setupRes.json();
+  const initAuth = useCallback(async () => {
+    try {
+      // First check if setup is required
+      const setupRes = await fetch(`${getApiUrl()}/api/auth/setup-required`, {
+        credentials: 'include',
+      });
+      const setupData = await setupRes.json();
 
-        if (setupData.setupRequired) {
-          // No users exist, redirect to setup
-          if (pathname !== '/setup') {
-            router.push('/setup');
-          }
-          setIsLoading(false);
-          return;
+      if (setupData.setupRequired) {
+        // No users exist, redirect to setup
+        if (pathname !== '/setup') {
+          router.push('/setup');
         }
-
-        // Try to get current user
-        const meRes = await fetch(`${getApiUrl()}/api/auth/me`, {
-          credentials: 'include',
-        });
-
-        if (meRes.ok) {
-          const data = await meRes.json();
-          setUser(data.user);
-        } else {
-          // Not authenticated
-          setUser(null);
-          if (!isPublicRoute) {
-            router.push('/login');
-          }
-        }
-      } catch (error) {
-        console.error('Auth init error:', error);
-        setUser(null);
-      } finally {
         setIsLoading(false);
+        return;
       }
-    }
 
+      // Try to get current user
+      const meRes = await fetch(`${getApiUrl()}/api/auth/me`, {
+        credentials: 'include',
+      });
+
+      if (meRes.ok) {
+        const data = await meRes.json();
+        setUser(data.user);
+      } else {
+        // Not authenticated
+        setUser(null);
+        if (!isPublicRoute) {
+          router.push('/login');
+        }
+      }
+    } catch (error) {
+      console.error('Auth init error:', error);
+      setUser(null);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [pathname, router, isPublicRoute]);
+
+  useEffect(() => {
     initAuth();
-  }, [pathname]);
+  }, [initAuth]);
 
   const login = async (email: string, password: string, rememberMe: boolean = false) => {
     const res = await fetch(`${getApiUrl()}/api/auth/login`, {

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
 
 const getApiUrl = () => {
@@ -46,14 +46,7 @@ export default function AlertsPage() {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<'all' | 'unread'>('unread');
 
-  useEffect(() => {
-    fetchAlerts();
-    // Refresh every 30 seconds
-    const interval = setInterval(fetchAlerts, 30000);
-    return () => clearInterval(interval);
-  }, [filter]);
-
-  async function fetchAlerts() {
+  const fetchAlerts = useCallback(async () => {
     try {
       const params = new URLSearchParams();
       if (filter === 'unread') params.set('unreadOnly', 'true');
@@ -72,7 +65,14 @@ export default function AlertsPage() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [filter]);
+
+  useEffect(() => {
+    fetchAlerts();
+    // Refresh every 30 seconds
+    const interval = setInterval(fetchAlerts, 30000);
+    return () => clearInterval(interval);
+  }, [fetchAlerts]);
 
   async function markAsRead(alertId: string) {
     try {

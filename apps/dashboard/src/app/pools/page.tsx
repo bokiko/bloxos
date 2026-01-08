@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import Image from 'next/image';
 
 const getApiUrl = () => {
@@ -139,11 +139,39 @@ export default function PoolsPage() {
     farmId: '',
   });
 
-  useEffect(() => {
-    fetchData();
+  const fetchPools = useCallback(async () => {
+    try {
+      const res = await fetch(`${getApiUrl()}/api/pools`, {
+        credentials: 'include',
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (Array.isArray(data)) {
+        setPools(data);
+      }
+    } catch (err) {
+      setError('Failed to fetch pools');
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
-  async function fetchData() {
+  const fetchCoins = useCallback(async () => {
+    try {
+      const res = await fetch(`${getApiUrl()}/api/coins`, {
+        credentials: 'include',
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (Array.isArray(data)) {
+        setCoins(data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch coins');
+    }
+  }, []);
+
+  const fetchData = useCallback(async () => {
     try {
       // Fetch user data to get farms
       const meRes = await fetch(`${getApiUrl()}/api/auth/me`, {
@@ -165,39 +193,11 @@ export default function PoolsPage() {
     } catch (err) {
       setError('Failed to load data');
     }
-  }
+  }, [fetchPools, fetchCoins]);
 
-  async function fetchPools() {
-    try {
-      const res = await fetch(`${getApiUrl()}/api/pools`, {
-        credentials: 'include',
-      });
-      if (!res.ok) return;
-      const data = await res.json();
-      if (Array.isArray(data)) {
-        setPools(data);
-      }
-    } catch (err) {
-      setError('Failed to fetch pools');
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function fetchCoins() {
-    try {
-      const res = await fetch(`${getApiUrl()}/api/coins`, {
-        credentials: 'include',
-      });
-      if (!res.ok) return;
-      const data = await res.json();
-      if (Array.isArray(data)) {
-        setCoins(data);
-      }
-    } catch (err) {
-      console.error('Failed to fetch coins');
-    }
-  }
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
 
   async function fetchPoolPresets(ticker: string) {
     try {

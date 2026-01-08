@@ -239,7 +239,7 @@ async function main() {
       const sensitiveRoutes = ['/api/auth', '/api/users', '/api/ssh', '/api/rigs'];
       if (sensitiveRoutes.some(r => path.startsWith(r))) {
         auditLog({
-          userId: (request as any).user?.userId,
+          userId: request.user?.userId,
           action: `${method} ${path}`,
           resource: path.split('/')[2] || 'unknown',
           ip: request.ip,
