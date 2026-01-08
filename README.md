@@ -36,6 +36,7 @@
 - [Project Structure](#project-structure)
 - [Roadmap](#roadmap)
 - [Contributing](#contributing)
+- [For Developers](#for-developers)
 - [License](#license)
 
 ---
@@ -126,22 +127,30 @@ git clone https://github.com/bokiko/bloxos.git
 cd bloxos
 ```
 
-### Step 3: Start BloxOS
+### Step 3: Configure Environment
 
 ```bash
-docker compose up -d
+cp .env.example .env
 ```
 
-Wait about 2 minutes for everything to start.
+Open `.env` and review the settings. The defaults work for testing, but change the passwords for production.
 
-### Step 4: Open the Dashboard
+### Step 4: Start BloxOS
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+```
+
+The first start takes 2-5 minutes to build the images. After that, starts are instant.
+
+### Step 5: Open the Dashboard
 
 Open your web browser and go to:
 ```
 http://localhost:3000
 ```
 
-### Step 5: Create Your Account
+### Step 6: Create Your Account
 
 The first time you visit, you'll create an admin account. Remember your password!
 
@@ -303,7 +312,7 @@ To get the latest version:
 ```bash
 cd bloxos
 git pull
-docker compose up -d --build
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 ```
 
 </details>
@@ -374,6 +383,71 @@ Want to help? Great! Here's how:
 4. Submit a pull request
 
 See [AGENTS.md](AGENTS.md) for coding guidelines.
+
+</details>
+
+---
+
+<details>
+<summary><h2>For Developers</h2></summary>
+
+Want to run BloxOS locally for development? Here's how:
+
+### Prerequisites
+
+- Node.js 22 or higher
+- pnpm 9 or higher
+
+**Install Node.js (using nvm):**
+```bash
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.0/install.sh | bash
+source ~/.bashrc
+nvm install 22
+```
+
+**Install pnpm:**
+```bash
+npm install -g pnpm@9
+```
+
+### Setup
+
+```bash
+# Clone and enter directory
+git clone https://github.com/bokiko/bloxos.git
+cd bloxos
+
+# Copy environment file
+cp .env.example .env
+
+# Start database services
+docker compose up -d
+
+# Install dependencies
+pnpm install
+
+# Setup database schema
+pnpm db:push
+
+# Seed initial data (optional)
+pnpm db:seed
+
+# Start development server
+pnpm dev
+```
+
+The dashboard runs at http://localhost:3000 and the API at http://localhost:3001.
+
+### Useful Commands
+
+| Command | Description |
+|---------|-------------|
+| `pnpm dev` | Start all apps in development mode |
+| `pnpm build` | Build all apps for production |
+| `pnpm db:studio` | Open Prisma Studio (database GUI) |
+| `pnpm db:push` | Push schema changes to database |
+| `pnpm lint` | Run linting |
+| `pnpm test` | Run tests |
 
 </details>
 
