@@ -21,7 +21,27 @@
 
 ---
 
-## What is BloxOS?
+## Table of Contents
+
+- [What is BloxOS?](#what-is-bloxos)
+- [Features](#features)
+- [Quick Start](#quick-start)
+- [Adding Your First Rig](#adding-your-first-rig)
+- [Setting Up Mining](#setting-up-mining)
+- [Supported Coins](#supported-coins)
+- [System Requirements](#system-requirements)
+- [Troubleshooting](#troubleshooting)
+- [Updating](#updating)
+- [Tech Stack](#tech-stack)
+- [Project Structure](#project-structure)
+- [Roadmap](#roadmap)
+- [Contributing](#contributing)
+- [License](#license)
+
+---
+
+<details>
+<summary><h2>What is BloxOS?</h2></summary>
 
 BloxOS lets you **manage all your mining rigs from one place** - just like HiveOS, but completely free and running on your own computer.
 
@@ -32,9 +52,12 @@ BloxOS lets you **manage all your mining rigs from one place** - just like HiveO
 | Unlimited rigs | Extra fees for more rigs |
 | Open source | Closed source |
 
+</details>
+
 ---
 
-## What Can You Do With BloxOS?
+<details>
+<summary><h2>Features</h2></summary>
 
 <table>
 <tr>
@@ -59,9 +82,12 @@ BloxOS lets you **manage all your mining rigs from one place** - just like HiveO
 </tr>
 </table>
 
+</details>
+
 ---
 
-## Quick Start (5 Minutes)
+<details open>
+<summary><h2>Quick Start</h2></summary>
 
 ### What You Need
 
@@ -119,9 +145,12 @@ http://localhost:3000
 
 The first time you visit, you'll create an admin account. Remember your password!
 
+</details>
+
 ---
 
-## Adding Your First Rig
+<details>
+<summary><h2>Adding Your First Rig</h2></summary>
 
 Once you're logged in:
 
@@ -135,9 +164,12 @@ Once you're logged in:
 
 3. **Click "Add Rig"** - BloxOS will connect and gather info automatically
 
+</details>
+
 ---
 
-## Setting Up Mining
+<details>
+<summary><h2>Setting Up Mining</h2></summary>
 
 ### Step 1: Add Your Wallet
 
@@ -172,9 +204,12 @@ A flight sheet tells your rig what to mine. Go to **Flight Sheets** and click **
 
 That's it! Your rig should start mining within a minute.
 
+</details>
+
 ---
 
-## Supported Coins
+<details>
+<summary><h2>Supported Coins</h2></summary>
 
 | Coin | Algorithm | GPU | CPU |
 |------|-----------|-----|-----|
@@ -186,9 +221,12 @@ That's it! Your rig should start mining within a minute.
 | Verus (VRSC) | VerusHash | No | Yes |
 | And 15+ more... | | | |
 
+</details>
+
 ---
 
-## System Requirements
+<details>
+<summary><h2>System Requirements</h2></summary>
 
 ### For the BloxOS Server
 
@@ -221,9 +259,12 @@ Your mining rigs need:
 >
 > **WSL2 is not recommended** for mining rigs - it lacks proper GPU passthrough and systemd support. Install Ubuntu directly on your mining hardware for best results.
 
+</details>
+
 ---
 
-## Troubleshooting
+<details>
+<summary><h2>Troubleshooting</h2></summary>
 
 ### "Can't connect to rig"
 
@@ -250,9 +291,12 @@ Your mining rigs need:
 - Check [GitHub Issues](https://github.com/bokiko/bloxos/issues) for known problems
 - View logs: `docker compose logs -f`
 
+</details>
+
 ---
 
-## Updating BloxOS
+<details>
+<summary><h2>Updating</h2></summary>
 
 To get the latest version:
 
@@ -262,9 +306,12 @@ git pull
 docker compose up -d --build
 ```
 
+</details>
+
 ---
 
-## Tech Stack
+<details>
+<summary><h2>Tech Stack</h2></summary>
 
 | Part | Technology |
 |------|------------|
@@ -274,9 +321,12 @@ docker compose up -d --build
 | Rig Agent | Go |
 | Containers | Docker |
 
+</details>
+
 ---
 
-## Project Structure
+<details>
+<summary><h2>Project Structure</h2></summary>
 
 ```
 bloxos/
@@ -290,9 +340,12 @@ bloxos/
 └── docs/                 # Documentation
 ```
 
+</details>
+
 ---
 
-## Roadmap
+<details>
+<summary><h2>Roadmap</h2></summary>
 
 - [x] Dashboard with real-time monitoring
 - [x] Rig management via SSH
@@ -306,9 +359,12 @@ bloxos/
 - [ ] Profit tracking
 - [ ] Auto-switching (mine most profitable coin)
 
+</details>
+
 ---
 
-## Contributing
+<details>
+<summary><h2>Contributing</h2></summary>
 
 Want to help? Great! Here's how:
 
@@ -319,11 +375,16 @@ Want to help? Great! Here's how:
 
 See [AGENTS.md](AGENTS.md) for coding guidelines.
 
+</details>
+
 ---
 
-## License
+<details>
+<summary><h2>License</h2></summary>
 
 MIT License - do whatever you want with it, just don't blame us if something goes wrong.
+
+</details>
 
 ---
 
