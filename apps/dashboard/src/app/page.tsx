@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
+import { useWebSocket } from '../hooks/useWebSocket';
 
 const getApiUrl = () => {
   if (typeof window === 'undefined') return 'http://localhost:3001';
@@ -20,6 +21,13 @@ interface GPU {
 interface CPU {
   id: string;
   powerDraw: number | null;
+  hashrate: number | null;
+}
+
+interface FlightSheet {
+  id: string;
+  name: string;
+  coin: string;
 }
 
 interface Rig {
@@ -31,6 +39,7 @@ interface Rig {
   lastSeen: string | null;
   gpus: GPU[];
   cpu: CPU | null;
+  flightSheet: FlightSheet | null;
 }
 
 interface Stats {
@@ -41,6 +50,7 @@ interface Stats {
   totalHashrate: number;
   totalPower: number;
   avgTemp: number;
+  maxTemp: number;
   efficiency: number;
 }
 
@@ -53,6 +63,12 @@ interface Alert {
   rigId: string;
   rig: { name: string };
   triggeredAt: string;
+}
+
+interface HashrateHistory {
+  timestamp: Date;
+  hashrate: number;
+  power: number;
 }
 
 // Stat Card Icons
@@ -88,9 +104,43 @@ const PowerIcon = () => (
 
 const TempIcon = () => (
   <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 9v3m0 0v3m0-3h3m-3 0H9m12 0a9 9 0 11-18 0 9 9 0 0118 0z" />
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
   </svg>
 );
+
+const OfflineIcon = () => (
+  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+  </svg>
+);
+
+// Simple sparkline component
+function Sparkline({ data, color, height = 40 }: { data: number[]; color: string; height?: number }) {
+  if (data.length < 2) return null;
+  
+  const max = Math.max(...data);
+  const min = Math.min(...data);
+  const range = max - min || 1;
+  
+  const points = data.map((value, index) => {
+    const x = (index / (data.length - 1)) * 100;
+    const y = height - ((value - min) / range) * height;
+    return `${x},${y}`;
+  }).join(' ');
+  
+  return (
+    <svg width="100%" height={height} className="overflow-visible">
+      <polyline
+        points={points}
+        fill="none"
+        stroke={color}
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
 
 export default function DashboardPage() {
   const [rigs, setRigs] = useState<Rig[]>([]);
@@ -102,21 +152,74 @@ export default function DashboardPage() {
     totalHashrate: 0,
     totalPower: 0,
     avgTemp: 0,
+    maxTemp: 0,
     efficiency: 0,
   });
   const [recentAlerts, setRecentAlerts] = useState<Alert[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [hashrateHistory, setHashrateHistory] = useState<number[]>([]);
+  const [powerHistory, setPowerHistory] = useState<number[]>([]);
   const REFRESH_INTERVAL = 30000; // 30 seconds
+  const MAX_HISTORY = 20;
+
+  // WebSocket handler for real-time rig updates
+  const handleRigsUpdate = useCallback((data: unknown) => {
+    if (Array.isArray(data)) {
+      processRigData(data as Rig[]);
+    }
+  }, []);
+
+  // Connect to WebSocket for real-time updates
+  const { isConnected } = useWebSocket({
+    onRigsUpdate: handleRigsUpdate,
+  });
+
+  function processRigData(data: Rig[]) {
+    setRigs(data);
+
+    // Calculate stats
+    const totalRigs = data.length;
+    const onlineRigs = data.filter((r: Rig) => r.status === 'ONLINE').length;
+    const offlineRigs = totalRigs - onlineRigs;
+    const totalGpus = data.reduce((acc: number, r: Rig) => acc + r.gpus.length, 0);
+    const totalHashrate = data.reduce((acc: number, r: Rig) => {
+      const gpuHashrate = r.gpus.reduce((sum, gpu) => sum + (gpu.hashrate || 0), 0);
+      const cpuHashrate = r.cpu?.hashrate || 0;
+      return acc + gpuHashrate + cpuHashrate;
+    }, 0);
+    const totalPower = data.reduce((acc: number, r: Rig) => {
+      const gpuPower = r.gpus.reduce((sum, gpu) => sum + (gpu.powerDraw || 0), 0);
+      const cpuPower = r.cpu?.powerDraw || 0;
+      return acc + gpuPower + cpuPower;
+    }, 0);
+    
+    // Calculate average and max temperature
+    const allTemps = data.flatMap((r: Rig) => r.gpus.map(g => g.temperature).filter((t: number | null) => t !== null)) as number[];
+    const avgTemp = allTemps.length > 0 ? allTemps.reduce((a: number, b: number) => a + b, 0) / allTemps.length : 0;
+    const maxTemp = allTemps.length > 0 ? Math.max(...allTemps) : 0;
+    
+    // Calculate efficiency (kH/W)
+    const efficiency = totalPower > 0 ? (totalHashrate * 1000) / totalPower : 0;
+
+    setStats({ totalRigs, onlineRigs, offlineRigs, totalGpus, totalHashrate, totalPower, avgTemp, maxTemp, efficiency });
+    setLastUpdated(new Date());
+    
+    // Update history for sparklines
+    setHashrateHistory(prev => [...prev.slice(-(MAX_HISTORY - 1)), totalHashrate]);
+    setPowerHistory(prev => [...prev.slice(-(MAX_HISTORY - 1)), totalPower]);
+    
+    setLoading(false);
+  }
 
   useEffect(() => {
     fetchRigs();
     fetchAlerts();
 
-    // Auto-refresh interval
+    // Auto-refresh interval (fallback when WebSocket not connected)
     let intervalId: NodeJS.Timeout | null = null;
-    if (autoRefresh) {
+    if (autoRefresh && !isConnected) {
       intervalId = setInterval(() => {
         fetchRigs();
         fetchAlerts();
@@ -126,7 +229,7 @@ export default function DashboardPage() {
     return () => {
       if (intervalId) clearInterval(intervalId);
     };
-  }, [autoRefresh]);
+  }, [autoRefresh, isConnected]);
 
   async function fetchRigs() {
     try {
@@ -142,31 +245,7 @@ export default function DashboardPage() {
         console.error('Unexpected response format:', data);
         return;
       }
-      setRigs(data);
-
-      // Calculate stats
-      const totalRigs = data.length;
-      const onlineRigs = data.filter((r: Rig) => r.status === 'ONLINE').length;
-      const offlineRigs = totalRigs - onlineRigs;
-      const totalGpus = data.reduce((acc: number, r: Rig) => acc + r.gpus.length, 0);
-      const totalHashrate = data.reduce((acc: number, r: Rig) => {
-        return acc + r.gpus.reduce((sum, gpu) => sum + (gpu.hashrate || 0), 0);
-      }, 0);
-      const totalPower = data.reduce((acc: number, r: Rig) => {
-        const gpuPower = r.gpus.reduce((sum, gpu) => sum + (gpu.powerDraw || 0), 0);
-        const cpuPower = r.cpu?.powerDraw || 0;
-        return acc + gpuPower + cpuPower;
-      }, 0);
-      
-      // Calculate average temperature
-      const allTemps = data.flatMap((r: Rig) => r.gpus.map(g => g.temperature).filter((t: number | null) => t !== null));
-      const avgTemp = allTemps.length > 0 ? allTemps.reduce((a: number, b: number) => a + b, 0) / allTemps.length : 0;
-      
-      // Calculate efficiency (kH/W)
-      const efficiency = totalPower > 0 ? (totalHashrate * 1000) / totalPower : 0;
-
-      setStats({ totalRigs, onlineRigs, offlineRigs, totalGpus, totalHashrate, totalPower, avgTemp, efficiency });
-      setLastUpdated(new Date());
+      processRigData(data);
     } catch (error) {
       console.error('Failed to fetch rigs:', error);
     } finally {
@@ -231,13 +310,52 @@ export default function DashboardPage() {
     return `${Math.floor(hours / 24)}d ago`;
   }
 
+  // Group rigs by coin
+  const rigsByCoin = rigs.reduce((acc, rig) => {
+    const coin = rig.flightSheet?.coin || 'Idle';
+    if (!acc[coin]) acc[coin] = [];
+    acc[coin].push(rig);
+    return acc;
+  }, {} as Record<string, Rig[]>);
+
   const statCards = [
     { label: 'Total Rigs', value: stats.totalRigs, icon: RigIcon, color: 'from-slate-500 to-slate-600', textColor: 'text-slate-400' },
     { label: 'Online', value: stats.onlineRigs, icon: OnlineIcon, color: 'from-green-500 to-green-600', textColor: 'text-green-400' },
+    { label: 'Offline', value: stats.offlineRigs, icon: OfflineIcon, color: 'from-red-500 to-red-600', textColor: 'text-red-400' },
     { label: 'Total GPUs', value: stats.totalGpus, icon: GpuIcon, color: 'from-blue-500 to-blue-600', textColor: 'text-blue-400' },
-    { label: 'Hashrate', value: `${stats.totalHashrate.toFixed(1)} MH/s`, icon: HashrateIcon, color: 'from-purple-500 to-purple-600', textColor: 'text-purple-400' },
-    { label: 'Power', value: `${stats.totalPower.toFixed(0)} W`, icon: PowerIcon, color: 'from-yellow-500 to-yellow-600', textColor: 'text-yellow-400' },
-    { label: 'Efficiency', value: `${stats.efficiency.toFixed(1)} kH/W`, icon: TempIcon, color: 'from-cyan-500 to-cyan-600', textColor: 'text-cyan-400' },
+  ];
+
+  const performanceCards = [
+    { 
+      label: 'Total Hashrate', 
+      value: `${stats.totalHashrate.toFixed(1)}`, 
+      unit: 'MH/s',
+      icon: HashrateIcon, 
+      color: 'from-purple-500 to-purple-600', 
+      textColor: 'text-purple-400',
+      history: hashrateHistory,
+      chartColor: '#a855f7',
+    },
+    { 
+      label: 'Total Power', 
+      value: `${stats.totalPower.toFixed(0)}`, 
+      unit: 'W',
+      icon: PowerIcon, 
+      color: 'from-yellow-500 to-yellow-600', 
+      textColor: 'text-yellow-400',
+      history: powerHistory,
+      chartColor: '#eab308',
+    },
+    { 
+      label: 'Efficiency', 
+      value: `${stats.efficiency.toFixed(2)}`, 
+      unit: 'kH/W',
+      icon: TempIcon, 
+      color: 'from-cyan-500 to-cyan-600', 
+      textColor: 'text-cyan-400',
+      history: [],
+      chartColor: '#06b6d4',
+    },
   ];
 
   return (
@@ -254,13 +372,15 @@ export default function DashboardPage() {
             <button
               onClick={() => setAutoRefresh(!autoRefresh)}
               className={`flex items-center gap-2 px-3 py-1.5 rounded-lg transition-all ${
-                autoRefresh
+                isConnected
                   ? 'bg-green-500/20 text-green-400'
+                  : autoRefresh
+                  ? 'bg-yellow-500/20 text-yellow-400'
                   : 'bg-slate-700 text-slate-400'
               }`}
             >
-              <span className={`w-2 h-2 rounded-full ${autoRefresh ? 'bg-green-400 animate-pulse' : 'bg-slate-500'}`}></span>
-              {autoRefresh ? 'Live' : 'Paused'}
+              <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-400 animate-pulse' : autoRefresh ? 'bg-yellow-400 animate-pulse' : 'bg-slate-500'}`}></span>
+              {isConnected ? 'Live' : autoRefresh ? 'Polling' : 'Paused'}
             </button>
             {lastUpdated && (
               <span className="text-slate-500 text-xs">
@@ -277,8 +397,8 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Stats Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
+      {/* Stats Cards - Row 1 */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
         {statCards.map((stat) => {
           const Icon = stat.icon;
           return (
@@ -292,10 +412,109 @@ export default function DashboardPage() {
                 </div>
               </div>
               <p className="text-slate-400 text-xs font-medium uppercase tracking-wider">{stat.label}</p>
-              <p className={`text-2xl font-bold mt-1 ${stat.textColor}`}>{stat.value}</p>
+              <p className={`text-3xl font-bold mt-1 ${stat.textColor}`}>{stat.value}</p>
             </div>
           );
         })}
+      </div>
+
+      {/* Performance Cards with Charts */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+        {performanceCards.map((stat) => {
+          const Icon = stat.icon;
+          return (
+            <div
+              key={stat.label}
+              className="bg-slate-800/50 backdrop-blur-sm rounded-xl p-5 border border-slate-700/50 hover:border-slate-600/50 transition-all duration-200"
+            >
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-3">
+                  <div className={`w-10 h-10 rounded-lg bg-gradient-to-br ${stat.color} flex items-center justify-center opacity-80`}>
+                    <Icon />
+                  </div>
+                  <div>
+                    <p className="text-slate-400 text-xs font-medium uppercase tracking-wider">{stat.label}</p>
+                    <p className={`text-2xl font-bold ${stat.textColor}`}>
+                      {stat.value} <span className="text-sm text-slate-400">{stat.unit}</span>
+                    </p>
+                  </div>
+                </div>
+              </div>
+              {stat.history.length > 1 && (
+                <div className="h-10 mt-2">
+                  <Sparkline data={stat.history} color={stat.chartColor} />
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Temperature Card */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
+        <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl p-5 border border-slate-700/50">
+          <h3 className="text-lg font-semibold mb-4">Temperature Overview</h3>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="bg-slate-900/50 rounded-lg p-4 text-center">
+              <p className="text-xs text-slate-400 uppercase mb-1">Average</p>
+              <p className={`text-3xl font-bold ${stats.avgTemp > 75 ? 'text-yellow-400' : stats.avgTemp > 85 ? 'text-red-400' : 'text-green-400'}`}>
+                {stats.avgTemp.toFixed(0)}°C
+              </p>
+            </div>
+            <div className="bg-slate-900/50 rounded-lg p-4 text-center">
+              <p className="text-xs text-slate-400 uppercase mb-1">Max</p>
+              <p className={`text-3xl font-bold ${stats.maxTemp > 80 ? 'text-red-400' : stats.maxTemp > 70 ? 'text-yellow-400' : 'text-green-400'}`}>
+                {stats.maxTemp.toFixed(0)}°C
+              </p>
+            </div>
+          </div>
+          {/* Temperature bar */}
+          <div className="mt-4">
+            <div className="flex justify-between text-xs text-slate-500 mb-1">
+              <span>0°C</span>
+              <span>50°C</span>
+              <span>100°C</span>
+            </div>
+            <div className="h-3 bg-slate-700 rounded-full overflow-hidden">
+              <div 
+                className="h-full bg-gradient-to-r from-green-500 via-yellow-500 to-red-500 rounded-full transition-all"
+                style={{ width: `${Math.min(stats.maxTemp, 100)}%` }}
+              ></div>
+            </div>
+          </div>
+        </div>
+
+        {/* Mining by Coin */}
+        <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl p-5 border border-slate-700/50">
+          <h3 className="text-lg font-semibold mb-4">Mining by Coin</h3>
+          {Object.keys(rigsByCoin).length === 0 ? (
+            <p className="text-slate-400 text-center py-4">No rigs configured</p>
+          ) : (
+            <div className="space-y-3">
+              {Object.entries(rigsByCoin).map(([coin, coinRigs]) => {
+                const hashrate = coinRigs.reduce((sum, r) => 
+                  sum + r.gpus.reduce((s, g) => s + (g.hashrate || 0), 0) + (r.cpu?.hashrate || 0), 0
+                );
+                const onlineCount = coinRigs.filter(r => r.status === 'ONLINE').length;
+                return (
+                  <div key={coin} className="flex items-center justify-between p-3 bg-slate-900/50 rounded-lg">
+                    <div className="flex items-center gap-3">
+                      <span className={`px-2 py-1 rounded text-xs font-medium ${coin === 'Idle' ? 'bg-slate-600 text-slate-300' : 'bg-purple-500/20 text-purple-400'}`}>
+                        {coin}
+                      </span>
+                      <span className="text-sm text-slate-400">
+                        {onlineCount}/{coinRigs.length} rigs
+                      </span>
+                    </div>
+                    <span className="text-purple-400 font-medium">
+                      {hashrate.toFixed(1)} MH/s
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Recent Alerts */}
@@ -371,7 +590,7 @@ export default function DashboardPage() {
                 <tr className="text-left text-xs font-medium text-slate-400 uppercase tracking-wider">
                   <th className="px-5 py-3">Status</th>
                   <th className="px-5 py-3">Rig Name</th>
-                  <th className="px-5 py-3">IP Address</th>
+                  <th className="px-5 py-3">Coin</th>
                   <th className="px-5 py-3">GPUs</th>
                   <th className="px-5 py-3">Hashrate</th>
                   <th className="px-5 py-3">Power</th>
@@ -380,8 +599,8 @@ export default function DashboardPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-700/50">
-                {rigs.map((rig) => {
-                  const hashrate = rig.gpus.reduce((sum, gpu) => sum + (gpu.hashrate || 0), 0);
+                {rigs.slice(0, 10).map((rig) => {
+                  const hashrate = rig.gpus.reduce((sum, gpu) => sum + (gpu.hashrate || 0), 0) + (rig.cpu?.hashrate || 0);
                   const gpuPower = rig.gpus.reduce((sum, gpu) => sum + (gpu.powerDraw || 0), 0);
                   const cpuPower = rig.cpu?.powerDraw || 0;
                   const power = gpuPower + cpuPower;
@@ -413,7 +632,9 @@ export default function DashboardPage() {
                         </div>
                       </td>
                       <td className="px-5 py-4">
-                        <span className="text-sm text-slate-300 font-mono">{rig.ipAddress || '-'}</span>
+                        <span className={`px-2 py-1 rounded text-xs font-medium ${rig.flightSheet ? 'bg-purple-500/20 text-purple-400' : 'bg-slate-600 text-slate-300'}`}>
+                          {rig.flightSheet?.coin || 'Idle'}
+                        </span>
                       </td>
                       <td className="px-5 py-4">
                         <span className="text-sm">{rig.gpus.length}</span>
@@ -437,6 +658,13 @@ export default function DashboardPage() {
                 })}
               </tbody>
             </table>
+            {rigs.length > 10 && (
+              <div className="px-5 py-3 border-t border-slate-700/50 text-center">
+                <Link href="/rigs" className="text-sm text-blox-400 hover:text-blox-300">
+                  View all {rigs.length} rigs →
+                </Link>
+              </div>
+            )}
           </div>
         )}
       </div>
