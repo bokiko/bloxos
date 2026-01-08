@@ -11,6 +11,93 @@ datasource db {
 }
 
 // ===========================================
+// System Presets (Pre-loaded coin/pool/miner data)
+// ===========================================
+
+model Coin {
+  id          String    @id @default(cuid())
+  ticker      String    @unique  // ETC, RVN, XMR
+  name        String              // Ethereum Classic
+  algorithm   String              // Etchash, KawPow, RandomX
+  type        CoinType            // GPU, CPU
+  logoPath    String?             // /logos/etc.png
+  coingeckoId String?             // for price API lookups
+  enabled     Boolean   @default(true)
+  
+  // Wallet validation regex pattern
+  addressRegex String?            // ^0x[a-fA-F0-9]{40}$
+  
+  poolPresets       PoolPreset[]
+  flightSheetTemplates FlightSheetTemplate[]
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  @@index([ticker])
+  @@index([type])
+  @@index([enabled])
+}
+
+enum CoinType {
+  GPU
+  CPU
+}
+
+model PoolPreset {
+  id          String     @id @default(cuid())
+  name        String               // 2Miners, HeroMiners
+  coinId      String
+  coin        Coin       @relation(fields: [coinId], references: [id], onDelete: Cascade)
+  region      PoolRegion
+  host        String               // rvn.2miners.com
+  port        Int                  // 6060
+  sslPort     Int?                 // 16060
+  fee         Float                // 1.0 (percent)
+  minPayout   Float?               // Minimum payout amount
+  payoutFreq  String?              // "2 hours", "daily"
+  website     String?              // https://2miners.com
+  
+  flightSheetTemplates FlightSheetTemplate[]
+  createdAt   DateTime   @default(now())
+  
+  @@unique([coinId, name, region])
+  @@index([coinId])
+  @@index([region])
+}
+
+enum PoolRegion {
+  US
+  EU
+  ASIA
+  GLOBAL
+}
+
+model FlightSheetTemplate {
+  id            String    @id @default(cuid())
+  name          String              // "RVN on 2Miners (NVIDIA)"
+  description   String?
+  coinId        String
+  coin          Coin      @relation(fields: [coinId], references: [id], onDelete: Cascade)
+  poolPresetId  String?
+  poolPreset    PoolPreset? @relation(fields: [poolPresetId], references: [id])
+  minerName     String              // t-rex, lolminer, xmrig
+  gpuType       HardwareType?       // NVIDIA, AMD, CPU
+  extraArgs     String?             // Additional miner args
+  recommended   Boolean   @default(false)
+  
+  createdAt     DateTime  @default(now())
+  
+  @@index([coinId])
+  @@index([gpuType])
+  @@index([recommended])
+}
+
+enum HardwareType {
+  NVIDIA
+  AMD
+  CPU
+}
+
+// ===========================================
 // Core Entities
 // ===========================================
 
@@ -255,19 +342,31 @@ model Pool {
 
 model MinerSoftware {
   id             String        @id @default(cuid())
-  name           String        // T-Rex, TeamRedMiner, etc.
+  name           String        @unique // t-rex, lolminer, xmrig
+  displayName    String        // T-Rex, lolMiner, XMRig
   version        String
-  algo           String        // ethash, kawpow, etc.
+  algorithms     String[]      // [ethash, kawpow, autolykos2]
+  supportsNvidia Boolean       @default(false)
+  supportsAmd    Boolean       @default(false)
+  supportsCpu    Boolean       @default(false)
+  
+  // GitHub release info for on-demand download
+  githubRepo     String?       // trexminer/T-Rex
+  binaryName     String?       // t-rex (executable name)
+  linuxAssetPattern String?    // t-rex-*-linux.tar.gz
+  
+  // Legacy fields for compatibility
   supportedGpus  GPUVendor[]
-  apiPort        Int
-  apiType        String        // http, tcp
-  installUrl     String?       // Download URL
+  apiPort        Int           @default(4067)
+  apiType        String        @default("http") // http, tcp
+  installPath    String?       // /opt/miners/t-rex
   defaultArgs    String?       // Default command line args
+  
   flightSheets   FlightSheet[]
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
 
-  @@unique([name, version, algo])
+  @@index([name])
 }
 
 model FlightSheet {

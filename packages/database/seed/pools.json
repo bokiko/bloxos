@@ -1,0 +1,205 @@
+{
+  "pools": [
+    {
+      "coin": "ETC",
+      "pools": [
+        { "name": "2Miners", "region": "US", "host": "us-etc.2miners.com", "port": 1010, "sslPort": 11010, "fee": 1.0, "minPayout": 0.1, "website": "https://2miners.com" },
+        { "name": "2Miners", "region": "EU", "host": "etc.2miners.com", "port": 1010, "sslPort": 11010, "fee": 1.0, "minPayout": 0.1, "website": "https://2miners.com" },
+        { "name": "2Miners", "region": "ASIA", "host": "asia-etc.2miners.com", "port": 1010, "sslPort": 11010, "fee": 1.0, "minPayout": 0.1, "website": "https://2miners.com" },
+        { "name": "Ethermine", "region": "US", "host": "us1-etc.ethermine.org", "port": 4444, "sslPort": 5555, "fee": 1.0, "minPayout": 0.1, "website": "https://etc.ethermine.org" },
+        { "name": "Ethermine", "region": "EU", "host": "eu1-etc.ethermine.org", "port": 4444, "sslPort": 5555, "fee": 1.0, "minPayout": 0.1, "website": "https://etc.ethermine.org" },
+        { "name": "Ethermine", "region": "ASIA", "host": "asia1-etc.ethermine.org", "port": 4444, "sslPort": 5555, "fee": 1.0, "minPayout": 0.1, "website": "https://etc.ethermine.org" },
+        { "name": "F2Pool", "region": "GLOBAL", "host": "etc.f2pool.com", "port": 8118, "fee": 2.0, "minPayout": 0.1, "website": "https://f2pool.com" },
+        { "name": "Nanopool", "region": "US", "host": "etc-us-east1.nanopool.org", "port": 19999, "fee": 1.0, "minPayout": 0.1, "website": "https://nanopool.org" },
+        { "name": "Nanopool", "region": "EU", "host": "etc-eu1.nanopool.org", "port": 19999, "fee": 1.0, "minPayout": 0.1, "website": "https://nanopool.org" },
+        { "name": "Nanopool", "region": "ASIA", "host": "etc-asia1.nanopool.org", "port": 19999, "fee": 1.0, "minPayout": 0.1, "website": "https://nanopool.org" }
+      ]
+    },
+    {
+      "coin": "RVN",
+      "pools": [
+        { "name": "2Miners", "region": "US", "host": "us-rvn.2miners.com", "port": 6060, "sslPort": 16060, "fee": 1.0, "minPayout": 10, "website": "https://2miners.com" },
+        { "name": "2Miners", "region": "EU", "host": "rvn.2miners.com", "port": 6060, "sslPort": 16060, "fee": 1.0, "minPayout": 10, "website": "https://2miners.com" },
+        { "name": "2Miners", "region": "ASIA", "host": "asia-rvn.2miners.com", "port": 6060, "sslPort": 16060, "fee": 1.0, "minPayout": 10, "website": "https://2miners.com" },
+        { "name": "Flypool", "region": "US", "host": "stratum-ravencoin.flypool.org", "port": 3443, "sslPort": 3443, "fee": 1.0, "minPayout": 10, "website": "https://ravencoin.flypool.org" },
+        { "name": "Flypool", "region": "EU", "host": "stratum-ravencoin.flypool.org", "port": 3333, "sslPort": 3443, "fee": 1.0, "minPayout": 10, "website": "https://ravencoin.flypool.org" },
+        { "name": "HeroMiners", "region": "US", "host": "ravencoin.herominers.com", "port": 1140, "sslPort": 1141, "fee": 0.9, "minPayout": 5, "website": "https://herominers.com" },
+        { "name": "HeroMiners", "region": "EU", "host": "de.ravencoin.herominers.com", "port": 1140, "sslPort": 1141, "fee": 0.9, "minPayout": 5, "website": "https://herominers.com" },
+        { "name": "HeroMiners", "region": "ASIA", "host": "sg.ravencoin.herominers.com", "port": 1140, "sslPort": 1141, "fee": 0.9, "minPayout": 5, "website": "https://herominers.com" }
+      ]
+    },
+    {
+      "coin": "ERG",
+      "pools": [
+        { "name": "2Miners", "region": "US", "host": "us-erg.2miners.com", "port": 8888, "sslPort": 18888, "fee": 1.0, "minPayout": 0.5, "website": "https://2miners.com" },
+        { "name": "2Miners", "region": "EU", "host": "erg.2miners.com", "port": 8888, "sslPort": 18888, "fee": 1.0, "minPayout": 0.5, "website": "https://2miners.com" },
+        { "name": "2Miners", "region": "ASIA", "host": "asia-erg.2miners.com", "port": 8888, "sslPort": 18888, "fee": 1.0, "minPayout": 0.5, "website": "https://2miners.com" },
+        { "name": "Flypool", "region": "GLOBAL", "host": "stratum-ergo.flypool.org", "port": 3333, "sslPort": 3443, "fee": 1.0, "minPayout": 0.5, "website": "https://ergo.flypool.org" },
+        { "name": "HeroMiners", "region": "US", "host": "ergo.herominers.com", "port": 1180, "sslPort": 1181, "fee": 0.9, "minPayout": 0.3, "website": "https://herominers.com" },
+        { "name": "HeroMiners", "region": "EU", "host": "de.ergo.herominers.com", "port": 1180, "sslPort": 1181, "fee": 0.9, "minPayout": 0.3, "website": "https://herominers.com" },
+        { "name": "Woolypooly", "region": "GLOBAL", "host": "pool.woolypooly.com", "port": 3100, "fee": 0.9, "minPayout": 0.5, "website": "https://woolypooly.com" }
+      ]
+    },
+    {
+      "coin": "NEOXA",
+      "pools": [
+        { "name": "Rplant", "region": "GLOBAL", "host": "stratum-na.rplant.xyz", "port": 7076, "fee": 0.5, "minPayout": 1, "website": "https://rplant.xyz" },
+        { "name": "HeroMiners", "region": "EU", "host": "neoxa.herominers.com", "port": 1140, "sslPort": 1141, "fee": 0.9, "minPayout": 1, "website": "https://herominers.com" },
+        { "name": "Woolypooly", "region": "GLOBAL", "host": "pool.woolypooly.com", "port": 3116, "fee": 0.9, "minPayout": 1, "website": "https://woolypooly.com" }
+      ]
+    },
+    {
+      "coin": "MEOW",
+      "pools": [
+        { "name": "Rplant", "region": "GLOBAL", "host": "stratum-na.rplant.xyz", "port": 7068, "fee": 0.5, "minPayout": 100, "website": "https://rplant.xyz" },
+        { "name": "HeroMiners", "region": "EU", "host": "meowcoin.herominers.com", "port": 1140, "sslPort": 1141, "fee": 0.9, "minPayout": 50, "website": "https://herominers.com" },
+        { "name": "Woolypooly", "region": "GLOBAL", "host": "pool.woolypooly.com", "port": 3126, "fee": 0.9, "minPayout": 100, "website": "https://woolypooly.com" }
+      ]
+    },
+    {
+      "coin": "XNA",
+      "pools": [
+        { "name": "Rplant", "region": "GLOBAL", "host": "stratum-na.rplant.xyz", "port": 7065, "fee": 0.5, "minPayout": 1, "website": "https://rplant.xyz" },
+        { "name": "HeroMiners", "region": "EU", "host": "neurai.herominers.com", "port": 1140, "sslPort": 1141, "fee": 0.9, "minPayout": 1, "website": "https://herominers.com" },
+        { "name": "Woolypooly", "region": "GLOBAL", "host": "pool.woolypooly.com", "port": 3127, "fee": 0.9, "minPayout": 1, "website": "https://woolypooly.com" }
+      ]
+    },
+    {
+      "coin": "CFX",
+      "pools": [
+        { "name": "F2Pool", "region": "GLOBAL", "host": "cfx.f2pool.com", "port": 6800, "fee": 2.0, "minPayout": 1, "website": "https://f2pool.com" },
+        { "name": "Woolypooly", "region": "GLOBAL", "host": "pool.woolypooly.com", "port": 3094, "fee": 0.9, "minPayout": 1, "website": "https://woolypooly.com" },
+        { "name": "HeroMiners", "region": "EU", "host": "conflux.herominers.com", "port": 1170, "sslPort": 1171, "fee": 0.9, "minPayout": 1, "website": "https://herominers.com" }
+      ]
+    },
+    {
+      "coin": "BEAM",
+      "pools": [
+        { "name": "2Miners", "region": "US", "host": "us-beam.2miners.com", "port": 5252, "sslPort": 15252, "fee": 1.0, "minPayout": 1, "website": "https://2miners.com" },
+        { "name": "2Miners", "region": "EU", "host": "beam.2miners.com", "port": 5252, "sslPort": 15252, "fee": 1.0, "minPayout": 1, "website": "https://2miners.com" },
+        { "name": "2Miners", "region": "ASIA", "host": "asia-beam.2miners.com", "port": 5252, "sslPort": 15252, "fee": 1.0, "minPayout": 1, "website": "https://2miners.com" },
+        { "name": "HeroMiners", "region": "EU", "host": "beam.herominers.com", "port": 1130, "sslPort": 1131, "fee": 0.9, "minPayout": 0.5, "website": "https://herominers.com" },
+        { "name": "Leafpool", "region": "GLOBAL", "host": "beam.leafpool.com", "port": 3333, "fee": 1.0, "minPayout": 1, "website": "https://leafpool.com" }
+      ]
+    },
+    {
+      "coin": "FIRO",
+      "pools": [
+        { "name": "2Miners", "region": "US", "host": "us-firo.2miners.com", "port": 8181, "sslPort": 18181, "fee": 1.0, "minPayout": 0.1, "website": "https://2miners.com" },
+        { "name": "2Miners", "region": "EU", "host": "firo.2miners.com", "port": 8181, "sslPort": 18181, "fee": 1.0, "minPayout": 0.1, "website": "https://2miners.com" },
+        { "name": "2Miners", "region": "ASIA", "host": "asia-firo.2miners.com", "port": 8181, "sslPort": 18181, "fee": 1.0, "minPayout": 0.1, "website": "https://2miners.com" },
+        { "name": "MintPond", "region": "GLOBAL", "host": "firo.mintpond.com", "port": 3000, "sslPort": 3443, "fee": 1.0, "minPayout": 0.1, "website": "https://mintpond.com" },
+        { "name": "HeroMiners", "region": "EU", "host": "firo.herominers.com", "port": 1190, "sslPort": 1191, "fee": 0.9, "minPayout": 0.05, "website": "https://herominers.com" }
+      ]
+    },
+    {
+      "coin": "IRON",
+      "pools": [
+        { "name": "HeroMiners", "region": "EU", "host": "ironfish.herominers.com", "port": 1145, "sslPort": 1146, "fee": 0.9, "minPayout": 0.1, "website": "https://herominers.com" },
+        { "name": "Kryptex", "region": "GLOBAL", "host": "iron.kryptex.network", "port": 7777, "fee": 1.0, "minPayout": 0.1, "website": "https://kryptex.network" },
+        { "name": "F2Pool", "region": "GLOBAL", "host": "iron.f2pool.com", "port": 1700, "fee": 2.0, "minPayout": 0.1, "website": "https://f2pool.com" }
+      ]
+    },
+    {
+      "coin": "DNX",
+      "pools": [
+        { "name": "HeroMiners", "region": "EU", "host": "dynex.herominers.com", "port": 1120, "sslPort": 1121, "fee": 0.9, "minPayout": 0.5, "website": "https://herominers.com" },
+        { "name": "HeroMiners", "region": "US", "host": "us.dynex.herominers.com", "port": 1120, "sslPort": 1121, "fee": 0.9, "minPayout": 0.5, "website": "https://herominers.com" },
+        { "name": "Kryptex", "region": "GLOBAL", "host": "dnx.kryptex.network", "port": 7070, "fee": 1.0, "minPayout": 0.5, "website": "https://kryptex.network" }
+      ]
+    },
+    {
+      "coin": "FLUX",
+      "pools": [
+        { "name": "2Miners", "region": "US", "host": "us-flux.2miners.com", "port": 9090, "sslPort": 19090, "fee": 1.0, "minPayout": 0.01, "website": "https://2miners.com" },
+        { "name": "2Miners", "region": "EU", "host": "flux.2miners.com", "port": 9090, "sslPort": 19090, "fee": 1.0, "minPayout": 0.01, "website": "https://2miners.com" },
+        { "name": "2Miners", "region": "ASIA", "host": "asia-flux.2miners.com", "port": 9090, "sslPort": 19090, "fee": 1.0, "minPayout": 0.01, "website": "https://2miners.com" },
+        { "name": "MintPond", "region": "GLOBAL", "host": "flux.mintpond.com", "port": 3000, "sslPort": 3443, "fee": 1.0, "minPayout": 0.01, "website": "https://mintpond.com" },
+        { "name": "HeroMiners", "region": "EU", "host": "flux.herominers.com", "port": 1110, "sslPort": 1111, "fee": 0.9, "minPayout": 0.01, "website": "https://herominers.com" }
+      ]
+    },
+    {
+      "coin": "CTXC",
+      "pools": [
+        { "name": "HeroMiners", "region": "EU", "host": "cortex.herominers.com", "port": 1200, "sslPort": 1201, "fee": 0.9, "minPayout": 0.1, "website": "https://herominers.com" },
+        { "name": "F2Pool", "region": "GLOBAL", "host": "ctxc.f2pool.com", "port": 2018, "fee": 2.0, "minPayout": 0.1, "website": "https://f2pool.com" }
+      ]
+    },
+    {
+      "coin": "KAS",
+      "pools": [
+        { "name": "HeroMiners", "region": "EU", "host": "kaspa.herominers.com", "port": 1206, "sslPort": 1207, "fee": 0.9, "minPayout": 5, "website": "https://herominers.com" },
+        { "name": "HeroMiners", "region": "US", "host": "us.kaspa.herominers.com", "port": 1206, "sslPort": 1207, "fee": 0.9, "minPayout": 5, "website": "https://herominers.com" },
+        { "name": "HeroMiners", "region": "ASIA", "host": "sg.kaspa.herominers.com", "port": 1206, "sslPort": 1207, "fee": 0.9, "minPayout": 5, "website": "https://herominers.com" },
+        { "name": "Woolypooly", "region": "GLOBAL", "host": "pool.woolypooly.com", "port": 3112, "fee": 0.9, "minPayout": 5, "website": "https://woolypooly.com" },
+        { "name": "ACC Pool", "region": "GLOBAL", "host": "kas.acc-pool.pw", "port": 16061, "fee": 1.0, "minPayout": 5, "website": "https://acc-pool.pw" }
+      ]
+    },
+    {
+      "coin": "XMR",
+      "pools": [
+        { "name": "2Miners", "region": "US", "host": "us-xmr.2miners.com", "port": 2222, "sslPort": 12222, "fee": 1.0, "minPayout": 0.01, "website": "https://2miners.com" },
+        { "name": "2Miners", "region": "EU", "host": "xmr.2miners.com", "port": 2222, "sslPort": 12222, "fee": 1.0, "minPayout": 0.01, "website": "https://2miners.com" },
+        { "name": "2Miners", "region": "ASIA", "host": "asia-xmr.2miners.com", "port": 2222, "sslPort": 12222, "fee": 1.0, "minPayout": 0.01, "website": "https://2miners.com" },
+        { "name": "SupportXMR", "region": "GLOBAL", "host": "pool.supportxmr.com", "port": 3333, "sslPort": 9999, "fee": 0.6, "minPayout": 0.01, "website": "https://supportxmr.com" },
+        { "name": "Nanopool", "region": "US", "host": "xmr-us-east1.nanopool.org", "port": 14433, "fee": 1.0, "minPayout": 0.05, "website": "https://nanopool.org" },
+        { "name": "Nanopool", "region": "EU", "host": "xmr-eu1.nanopool.org", "port": 14433, "fee": 1.0, "minPayout": 0.05, "website": "https://nanopool.org" },
+        { "name": "Nanopool", "region": "ASIA", "host": "xmr-asia1.nanopool.org", "port": 14433, "fee": 1.0, "minPayout": 0.05, "website": "https://nanopool.org" },
+        { "name": "HeroMiners", "region": "EU", "host": "monero.herominers.com", "port": 1111, "sslPort": 1112, "fee": 0.9, "minPayout": 0.01, "website": "https://herominers.com" }
+      ]
+    },
+    {
+      "coin": "VRSC",
+      "pools": [
+        { "name": "Luckpool", "region": "GLOBAL", "host": "na.luckpool.net", "port": 3956, "fee": 0.5, "minPayout": 0.1, "website": "https://luckpool.net" },
+        { "name": "Luckpool", "region": "EU", "host": "eu.luckpool.net", "port": 3956, "fee": 0.5, "minPayout": 0.1, "website": "https://luckpool.net" },
+        { "name": "HeroMiners", "region": "EU", "host": "veruscoin.herominers.com", "port": 1160, "sslPort": 1161, "fee": 0.9, "minPayout": 0.1, "website": "https://herominers.com" },
+        { "name": "Verus Community", "region": "GLOBAL", "host": "veruscoin.io", "port": 9999, "fee": 1.0, "minPayout": 0.25, "website": "https://veruscoin.io" }
+      ]
+    },
+    {
+      "coin": "ZEPH",
+      "pools": [
+        { "name": "HeroMiners", "region": "EU", "host": "zephyr.herominers.com", "port": 1123, "sslPort": 1124, "fee": 0.9, "minPayout": 0.01, "website": "https://herominers.com" },
+        { "name": "HeroMiners", "region": "US", "host": "us.zephyr.herominers.com", "port": 1123, "sslPort": 1124, "fee": 0.9, "minPayout": 0.01, "website": "https://herominers.com" },
+        { "name": "Miningocean", "region": "GLOBAL", "host": "zeph.miningocean.org", "port": 5432, "fee": 0.5, "minPayout": 0.01, "website": "https://miningocean.org" }
+      ]
+    },
+    {
+      "coin": "RTM",
+      "pools": [
+        { "name": "Rplant", "region": "GLOBAL", "host": "stratum-na.rplant.xyz", "port": 7040, "fee": 0.5, "minPayout": 10, "website": "https://rplant.xyz" },
+        { "name": "Flockpool", "region": "GLOBAL", "host": "stratum.flockpool.com", "port": 4444, "fee": 0.9, "minPayout": 10, "website": "https://flockpool.com" },
+        { "name": "HeroMiners", "region": "EU", "host": "raptoreum.herominers.com", "port": 1170, "sslPort": 1171, "fee": 0.9, "minPayout": 5, "website": "https://herominers.com" }
+      ]
+    },
+    {
+      "coin": "SAL",
+      "pools": [
+        { "name": "HeroMiners", "region": "EU", "host": "salvium.herominers.com", "port": 1120, "sslPort": 1121, "fee": 0.9, "minPayout": 0.01, "website": "https://herominers.com" },
+        { "name": "Miningocean", "region": "GLOBAL", "host": "sal.miningocean.org", "port": 4332, "fee": 0.5, "minPayout": 0.01, "website": "https://miningocean.org" }
+      ]
+    },
+    {
+      "coin": "QUBIC",
+      "pools": [
+        { "name": "Apool", "region": "GLOBAL", "host": "wss://qubic.apool.io", "port": 443, "fee": 1.0, "minPayout": 1000000, "website": "https://apool.io" },
+        { "name": "Solutions", "region": "GLOBAL", "host": "wss://mine.qubic.li", "port": 443, "fee": 2.0, "minPayout": 1000000, "website": "https://pool.qubic.li" }
+      ]
+    },
+    {
+      "coin": "XTR",
+      "pools": [
+        { "name": "HeroMiners", "region": "EU", "host": "tari.herominers.com", "port": 1122, "sslPort": 1123, "fee": 0.9, "minPayout": 1, "website": "https://herominers.com" },
+        { "name": "Miningocean", "region": "GLOBAL", "host": "xtr.miningocean.org", "port": 5132, "fee": 0.5, "minPayout": 1, "website": "https://miningocean.org" }
+      ]
+    },
+    {
+      "coin": "KCN",
+      "pools": [
+        { "name": "Rplant", "region": "GLOBAL", "host": "stratum-na.rplant.xyz", "port": 7045, "fee": 0.5, "minPayout": 1, "website": "https://rplant.xyz" },
+        { "name": "Luckpool", "region": "GLOBAL", "host": "na.luckpool.net", "port": 3957, "fee": 0.5, "minPayout": 1, "website": "https://luckpool.net" }
+      ]
+    }
+  ]
+}

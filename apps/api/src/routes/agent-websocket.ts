@@ -28,7 +28,7 @@ interface AgentMessage {
 
 interface Command {
   id: string;
-  type: 'start_miner' | 'stop_miner' | 'restart_miner' | 'apply_oc' | 'apply_flight_sheet' | 'reboot' | 'shutdown' | 'execute';
+  type: 'start_miner' | 'stop_miner' | 'restart_miner' | 'install_miner' | 'uninstall_miner' | 'list_miners' | 'apply_oc' | 'apply_flight_sheet' | 'reboot' | 'shutdown' | 'execute';
   payload?: unknown;
   createdAt: Date;
 }

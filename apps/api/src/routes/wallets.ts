@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { prisma } from '@bloxos/database';
 import { getUserFarmIds } from '../middleware/authorization.ts';
 import { auditLog } from '../utils/security.ts';
+import { validateWalletAddress } from '../utils/wallet-validator.js';
 
 // Validation schemas
 const CreateWalletSchema = z.object({
@@ -10,7 +11,7 @@ const CreateWalletSchema = z.object({
   coin: z.string().min(1).max(20),
   address: z.string().min(10).max(200),
   source: z.string().max(100).optional(),
-  farmId: z.string().cuid(),
+  farmId: z.string().min(1).max(50),
 });
 
 const UpdateWalletSchema = z.object({
@@ -87,6 +88,16 @@ export async function walletRoutes(app: FastifyInstance) {
       return reply.status(403).send({ error: 'Access denied to this farm' });
     }
 
+    // Validate wallet address format
+    const validation = await validateWalletAddress(data.coin, data.address);
+    if (!validation.valid) {
+      return reply.status(400).send({ 
+        error: 'Invalid wallet address',
+        details: validation.error,
+        field: 'address',
+      });
+    }
+
     const wallet = await prisma.wallet.create({
       data: {
         name: data.name,
@@ -131,6 +142,21 @@ export async function walletRoutes(app: FastifyInstance) {
 
     if (user.role !== 'ADMIN' && existing.farm.ownerId !== user.userId) {
       return reply.status(403).send({ error: 'Access denied' });
+    }
+
+    // If address or coin is being updated, validate the new address
+    const coinToValidate = data.coin?.toUpperCase() || existing.coin;
+    const addressToValidate = data.address || existing.address;
+    
+    if (data.address || data.coin) {
+      const validation = await validateWalletAddress(coinToValidate, addressToValidate);
+      if (!validation.valid) {
+        return reply.status(400).send({ 
+          error: 'Invalid wallet address',
+          details: validation.error,
+          field: 'address',
+        });
+      }
     }
 
     const wallet = await prisma.wallet.update({

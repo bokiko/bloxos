@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
+import Image from 'next/image';
 
 const getApiUrl = () => {
   if (typeof window === 'undefined') return 'http://localhost:3001';
@@ -32,6 +33,15 @@ interface Farm {
   name: string;
 }
 
+interface Coin {
+  id: string;
+  ticker: string;
+  name: string;
+  algorithm: string;
+  type: 'GPU' | 'CPU';
+  logoPath: string | null;
+}
+
 // Icons
 const PlusIcon = () => (
   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -57,30 +67,28 @@ const WalletIcon = () => (
   </svg>
 );
 
-// Coin colors
-const coinColors: Record<string, string> = {
-  BTC: 'bg-orange-500',
-  ETH: 'bg-blue-500',
-  KAS: 'bg-teal-500',
-  RVN: 'bg-purple-500',
-  ETC: 'bg-green-500',
-  ERGO: 'bg-red-500',
-  FLUX: 'bg-blue-400',
-  XMR: 'bg-orange-400',
-  DEFAULT: 'bg-slate-500',
-};
+const CheckIcon = () => (
+  <svg className="w-4 h-4 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+  </svg>
+);
 
-function getCoinColor(coin: string) {
-  return coinColors[coin.toUpperCase()] || coinColors.DEFAULT;
-}
+const XIcon = () => (
+  <svg className="w-4 h-4 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+  </svg>
+);
 
 export default function WalletsPage() {
   const [wallets, setWallets] = useState<Wallet[]>([]);
   const [farms, setFarms] = useState<Farm[]>([]);
+  const [coins, setCoins] = useState<Coin[]>([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [editingWallet, setEditingWallet] = useState<Wallet | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [addressValidation, setAddressValidation] = useState<{ valid: boolean; error?: string } | null>(null);
+  const [validating, setValidating] = useState(false);
 
   // Form state
   const [formData, setFormData] = useState({
@@ -91,12 +99,53 @@ export default function WalletsPage() {
     farmId: '',
   });
 
+  // Debounced address validation
+  const validateAddress = useCallback(async (ticker: string, address: string) => {
+    if (!ticker || !address || address.length < 10) {
+      setAddressValidation(null);
+      return;
+    }
+
+    setValidating(true);
+    try {
+      const res = await fetch(`${getApiUrl()}/api/coins/validate-wallet`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ ticker, address }),
+      });
+      const data = await res.json();
+      setAddressValidation(data);
+    } catch {
+      setAddressValidation(null);
+    } finally {
+      setValidating(false);
+    }
+  }, []);
+
+  // Debounce address validation
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      validateAddress(formData.coin, formData.address);
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [formData.coin, formData.address, validateAddress]);
+
   useEffect(() => {
     fetchData();
   }, []);
 
   async function fetchData() {
     try {
+      // Fetch coins
+      const coinsRes = await fetch(`${getApiUrl()}/api/coins`, {
+        credentials: 'include',
+      });
+      if (coinsRes.ok) {
+        const coinsData = await coinsRes.json();
+        setCoins(coinsData);
+      }
+
       // Fetch user data to get farms
       const meRes = await fetch(`${getApiUrl()}/api/auth/me`, {
         credentials: 'include',
@@ -111,7 +160,7 @@ export default function WalletsPage() {
       
       // Fetch wallets
       await fetchWallets();
-    } catch (err) {
+    } catch {
       setError('Failed to load data');
     }
   }
@@ -126,7 +175,7 @@ export default function WalletsPage() {
       if (Array.isArray(data)) {
         setWallets(data);
       }
-    } catch (err) {
+    } catch {
       setError('Failed to fetch wallets');
     } finally {
       setLoading(false);
@@ -136,6 +185,7 @@ export default function WalletsPage() {
   function openCreateModal() {
     setEditingWallet(null);
     setFormData({ name: '', coin: '', address: '', source: '', farmId: farms[0]?.id || '' });
+    setAddressValidation(null);
     setShowModal(true);
   }
 
@@ -148,6 +198,7 @@ export default function WalletsPage() {
       source: wallet.source || '',
       farmId: wallet.farmId,
     });
+    setAddressValidation(null);
     setShowModal(true);
   }
 
@@ -177,7 +228,7 @@ export default function WalletsPage() {
 
       if (!res.ok) {
         const data = await res.json();
-        throw new Error(data.error || data.message || 'Failed to save wallet');
+        throw new Error(data.details || data.error || data.message || 'Failed to save wallet');
       }
 
       setShowModal(false);
@@ -208,6 +259,11 @@ export default function WalletsPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete wallet');
     }
+  }
+
+  // Get coin info for display
+  function getCoinInfo(ticker: string): Coin | undefined {
+    return coins.find(c => c.ticker === ticker.toUpperCase());
   }
 
   return (
@@ -259,49 +315,67 @@ export default function WalletsPage() {
         </div>
       ) : (
         <div className="grid gap-4">
-          {wallets.map((wallet) => (
-            <div
-              key={wallet.id}
-              className="bg-slate-800/50 backdrop-blur-sm rounded-xl border border-slate-700/50 p-5 hover:border-slate-600/50 transition-all"
-            >
-              <div className="flex items-start justify-between">
-                <div className="flex items-center gap-4">
-                  <div className={`w-12 h-12 rounded-xl ${getCoinColor(wallet.coin)} flex items-center justify-center font-bold text-white`}>
-                    {wallet.coin.slice(0, 3)}
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h3 className="font-semibold text-lg">{wallet.name}</h3>
-                      <span className="px-2 py-0.5 bg-slate-700 rounded text-xs text-slate-300">{wallet.coin}</span>
+          {wallets.map((wallet) => {
+            const coinInfo = getCoinInfo(wallet.coin);
+            return (
+              <div
+                key={wallet.id}
+                className="bg-slate-800/50 backdrop-blur-sm rounded-xl border border-slate-700/50 p-5 hover:border-slate-600/50 transition-all"
+              >
+                <div className="flex items-start justify-between">
+                  <div className="flex items-center gap-4">
+                    <div className="w-12 h-12 rounded-xl bg-slate-700 flex items-center justify-center overflow-hidden">
+                      {coinInfo?.logoPath ? (
+                        <Image
+                          src={coinInfo.logoPath}
+                          alt={wallet.coin}
+                          width={48}
+                          height={48}
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <span className="font-bold text-white text-sm">{wallet.coin.slice(0, 3)}</span>
+                      )}
                     </div>
-                    <p className="text-sm text-slate-400 font-mono mt-1 break-all">{wallet.address}</p>
-                    {wallet.source && (
-                      <p className="text-xs text-slate-500 mt-1">Source: {wallet.source}</p>
-                    )}
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h3 className="font-semibold text-lg">{wallet.name}</h3>
+                        <span className="px-2 py-0.5 bg-slate-700 rounded text-xs text-slate-300">{wallet.coin}</span>
+                        {coinInfo && (
+                          <span className={`px-2 py-0.5 rounded text-xs ${coinInfo.type === 'GPU' ? 'bg-green-500/20 text-green-400' : 'bg-blue-500/20 text-blue-400'}`}>
+                            {coinInfo.type}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-sm text-slate-400 font-mono mt-1 break-all">{wallet.address}</p>
+                      {wallet.source && (
+                        <p className="text-xs text-slate-500 mt-1">Source: {wallet.source}</p>
+                      )}
+                    </div>
                   </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  {wallet._count && wallet._count.flightSheets > 0 && (
-                    <span className="text-xs text-slate-500 mr-2">
-                      {wallet._count.flightSheets} flight sheet{wallet._count.flightSheets > 1 ? 's' : ''}
-                    </span>
-                  )}
-                  <button
-                    onClick={() => openEditModal(wallet)}
-                    className="p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-700 transition-colors"
-                  >
-                    <EditIcon />
-                  </button>
-                  <button
-                    onClick={() => handleDelete(wallet)}
-                    className="p-2 rounded-lg text-slate-400 hover:text-red-400 hover:bg-red-500/10 transition-colors"
-                  >
-                    <TrashIcon />
-                  </button>
+                  <div className="flex items-center gap-2">
+                    {wallet._count && wallet._count.flightSheets > 0 && (
+                      <span className="text-xs text-slate-500 mr-2">
+                        {wallet._count.flightSheets} flight sheet{wallet._count.flightSheets > 1 ? 's' : ''}
+                      </span>
+                    )}
+                    <button
+                      onClick={() => openEditModal(wallet)}
+                      className="p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-700 transition-colors"
+                    >
+                      <EditIcon />
+                    </button>
+                    <button
+                      onClick={() => handleDelete(wallet)}
+                      className="p-2 rounded-lg text-slate-400 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                    >
+                      <TrashIcon />
+                    </button>
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
@@ -320,7 +394,7 @@ export default function WalletsPage() {
                   type="text"
                   value={formData.name}
                   onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  placeholder="My ETH Wallet"
+                  placeholder="My Mining Wallet"
                   className="w-full px-4 py-2.5 bg-slate-900/50 border border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blox-500"
                   required
                 />
@@ -328,26 +402,63 @@ export default function WalletsPage() {
 
               <div>
                 <label className="block text-sm font-medium text-slate-300 mb-1">Coin</label>
-                <input
-                  type="text"
+                <select
                   value={formData.coin}
-                  onChange={(e) => setFormData({ ...formData, coin: e.target.value.toUpperCase() })}
-                  placeholder="ETH, BTC, KAS, etc."
-                  className="w-full px-4 py-2.5 bg-slate-900/50 border border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blox-500 uppercase"
+                  onChange={(e) => setFormData({ ...formData, coin: e.target.value })}
+                  className="w-full px-4 py-2.5 bg-slate-900/50 border border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blox-500"
                   required
-                />
+                >
+                  <option value="">Select a coin...</option>
+                  <optgroup label="GPU Coins">
+                    {coins.filter(c => c.type === 'GPU').map(coin => (
+                      <option key={coin.id} value={coin.ticker}>
+                        {coin.ticker} - {coin.name} ({coin.algorithm})
+                      </option>
+                    ))}
+                  </optgroup>
+                  <optgroup label="CPU Coins">
+                    {coins.filter(c => c.type === 'CPU').map(coin => (
+                      <option key={coin.id} value={coin.ticker}>
+                        {coin.ticker} - {coin.name} ({coin.algorithm})
+                      </option>
+                    ))}
+                  </optgroup>
+                </select>
               </div>
 
               <div>
                 <label className="block text-sm font-medium text-slate-300 mb-1">Address</label>
-                <input
-                  type="text"
-                  value={formData.address}
-                  onChange={(e) => setFormData({ ...formData, address: e.target.value })}
-                  placeholder="0x..."
-                  className="w-full px-4 py-2.5 bg-slate-900/50 border border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blox-500 font-mono text-sm"
-                  required
-                />
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={formData.address}
+                    onChange={(e) => setFormData({ ...formData, address: e.target.value })}
+                    placeholder="Wallet address..."
+                    className={`w-full px-4 py-2.5 pr-10 bg-slate-900/50 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blox-500 font-mono text-sm ${
+                      addressValidation?.valid === false 
+                        ? 'border-red-500' 
+                        : addressValidation?.valid === true 
+                          ? 'border-green-500' 
+                          : 'border-slate-700'
+                    }`}
+                    required
+                  />
+                  <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                    {validating ? (
+                      <div className="w-4 h-4 border-2 border-slate-500 border-t-blox-400 rounded-full animate-spin" />
+                    ) : addressValidation?.valid === true ? (
+                      <CheckIcon />
+                    ) : addressValidation?.valid === false ? (
+                      <XIcon />
+                    ) : null}
+                  </div>
+                </div>
+                {addressValidation?.valid === false && (
+                  <p className="mt-1 text-xs text-red-400">{addressValidation.error}</p>
+                )}
+                {addressValidation?.valid === true && (
+                  <p className="mt-1 text-xs text-green-400">Valid address format</p>
+                )}
               </div>
 
               <div>
@@ -371,7 +482,8 @@ export default function WalletsPage() {
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 px-4 py-2.5 bg-blox-600 hover:bg-blox-700 rounded-lg font-medium transition-colors"
+                  disabled={addressValidation?.valid === false}
+                  className="flex-1 px-4 py-2.5 bg-blox-600 hover:bg-blox-700 rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {editingWallet ? 'Save Changes' : 'Add Wallet'}
                 </button>

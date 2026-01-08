@@ -8,6 +8,15 @@ const getWsUrl = () => {
   return `${protocol}//${window.location.hostname}:3001`;
 };
 
+// Use console.warn instead of console.error to avoid Next.js 15 error overlay
+const logError = (message: string, ...args: unknown[]) => {
+  if (process.env.NODE_ENV === 'development') {
+    console.warn(`[WS] ${message}`, ...args);
+  } else {
+    console.error(message, ...args);
+  }
+};
+
 interface WebSocketMessage {
   type: string;
   event?: string;
@@ -37,15 +46,15 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
       wsRef.current = ws;
 
       ws.onopen = () => {
-        console.log('WebSocket connected');
         setIsConnected(true);
         setError(null);
         reconnectAttempts.current = 0;
 
         // Authenticate with token from cookie
-        // Since we can't access httpOnly cookies, we'll use a different approach
-        // The server will need to check the session differently for WS
-        ws.send(JSON.stringify({ type: 'auth', token: getTokenFromStorage() }));
+        const token = getTokenFromStorage();
+        if (token) {
+          ws.send(JSON.stringify({ type: 'auth', token }));
+        }
       };
 
       ws.onmessage = (event) => {
@@ -58,7 +67,6 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
           }
 
           if (message.type === 'authenticated') {
-            console.log('WebSocket authenticated');
             return;
           }
 
@@ -79,13 +87,12 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
             options.onRigsUpdate?.(message.data as unknown[]);
           }
 
-        } catch (err) {
-          console.error('Failed to parse WebSocket message:', err);
+        } catch {
+          // Silently ignore parse errors
         }
       };
 
       ws.onclose = () => {
-        console.log('WebSocket disconnected');
         setIsConnected(false);
         wsRef.current = null;
 
@@ -93,18 +100,16 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
         if (reconnectAttempts.current < maxReconnectAttempts) {
           reconnectAttempts.current++;
           const delay = Math.min(1000 * Math.pow(2, reconnectAttempts.current), 30000);
-          console.log(`Reconnecting in ${delay}ms (attempt ${reconnectAttempts.current})`);
           reconnectTimeoutRef.current = setTimeout(connect, delay);
         }
       };
 
-      ws.onerror = (err) => {
-        console.error('WebSocket error:', err);
+      ws.onerror = () => {
+        // WebSocket errors are normal during development - don't show overlay
         setError('Connection error');
       };
 
-    } catch (err) {
-      console.error('Failed to create WebSocket:', err);
+    } catch {
       setError('Failed to connect');
     }
   }, [options]);

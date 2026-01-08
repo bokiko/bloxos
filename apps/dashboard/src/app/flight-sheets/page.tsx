@@ -7,6 +7,17 @@ const getApiUrl = () => {
   return `http://${window.location.hostname}:3001`;
 };
 
+// Helper to get CSRF token from cookie
+function getCsrfToken(): string {
+  const match = document.cookie.match(/(?:^|;\s*)csrf_token=([^;]*)/);
+  return match ? decodeURIComponent(match[1]) : '';
+}
+
+interface Farm {
+  id: string;
+  name: string;
+}
+
 interface Wallet {
   id: string;
   name: string;
@@ -89,6 +100,7 @@ export default function FlightSheetsPage() {
   const [wallets, setWallets] = useState<Wallet[]>([]);
   const [pools, setPools] = useState<Pool[]>([]);
   const [miners, setMiners] = useState<Miner[]>([]);
+  const [farms, setFarms] = useState<Farm[]>([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [editingFlightSheet, setEditingFlightSheet] = useState<FlightSheet | null>(null);
@@ -102,6 +114,7 @@ export default function FlightSheetsPage() {
     poolId: '',
     minerId: '',
     extraArgs: '',
+    farmId: '',
   });
 
   useEffect(() => {
@@ -110,11 +123,12 @@ export default function FlightSheetsPage() {
 
   async function fetchData() {
     try {
-      const [fsRes, walletsRes, poolsRes, minersRes] = await Promise.all([
+      const [fsRes, walletsRes, poolsRes, minersRes, farmsRes] = await Promise.all([
         fetch(`${getApiUrl()}/api/flight-sheets`, { credentials: 'include' }),
         fetch(`${getApiUrl()}/api/wallets`, { credentials: 'include' }),
         fetch(`${getApiUrl()}/api/pools`, { credentials: 'include' }),
         fetch(`${getApiUrl()}/api/miners`, { credentials: 'include' }),
+        fetch(`${getApiUrl()}/api/auth/me`, { credentials: 'include' }),
       ]);
 
       if (fsRes.ok) {
@@ -133,6 +147,12 @@ export default function FlightSheetsPage() {
         const minersData = await minersRes.json();
         if (Array.isArray(minersData)) setMiners(minersData);
       }
+      if (farmsRes.ok) {
+        const userData = await farmsRes.json();
+        if (userData.farms && Array.isArray(userData.farms)) {
+          setFarms(userData.farms);
+        }
+      }
     } catch (err) {
       setError('Failed to fetch data');
     } finally {
@@ -142,7 +162,7 @@ export default function FlightSheetsPage() {
 
   function openCreateModal() {
     setEditingFlightSheet(null);
-    setFormData({ name: '', coin: '', walletId: '', poolId: '', minerId: '', extraArgs: '' });
+    setFormData({ name: '', coin: '', walletId: '', poolId: '', minerId: '', extraArgs: '', farmId: farms[0]?.id || '' });
     setShowModal(true);
   }
 
@@ -155,6 +175,7 @@ export default function FlightSheetsPage() {
       poolId: fs.pool.id,
       minerId: fs.miner.id,
       extraArgs: fs.extraArgs || '',
+      farmId: farms[0]?.id || '',
     });
     setShowModal(true);
   }
@@ -168,16 +189,24 @@ export default function FlightSheetsPage() {
         ? `${getApiUrl()}/api/flight-sheets/${editingFlightSheet.id}`
         : `${getApiUrl()}/api/flight-sheets`;
       
+      // For updates, don't send farmId
+      const submitData = editingFlightSheet
+        ? { name: formData.name, coin: formData.coin, walletId: formData.walletId, poolId: formData.poolId, minerId: formData.minerId, extraArgs: formData.extraArgs || undefined }
+        : { ...formData, extraArgs: formData.extraArgs || undefined };
+      
       const res = await fetch(url, {
         method: editingFlightSheet ? 'PATCH' : 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'x-csrf-token': getCsrfToken(),
+        },
         credentials: 'include',
-        body: JSON.stringify(formData),
+        body: JSON.stringify(submitData),
       });
 
       if (!res.ok) {
         const data = await res.json();
-        throw new Error(data.message || 'Failed to save flight sheet');
+        throw new Error(data.message || data.error || 'Failed to save flight sheet');
       }
 
       setShowModal(false);
@@ -193,12 +222,15 @@ export default function FlightSheetsPage() {
     try {
       const res = await fetch(`${getApiUrl()}/api/flight-sheets/${fs.id}`, {
         method: 'DELETE',
+        headers: {
+          'x-csrf-token': getCsrfToken(),
+        },
         credentials: 'include',
       });
 
       if (!res.ok) {
         const data = await res.json();
-        throw new Error(data.message || 'Failed to delete flight sheet');
+        throw new Error(data.message || data.error || 'Failed to delete flight sheet');
       }
 
       fetchData();

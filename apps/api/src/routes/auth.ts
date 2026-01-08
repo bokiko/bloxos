@@ -43,6 +43,10 @@ const REFRESH_TOKEN_MAX_AGE = 7 * 24 * 60 * 60; // 7 days in seconds
 const EXTENDED_ACCESS_TOKEN_MAX_AGE = 30 * 24 * 60 * 60; // 30 days in seconds
 const EXTENDED_REFRESH_TOKEN_MAX_AGE = 90 * 24 * 60 * 60; // 90 days in seconds
 
+// Cookie settings based on environment
+const isProduction = process.env.NODE_ENV === 'production';
+const cookieSameSite = isProduction ? 'strict' : 'lax';
+
 export async function authRoutes(app: FastifyInstance) {
   // Check if setup is needed (no users exist)
   app.get('/setup-required', async (request: FastifyRequest, reply: FastifyReply) => {
@@ -76,8 +80,8 @@ export async function authRoutes(app: FastifyInstance) {
       // Set access token cookie
       reply.setCookie('token', accessToken, {
         httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'strict',
+        secure: isProduction,
+        sameSite: cookieSameSite,
         path: '/',
         maxAge: ACCESS_TOKEN_MAX_AGE,
       });
@@ -85,9 +89,9 @@ export async function authRoutes(app: FastifyInstance) {
       // Set refresh token cookie
       reply.setCookie('refreshToken', refreshToken, {
         httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'strict',
-        path: '/auth/refresh',
+        secure: isProduction,
+        sameSite: cookieSameSite,
+        path: '/api/auth/refresh',
         maxAge: REFRESH_TOKEN_MAX_AGE,
       });
 
@@ -126,8 +130,8 @@ export async function authRoutes(app: FastifyInstance) {
       // Set access token cookie
       reply.setCookie('token', accessToken, {
         httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'strict',
+        secure: isProduction,
+        sameSite: cookieSameSite,
         path: '/',
         maxAge: accessMaxAge,
       });
@@ -135,8 +139,8 @@ export async function authRoutes(app: FastifyInstance) {
       // Set refresh token cookie
       reply.setCookie('refreshToken', refreshToken, {
         httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'strict',
+        secure: isProduction,
+        sameSite: cookieSameSite,
         path: '/api/auth/refresh',
         maxAge: refreshMaxAge,
       });
@@ -168,8 +172,8 @@ export async function authRoutes(app: FastifyInstance) {
       // Set new access token cookie
       reply.setCookie('token', result.token, {
         httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'strict',
+        secure: isProduction,
+        sameSite: cookieSameSite,
         path: '/',
         maxAge: ACCESS_TOKEN_MAX_AGE,
       });
