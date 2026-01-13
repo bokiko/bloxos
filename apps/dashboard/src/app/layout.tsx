@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Inter } from 'next/font/google';
 import { usePathname } from 'next/navigation';
 import Link from 'next/link';
 import './globals.css';
@@ -11,8 +10,6 @@ const getApiUrl = () => {
   if (typeof window === 'undefined') return 'http://localhost:3001';
   return `http://${window.location.hostname}:3001`;
 };
-
-const inter = Inter({ subsets: ['latin'] });
 
 // Icons as simple SVG components
 const DashboardIcon = () => (
@@ -348,7 +345,7 @@ export default function RootLayout({
         <meta name="description" content="Open-source mining rig management system" />
         <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
       </head>
-      <body className={`${inter.className} bg-slate-900 text-white`}>
+      <body className="font-sans bg-slate-900 text-white">
         <AuthProvider>
           <AppContent>{children}</AppContent>
         </AuthProvider>
