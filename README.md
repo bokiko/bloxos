@@ -92,9 +92,16 @@ BloxOS lets you **manage all your mining rigs from one place** - just like HiveO
 
 ### What You Need
 
-- A computer to run BloxOS (can be an old PC, laptop, or even Raspberry Pi)
-- Mining rigs running [Ubuntu](https://ubuntu.com/download/desktop) or another Linux distro (Windows is not supported for rigs)
-- Your mining rigs connected to the same network
+**BloxOS Server (the dashboard)** - runs on **any OS**:
+- Windows, Mac, or Linux - whatever you have
+- Can be an old PC, laptop, or even Raspberry Pi
+
+**Your Mining Rigs** - must run **Linux**:
+- [Ubuntu](https://ubuntu.com/download/desktop), HiveOS, or any Linux distro
+- Windows is NOT supported on rigs (no GPU monitoring support)
+
+**Other requirements:**
+- Mining rigs connected to the same network as the server
 - Basic ability to copy/paste commands
 
 ### Step 1: Install Docker
