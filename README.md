@@ -175,21 +175,20 @@ The defaults work for testing. For production, change these passwords in the fil
 
 ### Step 4: Start BloxOS
 
-Copy and paste this entire command (it's all one line):
-
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+./start.sh
 ```
 
-> **What this does:** Starts BloxOS with the database (PostgreSQL), cache (Redis), API server, and dashboard - all in the background. The `-d` means "detached" so it runs without blocking your terminal.
+That's it! This script automatically:
+- Checks Docker is running
+- Creates `.env` if missing
+- Cleans up old containers
+- Builds and starts everything
+- Shows you the status
 
 The first start takes 2-5 minutes to download and build everything. After that, starts are instant.
 
-**Verify it's running:**
-```bash
-docker compose ps
-```
-You should see 4 services with "running" status.
+> **To stop BloxOS:** Run `./stop.sh`
 
 ### Step 5: Open the Dashboard
 
@@ -345,13 +344,9 @@ Your mining rigs need:
 ### "Dashboard won't load"
 
 1. Make sure Docker Desktop is running (check your system tray/menu bar)
-2. Check if BloxOS is running: `docker compose ps`
-3. If not running, start it:
-   ```bash
-   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
-   ```
-4. Wait 2 minutes and try again
-5. Check logs for errors: `docker compose logs dashboard`
+2. Run `./start.sh` again - it will fix most issues automatically
+3. Wait 2 minutes and try again
+4. Check logs for errors: `docker compose -f docker-compose.yml -f docker-compose.prod.yml logs dashboard`
 
 ### "Miner won't start"
 
@@ -377,14 +372,14 @@ To get the latest version:
 ```bash
 cd bloxos
 git pull
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+./start.sh
 ```
 
 **If you downloaded ZIP:**
 1. Download the new ZIP from https://github.com/bokiko/bloxos
 2. Extract it (keep your `.env` file!)
 3. Copy your `.env` file into the new folder
-4. Run the docker compose command above
+4. Run `./start.sh`
 
 </details>
 
