@@ -22,7 +22,6 @@ services:
       --appendonly yes
       --maxmemory 512mb
       --maxmemory-policy allkeys-lru
-      --requirepass ${REDIS_PASSWORD:-}
     # Don't expose port in production
     ports: []
     deploy:
@@ -45,7 +44,7 @@ services:
     environment:
       NODE_ENV: production
       DATABASE_URL: postgresql://${POSTGRES_USER:-bloxos}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bloxos}
-      REDIS_URL: redis://:${REDIS_PASSWORD:-}@redis:6379
+      REDIS_URL: redis://redis:6379
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
       COOKIE_SECRET: ${COOKIE_SECRET:?COOKIE_SECRET is required}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY is required}
