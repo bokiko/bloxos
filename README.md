@@ -129,19 +129,49 @@ cd bloxos
 
 ### Step 3: Configure Environment
 
+**Mac/Linux:**
 ```bash
 cp .env.example .env
 ```
 
-Open `.env` and review the settings. The defaults work for testing, but change the passwords for production.
+**Windows (Command Prompt):**
+```cmd
+copy .env.example .env
+```
+
+Now open the `.env` file to review settings:
+
+**Windows (choose one):**
+- Open File Explorer, go to the `bloxos` folder, right-click `.env` → "Open with" → Notepad
+- Or in Command Prompt: `notepad .env`
+
+**Mac:**
+- In Terminal: `open -e .env` (opens in TextEdit)
+
+**Linux:**
+- In Terminal: `nano .env` (press Ctrl+X to exit, Y to save)
+
+The defaults work for testing. For production, change these passwords in the file:
+- `POSTGRES_PASSWORD` - database password
+- `JWT_SECRET` - already generated, keep as is
 
 ### Step 4: Start BloxOS
+
+Copy and paste this entire command (it's all one line):
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 ```
 
-The first start takes 2-5 minutes to build the images. After that, starts are instant.
+> **What this does:** Starts BloxOS with the database (PostgreSQL), cache (Redis), API server, and dashboard - all in the background. The `-d` means "detached" so it runs without blocking your terminal.
+
+The first start takes 2-5 minutes to download and build everything. After that, starts are instant.
+
+**Verify it's running:**
+```bash
+docker compose ps
+```
+You should see 4 services with "running" status.
 
 ### Step 5: Open the Dashboard
 
@@ -170,6 +200,11 @@ Once you're logged in:
    - **IP Address:** Your rig's local IP (like 192.168.1.100)
    - **SSH Username:** Usually `root` or your username
    - **SSH Password:** Your rig's password
+
+   > **How to find your rig's IP address:**
+   > On your mining rig, open a terminal and run: `ip addr | grep inet`
+   > Look for an address like `192.168.x.x` or `10.0.x.x` (not `127.0.0.1`).
+   > Or check your router's admin page for connected devices.
 
 3. **Click "Add Rig"** - BloxOS will connect and gather info automatically
 
@@ -275,6 +310,13 @@ Your mining rigs need:
 <details>
 <summary><h2>Troubleshooting</h2></summary>
 
+### "docker: command not found"
+
+1. Make sure Docker Desktop is installed (Step 1 in Quick Start)
+2. **Windows:** Restart your computer after installing Docker
+3. **Mac:** Open Docker from Applications at least once
+4. **Linux:** Log out and back in after running `usermod` command
+
 ### "Can't connect to rig"
 
 1. Make sure your rig is turned on and connected to your network
@@ -284,10 +326,14 @@ Your mining rigs need:
 
 ### "Dashboard won't load"
 
-1. Make sure Docker is running
+1. Make sure Docker Desktop is running (check your system tray/menu bar)
 2. Check if BloxOS is running: `docker compose ps`
-3. If not running, start it: `docker compose up -d`
+3. If not running, start it:
+   ```bash
+   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+   ```
 4. Wait 2 minutes and try again
+5. Check logs for errors: `docker compose logs dashboard`
 
 ### "Miner won't start"
 
@@ -365,7 +411,7 @@ bloxos/
 - [x] 22 coins with 91 pool presets
 - [x] Email & Telegram notifications
 - [ ] Mobile app
-- [ ] Profit tracking
+- [x] Profit tracking
 - [ ] Auto-switching (mine most profitable coin)
 
 </details>
