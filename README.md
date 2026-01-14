@@ -127,12 +127,22 @@ Then log out and log back in.
 
 ### Step 2: Download BloxOS
 
-Open a terminal (Command Prompt on Windows, Terminal on Mac/Linux) and run:
-
+**Option A: Using Git** (if you have Git installed)
 ```bash
 git clone https://github.com/bokiko/bloxos.git
 cd bloxos
 ```
+
+**Option B: Download ZIP** (no Git needed)
+1. Go to https://github.com/bokiko/bloxos
+2. Click the green **"Code"** button → **"Download ZIP"**
+3. Extract the ZIP file:
+   - **Windows/Mac:** Double-click the ZIP file
+   - **Linux:** `unzip bloxos-main.zip` (install with `sudo apt install unzip` if needed)
+4. Open a terminal and navigate to the extracted folder:
+   ```bash
+   cd Downloads/bloxos-main
+   ```
 
 ### Step 3: Configure Environment
 
@@ -362,11 +372,18 @@ Your mining rigs need:
 
 To get the latest version:
 
+**If you used Git:**
 ```bash
 cd bloxos
 git pull
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 ```
+
+**If you downloaded ZIP:**
+1. Download the new ZIP from https://github.com/bokiko/bloxos
+2. Extract it (keep your `.env` file!)
+3. Copy your `.env` file into the new folder
+4. Run the docker compose command above
 
 </details>
 
