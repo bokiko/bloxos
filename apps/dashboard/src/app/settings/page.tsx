@@ -63,6 +63,11 @@ export default function SettingsPage() {
   const [notificationLoading, setNotificationLoading] = useState(false);
   const [testingNotification, setTestingNotification] = useState<'email' | 'telegram' | null>(null);
 
+  // Electricity settings
+  const [electricityRate, setElectricityRate] = useState(0.10);
+  const [electricityMessage, setElectricityMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [electricityLoading, setElectricityLoading] = useState(false);
+
   const fetchUpdates = useCallback(async (refresh = false) => {
     if (refresh) {
       setRefreshingUpdates(true);
@@ -94,6 +99,7 @@ export default function SettingsPage() {
   useEffect(() => {
     fetchUpdates();
     fetchNotificationSettings();
+    fetchElectricitySettings();
   }, [fetchUpdates]);
 
   async function fetchNotificationSettings() {
@@ -157,6 +163,45 @@ export default function SettingsPage() {
       setNotificationMessage({ type: 'error', text: err instanceof Error ? err.message : 'Test failed' });
     } finally {
       setTestingNotification(null);
+    }
+  }
+
+  async function fetchElectricitySettings() {
+    try {
+      const res = await fetch(`${getApiUrl()}/api/profit/settings`, {
+        credentials: 'include',
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setElectricityRate(data.rate || 0.10);
+      }
+    } catch (err) {
+      console.error('Failed to fetch electricity settings');
+    }
+  }
+
+  async function handleSaveElectricity() {
+    setElectricityMessage(null);
+    setElectricityLoading(true);
+
+    try {
+      const res = await fetch(`${getApiUrl()}/api/profit/settings`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ rate: electricityRate, currency: 'USD' }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || 'Failed to save settings');
+      }
+
+      setElectricityMessage({ type: 'success', text: 'Electricity rate saved' });
+    } catch (err) {
+      setElectricityMessage({ type: 'error', text: err instanceof Error ? err.message : 'Save failed' });
+    } finally {
+      setElectricityLoading(false);
     }
   }
 
@@ -688,6 +733,57 @@ export default function SettingsPage() {
             className="px-6 py-2.5 bg-blox-600 hover:bg-blox-700 text-white font-medium rounded-lg transition-colors disabled:opacity-50"
           >
             {notificationLoading ? 'Saving...' : 'Save Notification Settings'}
+          </button>
+        </div>
+      </div>
+
+      {/* Electricity Settings (for Profit Tracking) */}
+      <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-700/50 rounded-xl p-6">
+        <h2 className="text-lg font-semibold mb-4">Electricity Settings</h2>
+        <p className="text-slate-400 text-sm mb-4">
+          Configure your electricity rate for accurate profit calculations on the Profit page.
+        </p>
+
+        {electricityMessage && (
+          <div className={`px-4 py-3 rounded-lg text-sm mb-4 ${
+            electricityMessage.type === 'success'
+              ? 'bg-green-500/10 border border-green-500/50 text-green-400'
+              : 'bg-red-500/10 border border-red-500/50 text-red-400'
+          }`}>
+            {electricityMessage.text}
+          </div>
+        )}
+
+        <div className="max-w-md">
+          <label htmlFor="electricityRate" className="block text-sm font-medium text-slate-300 mb-2">
+            Electricity Rate ($/kWh)
+          </label>
+          <div className="flex items-center gap-4">
+            <input
+              id="electricityRate"
+              type="number"
+              step="0.01"
+              min="0"
+              max="1"
+              value={electricityRate}
+              onChange={(e) => setElectricityRate(parseFloat(e.target.value) || 0)}
+              className="w-32 px-4 py-2.5 bg-slate-700/50 border border-slate-600/50 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blox-500/50 focus:border-blox-500 transition-colors"
+            />
+            <span className="text-slate-400 text-sm">USD per kWh</span>
+          </div>
+          <p className="text-xs text-slate-500 mt-2">
+            Typical rates: $0.05-0.15 residential, $0.03-0.08 commercial/industrial
+          </p>
+        </div>
+
+        <div className="mt-6 pt-6 border-t border-slate-700/50">
+          <button
+            type="button"
+            onClick={handleSaveElectricity}
+            disabled={electricityLoading}
+            className="px-6 py-2.5 bg-blox-600 hover:bg-blox-700 text-white font-medium rounded-lg transition-colors disabled:opacity-50"
+          >
+            {electricityLoading ? 'Saving...' : 'Save Electricity Rate'}
           </button>
         </div>
       </div>

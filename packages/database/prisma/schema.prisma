@@ -23,15 +23,16 @@ model Coin {
   logoPath    String?             // /logos/etc.png
   coingeckoId String?             // for price API lookups
   enabled     Boolean   @default(true)
-  
+
   // Wallet validation regex pattern
   addressRegex String?            // ^0x[a-fA-F0-9]{40}$
-  
-  poolPresets       PoolPreset[]
+
+  poolPresets          PoolPreset[]
   flightSheetTemplates FlightSheetTemplate[]
+  prices               CoinPrice[]  // Historical price data
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
-  
+
   @@index([ticker])
   @@index([type])
   @@index([enabled])
@@ -151,6 +152,7 @@ model Farm {
   pools       Pool[]
   ocProfiles  OCProfile[]
   flightSheets FlightSheet[]
+  electricitySettings ElectricitySettings?  // Profit tracking settings
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
 
@@ -191,11 +193,11 @@ model Rig {
   token          String        @unique // Auth token for agent
   status         RigStatus     @default(OFFLINE)
   lastSeen       DateTime?
-  
+
   // Monitoring toggles
   cpuMiningEnabled Boolean     @default(false) // Enable CPU monitoring
   gpuMiningEnabled Boolean     @default(true)  // Enable GPU monitoring
-  
+
   farmId         String
   farm           Farm          @relation(fields: [farmId], references: [id], onDelete: Cascade)
   groups         RigGroup[]    @relation("RigToGroups")
@@ -211,6 +213,7 @@ model Rig {
   stats          RigStats[]
   alertConfig    AlertConfig?
   alerts         Alert[]
+  profitSnapshots ProfitSnapshot[]  // Daily profit records
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
 
@@ -584,25 +587,80 @@ model NotificationSettings {
   id                  String   @id @default(cuid())
   userId              String   @unique
   user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
+
   // Email notifications
   emailEnabled        Boolean  @default(false)
   emailAddress        String?
-  
+
   // Telegram notifications
   telegramEnabled     Boolean  @default(false)
   telegramChatId      String?
-  
+
   // Alert type toggles
   notifyOnOffline     Boolean  @default(true)
   notifyOnHighTemp    Boolean  @default(true)
   notifyOnLowHashrate Boolean  @default(true)
   notifyOnMinerError  Boolean  @default(true)
-  
+
   // Thresholds
   tempThreshold       Int      @default(85)  // Celsius
   hashrateDropPercent Int      @default(20)  // Percent
-  
+
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
+}
+
+// ===========================================
+// Profit Tracking
+// ===========================================
+
+// Per-farm electricity cost settings
+model ElectricitySettings {
+  id        String   @id @default(cuid())
+  farmId    String   @unique
+  farm      Farm     @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  rate      Float    // $/kWh
+  currency  String   @default("USD")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// Cached coin prices from CoinGecko (updated hourly)
+model CoinPrice {
+  id             String   @id @default(cuid())
+  coinId         String
+  coin           Coin     @relation(fields: [coinId], references: [id], onDelete: Cascade)
+  priceUsd       Float
+  priceChange24h Float?   // 24h percent change
+  fetchedAt      DateTime @default(now())
+
+  @@index([coinId, fetchedAt])
+  @@index([fetchedAt])
+}
+
+// Daily profit snapshots per rig
+model ProfitSnapshot {
+  id              String   @id @default(cuid())
+  rigId           String
+  rig             Rig      @relation(fields: [rigId], references: [id], onDelete: Cascade)
+  date            DateTime @db.Date  // Day granularity
+  coinTicker      String             // What was mined that day
+
+  // Revenue
+  coinsEarned     Float?             // Estimated coins mined
+  revenueUsd      Float              // coinsEarned * price
+  avgHashrate     Float              // Average MH/s for the day
+
+  // Costs
+  powerKwh        Float              // Total kWh consumed
+  electricityCost Float              // powerKwh * rate
+
+  // Net
+  profitUsd       Float              // revenueUsd - electricityCost
+
+  createdAt       DateTime @default(now())
+
+  @@unique([rigId, date])
+  @@index([rigId, date])
+  @@index([date])
 }

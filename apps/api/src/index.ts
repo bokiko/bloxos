@@ -27,8 +27,11 @@ import { coinsRoutes } from './routes/coins.ts';
 import { templatesRoutes } from './routes/templates.ts';
 import { updatesRoutes } from './routes/updates.ts';
 import { settingsRoutes } from './routes/settings.ts';
+import { profitRoutes } from './routes/profit.ts';
 import { gpuPoller } from './services/gpu-poller.ts';
 import { startUpdateChecker, stopUpdateChecker } from './services/update-checker.ts';
+import { priceService } from './services/price-service.ts';
+import { profitCalculator } from './services/profit-calculator.ts';
 import { requireAuth } from './middleware/auth.ts';
 import { csrfSetToken, csrfValidate, csrfTokenEndpoint } from './middleware/csrf.ts';
 import { validateSecrets, auditLog } from './utils/security.ts';
@@ -314,6 +317,7 @@ async function main() {
   await app.register(templatesRoutes, { prefix: '/api' });
   await app.register(updatesRoutes, { prefix: '/api/updates' });
   await app.register(settingsRoutes, { prefix: '/api/settings' });
+  await app.register(profitRoutes, { prefix: '/api/profit' });
 
   // ============================================
   // GRACEFUL SHUTDOWN
@@ -325,6 +329,8 @@ async function main() {
       app.log.info(`Received ${signal}, shutting down...`);
       gpuPoller.stop();
       stopUpdateChecker();
+      priceService.stop();
+      profitCalculator.stop();
       await app.close();
       await prisma.$disconnect();
       process.exit(0);
@@ -347,6 +353,14 @@ async function main() {
     // Start miner update checker (checks every 12 hours)
     startUpdateChecker();
     app.log.info('Miner update checker started');
+
+    // Start price fetching service (fetches every hour)
+    priceService.start();
+    app.log.info('Price fetching service started');
+
+    // Start profit calculator (runs daily)
+    profitCalculator.start();
+    app.log.info('Profit calculator service started');
   } catch (err) {
     app.log.error(err);
     process.exit(1);
