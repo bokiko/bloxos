@@ -132,8 +132,9 @@ Then log out and log back in.
 git clone https://github.com/bokiko/bloxos.git
 cd bloxos
 ```
+> No GitHub account needed - BloxOS is public!
 
-**Option B: Download ZIP** (no Git needed)
+**Option B: Download ZIP** (no Git required, no account needed)
 1. Go to https://github.com/bokiko/bloxos
 2. Click the green **"Code"** button → **"Download ZIP"**
 3. Extract the ZIP file:
