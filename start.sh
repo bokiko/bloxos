@@ -60,10 +60,9 @@ echo "  PostgreSQL is ready!"
 
 # Run database migrations
 echo "Running database migrations..."
-docker compose -f docker-compose.yml -f docker-compose.prod.yml run --rm api npx prisma db push --schema=/app/packages/database/prisma/schema.prisma --skip-generate 2>/dev/null || \
 docker run --rm --network bloxos-network \
     -e DATABASE_URL="postgresql://${POSTGRES_USER:-bloxos}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bloxos}" \
-    bloxos-api npx prisma db push --schema=/app/packages/database/prisma/schema.prisma --skip-generate
+    bloxos-api node /app/node_modules/.bin/prisma db push --schema=/app/packages/database/prisma/schema.prisma
 
 # Start all services
 echo "Starting all services..."
