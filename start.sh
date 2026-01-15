@@ -58,9 +58,9 @@ until docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T po
 done
 echo "  PostgreSQL is ready!"
 
-# Run database migrations
+# Run database migrations (as root to avoid permission issues with node_modules)
 echo "Running database migrations..."
-docker run --rm --network bloxos-network \
+docker run --rm --network bloxos-network --user root \
     -e DATABASE_URL="postgresql://${POSTGRES_USER:-bloxos}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bloxos}" \
     -w /app/packages/database \
     bloxos-api pnpm exec prisma db push
