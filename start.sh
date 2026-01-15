@@ -62,7 +62,8 @@ echo "  PostgreSQL is ready!"
 echo "Running database migrations..."
 docker run --rm --network bloxos-network \
     -e DATABASE_URL="postgresql://${POSTGRES_USER:-bloxos}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bloxos}" \
-    bloxos-api node /app/node_modules/.bin/prisma db push --schema=/app/packages/database/prisma/schema.prisma
+    -w /app/packages/database \
+    bloxos-api pnpm exec prisma db push
 
 # Start all services
 echo "Starting all services..."
