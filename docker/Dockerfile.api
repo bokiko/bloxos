@@ -20,7 +20,8 @@ COPY --from=deps /app/apps/api/node_modules ./apps/api/node_modules
 COPY --from=deps /app/packages/database/node_modules ./packages/database/node_modules
 COPY . .
 
-# Generate Prisma client
+# Generate Prisma client with Alpine-compatible binary
+ENV PRISMA_CLI_BINARY_TARGETS="linux-musl-openssl-3.0.x"
 RUN pnpm --filter @bloxos/database exec prisma generate
 
 # Build API
