@@ -30,6 +30,11 @@ if [ ! -f .env ]; then
     fi
 fi
 
+# Load environment variables
+set -a
+source .env
+set +a
+
 # Clean up orphan containers
 echo "Cleaning up old containers..."
 docker compose -f docker-compose.yml -f docker-compose.prod.yml down --remove-orphans 2>/dev/null || true
@@ -38,13 +43,37 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml down --remove-or
 echo "Pulling latest images..."
 docker compose -f docker-compose.yml -f docker-compose.prod.yml pull 2>/dev/null || true
 
-# Build and start everything
-echo "Building and starting BloxOS..."
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+# Build images first
+echo "Building BloxOS images..."
+docker compose -f docker-compose.yml -f docker-compose.prod.yml build
+
+# Start database services first
+echo "Starting database services..."
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d postgres redis
+
+# Wait for database to be ready
+echo "Waiting for database to be ready..."
+sleep 5
+until docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T postgres pg_isready -U "${POSTGRES_USER:-bloxos}" >/dev/null 2>&1; do
+    echo "  Waiting for PostgreSQL..."
+    sleep 2
+done
+echo "  PostgreSQL is ready!"
+
+# Run database migrations
+echo "Running database migrations..."
+docker compose -f docker-compose.yml -f docker-compose.prod.yml run --rm api npx prisma db push --schema=/app/packages/database/prisma/schema.prisma --skip-generate 2>/dev/null || \
+docker run --rm --network bloxos-network \
+    -e DATABASE_URL="postgresql://${POSTGRES_USER:-bloxos}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bloxos}" \
+    bloxos-api npx prisma db push --schema=/app/packages/database/prisma/schema.prisma --skip-generate
+
+# Start all services
+echo "Starting all services..."
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 
 # Wait for services to be healthy
 echo "Waiting for services to start..."
-sleep 5
+sleep 10
 
 # Show status
 echo ""
