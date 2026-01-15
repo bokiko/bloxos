@@ -30,10 +30,8 @@ if [ ! -f .env ]; then
     fi
 fi
 
-# Load environment variables
-set -a
-source .env
-set +a
+# Load environment variables for script use (docker-compose reads .env automatically)
+export $(grep -v '^#' .env | grep -v '^$' | xargs) 2>/dev/null || true
 
 # Clean up orphan containers
 echo "Cleaning up old containers..."
