@@ -19,6 +19,9 @@
 
 </div>
 
+> [!WARNING]
+> **This project is in beta and not ready for production use.** Expect breaking changes, incomplete features, and rough edges. Use at your own risk.
+
 ---
 
 ## Table of Contents
