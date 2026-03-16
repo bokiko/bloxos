@@ -6,6 +6,7 @@ import { usePathname } from 'next/navigation';
 import Link from 'next/link';
 import './globals.css';
 import { AuthProvider, useAuth } from '../context/auth';
+import CommandPalette from '../components/CommandPalette';
 
 const getApiUrl = () => {
   if (typeof window === 'undefined') return 'http://localhost:3001';
@@ -269,6 +270,20 @@ function AppContent({ children }: { children: React.ReactNode }) {
         </ul>
       </nav>
 
+      {/* Command Palette Hint */}
+      <div className="px-3 lg:px-4 pb-2">
+        <button
+          onClick={() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }))}
+          className="w-full flex items-center gap-2 px-3 py-2 text-sm text-slate-400 hover:text-white hover:bg-slate-700/50 rounded-lg border border-slate-700/50 transition-colors"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+          </svg>
+          <span className="flex-1 text-left text-xs">Search...</span>
+          <kbd className="hidden sm:inline-flex text-xs px-1.5 py-0.5 bg-slate-700/50 rounded border border-slate-600/50">⌘K</kbd>
+        </button>
+      </div>
+
       {/* User Footer */}
       <div className="p-3 lg:p-4 border-t border-slate-700/50">
         <div className="flex items-center gap-3 px-2 lg:px-3 py-2">
@@ -332,6 +347,9 @@ function AppContent({ children }: { children: React.ReactNode }) {
       >
         <SidebarContent />
       </aside>
+
+      {/* Command Palette */}
+      <CommandPalette />
 
       {/* Main content */}
       <main className="lg:ml-64 pt-16 lg:pt-0 min-h-screen">
