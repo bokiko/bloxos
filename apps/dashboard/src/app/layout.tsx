@@ -6,7 +6,9 @@ import { usePathname } from 'next/navigation';
 import Link from 'next/link';
 import './globals.css';
 import { AuthProvider, useAuth } from '../context/auth';
+import { ToastProvider, useToastContext } from '../context/toast';
 import CommandPalette from '../components/CommandPalette';
+import ToastContainer from '../components/Toast';
 
 const getApiUrl = () => {
   if (typeof window === 'undefined') return 'http://localhost:3001';
@@ -130,6 +132,7 @@ function AppContent({ children }: { children: React.ReactNode }) {
   const [alertCount, setAlertCount] = useState(0);
   const [updateCount, setUpdateCount] = useState(0);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const { showToast } = useToastContext();
 
   const isPublicRoute = publicRoutes.includes(pathname);
 
@@ -153,7 +156,15 @@ function AppContent({ children }: { children: React.ReactNode }) {
           return;
         }
         const data = await res.json();
-        setAlertCount(data.count || 0);
+        const newCount: number = data.count || 0;
+        setAlertCount((prev) => {
+          if (prev > 0 && newCount > prev) {
+            const diff = newCount - prev;
+            showToast(`🚨 ${diff} new alert${diff > 1 ? 's' : ''}`, 'error');
+          }
+          return newCount;
+        });
+        return;
       } catch {
         // Silently ignore network errors - don't spam console
       }
@@ -351,6 +362,9 @@ function AppContent({ children }: { children: React.ReactNode }) {
       {/* Command Palette */}
       <CommandPalette />
 
+      {/* Toast Notifications */}
+      <ToastContainer />
+
       {/* Main content */}
       <main className="lg:ml-64 pt-16 lg:pt-0 min-h-screen">
         <div className="p-4 lg:p-6 max-w-7xl mx-auto">
@@ -374,9 +388,11 @@ export default function RootLayout({
         <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
       </head>
       <body className={`${inter.className} bg-slate-900 text-white`}>
-        <AuthProvider>
-          <AppContent>{children}</AppContent>
-        </AuthProvider>
+        <ToastProvider>
+          <AuthProvider>
+            <AppContent>{children}</AppContent>
+          </AuthProvider>
+        </ToastProvider>
       </body>
     </html>
   );
