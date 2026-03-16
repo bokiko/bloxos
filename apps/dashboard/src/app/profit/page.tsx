@@ -131,6 +131,55 @@ export default function ProfitPage() {
     return value.toFixed(decimals);
   };
 
+  const exportToCSV = () => {
+    const periodLabel = period === 'day' ? '24h' : period === 'week' ? '7d' : '30d';
+    const timestamp = new Date().toISOString().split('T')[0];
+    const filename = `bloxos-profit-${periodLabel}-${timestamp}.csv`;
+
+    const rows: string[] = [];
+
+    // Summary section
+    rows.push('=== SUMMARY ===');
+    rows.push(`Period,${periodLabel}`);
+    rows.push(`Start Date,${summary?.startDate || ''}`);
+    rows.push(`End Date,${summary?.endDate || ''}`);
+    rows.push(`Total Revenue,$${summary?.totals.revenue?.toFixed(4) || '0'}`);
+    rows.push(`Electricity Cost,$${summary?.totals.electricityCost?.toFixed(4) || '0'}`);
+    rows.push(`Net Profit,$${summary?.totals.profit?.toFixed(4) || '0'}`);
+    rows.push(`Total Power (kWh),${summary?.totals.powerKwh?.toFixed(2) || '0'}`);
+    rows.push(`Active Rigs,${summary?.rigsCount || 0}`);
+    rows.push(`Electricity Rate ($/kWh),${settings?.rate || 0.10}`);
+    rows.push('');
+
+    // Daily breakdown
+    if (summary && summary.daily.length > 0) {
+      rows.push('=== DAILY BREAKDOWN ===');
+      rows.push('Date,Revenue ($),Electricity Cost ($),Net Profit ($)');
+      summary.daily.forEach(day => {
+        rows.push(`${day.date},${day.revenue.toFixed(4)},${day.cost.toFixed(4)},${day.profit.toFixed(4)}`);
+      });
+      rows.push('');
+    }
+
+    // Per-rig breakdown
+    if (rigProfits.length > 0) {
+      rows.push('=== PER-RIG BREAKDOWN ===');
+      rows.push('Rig Name,Status,Coin,Avg Hashrate (MH/s),Revenue ($),Electricity Cost ($),Net Profit ($),Days Tracked');
+      rigProfits.forEach(rig => {
+        rows.push(`"${rig.rigName}",${rig.status},${rig.coin || 'Idle'},${rig.avgHashrate.toFixed(2)},${rig.revenue.toFixed(4)},${rig.electricityCost.toFixed(4)},${rig.profit.toFixed(4)},${rig.daysTracked}`);
+      });
+    }
+
+    const csvContent = rows.join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -148,21 +197,36 @@ export default function ProfitPage() {
           <p className="text-slate-400 mt-1">Monitor your mining revenue and costs</p>
         </div>
 
-        {/* Period Selector */}
-        <div className="flex gap-2">
-          {(['day', 'week', 'month'] as const).map((p) => (
-            <button
-              key={p}
-              onClick={() => setPeriod(p)}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                period === p
-                  ? 'bg-indigo-600 text-white'
-                  : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
-              }`}
-            >
-              {p === 'day' ? '24h' : p === 'week' ? '7d' : '30d'}
-            </button>
-          ))}
+        <div className="flex items-center gap-3">
+          {/* Period Selector */}
+          <div className="flex gap-2">
+            {(['day', 'week', 'month'] as const).map((p) => (
+              <button
+                key={p}
+                onClick={() => setPeriod(p)}
+                className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  period === p
+                    ? 'bg-indigo-600 text-white'
+                    : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+                }`}
+              >
+                {p === 'day' ? '24h' : p === 'week' ? '7d' : '30d'}
+              </button>
+            ))}
+          </div>
+
+          {/* Export CSV */}
+          <button
+            onClick={exportToCSV}
+            disabled={!summary}
+            className="flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg text-sm font-medium text-slate-300 hover:text-white transition-colors"
+            title="Export profit data as CSV"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+            </svg>
+            Export CSV
+          </button>
         </div>
       </div>
 
