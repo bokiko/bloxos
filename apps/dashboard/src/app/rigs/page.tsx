@@ -75,6 +75,8 @@ export default function RigsPage() {
   const [rigGroups, setRigGroups] = useState<RigGroup[]>([]);
   const [bulkAssignType, setBulkAssignType] = useState<'flightsheet' | 'oc' | 'group' | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [sortBy, setSortBy] = useState<'name' | 'status' | 'hashrate' | 'power' | 'temp' | 'gpus'>('name');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const REFRESH_INTERVAL = 30000;
 
   // WebSocket handler for real-time rig updates
@@ -462,6 +464,51 @@ export default function RigsPage() {
     return true;
   });
 
+  const sortedRigs = [...filteredRigs].sort((a, b) => {
+    let aVal: number | string = 0;
+    let bVal: number | string = 0;
+    switch (sortBy) {
+      case 'name':
+        aVal = a.name.toLowerCase();
+        bVal = b.name.toLowerCase();
+        break;
+      case 'status': {
+        const order: Record<string, number> = { ONLINE: 0, WARNING: 1, REBOOTING: 2, ERROR: 3, OFFLINE: 4 };
+        aVal = order[a.status] ?? 5;
+        bVal = order[b.status] ?? 5;
+        break;
+      }
+      case 'hashrate':
+        aVal = getTotalHashrate(a.gpus);
+        bVal = getTotalHashrate(b.gpus);
+        break;
+      case 'power':
+        aVal = getTotalPower(a);
+        bVal = getTotalPower(b);
+        break;
+      case 'temp':
+        aVal = getMaxTemp(a.gpus) ?? -1;
+        bVal = getMaxTemp(b.gpus) ?? -1;
+        break;
+      case 'gpus':
+        aVal = a.gpus.length;
+        bVal = b.gpus.length;
+        break;
+    }
+    if (aVal < bVal) return sortDir === 'asc' ? -1 : 1;
+    if (aVal > bVal) return sortDir === 'asc' ? 1 : -1;
+    return 0;
+  });
+
+  function handleSort(field: typeof sortBy) {
+    if (sortBy === field) {
+      setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortBy(field);
+      setSortDir('asc');
+    }
+  }
+
   const onlineCount = rigs.filter(r => r.status === 'ONLINE').length;
   const offlineCount = rigs.length - onlineCount;
 
@@ -781,6 +828,29 @@ export default function RigsPage() {
           </button>
         ))}
         </div>
+
+        {/* Sort Controls */}
+        <div className="flex items-center gap-2 ml-auto">
+          <span className="text-sm text-slate-500">Sort:</span>
+          {(['name', 'status', 'hashrate', 'power', 'temp', 'gpus'] as const).map(field => (
+            <button
+              key={field}
+              onClick={() => handleSort(field)}
+              className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all flex items-center gap-1 ${
+                sortBy === field
+                  ? 'bg-blox-500/20 text-blox-400 ring-1 ring-blox-500/30'
+                  : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+              }`}
+            >
+              {field.charAt(0).toUpperCase() + field.slice(1)}
+              {sortBy === field && (
+                <svg className={`w-3 h-3 transition-transform ${sortDir === 'desc' ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+                </svg>
+              )}
+            </button>
+          ))}
+        </div>
       </div>
 
       {loading ? (
@@ -788,7 +858,7 @@ export default function RigsPage() {
           <div className="inline-block w-8 h-8 border-2 border-slate-600 border-t-blox-400 rounded-full animate-spin"></div>
           <p className="text-slate-400 mt-3">Loading rigs...</p>
         </div>
-      ) : filteredRigs.length === 0 ? (
+      ) : sortedRigs.length === 0 ? (
         <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl border border-slate-700/50 p-12 text-center">
           <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-slate-700/50 flex items-center justify-center">
             <svg className="w-8 h-8 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -813,7 +883,7 @@ export default function RigsPage() {
           <div className="flex items-center gap-3 px-2">
             <input
               type="checkbox"
-              checked={selectedRigs.size === filteredRigs.length && filteredRigs.length > 0}
+              checked={selectedRigs.size === sortedRigs.length && sortedRigs.length > 0}
               onChange={toggleSelectAll}
               className="w-4 h-4 rounded border-slate-600 bg-slate-700 text-blox-500 focus:ring-blox-500"
             />
@@ -822,7 +892,7 @@ export default function RigsPage() {
 
           {/* Rig List */}
           <div className="grid gap-4">
-            {filteredRigs.map((rig) => {
+            {sortedRigs.map((rig) => {
               const hashrate = getTotalHashrate(rig.gpus);
               const power = getTotalPower(rig);
               const maxTemp = getMaxTemp(rig.gpus);
