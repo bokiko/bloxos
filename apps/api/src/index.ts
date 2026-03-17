@@ -28,6 +28,7 @@ import { templatesRoutes } from './routes/templates.ts';
 import { updatesRoutes } from './routes/updates.ts';
 import { settingsRoutes } from './routes/settings.ts';
 import { profitRoutes } from './routes/profit.ts';
+import { alertRulesRoutes } from './routes/alert-rules.ts';
 import { gpuPoller } from './services/gpu-poller.ts';
 import { startUpdateChecker, stopUpdateChecker } from './services/update-checker.ts';
 import { priceService } from './services/price-service.ts';
@@ -318,6 +319,7 @@ async function main() {
   await app.register(updatesRoutes, { prefix: '/api/updates' });
   await app.register(settingsRoutes, { prefix: '/api/settings' });
   await app.register(profitRoutes, { prefix: '/api/profit' });
+  await app.register(alertRulesRoutes, { prefix: '/api/alert-rules' });
 
   // ============================================
   // GRACEFUL SHUTDOWN
