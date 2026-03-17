@@ -211,6 +211,18 @@ export default function AlertsPage() {
           </div>
         </div>
         <div className="flex items-center gap-3">
+          {/* Page Navigation */}
+          <div className="flex items-center bg-slate-800 rounded-lg p-1">
+            <div className="px-4 py-1.5 rounded-md text-sm font-medium bg-blox-600 text-white">
+              Active Alerts
+            </div>
+            <Link
+              href="/alerts/rules"
+              className="px-4 py-1.5 rounded-md text-sm font-medium text-slate-400 hover:text-white transition-colors"
+            >
+              Alert Rules
+            </Link>
+          </div>
           {/* Filter Toggle */}
           <div className="flex items-center bg-slate-800 rounded-lg p-1">
             <button
