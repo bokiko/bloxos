@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { SkeletonProfileCard } from '../../components/Skeleton';
 
 const getApiUrl = () => {
   if (typeof window === 'undefined') return 'http://localhost:3001';
@@ -199,9 +200,19 @@ export default function OCProfilesPage() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center py-20">
-        <div className="inline-block w-8 h-8 border-2 border-slate-600 border-t-blox-400 rounded-full animate-spin"></div>
-        <p className="text-slate-400 ml-3">Loading OC profiles...</p>
+      <div className="space-y-6">
+        <div className="flex items-center gap-4">
+          <div className="w-12 h-12 bg-slate-700/50 rounded-xl animate-pulse" />
+          <div className="space-y-2">
+            <div className="h-7 w-32 bg-slate-700/50 rounded animate-pulse" />
+            <div className="h-4 w-44 bg-slate-700/50 rounded animate-pulse" />
+          </div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <SkeletonProfileCard key={i} />
+          ))}
+        </div>
       </div>
     );
   }

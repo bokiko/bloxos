@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
+import { SkeletonStatCard, SkeletonTable } from '../../components/Skeleton';
 
 const getApiUrl = () => {
   if (typeof window === 'undefined') return 'http://localhost:3001';
@@ -182,8 +183,19 @@ export default function ProfitPage() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-500"></div>
+      <div className="space-y-6">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div className="space-y-2">
+            <div className="h-7 w-44 bg-slate-700/50 rounded animate-pulse" />
+            <div className="h-4 w-64 bg-slate-700/50 rounded animate-pulse" />
+          </div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <SkeletonStatCard key={i} />
+          ))}
+        </div>
+        <SkeletonTable rows={5} cols={4} />
       </div>
     );
   }
