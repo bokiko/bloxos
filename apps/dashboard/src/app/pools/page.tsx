@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import Image from 'next/image';
+import { SkeletonPoolRow } from '../../components/Skeleton';
 
 const getApiUrl = () => {
   if (typeof window === 'undefined') return 'http://localhost:3001';
@@ -409,9 +410,10 @@ export default function PoolsPage() {
 
       {/* Pools List */}
       {loading ? (
-        <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl border border-slate-700/50 p-12 text-center">
-          <div className="inline-block w-8 h-8 border-2 border-slate-600 border-t-blox-400 rounded-full animate-spin"></div>
-          <p className="text-slate-400 mt-3">Loading pools...</p>
+        <div className="grid gap-4">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <SkeletonPoolRow key={i} />
+          ))}
         </div>
       ) : filteredPools.length === 0 ? (
         <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl border border-slate-700/50 p-12 text-center">
