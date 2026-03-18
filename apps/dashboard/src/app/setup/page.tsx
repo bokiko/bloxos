@@ -3,11 +3,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '../../context/auth';
-
-const getApiUrl = () => {
-  if (typeof window === 'undefined') return 'http://localhost:3001';
-  return `http://${window.location.hostname}:3001`;
-};
+import { getApiUrl } from '../../lib/api';
 
 // Password requirements
 const PASSWORD_REQUIREMENTS = {
