@@ -21,6 +21,8 @@ function ToastItem({ toast }: { toast: Toast }) {
 
   return (
     <div
+      role={toast.type === 'error' ? 'alert' : 'status'}
+      aria-live={toast.type === 'error' ? 'assertive' : 'polite'}
       className={`flex items-start gap-3 px-4 py-3 bg-slate-800/95 backdrop-blur-sm border border-slate-700/50 border-l-4 ${borderColor[toast.type]} rounded-lg shadow-xl w-80 max-w-full`}
     >
       <p className={`flex-1 text-sm font-medium leading-snug ${iconColor[toast.type]}`}>
@@ -45,7 +47,7 @@ export default function ToastContainer() {
   if (toasts.length === 0) return null;
 
   return (
-    <div className="fixed bottom-4 right-4 z-[100] flex flex-col gap-2 items-end pointer-events-none">
+    <div className="fixed bottom-4 right-4 z-[100] flex flex-col gap-2 items-end pointer-events-none" aria-live="polite">
       {toasts.map((toast) => (
         <div key={toast.id} className="pointer-events-auto animate-slide-in-right">
           <ToastItem toast={toast} />

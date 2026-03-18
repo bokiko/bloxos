@@ -50,7 +50,7 @@ export default function LoginPage() {
         <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-700/50 rounded-xl p-6">
           <form onSubmit={handleSubmit} className="space-y-4">
             {error && (
-              <div className="bg-red-500/10 border border-red-500/50 text-red-400 px-4 py-3 rounded-lg text-sm">
+              <div id="login-error" role="alert" className="bg-red-500/10 border border-red-500/50 text-red-400 px-4 py-3 rounded-lg text-sm">
                 {error}
               </div>
             )}
@@ -68,6 +68,7 @@ export default function LoginPage() {
                 placeholder="admin@example.com"
                 required
                 autoComplete="email"
+                aria-describedby={error ? 'login-error' : undefined}
               />
             </div>
 
@@ -84,6 +85,7 @@ export default function LoginPage() {
                 placeholder="Enter your password"
                 required
                 autoComplete="current-password"
+                aria-describedby={error ? 'login-error' : undefined}
               />
             </div>
 
