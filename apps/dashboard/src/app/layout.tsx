@@ -205,7 +205,7 @@ function AppContent({ children }: { children: React.ReactNode }) {
   if (isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blox-500"></div>
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blox-500" role="status" aria-label="Loading"></div>
       </div>
     );
   }
@@ -229,6 +229,7 @@ function AppContent({ children }: { children: React.ReactNode }) {
           <button
             onClick={() => setSidebarOpen(false)}
             className="lg:hidden p-2 -mr-2 text-slate-400 hover:text-white"
+            aria-label="Close navigation menu"
           >
             <CloseIcon />
           </button>
@@ -236,7 +237,7 @@ function AppContent({ children }: { children: React.ReactNode }) {
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 p-3 lg:p-4 overflow-y-auto">
+      <nav className="flex-1 p-3 lg:p-4 overflow-y-auto" role="navigation" aria-label="Main navigation">
         <ul className="space-y-1">
           {navItems.map((item) => {
             // Skip admin-only items for non-admins
@@ -252,6 +253,7 @@ function AppContent({ children }: { children: React.ReactNode }) {
                 <Link
                   href={item.href}
                   onClick={() => setSidebarOpen(false)}
+                  aria-current={active ? 'page' : undefined}
                   className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 ${
                     active
                       ? 'bg-blox-600/20 text-blox-400 border border-blox-500/30'
@@ -261,12 +263,12 @@ function AppContent({ children }: { children: React.ReactNode }) {
                   <Icon />
                   <span className="font-medium flex-1 text-sm lg:text-base">{item.label}</span>
                   {showAlertBadge && (
-                    <span className="px-2 py-0.5 text-xs font-bold bg-red-500 text-white rounded-full min-w-[20px] text-center">
+                    <span className="px-2 py-0.5 text-xs font-bold bg-red-500 text-white rounded-full min-w-[20px] text-center" aria-label={`${alertCount} unread alerts`}>
                       {alertCount > 99 ? '99+' : alertCount}
                     </span>
                   )}
                   {showUpdateBadge && (
-                    <span className="px-2 py-0.5 text-xs font-bold bg-yellow-500 text-black rounded-full min-w-[20px] text-center" title="Miner updates available">
+                    <span className="px-2 py-0.5 text-xs font-bold bg-yellow-500 text-black rounded-full min-w-[20px] text-center" title="Miner updates available" aria-label={`${updateCount} miner updates available`}>
                       {updateCount}
                     </span>
                   )}
@@ -282,6 +284,7 @@ function AppContent({ children }: { children: React.ReactNode }) {
         <button
           onClick={() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }))}
           className="w-full flex items-center gap-2 px-3 py-2 text-sm text-slate-400 hover:text-white hover:bg-slate-700/50 rounded-lg border border-slate-700/50 transition-colors"
+          aria-label="Search or open command palette"
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
@@ -305,6 +308,7 @@ function AppContent({ children }: { children: React.ReactNode }) {
             onClick={logout}
             className="p-2 text-slate-400 hover:text-red-400 hover:bg-slate-700/50 rounded-lg transition-colors flex-shrink-0"
             title="Logout"
+            aria-label="Logout"
           >
             <LogoutIcon />
           </button>
@@ -316,12 +320,16 @@ function AppContent({ children }: { children: React.ReactNode }) {
   // Protected routes - render with sidebar
   return (
     <div className="min-h-screen">
+      {/* Skip to main content */}
+      <a href="#main-content" className="sr-only focus:not-sr-only focus:absolute focus:top-4 focus:left-4 focus:z-[100] focus:px-4 focus:py-2 focus:bg-blox-600 focus:text-white focus:rounded-lg focus:font-medium">Skip to main content</a>
+
       {/* Mobile Header */}
-      <header className="lg:hidden fixed top-0 left-0 right-0 z-40 bg-slate-800/95 backdrop-blur-sm border-b border-slate-700/50">
+      <header className="lg:hidden fixed top-0 left-0 right-0 z-40 bg-slate-800/95 backdrop-blur-sm border-b border-slate-700/50" role="banner">
         <div className="flex items-center justify-between px-4 py-3">
           <button
             onClick={() => setSidebarOpen(true)}
             className="p-2 -ml-2 text-slate-400 hover:text-white"
+            aria-label="Open navigation menu"
           >
             <MenuIcon />
           </button>
@@ -340,6 +348,8 @@ function AppContent({ children }: { children: React.ReactNode }) {
         <div
           className="lg:hidden fixed inset-0 z-50 bg-black/60 backdrop-blur-sm"
           onClick={() => setSidebarOpen(false)}
+          role="presentation"
+          aria-hidden="true"
         />
       )}
 
@@ -351,6 +361,8 @@ function AppContent({ children }: { children: React.ReactNode }) {
           lg:transform-none lg:z-30
           ${sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
         `}
+        role="complementary"
+        aria-label="Sidebar navigation"
       >
         <SidebarContent />
       </aside>
@@ -362,7 +374,7 @@ function AppContent({ children }: { children: React.ReactNode }) {
       <ToastContainer />
 
       {/* Main content */}
-      <main className="lg:ml-64 pt-16 lg:pt-0 min-h-screen">
+      <main id="main-content" tabIndex={-1} className="lg:ml-64 pt-16 lg:pt-0 min-h-screen">
         <div className="p-4 lg:p-6 max-w-7xl mx-auto">
           {children}
         </div>
