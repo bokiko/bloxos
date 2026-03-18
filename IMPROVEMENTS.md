@@ -44,7 +44,6 @@ Removed `getUserFarm()` from profit.ts, `getUserId()` from settings.ts, and the 
 **Lines:** +40 / -106 (net -66)
 **PR:** https://github.com/bokiko/bloxos/pull/5
 
-
 ## 2026-03-19 — Testing: Comprehensive tests for mining security validators
 
 The mining-specific security utility functions in apps/api/src/utils/security.ts had zero test coverage despite being critical guards against shell injection, invalid OC values, and malformed miner configuration. Added 74 new unit tests covering all eight untested functions.
