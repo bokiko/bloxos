@@ -25,3 +25,11 @@ Added Fastify injection-based integration tests for the auth and health API rout
 
 **Lines:** +268 / -0
 **PR:** https://github.com/bokiko/bloxos/pull/2
+
+## 2026-03-18 — Code Quality: Extract shared API utilities to lib/api.ts
+
+Centralized `getApiUrl()` and `getCsrfToken()` — two utility functions copy-pasted verbatim across 17 files in the dashboard. Created `apps/dashboard/src/lib/api.ts` as a single source of truth and updated all consumers to import from it.
+
+**Files changed:** apps/dashboard/src/lib/api.ts (new), + 17 files updated
+**Lines:** +26 / -129 (net -103)
+**PR:** https://github.com/bokiko/bloxos/pull/4
