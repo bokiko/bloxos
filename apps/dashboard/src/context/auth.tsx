@@ -3,11 +3,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import { saveTokenToStorage, removeTokenFromStorage } from '../hooks/useWebSocket';
-
-const getApiUrl = () => {
-  if (typeof window === 'undefined') return 'http://localhost:3001';
-  return `http://${window.location.hostname}:3001`;
-};
+import { getApiUrl } from '../lib/api';
 
 export interface User {
   id: string;

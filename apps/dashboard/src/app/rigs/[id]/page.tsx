@@ -5,14 +5,10 @@ import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import dynamic from 'next/dynamic';
 import { useWebSocket } from '../../../hooks/useWebSocket';
+import { getApiUrl } from '../../../lib/api';
 
 // Dynamic import for Terminal to avoid SSR issues
 const Terminal = dynamic(() => import('../../../components/Terminal'), { ssr: false });
-
-const getApiUrl = () => {
-  if (typeof window === 'undefined') return 'http://localhost:3001';
-  return `http://${window.location.hostname}:3001`;
-};
 
 interface GPU {
   id: string;

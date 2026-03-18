@@ -2,16 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
-
-const getApiUrl = () => {
-  if (typeof window === 'undefined') return 'http://localhost:3001';
-  return `http://${window.location.hostname}:3001`;
-};
-
-function getCsrfToken(): string {
-  const match = document.cookie.match(/(?:^|;\s*)csrf_token=([^;]*)/);
-  return match ? decodeURIComponent(match[1]) : '';
-}
+import { getApiUrl, getCsrfToken } from '../../../lib/api';
 
 type AlertCondition =
   | 'TEMP_ABOVE'
