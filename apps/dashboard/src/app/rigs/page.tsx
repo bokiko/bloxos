@@ -4,11 +4,7 @@ import { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
 import { useWebSocket } from '../../hooks/useWebSocket';
 import { SkeletonRigCard } from '../../components/Skeleton';
-
-const getApiUrl = () => {
-  if (typeof window === 'undefined') return 'http://localhost:3001';
-  return `http://${window.location.hostname}:3001`;
-};
+import { getApiUrl } from '../../lib/api';
 
 interface GPU {
   id: string;

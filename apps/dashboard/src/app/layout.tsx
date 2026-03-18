@@ -9,11 +9,7 @@ import { AuthProvider, useAuth } from '../context/auth';
 import { ToastProvider, useToastContext } from '../context/toast';
 import CommandPalette from '../components/CommandPalette';
 import ToastContainer from '../components/Toast';
-
-const getApiUrl = () => {
-  if (typeof window === 'undefined') return 'http://localhost:3001';
-  return `http://${window.location.hostname}:3001`;
-};
+import { getApiUrl } from '../lib/api';
 
 const inter = Inter({ subsets: ['latin'] });
 
