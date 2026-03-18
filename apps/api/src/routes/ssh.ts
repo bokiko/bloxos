@@ -143,6 +143,12 @@ const BLOCKED_PATTERNS = [
   /\bunset\s/i,
   /\bsource\s/i,
   /\b\.\s+\//i, // source with dot
+
+  // Sensitive file access (prevent tail/head/cat from reading credentials/keys)
+  /\/etc\/(passwd|shadow|gshadow|sudoers?|master\.passwd|securetty|ssh\/)/i,
+  /\/root\//i,
+  /\/home\/[^/]+\/\.ssh/i,
+  /\/proc\/[0-9]+\/(mem|maps|environ)\b/i,
 ];
 
 /**
@@ -164,10 +170,18 @@ function isCommandSafe(command: string): { safe: boolean; reason?: string } {
   }
   
   // Check if command starts with an allowed prefix
+  // For multi-word entries (e.g. "cat /proc/cpuinfo"), require full prefix match to prevent
+  // path traversal (e.g. "cat /etc/passwd" must NOT match the cat entries).
+  // For single-word entries (e.g. "uname"), allow any flags/arguments.
   const commandBase = trimmedCommand.split(/\s+/)[0].toLowerCase();
   const isAllowed = ALLOWED_USER_COMMANDS.some(allowed => {
-    const allowedBase = allowed.split(/\s+/)[0].toLowerCase();
-    return commandBase === allowedBase || trimmedCommand.toLowerCase().startsWith(allowed.toLowerCase());
+    if (allowed.includes(' ')) {
+      // Multi-word: require the command to start with the full allowed string
+      return trimmedCommand.toLowerCase().startsWith(allowed.toLowerCase());
+    } else {
+      // Single-word: match base command only
+      return commandBase === allowed.toLowerCase();
+    }
   });
   
   if (!isAllowed) {
