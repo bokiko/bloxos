@@ -55,3 +55,21 @@ Total suite: 132 passing tests (74 new + 58 existing). Zero new dependencies.
 **Files changed:** apps/api/src/__tests__/security.mining.test.ts (new)
 **Lines:** +369 / -0
 **PR:** https://github.com/bokiko/bloxos/pull/8
+
+## 2026-03-18 — Accessibility: ARIA markup across core dashboard components
+
+The dashboard had essentially zero accessibility support — one aria-* attribute across 50+ component files. Added comprehensive WCAG-compliant ARIA markup across the five most impactful files.
+
+layout.tsx: skip-to-main-content link, role=banner on mobile header, aria-label on hamburger/close buttons, role=navigation + aria-label on nav, aria-current=page on active links, aria-label on alert/update count badges, aria-label on command palette + logout buttons, id=main-content + tabIndex=-1 on main, role=complementary + aria-label on aside, role=presentation + aria-hidden on mobile overlay, role=status + aria-label on loading spinner.
+
+Toast.tsx: role=alert/status per toast severity, aria-live=assertive for errors and polite for info/success.
+
+CommandPalette.tsx: role=dialog + aria-modal + aria-label on modal, role=combobox + aria-autocomplete + aria-activedescendant on search input, role=listbox on results list, role=option + aria-selected on each result item.
+
+login/page.tsx: role=alert + id on error div, aria-describedby linking inputs to the error element.
+
+Skeleton.tsx: role=status + aria-label + aria-busy=true on all 10 skeleton components.
+
+**Files changed:** apps/dashboard/src/app/layout.tsx, apps/dashboard/src/app/login/page.tsx, apps/dashboard/src/components/CommandPalette.tsx, apps/dashboard/src/components/Skeleton.tsx, apps/dashboard/src/components/Toast.tsx
+**Lines:** +44 / -20
+**PR:** https://github.com/bokiko/bloxos/pull/6
