@@ -1,51 +1,56 @@
-'use client';
+'use client'
 
-import { useEffect, useState, useCallback } from 'react';
-import { SkeletonStatCard, SkeletonTable } from '../../components/Skeleton';
-import { getApiUrl } from '../../lib/api';
+import { useState } from 'react'
+import { SkeletonStatCard, SkeletonTable } from '../../components/Skeleton'
+import { getApiUrl } from '../../lib/api'
+import { useCachedFetch } from '../../hooks/useCachedFetch'
 
 interface ProfitSummary {
-  period: string;
-  startDate: string;
-  endDate: string;
+  period: string
+  startDate: string
+  endDate: string
   totals: {
-    revenue: number;
-    electricityCost: number;
-    profit: number;
-    powerKwh: number;
-  };
-  rigsCount: number;
-  snapshotsCount: number;
+    revenue: number
+    electricityCost: number
+    profit: number
+    powerKwh: number
+  }
+  rigsCount: number
+  snapshotsCount: number
   daily: Array<{
-    date: string;
-    revenue: number;
-    cost: number;
-    profit: number;
-  }>;
+    date: string
+    revenue: number
+    cost: number
+    profit: number
+  }>
 }
 
 interface RigProfit {
-  rigId: string;
-  rigName: string;
-  status: string;
-  coin: string | null;
-  revenue: number;
-  electricityCost: number;
-  profit: number;
-  avgHashrate: number;
-  daysTracked: number;
+  rigId: string
+  rigName: string
+  status: string
+  coin: string | null
+  revenue: number
+  electricityCost: number
+  profit: number
+  avgHashrate: number
+  daysTracked: number
+}
+
+interface RigProfitResponse {
+  rigs: RigProfit[]
 }
 
 interface CoinPrice {
-  ticker: string;
-  priceUsd: number;
-  priceChange24h: number | null;
-  fetchedAt: string;
+  ticker: string
+  priceUsd: number
+  priceChange24h: number | null
+  fetchedAt: string
 }
 
 interface ElectricitySettings {
-  rate: number;
-  currency: string;
+  rate: number
+  currency: string
 }
 
 // Icons
@@ -53,67 +58,56 @@ const ChartIcon = () => (
   <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
   </svg>
-);
+)
 
 const DollarIcon = () => (
   <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
   </svg>
-);
+)
 
 const BoltIcon = () => (
   <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
   </svg>
-);
+)
 
 const TrendingUpIcon = () => (
   <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
   </svg>
-);
+)
 
 const TrendingDownIcon = () => (
   <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 17h8m0 0V9m0 8l-8-8-4 4-6-6" />
   </svg>
-);
+)
 
 export default function ProfitPage() {
-  const [summary, setSummary] = useState<ProfitSummary | null>(null);
-  const [rigProfits, setRigProfits] = useState<RigProfit[]>([]);
-  const [prices, setPrices] = useState<CoinPrice[]>([]);
-  const [settings, setSettings] = useState<ElectricitySettings | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [period, setPeriod] = useState<'day' | 'week' | 'month'>('month');
+  const [period, setPeriod] = useState<'day' | 'week' | 'month'>('month')
 
-  const fetchData = useCallback(async () => {
-    setLoading(true);
-    try {
-      const [summaryRes, rigsRes, pricesRes, settingsRes] = await Promise.all([
-        fetch(`${getApiUrl()}/api/profit/summary?period=${period}`, { credentials: 'include' }),
-        fetch(`${getApiUrl()}/api/profit/by-rig?period=${period}`, { credentials: 'include' }),
-        fetch(`${getApiUrl()}/api/profit/prices`, { credentials: 'include' }),
-        fetch(`${getApiUrl()}/api/profit/settings`, { credentials: 'include' }),
-      ]);
+  const apiBase = getApiUrl()
 
-      if (summaryRes.ok) setSummary(await summaryRes.json());
-      if (rigsRes.ok) {
-        const data = await rigsRes.json();
-        setRigProfits(data.rigs || []);
-      }
-      if (pricesRes.ok) setPrices(await pricesRes.json());
-      if (settingsRes.ok) setSettings(await settingsRes.json());
-    } catch (err) {
-      console.error('Failed to fetch profit data:', err);
-    } finally {
-      setLoading(false);
-    }
-  }, [period]);
+  const { data: summary, loading: summaryLoading, error: summaryError } =
+    useCachedFetch<ProfitSummary>(`${apiBase}/api/profit/summary?period=${period}`, { ttl: 60000 })
 
-  useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+  const { data: rigsData, loading: rigsLoading, error: rigsError } =
+    useCachedFetch<RigProfitResponse>(`${apiBase}/api/profit/by-rig?period=${period}`, { ttl: 60000 })
+
+  const { data: prices, loading: pricesLoading, error: pricesError } =
+    useCachedFetch<CoinPrice[]>(`${apiBase}/api/profit/prices`, { ttl: 120000 })
+
+  const { data: settings, loading: settingsLoading, error: settingsError } =
+    useCachedFetch<ElectricitySettings>(`${apiBase}/api/profit/settings`, { ttl: 300000 })
+
+  const rigProfits = rigsData?.rigs ?? []
+  const loading = summaryLoading || rigsLoading || pricesLoading || settingsLoading
+  const error = summaryError || rigsError || pricesError || settingsError
+
+  if (error) {
+    console.error('Failed to fetch profit data:', error)
+  }
 
   const formatCurrency = (value: number) => {
     return new Intl.NumberFormat('en-US', {
@@ -121,61 +115,61 @@ export default function ProfitPage() {
       currency: 'USD',
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
-    }).format(value);
-  };
+    }).format(value)
+  }
 
   const formatNumber = (value: number, decimals = 2) => {
-    return value.toFixed(decimals);
-  };
+    return value.toFixed(decimals)
+  }
 
   const exportToCSV = () => {
-    const periodLabel = period === 'day' ? '24h' : period === 'week' ? '7d' : '30d';
-    const timestamp = new Date().toISOString().split('T')[0];
-    const filename = `bloxos-profit-${periodLabel}-${timestamp}.csv`;
+    const periodLabel = period === 'day' ? '24h' : period === 'week' ? '7d' : '30d'
+    const timestamp = new Date().toISOString().split('T')[0]
+    const filename = `bloxos-profit-${periodLabel}-${timestamp}.csv`
 
-    const rows: string[] = [];
+    const rows: string[] = []
 
     // Summary section
-    rows.push('=== SUMMARY ===');
-    rows.push(`Period,${periodLabel}`);
-    rows.push(`Start Date,${summary?.startDate || ''}`);
-    rows.push(`End Date,${summary?.endDate || ''}`);
-    rows.push(`Total Revenue,$${summary?.totals.revenue?.toFixed(4) || '0'}`);
-    rows.push(`Electricity Cost,$${summary?.totals.electricityCost?.toFixed(4) || '0'}`);
-    rows.push(`Net Profit,$${summary?.totals.profit?.toFixed(4) || '0'}`);
-    rows.push(`Total Power (kWh),${summary?.totals.powerKwh?.toFixed(2) || '0'}`);
-    rows.push(`Active Rigs,${summary?.rigsCount || 0}`);
-    rows.push(`Electricity Rate ($/kWh),${settings?.rate || 0.10}`);
-    rows.push('');
+    rows.push('=== SUMMARY ===')
+    rows.push(`Period,${periodLabel}`)
+    rows.push(`Start Date,${summary?.startDate || ''}`)
+    rows.push(`End Date,${summary?.endDate || ''}`)
+    rows.push(`Total Revenue,$${summary?.totals.revenue?.toFixed(4) || '0'}`)
+    rows.push(`Electricity Cost,$${summary?.totals.electricityCost?.toFixed(4) || '0'}`)
+    rows.push(`Net Profit,$${summary?.totals.profit?.toFixed(4) || '0'}`)
+    rows.push(`Total Power (kWh),${summary?.totals.powerKwh?.toFixed(2) || '0'}`)
+    rows.push(`Active Rigs,${summary?.rigsCount || 0}`)
+    rows.push(`Electricity Rate ($/kWh),${settings?.rate || 0.10}`)
+    rows.push('')
 
     // Daily breakdown
     if (summary && summary.daily.length > 0) {
-      rows.push('=== DAILY BREAKDOWN ===');
-      rows.push('Date,Revenue ($),Electricity Cost ($),Net Profit ($)');
+      rows.push('=== DAILY BREAKDOWN ===')
+      rows.push('Date,Revenue ($),Electricity Cost ($),Net Profit ($)')
       summary.daily.forEach(day => {
-        rows.push(`${day.date},${day.revenue.toFixed(4)},${day.cost.toFixed(4)},${day.profit.toFixed(4)}`);
-      });
-      rows.push('');
+        rows.push(`${day.date},${day.revenue.toFixed(4)},${day.cost.toFixed(4)},${day.profit.toFixed(4)}`)
+      })
+      rows.push('')
     }
 
     // Per-rig breakdown
     if (rigProfits.length > 0) {
-      rows.push('=== PER-RIG BREAKDOWN ===');
-      rows.push('Rig Name,Status,Coin,Avg Hashrate (MH/s),Revenue ($),Electricity Cost ($),Net Profit ($),Days Tracked');
+      rows.push('=== PER-RIG BREAKDOWN ===')
+      rows.push('Rig Name,Status,Coin,Avg Hashrate (MH/s),Revenue ($),Electricity Cost ($),Net Profit ($),Days Tracked')
       rigProfits.forEach(rig => {
-        rows.push(`"${rig.rigName}",${rig.status},${rig.coin || 'Idle'},${rig.avgHashrate.toFixed(2)},${rig.revenue.toFixed(4)},${rig.electricityCost.toFixed(4)},${rig.profit.toFixed(4)},${rig.daysTracked}`);
-      });
+        rows.push(`"${rig.rigName}",${rig.status},${rig.coin || 'Idle'},${rig.avgHashrate.toFixed(2)},${rig.revenue.toFixed(4)},${rig.electricityCost.toFixed(4)},${rig.profit.toFixed(4)},${rig.daysTracked}`)
+      })
     }
 
-    const csvContent = rows.join('\n');
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = filename;
-    link.click();
-    URL.revokeObjectURL(url);
-  };
+    const csvContent = rows.join('\n')
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = filename
+    link.click()
+    URL.revokeObjectURL(url)
+  }
 
   if (loading) {
     return (
@@ -193,7 +187,7 @@ export default function ProfitPage() {
         </div>
         <SkeletonTable rows={5} cols={4} />
       </div>
-    );
+    )
   }
 
   return (
@@ -311,9 +305,9 @@ export default function ProfitPage() {
           <h2 className="text-lg font-semibold text-white mb-4">Daily Profit</h2>
           <div className="h-64 flex items-end gap-1">
             {summary.daily.map((day, i) => {
-              const maxValue = Math.max(...summary.daily.map(d => Math.abs(d.profit)), 1);
-              const height = Math.abs(day.profit) / maxValue * 100;
-              const isPositive = day.profit >= 0;
+              const maxValue = Math.max(...summary.daily.map(d => Math.abs(d.profit)), 1)
+              const height = Math.abs(day.profit) / maxValue * 100
+              const isPositive = day.profit >= 0
 
               return (
                 <div
@@ -330,7 +324,7 @@ export default function ProfitPage() {
                     {new Date(day.date).toLocaleDateString()}: {formatCurrency(day.profit)}
                   </div>
                 </div>
-              );
+              )
             })}
           </div>
           <div className="flex justify-between mt-2 text-xs text-slate-500">
@@ -400,7 +394,7 @@ export default function ProfitPage() {
       </div>
 
       {/* Coin Prices */}
-      {prices.length > 0 && (
+      {prices && prices.length > 0 && (
         <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
           <div className="px-6 py-4 border-b border-slate-700">
             <h2 className="text-lg font-semibold text-white">Current Coin Prices</h2>
@@ -433,5 +427,5 @@ export default function ProfitPage() {
         </p>
       </div>
     </div>
-  );
+  )
 }
