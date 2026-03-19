@@ -85,3 +85,13 @@ Integrated into profit/page.tsx as the first consumer: replaced the manual useEf
 **Files changed:** apps/dashboard/src/hooks/useCachedFetch.ts (new), apps/dashboard/src/app/profit/page.tsx
 **Lines:** +250 / -116
 **PR:** https://github.com/bokiko/bloxos/pull/7
+
+## 2026-03-19 — Code Quality: Extract shared formatting utilities to lib/format.ts
+
+Four utility functions (formatTimeAgo, formatLastSeen, getStatusColor, getSeverityColor) were copy-pasted across 6 dashboard pages with minor inconsistencies — notably, two copies of getStatusColor were missing the REBOOTING status case, and formatTimeAgo had different type signatures across files.
+
+Created apps/dashboard/src/lib/format.ts as the single authoritative source for all formatting and status utilities. formatTimeAgo now accepts string | Date | null for full flexibility. getStatusColor consistently handles REBOOTING across all pages. Removed all 6 sets of local definitions.
+
+**Files changed:** apps/dashboard/src/lib/format.ts (new), apps/dashboard/src/app/page.tsx, apps/dashboard/src/app/alerts/page.tsx, apps/dashboard/src/app/alerts/rules/page.tsx, apps/dashboard/src/app/rigs/page.tsx, apps/dashboard/src/app/rigs/[id]/page.tsx, apps/dashboard/src/app/rig-groups/page.tsx
+**Lines:** +53 / -124 (net -71)
+**PR:** https://github.com/bokiko/bloxos/pull/9
