@@ -34,6 +34,17 @@ Centralized `getApiUrl()` and `getCsrfToken()` — two utility functions copy-pa
 **Lines:** +26 / -129 (net -103)
 **PR:** https://github.com/bokiko/bloxos/pull/4
 
+## 2026-03-18 — Security: Consolidate auth to global middleware
+
+Three route files (profit.ts, settings.ts, users.ts) were bypassing the centralized `requireAuth` middleware by re-implementing JWT extraction and verification inline. Despite the global `onRequest` hook already calling `requireAuth` and populating `request.user` for every protected route, these files ignored `request.user` and re-verified the JWT themselves — duplicating security logic that could drift from the canonical implementation.
+
+Removed `getUserFarm()` from profit.ts, `getUserId()` from settings.ts, and the local `requireAdmin()` from users.ts. Replaced all usages with direct `request.user!.userId` reads. Converted users.ts routes to use `preHandler: [requireAdmin]` from the centralized middleware.
+
+**Files changed:** apps/api/src/routes/profit.ts, apps/api/src/routes/settings.ts, apps/api/src/routes/users.ts
+**Lines:** +40 / -106 (net -66)
+**PR:** https://github.com/bokiko/bloxos/pull/5
+
+
 ## 2026-03-19 — Testing: Comprehensive tests for mining security validators
 
 The mining-specific security utility functions in apps/api/src/utils/security.ts had zero test coverage despite being critical guards against shell injection, invalid OC values, and malformed miner configuration. Added 74 new unit tests covering all eight untested functions.
