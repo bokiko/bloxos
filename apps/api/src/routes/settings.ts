@@ -1,7 +1,6 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@bloxos/database';
-import { authService } from '../services/auth-service.ts';
 import { notificationService } from '../services/notification-service.ts';
 
 const NotificationSettingsSchema = z.object({
@@ -21,22 +20,10 @@ const TestNotificationSchema = z.object({
   type: z.enum(['email', 'telegram']),
 });
 
-// Helper to get user ID from request
-async function getUserId(request: FastifyRequest): Promise<string | null> {
-  const token = request.cookies.token || request.headers.authorization?.replace('Bearer ', '');
-  if (!token) return null;
-
-  const payload = await authService.verifyToken(token);
-  return payload?.userId || null;
-}
-
 export async function settingsRoutes(app: FastifyInstance) {
   // Get notification settings
   app.get('/notifications', async (request: FastifyRequest, reply: FastifyReply) => {
-    const userId = await getUserId(request);
-    if (!userId) {
-      return reply.status(401).send({ error: 'Not authenticated' });
-    }
+    const userId = request.user!.userId;
 
     const settings = await prisma.notificationSettings.findUnique({
       where: { userId },
@@ -74,10 +61,7 @@ export async function settingsRoutes(app: FastifyInstance) {
 
   // Update notification settings
   app.put('/notifications', async (request: FastifyRequest, reply: FastifyReply) => {
-    const userId = await getUserId(request);
-    if (!userId) {
-      return reply.status(401).send({ error: 'Not authenticated' });
-    }
+    const userId = request.user!.userId;
 
     const result = NotificationSettingsSchema.safeParse(request.body);
     if (!result.success) {
@@ -146,10 +130,7 @@ export async function settingsRoutes(app: FastifyInstance) {
 
   // Test notification
   app.post('/notifications/test', async (request: FastifyRequest, reply: FastifyReply) => {
-    const userId = await getUserId(request);
-    if (!userId) {
-      return reply.status(401).send({ error: 'Not authenticated' });
-    }
+    const userId = request.user!.userId;
 
     const result = TestNotificationSchema.safeParse(request.body);
     if (!result.success) {
