@@ -6,6 +6,7 @@ import Link from 'next/link';
 import dynamic from 'next/dynamic';
 import { useWebSocket } from '../../../hooks/useWebSocket';
 import { getApiUrl } from '../../../lib/api';
+import { formatTimeAgo, formatLastSeen } from '../../../lib/format';
 
 // Dynamic import for Terminal to avoid SSR issues
 const Terminal = dynamic(() => import('../../../components/Terminal'), { ssr: false });
@@ -784,15 +785,6 @@ export default function RigDetailPage() {
     }
   }
 
-  function formatTimeAgo(date: Date | null) {
-    if (!date) return '';
-    const diff = Date.now() - date.getTime();
-    const secs = Math.floor(diff / 1000);
-    if (secs < 60) return `${secs}s ago`;
-    const mins = Math.floor(secs / 60);
-    return `${mins}m ago`;
-  }
-
   async function handleDelete() {
     if (!rig) return;
     if (!confirm(`Are you sure you want to delete "${rig.name}"?`)) return;
@@ -1077,17 +1069,6 @@ export default function RigDetailPage() {
       return `${hours}h ${mins}m`;
     }
     return `${mins}m`;
-  }
-
-  function formatLastSeen(lastSeen: string | null) {
-    if (!lastSeen) return 'Never';
-    const diff = Date.now() - new Date(lastSeen).getTime();
-    const mins = Math.floor(diff / 60000);
-    if (mins < 1) return 'Just now';
-    if (mins < 60) return `${mins}m ago`;
-    const hours = Math.floor(mins / 60);
-    if (hours < 24) return `${hours}h ago`;
-    return `${Math.floor(hours / 24)}d ago`;
   }
 
   function getTempColor(temp: number | null) {
