@@ -1,7 +1,6 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@bloxos/database';
-import { authService } from '../services/auth-service.ts';
 import { priceService } from '../services/price-service.ts';
 
 // Schemas
@@ -16,23 +15,13 @@ const ProfitQuerySchema = z.object({
   endDate: z.string().datetime().optional(),
 });
 
-// Helper to get user and their farm
-async function getUserFarm(request: FastifyRequest): Promise<{ userId: string; farmId: string } | null> {
-  const token = request.cookies.token || request.headers.authorization?.replace('Bearer ', '');
-  if (!token) return null;
-
-  const payload = await authService.verifyToken(token);
-  if (!payload?.userId) return null;
-
-  // Get user's first farm (users typically have one farm)
+// Helper to get user's farm ID (auth is guaranteed by global middleware)
+async function getFarmId(userId: string): Promise<string | null> {
   const farm = await prisma.farm.findFirst({
-    where: { ownerId: payload.userId },
+    where: { ownerId: userId },
     select: { id: true },
   });
-
-  if (!farm) return null;
-
-  return { userId: payload.userId, farmId: farm.id };
+  return farm?.id ?? null;
 }
 
 // Calculate date range from period
@@ -65,13 +54,13 @@ export async function profitRoutes(app: FastifyInstance) {
 
   // Get electricity settings for user's farm
   app.get('/settings', async (request: FastifyRequest, reply: FastifyReply) => {
-    const userFarm = await getUserFarm(request);
-    if (!userFarm) {
-      return reply.status(401).send({ error: 'Not authenticated' });
+    const farmId = await getFarmId(request.user!.userId);
+    if (!farmId) {
+      return reply.status(404).send({ error: 'No farm found' });
     }
 
     const settings = await prisma.electricitySettings.findUnique({
-      where: { farmId: userFarm.farmId },
+      where: { farmId },
     });
 
     // Return defaults if no settings exist
@@ -90,9 +79,9 @@ export async function profitRoutes(app: FastifyInstance) {
 
   // Update electricity settings
   app.put('/settings', async (request: FastifyRequest, reply: FastifyReply) => {
-    const userFarm = await getUserFarm(request);
-    if (!userFarm) {
-      return reply.status(401).send({ error: 'Not authenticated' });
+    const farmId = await getFarmId(request.user!.userId);
+    if (!farmId) {
+      return reply.status(404).send({ error: 'No farm found' });
     }
 
     const result = ElectricitySettingsSchema.safeParse(request.body);
@@ -101,10 +90,10 @@ export async function profitRoutes(app: FastifyInstance) {
     }
 
     const settings = await prisma.electricitySettings.upsert({
-      where: { farmId: userFarm.farmId },
+      where: { farmId },
       update: result.data,
       create: {
-        farmId: userFarm.farmId,
+        farmId,
         ...result.data,
       },
     });
@@ -177,9 +166,9 @@ export async function profitRoutes(app: FastifyInstance) {
 
   // Get profit summary across all rigs
   app.get('/summary', async (request: FastifyRequest<{ Querystring: { period?: string } }>, reply: FastifyReply) => {
-    const userFarm = await getUserFarm(request);
-    if (!userFarm) {
-      return reply.status(401).send({ error: 'Not authenticated' });
+    const farmId = await getFarmId(request.user!.userId);
+    if (!farmId) {
+      return reply.status(404).send({ error: 'No farm found' });
     }
 
     const queryResult = ProfitQuerySchema.safeParse(request.query);
@@ -188,7 +177,7 @@ export async function profitRoutes(app: FastifyInstance) {
 
     // Get all rigs for the user's farm
     const rigs = await prisma.rig.findMany({
-      where: { farmId: userFarm.farmId },
+      where: { farmId },
       select: { id: true },
     });
 
@@ -253,16 +242,16 @@ export async function profitRoutes(app: FastifyInstance) {
 
   // Get profit for a specific rig
   app.get('/rig/:id', async (request: FastifyRequest<{ Params: { id: string }; Querystring: { period?: string } }>, reply: FastifyReply) => {
-    const userFarm = await getUserFarm(request);
-    if (!userFarm) {
-      return reply.status(401).send({ error: 'Not authenticated' });
+    const farmId = await getFarmId(request.user!.userId);
+    if (!farmId) {
+      return reply.status(404).send({ error: 'No farm found' });
     }
 
     const { id: rigId } = request.params;
 
     // Verify rig belongs to user's farm
     const rig = await prisma.rig.findFirst({
-      where: { id: rigId, farmId: userFarm.farmId },
+      where: { id: rigId, farmId },
       select: { id: true, name: true },
     });
 
@@ -328,9 +317,9 @@ export async function profitRoutes(app: FastifyInstance) {
 
   // Get profit breakdown by rig (for comparison table)
   app.get('/by-rig', async (request: FastifyRequest<{ Querystring: { period?: string } }>, reply: FastifyReply) => {
-    const userFarm = await getUserFarm(request);
-    if (!userFarm) {
-      return reply.status(401).send({ error: 'Not authenticated' });
+    const farmId = await getFarmId(request.user!.userId);
+    if (!farmId) {
+      return reply.status(404).send({ error: 'No farm found' });
     }
 
     const queryResult = ProfitQuerySchema.safeParse(request.query);
@@ -339,7 +328,7 @@ export async function profitRoutes(app: FastifyInstance) {
 
     // Get all rigs with their profit snapshots
     const rigs = await prisma.rig.findMany({
-      where: { farmId: userFarm.farmId },
+      where: { farmId },
       select: {
         id: true,
         name: true,
