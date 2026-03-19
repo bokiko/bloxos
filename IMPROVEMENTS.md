@@ -33,3 +33,15 @@ Centralized `getApiUrl()` and `getCsrfToken()` — two utility functions copy-pa
 **Files changed:** apps/dashboard/src/lib/api.ts (new), + 17 files updated
 **Lines:** +26 / -129 (net -103)
 **PR:** https://github.com/bokiko/bloxos/pull/4
+
+## 2026-03-19 — Testing: Comprehensive tests for mining security validators
+
+The mining-specific security utility functions in apps/api/src/utils/security.ts had zero test coverage despite being critical guards against shell injection, invalid OC values, and malformed miner configuration. Added 74 new unit tests covering all eight untested functions.
+
+Functions covered: sanitizeCommand (chaining/redirection/dangerous chars), isCommandAllowed (whitelist enforcement), escapeShellArg (shell metacharacter containment), validateNumericRange (boundary + NaN guards), validateMinerName (all 7 valid miners, case-insensitive), validatePoolUrl (all stratum variants, injection schemes), validateWalletAddress (ETH/BTC formats, metacharacters), validateExtraArgs (safe flags vs injection chars), validateOCValue (NVIDIA/AMD boundaries, null pass-through, unknown setting).
+
+Total suite: 132 passing tests (74 new + 58 existing). Zero new dependencies.
+
+**Files changed:** apps/api/src/__tests__/security.mining.test.ts (new)
+**Lines:** +369 / -0
+**PR:** https://github.com/bokiko/bloxos/pull/8
