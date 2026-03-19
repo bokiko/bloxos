@@ -191,7 +191,7 @@ export default function CommandPalette() {
       />
 
       {/* Palette */}
-      <div className="relative w-full max-w-lg bg-slate-800 rounded-xl border border-slate-600/50 shadow-2xl shadow-black/50 overflow-hidden">
+      <div className="relative w-full max-w-lg bg-slate-800 rounded-xl border border-slate-600/50 shadow-2xl shadow-black/50 overflow-hidden" role="dialog" aria-modal="true" aria-label="Command palette">
         {/* Search input */}
         <div className="flex items-center px-4 border-b border-slate-700/50">
           <svg className="w-5 h-5 text-slate-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -205,6 +205,11 @@ export default function CommandPalette() {
             onKeyDown={handleKeyDown}
             placeholder="Type a command or search..."
             className="w-full px-3 py-4 bg-transparent text-white placeholder-slate-400 outline-none text-sm"
+            role="combobox"
+            aria-autocomplete="list"
+            aria-expanded={true}
+            aria-controls="command-palette-list"
+            aria-activedescendant={filtered[selectedIndex] ? `command-${filtered[selectedIndex].id}` : undefined}
           />
           <kbd className="hidden sm:inline-flex items-center px-2 py-1 text-xs text-slate-400 bg-slate-700/50 rounded border border-slate-600/50">
             ESC
@@ -212,7 +217,7 @@ export default function CommandPalette() {
         </div>
 
         {/* Results */}
-        <div ref={listRef} className="max-h-72 overflow-y-auto py-2">
+        <div ref={listRef} id="command-palette-list" role="listbox" className="max-h-72 overflow-y-auto py-2">
           {filtered.length === 0 ? (
             <div className="px-4 py-8 text-center text-slate-400 text-sm">
               No results found
@@ -221,6 +226,9 @@ export default function CommandPalette() {
             filtered.map((cmd, i) => (
               <button
                 key={cmd.id}
+                id={`command-${cmd.id}`}
+                role="option"
+                aria-selected={i === selectedIndex}
                 onClick={() => execute(cmd)}
                 onMouseEnter={() => setSelectedIndex(i)}
                 className={`w-full flex items-center gap-3 px-4 py-3 text-left transition-colors ${
