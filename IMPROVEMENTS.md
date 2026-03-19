@@ -73,3 +73,15 @@ Skeleton.tsx: role=status + aria-label + aria-busy=true on all 10 skeleton compo
 **Files changed:** apps/dashboard/src/app/layout.tsx, apps/dashboard/src/app/login/page.tsx, apps/dashboard/src/components/CommandPalette.tsx, apps/dashboard/src/components/Skeleton.tsx, apps/dashboard/src/components/Toast.tsx
 **Lines:** +44 / -20
 **PR:** https://github.com/bokiko/bloxos/pull/6
+
+## 2026-03-19 — Performance: useCachedFetch hook with stale-while-revalidate
+
+Every dashboard page called fetch() in useEffect with no caching. Navigating away and back triggered a full round-trip even when data was seconds old. Added a zero-dependency module-level cache that returns stale data instantly while revalidating in the background, and deduplicates concurrent requests to the same URL.
+
+New hook (useCachedFetch.ts) features: configurable TTL (default 30s), stale-while-revalidate semantics, in-flight Promise deduplication, optional revalidateOnFocus, full TypeScript generics with no any types.
+
+Integrated into profit/page.tsx as the first consumer: replaced the manual useEffect/useCallback/Promise.all chain with four useCachedFetch calls, TTLs tuned per endpoint (summary/rigs 60s, prices 120s, settings 300s). All existing UI and data structures preserved exactly.
+
+**Files changed:** apps/dashboard/src/hooks/useCachedFetch.ts (new), apps/dashboard/src/app/profit/page.tsx
+**Lines:** +250 / -116
+**PR:** https://github.com/bokiko/bloxos/pull/7
