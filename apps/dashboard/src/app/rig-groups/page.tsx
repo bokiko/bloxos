@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { getApiUrl, getCsrfToken } from '../../lib/api';
+import { getStatusColor } from '../../lib/format';
 
 interface Farm {
   id: string;
@@ -169,15 +170,6 @@ export default function RigGroupsPage() {
       description: group.description || '',
       farmId: farms[0]?.id || '',
     });
-  }
-
-  function getStatusColor(status: string) {
-    switch (status) {
-      case 'ONLINE': return 'bg-green-500';
-      case 'WARNING': return 'bg-yellow-500';
-      case 'ERROR': return 'bg-red-500';
-      default: return 'bg-slate-500';
-    }
   }
 
   return (
