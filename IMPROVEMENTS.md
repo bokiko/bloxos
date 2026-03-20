@@ -85,3 +85,15 @@ Integrated into profit/page.tsx as the first consumer: replaced the manual useEf
 **Files changed:** apps/dashboard/src/hooks/useCachedFetch.ts (new), apps/dashboard/src/app/profit/page.tsx
 **Lines:** +250 / -116
 **PR:** https://github.com/bokiko/bloxos/pull/7
+
+## 2026-03-20 — UI/UX: Search and coin filter on wallets page
+
+The wallets page had no way to find a specific wallet in a long list. With multiple coins and many addresses, users had to scroll manually to locate what they needed.
+
+Added a search bar (filters by name or address) and a coin filter dropdown (auto-populated from existing wallets) that render together in a styled toolbar row above the list. The clear (X) button removes the query instantly. When filters are active and nothing matches, the empty state shows "No wallets match your filters" instead of the onboarding prompt. Filter UI is hidden during loading and when no wallets exist.
+
+UI style matches the existing pools page search bar (slate-800/50 bg, rounded-xl, blox-500 focus ring).
+
+**Files changed:** apps/dashboard/src/app/wallets/page.tsx
+**Lines:** +65 / -9
+**PR:** https://github.com/bokiko/bloxos/pull/10
