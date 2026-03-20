@@ -97,3 +97,13 @@ UI style matches the existing pools page search bar (slate-800/50 bg, rounded-xl
 **Files changed:** apps/dashboard/src/app/wallets/page.tsx
 **Lines:** +65 / -9
 **PR:** https://github.com/bokiko/bloxos/pull/10
+
+## 2026-03-20 — Bug Fix: Unified API URL resolution and NEXT_PUBLIC_API_URL support
+
+Three separate files each maintained their own URL-building logic hardcoded to http://, silently breaking any deployment served over HTTPS or behind a reverse proxy. A fourth call in rigs/[id]/page.tsx bypassed getApiUrl() entirely with a bare http:// string.
+
+lib/api.ts now exports getApiUrl() that respects a NEXT_PUBLIC_API_URL env override first, then infers from window.location.protocol so the scheme always matches the page. A new getWsUrl() helper derives ws/wss from getApiUrl() — single source of truth for WebSocket URLs. useWebSocket.ts and Terminal.tsx now import the shared getWsUrl() instead of duplicating it. The stray http:// string in rigs/[id]/page.tsx is replaced with getApiUrl(). Added .env.example documenting the new env var.
+
+**Files changed:** apps/dashboard/src/lib/api.ts, apps/dashboard/src/hooks/useWebSocket.ts, apps/dashboard/src/components/Terminal.tsx, apps/dashboard/src/app/rigs/[id]/page.tsx, apps/dashboard/.env.example (new)
+**Lines:** +32 / -16
+**PR:** https://github.com/bokiko/bloxos/pull/11
