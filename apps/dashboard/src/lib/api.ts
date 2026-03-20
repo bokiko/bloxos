@@ -11,11 +11,14 @@ export function getApiUrl(): string {
   return `${protocol}//${window.location.hostname}:3001`;
 }
 
-// Derive WebSocket URL from the API URL.
-// Replaces http(s): with ws(s): so callers don't need to duplicate the logic.
+// Resolve the WebSocket URL.
+// Priority: NEXT_PUBLIC_WS_URL env var → infer from current page origin.
 export function getWsUrl(): string {
-  const base = getApiUrl();
-  return base.replace(/^http(s?):/, 'ws$1:');
+  const envUrl = process.env.NEXT_PUBLIC_WS_URL;
+  if (envUrl) return envUrl.replace(/\/$/, '');
+  if (typeof window === 'undefined') return 'ws://localhost:3001';
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${protocol}//${window.location.hostname}:3001`;
 }
 
 export function getCsrfToken(): string {

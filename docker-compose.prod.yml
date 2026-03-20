@@ -71,6 +71,9 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.dashboard
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
+        NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-ws://localhost:3001}
     container_name: bloxos-dashboard
     restart: unless-stopped
     depends_on:
@@ -78,7 +81,6 @@ services:
         condition: service_healthy
     environment:
       NODE_ENV: production
-      NEXT_PUBLIC_API_URL: ${API_URL:-http://localhost:3001}
     ports:
       - "3000:3000"
     healthcheck:
