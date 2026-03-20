@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from 'react';
 import Image from 'next/image';
 import { SkeletonPoolRow } from '../../components/Skeleton';
 import { getApiUrl, getCsrfToken } from '../../lib/api';
+import { useAuth } from '../../context/auth';
 
 interface Pool {
   id: string;
@@ -19,11 +20,6 @@ interface Pool {
   _count?: {
     flightSheets: number;
   };
-}
-
-interface Farm {
-  id: string;
-  name: string;
 }
 
 interface Coin {
@@ -104,8 +100,8 @@ const regionFlags: Record<string, string> = {
 };
 
 export default function PoolsPage() {
+  const { farms } = useAuth();
   const [pools, setPools] = useState<Pool[]>([]);
-  const [farms, setFarms] = useState<Farm[]>([]);
   const [coins, setCoins] = useState<Coin[]>([]);
   const [poolPresets, setPoolPresets] = useState<PoolPreset[]>([]);
   const [loading, setLoading] = useState(true);
@@ -163,19 +159,6 @@ export default function PoolsPage() {
 
   const fetchData = useCallback(async () => {
     try {
-      // Fetch user data to get farms
-      const meRes = await fetch(`${getApiUrl()}/api/auth/me`, {
-        credentials: 'include',
-      });
-      if (meRes.ok) {
-        const meData = await meRes.json();
-        if (meData.farms && meData.farms.length > 0) {
-          setFarms(meData.farms);
-          setFormData(prev => ({ ...prev, farmId: meData.farms[0].id }));
-        }
-      }
-      
-      // Fetch pools, coins, and templates
       await Promise.all([
         fetchPools(),
         fetchCoins(),

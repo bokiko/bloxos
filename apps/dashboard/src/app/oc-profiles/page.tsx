@@ -3,11 +3,7 @@
 import { useEffect, useState } from 'react';
 import { SkeletonProfileCard } from '../../components/Skeleton';
 import { getApiUrl, getCsrfToken } from '../../lib/api';
-
-interface Farm {
-  id: string;
-  name: string;
-}
+import { useAuth } from '../../context/auth';
 
 interface OCProfile {
   id: string;
@@ -43,8 +39,8 @@ const EditIcon = () => (
 );
 
 export default function OCProfilesPage() {
+  const { farms } = useAuth();
   const [profiles, setProfiles] = useState<OCProfile[]>([]);
-  const [farms, setFarms] = useState<Farm[]>([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [editingProfile, setEditingProfile] = useState<OCProfile | null>(null);
@@ -67,22 +63,12 @@ export default function OCProfilesPage() {
 
   async function fetchProfiles() {
     try {
-      const [profilesRes, userRes] = await Promise.all([
-        fetch(`${getApiUrl()}/api/oc-profiles`, { credentials: 'include' }),
-        fetch(`${getApiUrl()}/api/auth/me`, { credentials: 'include' }),
-      ]);
+      const profilesRes = await fetch(`${getApiUrl()}/api/oc-profiles`, { credentials: 'include' });
       
       if (profilesRes.ok) {
         const data = await profilesRes.json();
         if (Array.isArray(data)) {
           setProfiles(data);
-        }
-      }
-      
-      if (userRes.ok) {
-        const userData = await userRes.json();
-        if (userData.farms && Array.isArray(userData.farms)) {
-          setFarms(userData.farms);
         }
       }
     } catch (err) {
