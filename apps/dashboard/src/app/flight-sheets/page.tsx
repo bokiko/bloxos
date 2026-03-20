@@ -3,11 +3,7 @@
 import { useEffect, useState } from 'react';
 import Image from 'next/image';
 import { getApiUrl, getCsrfToken } from '../../lib/api';
-
-interface Farm {
-  id: string;
-  name: string;
-}
+import { useAuth } from '../../context/auth';
 
 interface Coin {
   id: string;
@@ -141,11 +137,11 @@ function getCoinColor(coin: string) {
 }
 
 export default function FlightSheetsPage() {
+  const { farms } = useAuth();
   const [flightSheets, setFlightSheets] = useState<FlightSheet[]>([]);
   const [wallets, setWallets] = useState<Wallet[]>([]);
   const [pools, setPools] = useState<Pool[]>([]);
   const [miners, setMiners] = useState<Miner[]>([]);
-  const [farms, setFarms] = useState<Farm[]>([]);
   const [coins, setCoins] = useState<Coin[]>([]);
   const [poolPresets, setPoolPresets] = useState<PoolPreset[]>([]);
   const [templates, setTemplates] = useState<FlightSheetTemplate[]>([]);
@@ -174,12 +170,11 @@ export default function FlightSheetsPage() {
 
   async function fetchData() {
     try {
-      const [fsRes, walletsRes, poolsRes, minersRes, farmsRes, coinsRes, templatesRes] = await Promise.all([
+      const [fsRes, walletsRes, poolsRes, minersRes, coinsRes, templatesRes] = await Promise.all([
         fetch(`${getApiUrl()}/api/flight-sheets`, { credentials: 'include' }),
         fetch(`${getApiUrl()}/api/wallets`, { credentials: 'include' }),
         fetch(`${getApiUrl()}/api/pools`, { credentials: 'include' }),
         fetch(`${getApiUrl()}/api/miners`, { credentials: 'include' }),
-        fetch(`${getApiUrl()}/api/auth/me`, { credentials: 'include' }),
         fetch(`${getApiUrl()}/api/coins`, { credentials: 'include' }),
         fetch(`${getApiUrl()}/api/templates/recommended`, { credentials: 'include' }),
       ]);
@@ -199,12 +194,6 @@ export default function FlightSheetsPage() {
       if (minersRes.ok) {
         const minersData = await minersRes.json();
         if (Array.isArray(minersData)) setMiners(minersData);
-      }
-      if (farmsRes.ok) {
-        const userData = await farmsRes.json();
-        if (userData.farms && Array.isArray(userData.farms)) {
-          setFarms(userData.farms);
-        }
       }
       if (coinsRes.ok) {
         const coinsData = await coinsRes.json();

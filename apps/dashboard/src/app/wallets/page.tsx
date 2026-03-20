@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from 'react';
 import Image from 'next/image';
 import { SkeletonWalletRow } from '../../components/Skeleton';
 import { getApiUrl, getCsrfToken } from '../../lib/api';
+import { useAuth } from '../../context/auth';
 
 interface Wallet {
   id: string;
@@ -16,11 +17,6 @@ interface Wallet {
   _count?: {
     flightSheets: number;
   };
-}
-
-interface Farm {
-  id: string;
-  name: string;
 }
 
 interface Coin {
@@ -70,8 +66,8 @@ const XIcon = () => (
 );
 
 export default function WalletsPage() {
+  const { farms } = useAuth();
   const [wallets, setWallets] = useState<Wallet[]>([]);
-  const [farms, setFarms] = useState<Farm[]>([]);
   const [coins, setCoins] = useState<Coin[]>([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
@@ -153,7 +149,6 @@ export default function WalletsPage() {
 
   const fetchData = useCallback(async () => {
     try {
-      // Fetch coins
       const coinsRes = await fetch(`${getApiUrl()}/api/coins`, {
         credentials: 'include',
       });
@@ -162,19 +157,6 @@ export default function WalletsPage() {
         setCoins(coinsData);
       }
 
-      // Fetch user data to get farms
-      const meRes = await fetch(`${getApiUrl()}/api/auth/me`, {
-        credentials: 'include',
-      });
-      if (meRes.ok) {
-        const meData = await meRes.json();
-        if (meData.farms && meData.farms.length > 0) {
-          setFarms(meData.farms);
-          setFormData(prev => ({ ...prev, farmId: meData.farms[0].id }));
-        }
-      }
-      
-      // Fetch wallets
       await fetchWallets();
     } catch {
       setError('Failed to load data');
