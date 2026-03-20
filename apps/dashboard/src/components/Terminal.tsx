@@ -1,12 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-
-const getWsUrl = () => {
-  if (typeof window === 'undefined') return 'ws://localhost:3001';
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${protocol}//${window.location.hostname}:3001`;
-};
+import { getWsUrl } from '../lib/api';
 
 interface TerminalProps {
   rigId: string;
