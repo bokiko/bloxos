@@ -75,6 +75,19 @@ export default function WalletsPage() {
   const [error, setError] = useState<string | null>(null);
   const [addressValidation, setAddressValidation] = useState<{ valid: boolean; error?: string } | null>(null);
   const [validating, setValidating] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [coinFilter, setCoinFilter] = useState('');
+
+  // Filter wallets by search query and coin
+  const filteredWallets = wallets.filter((w) => {
+    const q = searchQuery.toLowerCase();
+    const matchesSearch = !q || w.name.toLowerCase().includes(q) || w.address.toLowerCase().includes(q);
+    const matchesCoin = !coinFilter || w.coin === coinFilter;
+    return matchesSearch && matchesCoin;
+  });
+
+  // Unique coins from current wallets for the filter dropdown
+  const walletCoins = Array.from(new Set(wallets.map((w) => w.coin))).sort();
 
   // Form state
   const [formData, setFormData] = useState({
@@ -266,6 +279,45 @@ export default function WalletsPage() {
         </div>
       )}
 
+      {/* Search & Filter */}
+      {!loading && wallets.length > 0 && (
+        <div className="mb-4 bg-slate-800/50 backdrop-blur-sm rounded-xl border border-slate-700/50 p-4">
+          <div className="flex gap-3">
+            <div className="relative flex-1">
+              <input
+                type="search"
+                aria-label="Search wallets"
+                placeholder="Search wallets..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full bg-slate-700/50 border border-slate-600/50 rounded-lg px-4 py-2.5 text-sm text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blox-500/50 focus:border-blox-500/50"
+              />
+              {searchQuery && (
+                <button
+                  onClick={() => setSearchQuery('')}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              )}
+            </div>
+            <select
+              value={coinFilter}
+              onChange={(e) => setCoinFilter(e.target.value)}
+              aria-label="Filter by coin"
+              className="bg-slate-700/50 border border-slate-600/50 rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blox-500/50 focus:border-blox-500/50"
+            >
+              <option value="">All Coins</option>
+              {walletCoins.map((coin) => (
+                <option key={coin} value={coin}>{coin}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+      )}
+
       {/* Wallets List */}
       {loading ? (
         <div className="grid gap-4">
@@ -273,22 +325,34 @@ export default function WalletsPage() {
             <SkeletonWalletRow key={i} />
           ))}
         </div>
-      ) : wallets.length === 0 ? (
+      ) : filteredWallets.length === 0 ? (
         <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl border border-slate-700/50 p-12 text-center">
           <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-slate-700/50 flex items-center justify-center">
             <WalletIcon />
           </div>
-          <p className="text-slate-400 mb-4">No wallets configured yet</p>
-          <button
-            onClick={openCreateModal}
-            className="inline-block px-4 py-2 bg-blox-600 hover:bg-blox-700 rounded-lg text-white font-medium transition-colors"
-          >
-            Add Your First Wallet
-          </button>
+          {wallets.length === 0 ? (
+            <>
+              <p className="text-slate-400 mb-4">No wallets configured yet</p>
+              <button
+                onClick={openCreateModal}
+                className="inline-block px-4 py-2 bg-blox-600 hover:bg-blox-700 rounded-lg text-white font-medium transition-colors"
+              >
+                Add Your First Wallet
+              </button>
+            </>
+          ) : searchQuery && coinFilter ? (
+            <p className="text-slate-400 mb-4">No wallets match your search and filter</p>
+          ) : searchQuery ? (
+            <p className="text-slate-400 mb-4">No wallets match your search</p>
+          ) : coinFilter ? (
+            <p className="text-slate-400 mb-4">No wallets for {coinFilter}</p>
+          ) : (
+            <p className="text-slate-400 mb-4">No wallets found</p>
+          )}
         </div>
       ) : (
         <div className="grid gap-4">
-          {wallets.map((wallet) => {
+          {filteredWallets.map((wallet) => {
             const coinInfo = getCoinInfo(wallet.coin);
             return (
               <div
