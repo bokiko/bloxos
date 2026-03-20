@@ -44,6 +44,18 @@ Removed `getUserFarm()` from profit.ts, `getUserId()` from settings.ts, and the 
 **Lines:** +40 / -106 (net -66)
 **PR:** https://github.com/bokiko/bloxos/pull/5
 
+## 2026-03-19 — Testing: Comprehensive tests for mining security validators
+
+The mining-specific security utility functions in apps/api/src/utils/security.ts had zero test coverage despite being critical guards against shell injection, invalid OC values, and malformed miner configuration. Added 74 new unit tests covering all eight untested functions.
+
+Functions covered: sanitizeCommand (chaining/redirection/dangerous chars), isCommandAllowed (whitelist enforcement), escapeShellArg (shell metacharacter containment), validateNumericRange (boundary + NaN guards), validateMinerName (all 7 valid miners, case-insensitive), validatePoolUrl (all stratum variants, injection schemes), validateWalletAddress (ETH/BTC formats, metacharacters), validateExtraArgs (safe flags vs injection chars), validateOCValue (NVIDIA/AMD boundaries, null pass-through, unknown setting).
+
+Total suite: 132 passing tests (74 new + 58 existing). Zero new dependencies.
+
+**Files changed:** apps/api/src/__tests__/security.mining.test.ts (new)
+**Lines:** +369 / -0
+**PR:** https://github.com/bokiko/bloxos/pull/8
+
 ## 2026-03-18 — Accessibility: ARIA markup across core dashboard components
 
 The dashboard had essentially zero accessibility support — one aria-* attribute across 50+ component files. Added comprehensive WCAG-compliant ARIA markup across the five most impactful files.
@@ -73,3 +85,15 @@ Integrated into profit/page.tsx as the first consumer: replaced the manual useEf
 **Files changed:** apps/dashboard/src/hooks/useCachedFetch.ts (new), apps/dashboard/src/app/profit/page.tsx
 **Lines:** +250 / -116
 **PR:** https://github.com/bokiko/bloxos/pull/7
+
+## 2026-03-20 — UI/UX: Search and coin filter on wallets page
+
+The wallets page had no way to find a specific wallet in a long list. With multiple coins and many addresses, users had to scroll manually to locate what they needed.
+
+Added a search bar (filters by name or address) and a coin filter dropdown (auto-populated from existing wallets) that render together in a styled toolbar row above the list. The clear (X) button removes the query instantly. When filters are active and nothing matches, the empty state shows "No wallets match your filters" instead of the onboarding prompt. Filter UI is hidden during loading and when no wallets exist.
+
+UI style matches the existing pools page search bar (slate-800/50 bg, rounded-xl, blox-500 focus ring).
+
+**Files changed:** apps/dashboard/src/app/wallets/page.tsx
+**Lines:** +65 / -9
+**PR:** https://github.com/bokiko/bloxos/pull/10
