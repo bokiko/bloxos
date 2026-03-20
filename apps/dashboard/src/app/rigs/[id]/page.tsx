@@ -6,7 +6,7 @@ import Link from 'next/link';
 import dynamic from 'next/dynamic';
 import { useWebSocket } from '../../../hooks/useWebSocket';
 import { getApiUrl } from '../../../lib/api';
-import { formatTimeAgo, formatLastSeen } from '../../../lib/format';
+import { formatTimeAgo, formatLastSeen, getStatusBadge } from '../../../lib/format';
 
 // Dynamic import for Terminal to avoid SSR issues
 const Terminal = dynamic(() => import('../../../components/Terminal'), { ssr: false });
@@ -231,7 +231,7 @@ function SystemInfoSection({ rigId, basicInfo }: {
   async function fetchSystemInfo() {
     setLoading(true);
     try {
-      const res = await fetch(`http://${window.location.hostname}:3001/api/ssh/rig/${rigId}/system-info`, {
+      const res = await fetch(`${getApiUrl()}/api/ssh/rig/${rigId}/system-info`, {
         credentials: 'include',
       });
       if (res.ok) {
@@ -1031,15 +1031,6 @@ export default function RigDetailPage() {
       case 'WARNING': return 'bg-yellow-500 shadow-yellow-500/50';
       case 'ERROR': return 'bg-red-500 shadow-red-500/50';
       default: return 'bg-slate-500 shadow-slate-500/50';
-    }
-  }
-
-  function getStatusBadge(status: string) {
-    switch (status) {
-      case 'ONLINE': return 'bg-green-500/10 text-green-400 ring-1 ring-green-500/30';
-      case 'WARNING': return 'bg-yellow-500/10 text-yellow-400 ring-1 ring-yellow-500/30';
-      case 'ERROR': return 'bg-red-500/10 text-red-400 ring-1 ring-red-500/30';
-      default: return 'bg-slate-500/10 text-slate-400 ring-1 ring-slate-500/30';
     }
   }
 

@@ -86,12 +86,24 @@ Integrated into profit/page.tsx as the first consumer: replaced the manual useEf
 **Lines:** +250 / -116
 **PR:** https://github.com/bokiko/bloxos/pull/7
 
-## 2026-03-19 — Code Quality: Extract shared formatting utilities to lib/format.ts
+## 2026-03-20 — UI/UX: Search and coin filter on wallets page
 
-Four utility functions (formatTimeAgo, formatLastSeen, getStatusColor, getSeverityColor) were copy-pasted across 6 dashboard pages with minor inconsistencies — notably, two copies of getStatusColor were missing the REBOOTING status case, and formatTimeAgo had different type signatures across files.
+The wallets page had no way to find a specific wallet in a long list. With multiple coins and many addresses, users had to scroll manually to locate what they needed.
 
-Created apps/dashboard/src/lib/format.ts as the single authoritative source for all formatting and status utilities. formatTimeAgo now accepts string | Date | null for full flexibility. getStatusColor consistently handles REBOOTING across all pages. Removed all 6 sets of local definitions.
+Added a search bar (filters by name or address) and a coin filter dropdown (auto-populated from existing wallets) that render together in a styled toolbar row above the list. The clear (X) button removes the query instantly. When filters are active and nothing matches, the empty state shows "No wallets match your filters" instead of the onboarding prompt. Filter UI is hidden during loading and when no wallets exist.
 
-**Files changed:** apps/dashboard/src/lib/format.ts (new), apps/dashboard/src/app/page.tsx, apps/dashboard/src/app/alerts/page.tsx, apps/dashboard/src/app/alerts/rules/page.tsx, apps/dashboard/src/app/rigs/page.tsx, apps/dashboard/src/app/rigs/[id]/page.tsx, apps/dashboard/src/app/rig-groups/page.tsx
-**Lines:** +53 / -124 (net -71)
-**PR:** https://github.com/bokiko/bloxos/pull/9
+UI style matches the existing pools page search bar (slate-800/50 bg, rounded-xl, blox-500 focus ring).
+
+**Files changed:** apps/dashboard/src/app/wallets/page.tsx
+**Lines:** +65 / -9
+**PR:** https://github.com/bokiko/bloxos/pull/10
+
+## 2026-03-20 — Bug Fix: Unified API URL resolution and NEXT_PUBLIC_API_URL support
+
+Three separate files each maintained their own URL-building logic hardcoded to http://, silently breaking any deployment served over HTTPS or behind a reverse proxy. A fourth call in rigs/[id]/page.tsx bypassed getApiUrl() entirely with a bare http:// string.
+
+lib/api.ts now exports getApiUrl() that respects a NEXT_PUBLIC_API_URL env override first, then infers from window.location.protocol so the scheme always matches the page. A new getWsUrl() helper derives ws/wss from getApiUrl() — single source of truth for WebSocket URLs. useWebSocket.ts and Terminal.tsx now import the shared getWsUrl() instead of duplicating it. The stray http:// string in rigs/[id]/page.tsx is replaced with getApiUrl(). Added .env.example documenting the new env var.
+
+**Files changed:** apps/dashboard/src/lib/api.ts, apps/dashboard/src/hooks/useWebSocket.ts, apps/dashboard/src/components/Terminal.tsx, apps/dashboard/src/app/rigs/[id]/page.tsx, apps/dashboard/.env.example (new)
+**Lines:** +32 / -16
+**PR:** https://github.com/bokiko/bloxos/pull/11
