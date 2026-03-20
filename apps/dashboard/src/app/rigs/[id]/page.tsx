@@ -231,7 +231,7 @@ function SystemInfoSection({ rigId, basicInfo }: {
   async function fetchSystemInfo() {
     setLoading(true);
     try {
-      const res = await fetch(`http://${window.location.hostname}:3001/api/ssh/rig/${rigId}/system-info`, {
+      const res = await fetch(`${getApiUrl()}/api/ssh/rig/${rigId}/system-info`, {
         credentials: 'include',
       });
       if (res.ok) {
