@@ -3,11 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { getApiUrl, getCsrfToken } from '../../lib/api';
-
-interface Farm {
-  id: string;
-  name: string;
-}
+import { useAuth } from '../../context/auth';
 
 interface Rig {
   id: string;
@@ -39,8 +35,8 @@ const COLORS = [
 ];
 
 export default function RigGroupsPage() {
+  const { farms } = useAuth();
   const [groups, setGroups] = useState<RigGroup[]>([]);
-  const [farms, setFarms] = useState<Farm[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [editingGroup, setEditingGroup] = useState<RigGroup | null>(null);
@@ -53,22 +49,12 @@ export default function RigGroupsPage() {
 
   async function fetchGroups() {
     try {
-      const [groupsRes, userRes] = await Promise.all([
-        fetch(`${getApiUrl()}/api/rig-groups`, { credentials: 'include' }),
-        fetch(`${getApiUrl()}/api/auth/me`, { credentials: 'include' }),
-      ]);
+      const groupsRes = await fetch(`${getApiUrl()}/api/rig-groups`, { credentials: 'include' });
       
       if (groupsRes.ok) {
         const data = await groupsRes.json();
         if (Array.isArray(data)) {
           setGroups(data);
-        }
-      }
-      
-      if (userRes.ok) {
-        const userData = await userRes.json();
-        if (userData.farms && Array.isArray(userData.farms)) {
-          setFarms(userData.farms);
         }
       }
     } catch (error) {
