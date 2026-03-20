@@ -303,7 +303,8 @@ export default function WalletsPage() {
           <div className="flex gap-3">
             <div className="relative flex-1">
               <input
-                type="text"
+                type="search"
+                aria-label="Search wallets"
                 placeholder="Search wallets..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
@@ -323,6 +324,7 @@ export default function WalletsPage() {
             <select
               value={coinFilter}
               onChange={(e) => setCoinFilter(e.target.value)}
+              aria-label="Filter by coin"
               className="bg-slate-700/50 border border-slate-600/50 rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blox-500/50 focus:border-blox-500/50"
             >
               <option value="">All Coins</option>
@@ -346,9 +348,7 @@ export default function WalletsPage() {
           <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-slate-700/50 flex items-center justify-center">
             <WalletIcon />
           </div>
-          {searchQuery || coinFilter ? (
-            <p className="text-slate-400 mb-4">No wallets match your filters</p>
-          ) : (
+          {wallets.length === 0 ? (
             <>
               <p className="text-slate-400 mb-4">No wallets configured yet</p>
               <button
@@ -358,6 +358,14 @@ export default function WalletsPage() {
                 Add Your First Wallet
               </button>
             </>
+          ) : searchQuery && coinFilter ? (
+            <p className="text-slate-400 mb-4">No wallets match your search and filter</p>
+          ) : searchQuery ? (
+            <p className="text-slate-400 mb-4">No wallets match your search</p>
+          ) : coinFilter ? (
+            <p className="text-slate-400 mb-4">No wallets for {coinFilter}</p>
+          ) : (
+            <p className="text-slate-400 mb-4">No wallets found</p>
           )}
         </div>
       ) : (
