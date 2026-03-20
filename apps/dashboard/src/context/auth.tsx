@@ -12,8 +12,14 @@ export interface User {
   role: 'ADMIN' | 'USER';
 }
 
+export interface Farm {
+  id: string;
+  name: string;
+}
+
 interface AuthContextType {
   user: User | null;
+  farms: Farm[];
   isLoading: boolean;
   login: (email: string, password: string, rememberMe?: boolean) => Promise<void>;
   register: (email: string, password: string, name?: string) => Promise<void>;
@@ -25,6 +31,7 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
+  const [farms, setFarms] = useState<Farm[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const router = useRouter();
   const pathname = usePathname();
@@ -59,9 +66,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (meRes.ok) {
         const data = await meRes.json();
         setUser(data.user);
+        if (data.farms && Array.isArray(data.farms)) {
+          setFarms(data.farms);
+        }
       } else {
         // Not authenticated
         setUser(null);
+        setFarms([]);
         if (!isPublicRoute) {
           router.push('/login');
         }
@@ -69,6 +80,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch (error) {
       console.error('Auth init error:', error);
       setUser(null);
+      setFarms([]);
     } finally {
       setIsLoading(false);
     }
@@ -142,6 +154,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (res.ok) {
         const data = await res.json();
         setUser(data.user);
+        if (data.farms && Array.isArray(data.farms)) {
+          setFarms(data.farms);
+        }
       }
     } catch (error) {
       console.error('Refresh user error:', error);
@@ -149,7 +164,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, isLoading, login, register, logout, refreshUser }}>
+    <AuthContext.Provider value={{ user, farms, isLoading, login, register, logout, refreshUser }}>
       {children}
     </AuthContext.Provider>
   );
