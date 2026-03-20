@@ -107,3 +107,15 @@ lib/api.ts now exports getApiUrl() that respects a NEXT_PUBLIC_API_URL env overr
 **Files changed:** apps/dashboard/src/lib/api.ts, apps/dashboard/src/hooks/useWebSocket.ts, apps/dashboard/src/components/Terminal.tsx, apps/dashboard/src/app/rigs/[id]/page.tsx, apps/dashboard/.env.example (new)
 **Lines:** +32 / -16
 **PR:** https://github.com/bokiko/bloxos/pull/11
+
+## 2026-03-20 — Code Quality: Centralize farms in AuthContext
+
+Every page that needed farms data (pools, wallets, flight-sheets, rig-groups, oc-profiles) was independently fetching /api/auth/me on mount, firing 5 extra network round-trips that duplicated what AuthContext already did during initialization.
+
+Extended AuthContext with a Farm type and farms state, populated from the existing /api/auth/me call in initAuth() and refreshUser(). All five pages now call useAuth() to get farms instead of fetching the endpoint again. Removed the now-redundant local Farm interface definitions from four pages.
+
+Result: 5 fewer network calls per page navigation, single source of truth for farms data, and a clear pattern for any future farm-aware pages.
+
+**Files changed:** apps/dashboard/src/context/auth.tsx, apps/dashboard/src/app/pools/page.tsx, apps/dashboard/src/app/wallets/page.tsx, apps/dashboard/src/app/flight-sheets/page.tsx, apps/dashboard/src/app/rig-groups/page.tsx, apps/dashboard/src/app/oc-profiles/page.tsx
+**Lines:** +29 / -88
+**PR:** https://github.com/bokiko/bloxos/pull/12
