@@ -20,6 +20,7 @@ export interface Farm {
 interface AuthContextType {
   user: User | null;
   farms: Farm[];
+  activeFarmId: string | null;
   isLoading: boolean;
   login: (email: string, password: string, rememberMe?: boolean) => Promise<void>;
   register: (email: string, password: string, name?: string) => Promise<void>;
@@ -33,6 +34,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [farms, setFarms] = useState<Farm[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [setupRequired, setSetupRequired] = useState(false);
   const router = useRouter();
   const pathname = usePathname();
 
@@ -40,7 +42,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const publicRoutes = ['/login', '/setup'];
   const isPublicRoute = publicRoutes.includes(pathname);
 
-  // Check if setup is required and fetch current user
+  const activeFarmId = farms.length > 0 ? farms[0].id : null;
+
+  // Auth init - runs once on mount, no redirect logic here
   const initAuth = useCallback(async () => {
     try {
       // First check if setup is required
@@ -50,10 +54,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const setupData = await setupRes.json();
 
       if (setupData.setupRequired) {
-        // No users exist, redirect to setup
-        if (pathname !== '/setup') {
-          router.push('/setup');
-        }
+        setSetupRequired(true);
         setIsLoading(false);
         return;
       }
@@ -66,16 +67,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (meRes.ok) {
         const data = await meRes.json();
         setUser(data.user);
-        if (data.farms && Array.isArray(data.farms)) {
-          setFarms(data.farms);
-        }
+        setFarms(data.farms || []);
       } else {
         // Not authenticated
         setUser(null);
         setFarms([]);
-        if (!isPublicRoute) {
-          router.push('/login');
-        }
       }
     } catch (error) {
       console.error('Auth init error:', error);
@@ -84,11 +80,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } finally {
       setIsLoading(false);
     }
-  }, [pathname, router, isPublicRoute]);
+  }, []);
 
   useEffect(() => {
     initAuth();
   }, [initAuth]);
+
+  // Redirect logic - separate effect
+  useEffect(() => {
+    if (isLoading) return;
+    if (setupRequired && pathname !== '/setup') {
+      router.push('/setup');
+    } else if (!setupRequired && !user && !isPublicRoute) {
+      router.push('/login');
+    }
+  }, [user, isLoading, setupRequired, isPublicRoute, pathname, router]);
 
   const login = async (email: string, password: string, rememberMe: boolean = false) => {
     const res = await fetch(`${getApiUrl()}/api/auth/login`, {
@@ -164,7 +170,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, farms, isLoading, login, register, logout, refreshUser }}>
+    <AuthContext.Provider value={{ user, farms, activeFarmId, isLoading, login, register, logout, refreshUser }}>
       {children}
     </AuthContext.Provider>
   );

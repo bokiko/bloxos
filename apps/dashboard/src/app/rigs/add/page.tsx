@@ -4,20 +4,15 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { getApiUrl, getCsrfToken } from '../../../lib/api';
-
-interface Farm {
-  id: string;
-  name: string;
-}
+import { useAuth } from '../../../context/auth';
 
 export default function AddRigPage() {
   const router = useRouter();
+  const { farms, activeFarmId, isLoading: loadingFarms } = useAuth();
   const [loading, setLoading] = useState(false);
   const [testing, setTesting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
-  const [farms, setFarms] = useState<Farm[]>([]);
-  const [loadingFarms, setLoadingFarms] = useState(true);
 
   const [formData, setFormData] = useState({
     name: '',
@@ -30,33 +25,12 @@ export default function AddRigPage() {
     authType: 'password' as 'password' | 'key',
   });
 
-  // Fetch farms on mount
+  // Set farmId from context when farms load
   useEffect(() => {
-    async function fetchFarms() {
-      try {
-        // Get user data with farms (auto-creates default farm if none)
-        const res = await fetch(`${getApiUrl()}/api/auth/me`, {
-          credentials: 'include',
-        });
-        
-        if (res.ok) {
-          const data = await res.json();
-          if (data.farms && data.farms.length > 0) {
-            setFarms(data.farms);
-            setFormData(prev => ({ ...prev, farmId: data.farms[0].id }));
-          }
-        } else {
-          setError('Please log in to add rigs');
-        }
-      } catch (err) {
-        console.error('Failed to fetch farms:', err);
-        setError('Failed to load user data');
-      } finally {
-        setLoadingFarms(false);
-      }
+    if (activeFarmId && !formData.farmId) {
+      setFormData(prev => ({ ...prev, farmId: activeFarmId }));
     }
-    fetchFarms();
-  }, []);
+  }, [activeFarmId, formData.farmId]);
 
   async function handleTestConnection() {
     setTesting(true);
