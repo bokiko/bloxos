@@ -75,7 +75,7 @@ const ALLOWED_COMMANDS = new Set([
 ]);
 
 // Characters that should never appear in commands
-const DANGEROUS_CHARS = /[;&|`$(){}[\]<>!\\'"]/g;
+const DANGEROUS_CHARS = /[;&|`$(){}[\]<>!\\'"]/;
 
 // Validate and sanitize a command
 export function sanitizeCommand(command: string): string {
