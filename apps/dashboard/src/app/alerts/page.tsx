@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { SkeletonAlertItem } from '../../components/Skeleton';
 import { getApiUrl } from '../../lib/api';
 import { formatTimeAgo } from '../../lib/format';
+import { usePageVisibilityInterval } from '../../hooks/usePageVisibilityInterval';
 
 interface Alert {
   id: string;
@@ -67,10 +68,10 @@ export default function AlertsPage() {
 
   useEffect(() => {
     fetchAlerts();
-    // Refresh every 30 seconds
-    const interval = setInterval(fetchAlerts, 30000);
-    return () => clearInterval(interval);
   }, [fetchAlerts]);
+
+  // Auto-refresh every 30 s — pauses automatically when the tab is hidden
+  usePageVisibilityInterval(fetchAlerts, 30000);
 
   async function markAsRead(alertId: string) {
     try {
