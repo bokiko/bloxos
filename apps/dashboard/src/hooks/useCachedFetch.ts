@@ -8,6 +8,12 @@ interface CachedFetchOptions {
   credentials?: RequestCredentials
   enabled?: boolean
   revalidateOnFocus?: boolean
+  /**
+   * If set, automatically re-fetches at this interval (ms).
+   * Polling is automatically paused when the browser tab is hidden
+   * (Page Visibility API) and resumes immediately on tab focus.
+   */
+  pollingInterval?: number
 }
 
 interface CacheEntry {
@@ -20,6 +26,8 @@ interface UseCachedFetchResult<T> {
   loading: boolean
   error: string | null
   refresh: () => void
+  /** Whether a background polling interval is currently active */
+  isPolling: boolean
 }
 
 const cache = new Map<string, CacheEntry>()
@@ -38,6 +46,7 @@ export function useCachedFetch<T>(
     credentials = 'include',
     enabled = true,
     revalidateOnFocus = false,
+    pollingInterval,
   } = options ?? {}
 
   const cached = cache.get(url)
@@ -46,7 +55,12 @@ export function useCachedFetch<T>(
   )
   const [loading, setLoading] = useState<boolean>(!cached && enabled)
   const [error, setError] = useState<string | null>(null)
+  const [isPolling, setIsPolling] = useState(false)
   const mountedRef = useRef(true)
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Track current option values in a ref so the polling closure stays stable
+  const pollingIntervalRef = useRef(pollingInterval)
+  pollingIntervalRef.current = pollingInterval
 
   const doFetch = useCallback(
     async (isRevalidation: boolean) => {
@@ -91,6 +105,7 @@ export function useCachedFetch<T>(
     [url, credentials, enabled]
   )
 
+  // ── Initial load ──────────────────────────────────────────────────────────
   useEffect(() => {
     mountedRef.current = true
     if (!enabled) {
@@ -117,6 +132,67 @@ export function useCachedFetch<T>(
     }
   }, [url, ttl, enabled, doFetch])
 
+  // ── Polling with Page Visibility ──────────────────────────────────────────
+  useEffect(() => {
+    if (!pollingInterval || !enabled) {
+      setIsPolling(false)
+      return
+    }
+
+    let active = true
+
+    function scheduleNext() {
+      if (!active || !mountedRef.current) return
+      // Check visibility before scheduling — if hidden, we'll resume on visibilitychange
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+        setIsPolling(false)
+        return
+      }
+      setIsPolling(true)
+      pollTimerRef.current = setTimeout(async () => {
+        if (!active || !mountedRef.current) return
+        await doFetch(true)
+        if (active && mountedRef.current) scheduleNext()
+      }, pollingIntervalRef.current!)
+    }
+
+    scheduleNext()
+
+    // Resume polling when tab becomes visible again
+    function onVisibilityChange() {
+      if (document.visibilityState === 'visible') {
+        // Immediately revalidate, then resume the schedule
+        doFetch(true).then(() => {
+          if (active && mountedRef.current) scheduleNext()
+        })
+      } else {
+        // Tab hidden — cancel pending timer, show polling as paused
+        if (pollTimerRef.current) {
+          clearTimeout(pollTimerRef.current)
+          pollTimerRef.current = null
+        }
+        setIsPolling(false)
+      }
+    }
+
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', onVisibilityChange)
+    }
+
+    return () => {
+      active = false
+      if (pollTimerRef.current) {
+        clearTimeout(pollTimerRef.current)
+        pollTimerRef.current = null
+      }
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', onVisibilityChange)
+      }
+      setIsPolling(false)
+    }
+  }, [pollingInterval, enabled, doFetch])
+
+  // ── Revalidate on focus ───────────────────────────────────────────────────
   useEffect(() => {
     if (!revalidateOnFocus || !enabled) return
 
@@ -136,5 +212,5 @@ export function useCachedFetch<T>(
     doFetch(false)
   }, [url, doFetch])
 
-  return { data, loading, error, refresh }
+  return { data, loading, error, refresh, isPolling }
 }

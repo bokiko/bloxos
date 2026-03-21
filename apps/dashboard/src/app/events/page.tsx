@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { getApiUrl } from '../../lib/api';
 import { formatTimeAgo } from '../../lib/format';
+import { usePageVisibilityInterval } from '../../hooks/usePageVisibilityInterval';
 
 type EventSeverity = 'INFO' | 'WARNING' | 'ERROR' | 'CRITICAL';
 
@@ -136,8 +137,6 @@ export default function EventsPage() {
   const [severityFilter, setSeverityFilter] = useState('');
   const [autoRefresh, setAutoRefresh] = useState(true);
 
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
   const fetchEvents = useCallback(async (currentPage: number) => {
     const params = new URLSearchParams();
     params.set('limit', String(PAGE_SIZE));
@@ -183,16 +182,12 @@ export default function EventsPage() {
     fetchRigs();
   }, [fetchRigs]);
 
-  // Auto-refresh every 30 s
-  useEffect(() => {
-    if (intervalRef.current) clearInterval(intervalRef.current);
-    if (autoRefresh) {
-      intervalRef.current = setInterval(() => fetchEvents(page), 30000);
-    }
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-    };
-  }, [autoRefresh, fetchEvents, page]);
+  // Auto-refresh every 30 s — pauses automatically when the tab is hidden
+  const isPolling = usePageVisibilityInterval(
+    () => fetchEvents(page),
+    30000,
+    autoRefresh
+  );
 
   const totalPages = Math.ceil(total / PAGE_SIZE);
 
@@ -220,14 +215,15 @@ export default function EventsPage() {
               : 'bg-slate-700 text-slate-400'
           }`}
           aria-pressed={autoRefresh}
-          aria-label={autoRefresh ? 'Auto-refresh on' : 'Auto-refresh off'}
+          aria-label={autoRefresh ? 'Auto-refresh on — pauses when tab is hidden' : 'Auto-refresh off'}
+          title={autoRefresh && !isPolling ? 'Polling paused (tab hidden)' : undefined}
         >
           <span
             className={`w-2 h-2 rounded-full ${
-              autoRefresh ? 'bg-green-400 animate-pulse' : 'bg-slate-500'
+              isPolling ? 'bg-green-400 animate-pulse' : autoRefresh ? 'bg-yellow-500' : 'bg-slate-500'
             }`}
           />
-          {autoRefresh ? 'Live' : 'Paused'}
+          {isPolling ? 'Live' : autoRefresh ? 'Paused (hidden)' : 'Paused'}
         </button>
       </div>
 
