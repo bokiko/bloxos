@@ -119,3 +119,15 @@ Result: 5 fewer network calls per page navigation, single source of truth for fa
 **Files changed:** apps/dashboard/src/context/auth.tsx, apps/dashboard/src/app/pools/page.tsx, apps/dashboard/src/app/wallets/page.tsx, apps/dashboard/src/app/flight-sheets/page.tsx, apps/dashboard/src/app/rig-groups/page.tsx, apps/dashboard/src/app/oc-profiles/page.tsx
 **Lines:** +29 / -88
 **PR:** https://github.com/bokiko/bloxos/pull/12
+
+## 2026-03-20 — New Feature: Rig event log page
+
+Added a /events page — a paginated, filterable chronological feed of all RigEvent records across the farm. Operators previously had no way to review rig history without drilling into individual rig detail pages.
+
+API: GET /api/events (filters: rigId, type, severity, since; paginated up to 200/request) and GET /api/events/rigs (rig list for filter dropdown), registered at /api/events prefix.
+
+Dashboard: filter bar (rig, event type, severity dropdowns + clear button), color-coded severity badges, human-readable event type labels, rig name links to detail page, pagination (50/page), 30 s auto-refresh with live indicator, full ARIA markup. Sidebar nav link added after Alerts.
+
+**Files changed:** apps/api/src/routes/events.ts (new), apps/api/src/index.ts, apps/dashboard/src/app/events/page.tsx (new), apps/dashboard/src/app/layout.tsx
+**Lines:** +533 / -0
+**PR:** https://github.com/bokiko/bloxos/pull/13
