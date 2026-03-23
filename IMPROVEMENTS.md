@@ -131,3 +131,15 @@ Dashboard: filter bar (rig, event type, severity dropdowns + clear button), colo
 **Files changed:** apps/api/src/routes/events.ts (new), apps/api/src/index.ts, apps/dashboard/src/app/events/page.tsx (new), apps/dashboard/src/app/layout.tsx
 **Lines:** +533 / -0
 **PR:** https://github.com/bokiko/bloxos/pull/13
+
+## 2026-03-21 — Performance: Page Visibility-aware polling
+
+Every page with auto-refresh ran a plain setInterval that kept firing network requests even when the browser tab was hidden or backgrounded. On the events page alone this wasted 2 API calls per minute with zero user benefit.
+
+Extended useCachedFetch with a pollingInterval option that hooks into the Page Visibility API (visibilitychange event) to pause poll timers when the tab is hidden and resume — with an immediate revalidation — when it becomes visible again. Also extracted a standalone usePageVisibilityInterval hook for paginated/parameterised pages that can't use useCachedFetch directly.
+
+Migrated events/page.tsx and alerts/page.tsx to the new hook. The events page Live indicator now shows three distinct states: Live (green pulse), Paused-hidden (yellow, tab backgrounded), and Off (grey, user-disabled).
+
+**Files changed:** apps/dashboard/src/hooks/useCachedFetch.ts, apps/dashboard/src/hooks/usePageVisibilityInterval.ts (new), apps/dashboard/src/app/events/page.tsx, apps/dashboard/src/app/alerts/page.tsx
+**Lines:** +181 / -20
+**PR:** https://github.com/bokiko/bloxos/pull/14
