@@ -119,10 +119,25 @@ export async function csrfValidate(request: FastifyRequest, reply: FastifyReply)
   }
 
   // Validate tokens match (timing-safe comparison)
-  const tokensMatch = crypto.timingSafeEqual(
-    Buffer.from(cookieToken),
-    Buffer.from(headerToken)
-  );
+  // timingSafeEqual requires equal-length buffers — reject immediately on length mismatch
+  const cookieBuf = Buffer.from(cookieToken);
+  const headerBuf = Buffer.from(headerToken);
+  if (cookieBuf.length !== headerBuf.length) {
+    auditLog({
+      userId: request.user?.userId,
+      action: 'csrf_validation_failed',
+      resource: 'security',
+      details: { path, method, reason: 'token_mismatch' },
+      ip: request.ip,
+      success: false,
+      error: 'CSRF token mismatch',
+    });
+    return reply.status(403).send({
+      error: 'CSRF validation failed',
+      message: 'Invalid CSRF token.',
+    });
+  }
+  const tokensMatch = crypto.timingSafeEqual(cookieBuf, headerBuf);
 
   if (!tokensMatch) {
     auditLog({

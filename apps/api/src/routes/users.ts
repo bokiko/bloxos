@@ -68,8 +68,10 @@ export async function userRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: 'Validation failed', details: result.error.issues });
     }
 
+    const normalizedEmail = result.data.email.toLowerCase();
+
     // Check if email exists
-    const existing = await prisma.user.findUnique({ where: { email: result.data.email } });
+    const existing = await prisma.user.findUnique({ where: { email: normalizedEmail } });
     if (existing) {
       return reply.status(400).send({ error: 'Email already registered' });
     }
@@ -79,7 +81,7 @@ export async function userRoutes(app: FastifyInstance) {
 
     const user = await prisma.user.create({
       data: {
-        email: result.data.email,
+        email: normalizedEmail,
         password: hashedPassword,
         name: result.data.name,
         role: result.data.role || 'USER',
@@ -111,6 +113,9 @@ export async function userRoutes(app: FastifyInstance) {
     }
 
     // If email is being changed, check it's not taken
+    if (result.data.email) {
+      result.data.email = result.data.email.toLowerCase();
+    }
     if (result.data.email && result.data.email !== existing.email) {
       const emailTaken = await prisma.user.findUnique({ where: { email: result.data.email } });
       if (emailTaken) {

@@ -260,7 +260,7 @@ export class AuthService {
         throw new Error('Account has been locked due to too many failed login attempts. Try again in 15 minutes.');
       }
       
-      throw new Error(`Invalid email or password. ${lockResult.attemptsRemaining} attempts remaining before account lockout.`);
+      throw new Error('Invalid email or password');
     }
 
     // Successful login - clear any failed attempts

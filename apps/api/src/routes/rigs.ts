@@ -27,14 +27,16 @@ const UpdateRigSchema = z.object({
 
 export async function rigRoutes(app: FastifyInstance) {
   // List all rigs (filtered by user's farm ownership)
-  app.get('/', async (request: FastifyRequest, reply: FastifyReply) => {
+  app.get<{ Querystring: { limit?: string; offset?: string } }>('/', async (request: FastifyRequest<{ Querystring: { limit?: string; offset?: string } }>, reply: FastifyReply) => {
     const user = request.user;
     if (!user) {
       return reply.status(401).send({ error: 'Authentication required' });
     }
 
     const filter = getUserRigFilter(user);
-    
+    const limit = Math.min(parseInt(request.query.limit ?? '') || 50, 200);
+    const offset = parseInt(request.query.offset ?? '') || 0;
+
     const rigs = await prisma.rig.findMany({
       where: filter,
       include: {
@@ -45,6 +47,8 @@ export async function rigRoutes(app: FastifyInstance) {
         minerInstances: true,
       },
       orderBy: { createdAt: 'desc' },
+      take: limit,
+      skip: offset,
     });
 
     return reply.send(rigs);
@@ -398,23 +402,18 @@ export async function rigRoutes(app: FastifyInstance) {
       return reply.status(404).send({ error: 'Rig not found' });
     }
 
-    // Update rig groups (set = replace all)
-    await prisma.rig.update({
+    // Update rig groups (set = replace all) and return result in one query
+    const updated = await prisma.rig.update({
       where: { id },
       data: {
         groups: {
           set: groupIds.map(gid => ({ id: gid })),
         },
       },
-    });
-
-    // Return updated rig with groups
-    const updated = await prisma.rig.findUnique({
-      where: { id },
       include: { groups: true },
     });
 
-    return reply.send({ success: true, groups: updated?.groups || [] });
+    return reply.send({ success: true, groups: updated.groups });
   });
 
   // Add rig to a group (with authorization check)

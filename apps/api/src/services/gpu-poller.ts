@@ -190,7 +190,7 @@ export class GPUPoller {
   // Get CPU info and create/update CPU record
   async pollCPUInfo(rigId: string): Promise<void> {
     try {
-      const output = await this.sshManager.executeCommandOnRig(
+      const output = await this.sshManager.executeInternalCommandOnRig(
         rigId,
         'lscpu | grep -E "Model name|Core|Thread|MHz"'
       );
@@ -230,9 +230,9 @@ export class GPUPoller {
     try {
       // Run all commands in parallel
       const [statOutput, freqOutput, tempOutput, energyOutput] = await Promise.all([
-        this.sshManager.executeCommandOnRig(rigId, 'grep "^cpu " /proc/stat'),
-        this.sshManager.executeCommandOnRig(rigId, 'grep "cpu MHz" /proc/cpuinfo | head -1'),
-        this.sshManager.executeCommandOnRig(rigId, 'cat /sys/class/hwmon/hwmon0/temp1_input 2>/dev/null || cat /sys/class/hwmon/hwmon1/temp1_input 2>/dev/null || echo "0"'),
+        this.sshManager.executeInternalCommandOnRig(rigId, 'grep "^cpu " /proc/stat'),
+        this.sshManager.executeInternalCommandOnRig(rigId, 'grep "cpu MHz" /proc/cpuinfo | head -1'),
+        this.sshManager.executeInternalCommandOnRig(rigId, 'cat /sys/class/hwmon/hwmon0/temp1_input 2>/dev/null || cat /sys/class/hwmon/hwmon1/temp1_input 2>/dev/null || echo "0"'),
         this.sshManager.executeSudoCommandOnRig(rigId, 'cat /sys/class/powercap/intel-rapl:0/energy_uj 2>/dev/null || echo "0"'),
       ]);
 

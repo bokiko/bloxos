@@ -151,7 +151,7 @@ export async function getUserFarmIds(userId: string, role: string): Promise<stri
   // Admins have access to all farms
   if (role === 'ADMIN') {
     const allFarms = await prisma.farm.findMany({ select: { id: true } });
-    return allFarms.map(f => f.id);
+    return allFarms.map((f: { id: string }) => f.id);
   }
 
   const farms = await prisma.farm.findMany({
@@ -159,7 +159,7 @@ export async function getUserFarmIds(userId: string, role: string): Promise<stri
     select: { id: true },
   });
 
-  return farms.map(f => f.id);
+  return farms.map((f: { id: string }) => f.id);
 }
 
 // Check if user owns a specific resource by farmId
@@ -395,7 +395,7 @@ export async function filterOwnedRigIds(
     select: { id: true },
   });
 
-  return ownedRigs.map(r => r.id);
+  return ownedRigs.map((r: { id: string }) => r.id);
 }
 
 // Validate agent token and return rig if valid

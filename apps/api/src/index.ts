@@ -227,8 +227,9 @@ async function main() {
   });
 
   // CSRF validation for state-changing requests
-  // Disabled in development for easier testing - enable in production
-  if (isProduction) {
+  // Enabled by default; set DISABLE_CSRF=true or NODE_ENV=test to disable
+  const csrfDisabled = process.env.DISABLE_CSRF === 'true' || process.env.NODE_ENV === 'test';
+  if (!csrfDisabled) {
     app.addHook('preHandler', async (request, reply) => {
       await csrfValidate(request, reply);
     });

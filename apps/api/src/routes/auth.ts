@@ -165,7 +165,7 @@ export async function authRoutes(app: FastifyInstance) {
       
       if (!result) {
         reply.clearCookie('token', { path: '/' });
-        reply.clearCookie('refreshToken', { path: '/auth/refresh' });
+        reply.clearCookie('refreshToken', { path: '/api/auth/refresh' });
         return reply.status(401).send({ error: 'Invalid refresh token' });
       }
 
@@ -181,7 +181,7 @@ export async function authRoutes(app: FastifyInstance) {
       return reply.send({ token: result.token });
     } catch {
       reply.clearCookie('token', { path: '/' });
-      reply.clearCookie('refreshToken', { path: '/auth/refresh' });
+      reply.clearCookie('refreshToken', { path: '/api/auth/refresh' });
       return reply.status(401).send({ error: 'Invalid refresh token' });
     }
   });

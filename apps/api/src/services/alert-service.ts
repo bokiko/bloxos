@@ -226,6 +226,22 @@ export class AlertService {
     }
   }
 
+  // Remove map entries for rigs that no longer exist in the database
+  private async clearStaleEntries(existingRigIds: Set<string>): Promise<void> {
+    for (const rigId of previousHashrates.keys()) {
+      if (!existingRigIds.has(rigId)) {
+        previousHashrates.delete(rigId);
+      }
+    }
+    for (const key of lastAlertTimes.keys()) {
+      // Alert keys are prefixed (e.g. "offline_<rigId>", "gpu_temp_<rigId>_<index>")
+      const rigId = key.replace(/^[a-z_]+_/, '').split('_')[0];
+      if (!existingRigIds.has(rigId)) {
+        lastAlertTimes.delete(key);
+      }
+    }
+  }
+
   // Check offline rigs (run separately on interval)
   async checkOfflineRigs(): Promise<void> {
     try {
@@ -240,6 +256,9 @@ export class AlertService {
           status: true,
         },
       });
+
+      const existingRigIds = new Set<string>(rigs.map((r: { id: string }) => r.id));
+      await this.clearStaleEntries(existingRigIds);
 
       for (const rig of rigs) {
         if (rig.status === 'OFFLINE' || (rig.lastSeen && (Date.now() - rig.lastSeen.getTime()) > 5 * 60 * 1000)) {

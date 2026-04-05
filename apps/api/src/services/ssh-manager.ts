@@ -300,7 +300,7 @@ export class SSHManager {
     };
   }
 
-  // Execute validated command on a rig using stored credentials
+  // Execute validated command on a rig using stored credentials (user-facing, validates input)
   async executeCommandOnRig(rigId: string, command: string): Promise<string> {
     const credentials = await this.getCredentialsForRig(rigId);
     if (!credentials) {
@@ -317,6 +317,17 @@ export class SSHManager {
       details: { command: command.substring(0, 100) }, // Truncate for logging
       success: true,
     });
+
+    return this.executeInternalCommand(credentials, command);
+  }
+
+  // Execute internal (trusted) command on a rig — skips user-input validation.
+  // Only call this with hardcoded or fully-controlled command strings, never with user input.
+  async executeInternalCommandOnRig(rigId: string, command: string): Promise<string> {
+    const credentials = await this.getCredentialsForRig(rigId);
+    if (!credentials) {
+      throw new Error('No SSH credentials found for this rig');
+    }
 
     return this.executeInternalCommand(credentials, command);
   }
