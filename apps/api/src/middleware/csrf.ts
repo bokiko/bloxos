@@ -119,10 +119,12 @@ export async function csrfValidate(request: FastifyRequest, reply: FastifyReply)
   }
 
   // Validate tokens match (timing-safe comparison)
-  const tokensMatch = crypto.timingSafeEqual(
-    Buffer.from(cookieToken),
-    Buffer.from(headerToken)
-  );
+  // Pre-check buffer lengths to avoid timingSafeEqual throwing on mismatch
+  const cookieBuf = Buffer.from(cookieToken);
+  const headerBuf = Buffer.from(headerToken);
+  const tokensMatch =
+    cookieBuf.length === headerBuf.length &&
+    crypto.timingSafeEqual(cookieBuf, headerBuf);
 
   if (!tokensMatch) {
     auditLog({

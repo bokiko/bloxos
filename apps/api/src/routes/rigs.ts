@@ -34,7 +34,12 @@ export async function rigRoutes(app: FastifyInstance) {
     }
 
     const filter = getUserRigFilter(user);
-    
+
+    // Pagination — clamp both values to safe ranges
+    const query = request.query as { limit?: string; offset?: string };
+    const limit = Math.min(Math.max(1, parseInt(query.limit ?? '') || 50), 200);
+    const offset = Math.max(0, parseInt(query.offset ?? '') || 0);
+
     const rigs = await prisma.rig.findMany({
       where: filter,
       include: {
@@ -45,6 +50,8 @@ export async function rigRoutes(app: FastifyInstance) {
         minerInstances: true,
       },
       orderBy: { createdAt: 'desc' },
+      take: limit,
+      skip: offset,
     });
 
     return reply.send(rigs);
@@ -398,23 +405,18 @@ export async function rigRoutes(app: FastifyInstance) {
       return reply.status(404).send({ error: 'Rig not found' });
     }
 
-    // Update rig groups (set = replace all)
-    await prisma.rig.update({
+    // Update rig groups (set = replace all) and return updated record in one query
+    const updated = await prisma.rig.update({
       where: { id },
       data: {
         groups: {
           set: groupIds.map(gid => ({ id: gid })),
         },
       },
-    });
-
-    // Return updated rig with groups
-    const updated = await prisma.rig.findUnique({
-      where: { id },
       include: { groups: true },
     });
 
-    return reply.send({ success: true, groups: updated?.groups || [] });
+    return reply.send({ success: true, groups: updated.groups ?? [] });
   });
 
   // Add rig to a group (with authorization check)

@@ -241,6 +241,9 @@ export class AlertService {
         },
       });
 
+      // Clear stale entries from in-memory maps before processing
+      this.clearStaleEntries(new Set(rigs.map((r: { id: string }) => r.id)));
+
       for (const rig of rigs) {
         if (rig.status === 'OFFLINE' || (rig.lastSeen && (Date.now() - rig.lastSeen.getTime()) > 5 * 60 * 1000)) {
           await this.checkRigOffline(rig.id, rig.name, rig.lastSeen);
@@ -248,6 +251,30 @@ export class AlertService {
       }
     } catch (error) {
       console.error('[AlertService] Error checking offline rigs:', error);
+    }
+  }
+
+  // Remove entries for rigs that no longer exist to prevent unbounded map growth
+  private clearStaleEntries(existingRigIds: Set<string>): void {
+    // previousHashrates uses rigId directly as key
+    for (const rigId of previousHashrates.keys()) {
+      if (!existingRigIds.has(rigId)) {
+        previousHashrates.delete(rigId);
+      }
+    }
+
+    // lastAlertTimes uses composite keys — check if any existing rigId appears in the key
+    for (const alertKey of lastAlertTimes.keys()) {
+      let foundRig = false;
+      for (const rigId of existingRigIds) {
+        if (alertKey.includes(rigId)) {
+          foundRig = true;
+          break;
+        }
+      }
+      if (!foundRig) {
+        lastAlertTimes.delete(alertKey);
+      }
     }
   }
 }
