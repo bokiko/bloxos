@@ -4,9 +4,10 @@
 - Done:
   - [x] Phase 1a: Foundation -- repo cleanup, Go hub + agent + Next.js grid
   - [x] Phase 1b: Live Pipeline -- agent IP, CORS, SSE wiring, machine detail page
-- Now: Phase 1c: Polish -- verify demo/live mode toggle, UX tweaks, mobile responsive
+  - [x] Phase 1c: Services & Containers -- ServicePanel, ContainerPanel, Toast, RebootModal, command relay
+- Now: Phase 1d: Polish -- verify demo/live mode toggle, UX tweaks, mobile responsive
 - Remaining:
-  - [ ] Phase 2: GPU + Services -- go-nvml, systemd, Docker, network/load metrics
+  - [ ] Phase 2: GPU + Network -- go-nvml, network/load metrics, power draw
   - [ ] Phase 3: Terminal -- xterm.js + creack/pty + re-auth
   - [ ] Phase 4: Alerts + UX -- Telegram, search/filter, tags, list view
   - [ ] Phase 5: Hardening -- charts, retention, auth, auto-update
@@ -19,16 +20,31 @@ rewrite/bloxos-v2
 - Hub stores in SQLite, broadcasts to SSE clients with enriched snapshot
 - Dashboard connects to hub SSE, shows live machine card replacing demo data
 - Machine detail page (/machine/[id]) shows system/GPU panels with live updates
+- **ServicePanel: 7 systemd services displayed with status dots, sorted by status**
+- **ContainerPanel: 8 Docker containers displayed with status, image tags**
+- **Command execution: restart/stop/start services and restart/start containers via hub relay**
+- **Toast notifications: success/error feedback with auto-dismiss**
+- **Reboot button: confirmation modal, sends reboot command to agent**
+- **Service restart verified: redis-server restart via POST /api/machines/:id/command returns success**
 - Demo mode fallback when hub is offline (with badge)
 - GET /api/machines/:id returns machine info + latest metrics
+- GET /api/machines/:id/services returns systemd services
+- GET /api/machines/:id/containers returns Docker containers
+- POST /api/machines/:id/command relays commands to agent, returns result
 - CORS configured for dashboard at :3000
+- SSE snapshot includes services and containers arrays per machine
 
 ## Working Set
-- Hub: hub/main.go -- Echo server + WebSocket + SSE broadcast + machine detail API
-- Agent: agent/main.go -- gopsutil metrics + WebSocket client + IP detection
+- Hub: hub/main.go -- Echo server + WebSocket + SSE broadcast + machine detail API + command relay
+- Agent: agent/main.go -- gopsutil metrics + WebSocket client + IP detection + command handler
 - Dashboard: dashboard/ -- Next.js 15 + Tailwind v4, dark theme
+  - src/app/layout.tsx -- Root layout with ToastProvider
   - src/app/page.tsx -- Fleet grid with SSE + demo fallback
-  - src/app/machine/[id]/page.tsx -- Machine detail view (system + GPU + placeholders)
+  - src/app/machine/[id]/page.tsx -- Machine detail view (system + GPU + services + containers)
+  - src/components/ServicePanel.tsx -- Systemd service list with action dropdowns
+  - src/components/ContainerPanel.tsx -- Docker container list with restart/start
+  - src/components/Toast.tsx -- Toast notifications with ToastProvider context
+  - src/components/RebootModal.tsx -- Reboot confirmation dialog
   - src/components/MachineCard.tsx -- Card with Link wrapper for navigation
   - src/components/ProgressBar.tsx -- Color-coded horizontal progress bar
   - src/components/StatusBadge.tsx -- Online/Warning/Offline badge
