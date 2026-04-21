@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"net"
 	"net/url"
 	"os"
 	"os/signal"
@@ -140,8 +141,8 @@ func sendMetrics(conn *websocket.Conn, machineID string) error {
 		return fmt.Errorf("write error: %w", err)
 	}
 
-	log.Printf("sent metrics: cpu=%.1f%% ram=%d/%dMB",
-		m.CPUPercent, m.RAMUsedBytes/1024/1024, m.RAMTotalBytes/1024/1024)
+	log.Printf("sent metrics: cpu=%.1f%% ram=%d/%dMB ip=%s",
+		m.CPUPercent, m.RAMUsedBytes/1024/1024, m.RAMTotalBytes/1024/1024, m.IP)
 	return nil
 }
 
@@ -173,9 +174,12 @@ func collectMetrics(machineID string) (*Metrics, error) {
 		osInfo = fmt.Sprintf("%s %s (%s)", hostInfo.Platform, hostInfo.PlatformVersion, hostInfo.KernelArch)
 	}
 
+	localIP := getOutboundIP()
+
 	return &Metrics{
 		MachineID:      machineID,
 		Hostname:       hostname,
+		IP:             localIP,
 		OS:             osInfo,
 		CPUPercent:     cpuAvg,
 		RAMUsedBytes:   memInfo.Used,
@@ -193,4 +197,15 @@ func getMachineID() string {
 		return hostname
 	}
 	return info.HostID
+}
+
+// getOutboundIP finds the local IP that would route to the internet/hub.
+func getOutboundIP() string {
+	conn, err := net.DialTimeout("udp", "8.8.8.8:80", 2*time.Second)
+	if err != nil {
+		return ""
+	}
+	defer conn.Close()
+	localAddr := conn.LocalAddr().(*net.UDPAddr)
+	return localAddr.IP.String()
 }
