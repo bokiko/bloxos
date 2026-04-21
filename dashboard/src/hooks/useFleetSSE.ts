@@ -29,11 +29,11 @@ export function useFleetSSE() {
 
     es.addEventListener("snapshot", (event) => {
       try {
-        const list: MachineMetrics[] = JSON.parse(event.data);
+        const list = JSON.parse(event.data) as MachineMetrics[];
         if (list.length > 0) {
           setHasReceivedData(true);
-          setMachines((prev) => {
-            const next = new Map(prev);
+          setMachines(() => {
+            const next = new Map<string, MachineMetrics>();
             for (const m of list) {
               next.set(m.machine_id, { ...m, last_seen: Date.now() });
             }
@@ -47,7 +47,7 @@ export function useFleetSSE() {
 
     es.addEventListener("metrics", (event) => {
       try {
-        const m: MachineMetrics = JSON.parse(event.data);
+        const m = JSON.parse(event.data) as MachineMetrics;
         setHasReceivedData(true);
         setMachines((prev) => {
           const next = new Map(prev);

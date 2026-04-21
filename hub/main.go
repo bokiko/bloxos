@@ -74,13 +74,19 @@ func main() {
 	e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
-		AllowOrigins: []string{"*"},
+		AllowOrigins: []string{
+			"http://192.168.16.113:3000",
+			"http://localhost:3000",
+		},
+		AllowMethods: []string{http.MethodGet, http.MethodOptions},
+		AllowHeaders: []string{"Accept", "Content-Type", "Cache-Control"},
 	}))
 
 	e.GET("/health", handleHealth)
 	e.GET("/ws/agent", handleAgentWS)
 	e.GET("/api/events", handleSSE)
 	e.GET("/api/machines", handleListMachines)
+	e.GET("/api/machines/:id", handleGetMachine)
 
 	log.Println("hub listening on :4000")
 	if err := e.Start(":4000"); err != nil && err != http.ErrServerClosed {
@@ -238,7 +244,6 @@ func handleSSE(c echo.Context) error {
 	c.Response().Header().Set("Content-Type", "text/event-stream")
 	c.Response().Header().Set("Cache-Control", "no-cache")
 	c.Response().Header().Set("Connection", "keep-alive")
-	c.Response().Header().Set("Access-Control-Allow-Origin", "*")
 
 	ch := make(chan []byte, 64)
 	sseClientsMu.Lock()
@@ -257,7 +262,8 @@ func handleSSE(c echo.Context) error {
 		return fmt.Errorf("streaming not supported")
 	}
 
-	snapshot, _ := getMachinesJSON()
+	// Send enriched snapshot: machines with their latest metrics merged
+	snapshot, _ := getEnrichedMachinesJSON()
 	fmt.Fprintf(c.Response(), "event: snapshot\ndata: %s\n\n", snapshot)
 	flusher.Flush()
 
@@ -278,6 +284,117 @@ func handleListMachines(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 	return c.JSONBlob(http.StatusOK, data)
+}
+
+func handleGetMachine(c echo.Context) error {
+	id := c.Param("id")
+
+	var m struct {
+		ID       string  `json:"id"`
+		Hostname string  `json:"hostname"`
+		IP       *string `json:"ip"`
+		OS       *string `json:"os"`
+		Status   string  `json:"status"`
+		LastSeen *string `json:"last_seen"`
+	}
+	err := db.QueryRow(`SELECT id, hostname, ip, os, status, last_seen FROM machines WHERE id = ?`, id).
+		Scan(&m.ID, &m.Hostname, &m.IP, &m.OS, &m.Status, &m.LastSeen)
+	if err == sql.ErrNoRows {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "machine not found"})
+	}
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+
+	var met struct {
+		CPUPercent     float64 `json:"cpu_percent"`
+		RAMUsedBytes   int64   `json:"ram_used_bytes"`
+		RAMTotalBytes  int64   `json:"ram_total_bytes"`
+		DiskUsedBytes  int64   `json:"disk_used_bytes"`
+		DiskTotalBytes int64   `json:"disk_total_bytes"`
+		GPUTemp        float64 `json:"gpu_temp"`
+		GPUUtil        float64 `json:"gpu_util_percent"`
+		GPUVRAMUsed    int64   `json:"gpu_vram_used_bytes"`
+		GPUVRAMTotal   int64   `json:"gpu_vram_total_bytes"`
+	}
+	err = db.QueryRow(`
+		SELECT cpu_percent, ram_used_bytes, ram_total_bytes, disk_used_bytes, disk_total_bytes,
+			gpu_temp, gpu_util_percent, gpu_vram_used_bytes, gpu_vram_total_bytes
+		FROM metrics WHERE machine_id = ? ORDER BY timestamp DESC LIMIT 1
+	`, id).Scan(&met.CPUPercent, &met.RAMUsedBytes, &met.RAMTotalBytes,
+		&met.DiskUsedBytes, &met.DiskTotalBytes, &met.GPUTemp, &met.GPUUtil,
+		&met.GPUVRAMUsed, &met.GPUVRAMTotal)
+	if err != nil && err != sql.ErrNoRows {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"machine": m,
+		"metrics": met,
+	})
+}
+
+// getEnrichedMachinesJSON returns machines merged with their latest metrics,
+// in the same shape as AgentMetrics so the dashboard can use them directly.
+func getEnrichedMachinesJSON() ([]byte, error) {
+	rows, err := db.Query(`
+		SELECT m.id, m.hostname, m.ip, m.os, m.status, m.last_seen,
+			COALESCE(met.cpu_percent, 0),
+			COALESCE(met.ram_used_bytes, 0), COALESCE(met.ram_total_bytes, 0),
+			COALESCE(met.disk_used_bytes, 0), COALESCE(met.disk_total_bytes, 0),
+			COALESCE(met.gpu_temp, 0), COALESCE(met.gpu_util_percent, 0),
+			COALESCE(met.gpu_vram_used_bytes, 0), COALESCE(met.gpu_vram_total_bytes, 0),
+			COALESCE(met.timestamp, m.last_seen)
+		FROM machines m
+		LEFT JOIN (
+			SELECT machine_id, cpu_percent, ram_used_bytes, ram_total_bytes,
+				disk_used_bytes, disk_total_bytes, gpu_temp, gpu_util_percent,
+				gpu_vram_used_bytes, gpu_vram_total_bytes, timestamp,
+				ROW_NUMBER() OVER (PARTITION BY machine_id ORDER BY timestamp DESC) as rn
+			FROM metrics
+		) met ON met.machine_id = m.id AND met.rn = 1
+		ORDER BY m.hostname
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	type EnrichedMachine struct {
+		MachineID      string  `json:"machine_id"`
+		Hostname       string  `json:"hostname"`
+		IP             *string `json:"ip"`
+		OS             *string `json:"os"`
+		Status         string  `json:"status"`
+		CPUPercent     float64 `json:"cpu_percent"`
+		RAMUsedBytes   int64   `json:"ram_used_bytes"`
+		RAMTotalBytes  int64   `json:"ram_total_bytes"`
+		DiskUsedBytes  int64   `json:"disk_used_bytes"`
+		DiskTotalBytes int64   `json:"disk_total_bytes"`
+		GPUTemp        float64 `json:"gpu_temp"`
+		GPUUtil        float64 `json:"gpu_util_percent"`
+		GPUVRAMUsed    int64   `json:"gpu_vram_used_bytes"`
+		GPUVRAMTotal   int64   `json:"gpu_vram_total_bytes"`
+		Timestamp      *string `json:"timestamp"`
+	}
+
+	var machines []EnrichedMachine
+	for rows.Next() {
+		var m EnrichedMachine
+		var lastSeen *string
+		if err := rows.Scan(&m.MachineID, &m.Hostname, &m.IP, &m.OS, &m.Status, &lastSeen,
+			&m.CPUPercent, &m.RAMUsedBytes, &m.RAMTotalBytes,
+			&m.DiskUsedBytes, &m.DiskTotalBytes,
+			&m.GPUTemp, &m.GPUUtil, &m.GPUVRAMUsed, &m.GPUVRAMTotal,
+			&m.Timestamp); err != nil {
+			return nil, err
+		}
+		machines = append(machines, m)
+	}
+	if machines == nil {
+		machines = []EnrichedMachine{}
+	}
+	return json.Marshal(machines)
 }
 
 func getMachinesJSON() ([]byte, error) {
