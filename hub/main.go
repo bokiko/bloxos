@@ -18,23 +18,32 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// GPUInfo holds per-GPU metrics from the agent.
+type GPUInfo struct {
+	Index         int     `json:"index"`
+	Name          string  `json:"name"`
+	TempC         float64 `json:"temp_c"`
+	UtilPercent   float64 `json:"util_percent"`
+	MemUsedBytes  int64   `json:"mem_used_bytes"`
+	MemTotalBytes int64   `json:"mem_total_bytes"`
+	PowerWatts    float64 `json:"power_watts"`
+	FanPercent    float64 `json:"fan_percent"`
+}
+
 // AgentMetrics is the JSON payload sent by each agent.
 type AgentMetrics struct {
-	Type           string  `json:"type"`
-	MachineID      string  `json:"machine_id"`
-	Hostname       string  `json:"hostname"`
-	IP             string  `json:"ip,omitempty"`
-	OS             string  `json:"os,omitempty"`
-	CPUPercent     float64 `json:"cpu_percent"`
-	RAMUsedBytes   int64   `json:"ram_used_bytes"`
-	RAMTotalBytes  int64   `json:"ram_total_bytes"`
-	DiskUsedBytes  int64   `json:"disk_used_bytes"`
-	DiskTotalBytes int64   `json:"disk_total_bytes"`
-	GPUTemp        float64 `json:"gpu_temp,omitempty"`
-	GPUUtil        float64 `json:"gpu_util_percent,omitempty"`
-	GPUVRAMUsed    int64   `json:"gpu_vram_used_bytes,omitempty"`
-	GPUVRAMTotal   int64   `json:"gpu_vram_total_bytes,omitempty"`
-	Timestamp      string  `json:"timestamp"`
+	Type           string    `json:"type"`
+	MachineID      string    `json:"machine_id"`
+	Hostname       string    `json:"hostname"`
+	IP             string    `json:"ip,omitempty"`
+	OS             string    `json:"os,omitempty"`
+	CPUPercent     float64   `json:"cpu_percent"`
+	RAMUsedBytes   int64     `json:"ram_used_bytes"`
+	RAMTotalBytes  int64     `json:"ram_total_bytes"`
+	DiskUsedBytes  int64     `json:"disk_used_bytes"`
+	DiskTotalBytes int64     `json:"disk_total_bytes"`
+	GPUs           []GPUInfo `json:"gpus"`
+	Timestamp      string    `json:"timestamp"`
 }
 
 // ServiceInfo from agent.
@@ -212,6 +221,23 @@ func initDB() error {
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_metrics_machine_time ON metrics(machine_id, timestamp);
+
+	CREATE TABLE IF NOT EXISTS gpu_metrics (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		machine_id TEXT NOT NULL,
+		gpu_index INTEGER NOT NULL,
+		gpu_name TEXT,
+		temp_c REAL,
+		util_percent REAL,
+		mem_used_bytes INTEGER,
+		mem_total_bytes INTEGER,
+		power_watts REAL,
+		fan_percent REAL,
+		timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+		FOREIGN KEY (machine_id) REFERENCES machines(id)
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_gpu_metrics_machine_time ON gpu_metrics(machine_id, timestamp);
 	`
 	_, err := db.Exec(schema)
 	return err
@@ -409,16 +435,38 @@ func upsertMachine(m AgentMetrics) {
 }
 
 func storeMetrics(m AgentMetrics) {
+	// Store core metrics (gpu_temp etc columns kept for backward compat, populated from first GPU).
+	var gpuTemp, gpuUtil float64
+	var gpuVRAMUsed, gpuVRAMTotal int64
+	if len(m.GPUs) > 0 {
+		gpuTemp = m.GPUs[0].TempC
+		gpuUtil = m.GPUs[0].UtilPercent
+		gpuVRAMUsed = m.GPUs[0].MemUsedBytes
+		gpuVRAMTotal = m.GPUs[0].MemTotalBytes
+	}
+
 	_, err := db.Exec(`
 		INSERT INTO metrics (machine_id, cpu_percent, ram_used_bytes, ram_total_bytes,
 			disk_used_bytes, disk_total_bytes, gpu_temp, gpu_util_percent,
 			gpu_vram_used_bytes, gpu_vram_total_bytes)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, m.MachineID, m.CPUPercent, m.RAMUsedBytes, m.RAMTotalBytes,
-		m.DiskUsedBytes, m.DiskTotalBytes, m.GPUTemp, m.GPUUtil,
-		m.GPUVRAMUsed, m.GPUVRAMTotal)
+		m.DiskUsedBytes, m.DiskTotalBytes, gpuTemp, gpuUtil, gpuVRAMUsed, gpuVRAMTotal)
 	if err != nil {
 		log.Printf("store metrics error: %v", err)
+	}
+
+	// Store per-GPU metrics.
+	for _, g := range m.GPUs {
+		_, err := db.Exec(`
+			INSERT INTO gpu_metrics (machine_id, gpu_index, gpu_name, temp_c, util_percent,
+				mem_used_bytes, mem_total_bytes, power_watts, fan_percent)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, m.MachineID, g.Index, g.Name, g.TempC, g.UtilPercent,
+			g.MemUsedBytes, g.MemTotalBytes, g.PowerWatts, g.FanPercent)
+		if err != nil {
+			log.Printf("store gpu metric error: %v", err)
+		}
 	}
 }
 
@@ -529,10 +577,47 @@ func handleGetMachine(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
+	// Load latest GPU metrics.
+	gpus := getLatestGPUMetrics(id)
+
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"machine": m,
 		"metrics": met,
+		"gpus":    gpus,
 	})
+}
+
+func getLatestGPUMetrics(machineID string) []GPUInfo {
+	rows, err := db.Query(`
+		SELECT gpu_index, gpu_name, temp_c, util_percent, mem_used_bytes, mem_total_bytes, power_watts, fan_percent
+		FROM gpu_metrics
+		WHERE machine_id = ? AND timestamp = (
+			SELECT MAX(timestamp) FROM gpu_metrics WHERE machine_id = ?
+		)
+		ORDER BY gpu_index
+	`, machineID, machineID)
+	if err != nil {
+		return []GPUInfo{}
+	}
+	defer rows.Close()
+
+	var gpus []GPUInfo
+	for rows.Next() {
+		var g GPUInfo
+		var name *string
+		if err := rows.Scan(&g.Index, &name, &g.TempC, &g.UtilPercent,
+			&g.MemUsedBytes, &g.MemTotalBytes, &g.PowerWatts, &g.FanPercent); err != nil {
+			continue
+		}
+		if name != nil {
+			g.Name = *name
+		}
+		gpus = append(gpus, g)
+	}
+	if gpus == nil {
+		return []GPUInfo{}
+	}
+	return gpus
 }
 
 func handleGetServices(c echo.Context) error {
@@ -677,6 +762,7 @@ func getEnrichedMachinesJSON() ([]byte, error) {
 		GPUVRAMUsed    int64           `json:"gpu_vram_used_bytes"`
 		GPUVRAMTotal   int64           `json:"gpu_vram_total_bytes"`
 		Timestamp      *string         `json:"timestamp"`
+		GPUs           []GPUInfo       `json:"gpus"`
 		Services       []ServiceInfo   `json:"services"`
 		Containers     []ContainerInfo `json:"containers"`
 	}
@@ -693,9 +779,10 @@ func getEnrichedMachinesJSON() ([]byte, error) {
 			return nil, err
 		}
 
-		// Load services for this machine.
+		// Load services, containers, and GPU metrics for this machine.
 		m.Services = getServicesForMachine(m.MachineID)
 		m.Containers = getContainersForMachine(m.MachineID)
+		m.GPUs = getLatestGPUMetrics(m.MachineID)
 
 		machines = append(machines, m)
 	}

@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"encoding/xml"
+	"strconv"
 	"flag"
 	"fmt"
 	"log"
@@ -25,22 +27,31 @@ import (
 	"github.com/shirou/gopsutil/v4/mem"
 )
 
+// GPUInfo holds per-GPU metrics parsed from nvidia-smi XML.
+type GPUInfo struct {
+	Index        int     `json:"index"`
+	Name         string  `json:"name"`
+	TempC        float64 `json:"temp_c"`
+	UtilPercent  float64 `json:"util_percent"`
+	MemUsedBytes int64   `json:"mem_used_bytes"`
+	MemTotalBytes int64  `json:"mem_total_bytes"`
+	PowerWatts   float64 `json:"power_watts"`
+	FanPercent   float64 `json:"fan_percent"`
+}
+
 type Metrics struct {
-	Type           string  `json:"type"`
-	MachineID      string  `json:"machine_id"`
-	Hostname       string  `json:"hostname"`
-	IP             string  `json:"ip,omitempty"`
-	OS             string  `json:"os,omitempty"`
-	CPUPercent     float64 `json:"cpu_percent"`
-	RAMUsedBytes   uint64  `json:"ram_used_bytes"`
-	RAMTotalBytes  uint64  `json:"ram_total_bytes"`
-	DiskUsedBytes  uint64  `json:"disk_used_bytes"`
-	DiskTotalBytes uint64  `json:"disk_total_bytes"`
-	GPUTemp        float64 `json:"gpu_temp,omitempty"`
-	GPUUtil        float64 `json:"gpu_util_percent,omitempty"`
-	GPUVRAMUsed    uint64  `json:"gpu_vram_used_bytes,omitempty"`
-	GPUVRAMTotal   uint64  `json:"gpu_vram_total_bytes,omitempty"`
-	Timestamp      string  `json:"timestamp"`
+	Type           string    `json:"type"`
+	MachineID      string    `json:"machine_id"`
+	Hostname       string    `json:"hostname"`
+	IP             string    `json:"ip,omitempty"`
+	OS             string    `json:"os,omitempty"`
+	CPUPercent     float64   `json:"cpu_percent"`
+	RAMUsedBytes   uint64    `json:"ram_used_bytes"`
+	RAMTotalBytes  uint64    `json:"ram_total_bytes"`
+	DiskUsedBytes  uint64    `json:"disk_used_bytes"`
+	DiskTotalBytes uint64    `json:"disk_total_bytes"`
+	GPUs           []GPUInfo `json:"gpus"`
+	Timestamp      string    `json:"timestamp"`
 }
 
 // Command is received from the hub.
@@ -280,6 +291,8 @@ func collectMetrics(machineID string) (*Metrics, error) {
 
 	localIP := getOutboundIP()
 
+	gpus := collectGPUMetrics()
+
 	return &Metrics{
 		Type:           "metrics",
 		MachineID:      machineID,
@@ -291,6 +304,7 @@ func collectMetrics(machineID string) (*Metrics, error) {
 		RAMTotalBytes:  memInfo.Total,
 		DiskUsedBytes:  diskInfo.Used,
 		DiskTotalBytes: diskInfo.Total,
+		GPUs:           gpus,
 		Timestamp:      time.Now().UTC().Format(time.RFC3339),
 	}, nil
 }
@@ -533,6 +547,110 @@ func getMachineID() string {
 		return hostname
 	}
 	return info.HostID
+}
+
+
+// nvidia-smi XML structures for parsing.
+type nvidiaSmiLog struct {
+	GPUs []nvGPU `xml:"gpu"`
+}
+
+type nvGPU struct {
+	ID          string        `xml:"id,attr"`
+	ProductName string        `xml:"product_name"`
+	FanSpeed    string        `xml:"fan_speed"`
+	Temperature nvTemperature `xml:"temperature"`
+	Utilization nvUtilization `xml:"utilization"`
+	FBMemory    nvFBMemory    `xml:"fb_memory_usage"`
+	// Driver versions may use either tag name.
+	GPUPowerReadings nvPower `xml:"gpu_power_readings"`
+	PowerReadings    nvPower `xml:"power_readings"`
+}
+
+type nvTemperature struct {
+	GPUTemp string `xml:"gpu_temp"`
+}
+
+type nvUtilization struct {
+	GPUUtil string `xml:"gpu_util"`
+	MemUtil string `xml:"memory_util"`
+}
+
+type nvFBMemory struct {
+	Total string `xml:"total"`
+	Used  string `xml:"used"`
+	Free  string `xml:"free"`
+}
+
+type nvPower struct {
+	PowerDraw string `xml:"power_draw"`
+}
+
+// collectGPUMetrics runs nvidia-smi and parses XML output.
+// Returns nil if nvidia-smi is not available or fails (no GPU).
+func collectGPUMetrics() []GPUInfo {
+	out, err := exec.Command("nvidia-smi", "-x", "-q").Output()
+	if err != nil {
+		// nvidia-smi not found or failed — no GPU, that is fine.
+		return nil
+	}
+
+	var smiLog nvidiaSmiLog
+	if err := xml.Unmarshal(out, &smiLog); err != nil {
+		log.Printf("nvidia-smi XML parse error: %v", err)
+		return nil
+	}
+
+	if len(smiLog.GPUs) == 0 {
+		return nil
+	}
+
+	gpus := make([]GPUInfo, 0, len(smiLog.GPUs))
+	for i, g := range smiLog.GPUs {
+		gpu := GPUInfo{
+			Index:         i,
+			Name:          g.ProductName,
+			TempC:         parseNvValue(g.Temperature.GPUTemp),
+			UtilPercent:   parseNvValue(g.Utilization.GPUUtil),
+			FanPercent:    parseNvValue(g.FanSpeed),
+			MemUsedBytes:  mibToBytes(g.FBMemory.Used),
+			MemTotalBytes: mibToBytes(g.FBMemory.Total),
+		}
+
+		// Power may be in either tag depending on driver version.
+		pw := parseNvValue(g.GPUPowerReadings.PowerDraw)
+		if pw == 0 {
+			pw = parseNvValue(g.PowerReadings.PowerDraw)
+		}
+		gpu.PowerWatts = pw
+
+		gpus = append(gpus, gpu)
+	}
+	return gpus
+}
+
+// parseNvValue extracts the numeric part from strings like "72 C", "89 %", "285.50 W".
+func parseNvValue(s string) float64 {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "N/A" || s == "[N/A]" {
+		return 0
+	}
+	// Take only the first token (the number).
+	parts := strings.Fields(s)
+	if len(parts) == 0 {
+		return 0
+	}
+	v, err := strconv.ParseFloat(parts[0], 64)
+	if err != nil {
+		return 0
+	}
+	return v
+}
+
+// mibToBytes converts "24576 MiB" to bytes.
+func mibToBytes(s string) int64 {
+	v := parseNvValue(s)
+	return int64(v * 1024 * 1024)
 }
 
 func getOutboundIP() string {

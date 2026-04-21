@@ -1,3 +1,14 @@
+export interface GPUInfo {
+  index: number;
+  name: string;
+  temp_c: number;
+  util_percent: number;
+  mem_used_bytes: number;
+  mem_total_bytes: number;
+  power_watts: number;
+  fan_percent: number;
+}
+
 export interface MachineMetrics {
   machine_id: string;
   hostname: string;
@@ -12,6 +23,7 @@ export interface MachineMetrics {
   gpu_util_percent?: number;
   gpu_vram_used_bytes?: number;
   gpu_vram_total_bytes?: number;
+  gpus?: GPUInfo[];
   timestamp: string;
   last_seen?: number; // epoch ms, set by dashboard
 }
