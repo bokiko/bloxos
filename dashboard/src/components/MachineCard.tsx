@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import Link from "next/link";
-import { MachineMetrics } from "@/lib/demo-data";
+import { MachineMetrics, GPUInfo } from "@/lib/demo-data";
 import { ProgressBar } from "./ProgressBar";
 import { StatusBadge, MachineStatus } from "./StatusBadge";
 import { Cpu, HardDrive, MemoryStick, Thermometer, Clock, Monitor } from "lucide-react";
@@ -70,8 +70,13 @@ export function MachineCard({ machine, onClick }: MachineCardProps) {
     ? (machine.disk_used_bytes / machine.disk_total_bytes) * 100
     : 0;
 
-  const hasGpu = (machine.gpu_temp && machine.gpu_temp > 0) ||
+  const gpu0 = machine.gpus && machine.gpus.length > 0 ? machine.gpus[0] : null;
+  const hasGpu = gpu0 !== null || (machine.gpu_temp && machine.gpu_temp > 0) ||
     (machine.gpu_vram_total_bytes && machine.gpu_vram_total_bytes > 0);
+  const gpuTemp = gpu0 ? gpu0.temp_c : (machine.gpu_temp || 0);
+  const gpuUtil = gpu0 ? gpu0.util_percent : (machine.gpu_util_percent || 0);
+  const gpuVramUsed = gpu0 ? gpu0.mem_used_bytes : (machine.gpu_vram_used_bytes || 0);
+  const gpuVramTotal = gpu0 ? gpu0.mem_total_bytes : (machine.gpu_vram_total_bytes || 0);
 
   return (
     <Link href={`/machine/${machine.machine_id}`} className="block">
@@ -151,18 +156,18 @@ export function MachineCard({ machine, onClick }: MachineCardProps) {
           )}
 
           {/* VRAM */}
-          {hasGpu && machine.gpu_vram_total_bytes && machine.gpu_vram_total_bytes > 0 && (
+          {hasGpu && gpuVramTotal > 0 && (
             <div className="flex items-center gap-2">
               <MemoryStick className="w-3.5 h-3.5 text-blox-muted shrink-0" />
               <span className="text-xs text-blox-muted w-8">VRAM</span>
               <div className="flex-1">
                 <ProgressBar
-                  value={(machine.gpu_vram_used_bytes || 0) / machine.gpu_vram_total_bytes * 100}
-                  label={`${((machine.gpu_vram_used_bytes || 0) / machine.gpu_vram_total_bytes * 100).toFixed(0)}%`}
+                  value={gpuVramUsed / gpuVramTotal * 100}
+                  label={`${(gpuVramUsed / gpuVramTotal * 100).toFixed(0)}%`}
                 />
               </div>
               <span className="text-[10px] text-blox-muted tabular-nums">
-                {formatBytes(machine.gpu_vram_used_bytes || 0)}/{formatBytes(machine.gpu_vram_total_bytes)}
+                {formatBytes(gpuVramUsed)}/{formatBytes(gpuVramTotal)}
               </span>
             </div>
           )}

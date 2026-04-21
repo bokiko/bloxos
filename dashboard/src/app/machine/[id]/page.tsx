@@ -15,6 +15,17 @@ import {
 
 const HUB_URL = process.env.NEXT_PUBLIC_HUB_URL || "http://localhost:4000";
 
+interface GPUData {
+  index: number;
+  name: string;
+  temp_c: number;
+  util_percent: number;
+  mem_used_bytes: number;
+  mem_total_bytes: number;
+  power_watts: number;
+  fan_percent: number;
+}
+
 interface MachineData {
   machine: {
     id: string;
@@ -35,6 +46,7 @@ interface MachineData {
     gpu_vram_used_bytes: number;
     gpu_vram_total_bytes: number;
   };
+  gpus: GPUData[];
 }
 
 function formatBytes(bytes: number): string {
@@ -57,7 +69,14 @@ function timeSince(dateStr: string): string {
 
 function getStatus(data: MachineData): MachineStatus {
   if (data.machine.status === "offline") return "offline";
-  if (data.metrics.gpu_temp > 80) return "warning";
+  // Check GPU temps from gpus array
+  if (data.gpus && data.gpus.length > 0) {
+    for (const g of data.gpus) {
+      if (g.temp_c > 80) return "warning";
+    }
+  } else if (data.metrics.gpu_temp > 80) {
+    return "warning";
+  }
   const diskPct = data.metrics.disk_total_bytes > 0
     ? (data.metrics.disk_used_bytes / data.metrics.disk_total_bytes) * 100 : 0;
   if (diskPct > 90) return "warning";
@@ -214,8 +233,8 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
   const status = getStatus(data);
   const ramPct = metrics.ram_total_bytes > 0 ? (metrics.ram_used_bytes / metrics.ram_total_bytes) * 100 : 0;
   const diskPct = metrics.disk_total_bytes > 0 ? (metrics.disk_used_bytes / metrics.disk_total_bytes) * 100 : 0;
-  const gpuVramPct = metrics.gpu_vram_total_bytes > 0 ? (metrics.gpu_vram_used_bytes / metrics.gpu_vram_total_bytes) * 100 : 0;
-  const hasGpu = metrics.gpu_temp > 0 || metrics.gpu_vram_total_bytes > 0;
+  const gpus = data.gpus || [];
+  const hasGpu = gpus.length > 0;
 
   return (
     <div className="min-h-screen bg-blox-bg">
@@ -354,62 +373,91 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
               {!hasGpu && <span className="text-[10px] text-blox-muted">(no GPU detected)</span>}
             </div>
             {hasGpu ? (
-              <div className="space-y-4">
-                {/* Temperature */}
-                <div>
-                  <div className="flex items-center justify-between mb-1.5">
-                    <div className="flex items-center gap-2">
-                      <Thermometer className="w-3.5 h-3.5 text-blox-muted" />
-                      <span className="text-xs text-blox-muted">Temperature</span>
-                    </div>
-                    <span className={`text-sm font-semibold tabular-nums ${
-                      metrics.gpu_temp > 80 ? "text-blox-red" :
-                      metrics.gpu_temp > 70 ? "text-blox-amber" : "text-blox-green"
-                    }`}>{metrics.gpu_temp}&deg;C</span>
-                  </div>
-                  <ProgressBar value={metrics.gpu_temp} size="md" />
-                </div>
+              <div className="space-y-5">
+                {gpus.map((gpu) => {
+                  const vramPct = gpu.mem_total_bytes > 0 ? (gpu.mem_used_bytes / gpu.mem_total_bytes) * 100 : 0;
+                  return (
+                    <div key={gpu.index} className="space-y-3">
+                      {gpus.length > 1 && (
+                        <div className="text-[10px] text-blox-muted font-mono border-b border-blox-border pb-1">
+                          GPU {gpu.index}: {gpu.name}
+                        </div>
+                      )}
+                      {gpus.length === 1 && gpu.name && (
+                        <div className="text-[10px] text-blox-muted font-mono mb-1">{gpu.name}</div>
+                      )}
 
-                {/* Utilization */}
-                <div>
-                  <div className="flex items-center justify-between mb-1.5">
-                    <div className="flex items-center gap-2">
-                      <Cpu className="w-3.5 h-3.5 text-blox-muted" />
-                      <span className="text-xs text-blox-muted">Utilization</span>
-                    </div>
-                    <span className="text-sm font-semibold text-blox-text tabular-nums">{metrics.gpu_util_percent.toFixed(0)}%</span>
-                  </div>
-                  <ProgressBar value={metrics.gpu_util_percent} size="md" />
-                </div>
-
-                {/* VRAM */}
-                {metrics.gpu_vram_total_bytes > 0 && (
-                  <div>
-                    <div className="flex items-center justify-between mb-1.5">
-                      <div className="flex items-center gap-2">
-                        <MemoryStick className="w-3.5 h-3.5 text-blox-muted" />
-                        <span className="text-xs text-blox-muted">VRAM</span>
+                      {/* Temperature */}
+                      <div>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <div className="flex items-center gap-2">
+                            <Thermometer className="w-3.5 h-3.5 text-blox-muted" />
+                            <span className="text-xs text-blox-muted">Temperature</span>
+                          </div>
+                          <span className={`text-sm font-semibold tabular-nums ${
+                            gpu.temp_c > 80 ? "text-blox-red" :
+                            gpu.temp_c > 70 ? "text-blox-amber" : "text-blox-green"
+                          }`}>{gpu.temp_c}&deg;C</span>
+                        </div>
+                        <ProgressBar value={gpu.temp_c} size="md" />
                       </div>
-                      <span className="text-xs text-blox-muted tabular-nums">{formatBytes(metrics.gpu_vram_used_bytes)} / {formatBytes(metrics.gpu_vram_total_bytes)}</span>
-                    </div>
-                    <ProgressBar value={gpuVramPct} size="md" label={`${gpuVramPct.toFixed(0)}%`} />
-                  </div>
-                )}
 
-                {/* Power placeholder */}
-                <div className="flex items-center justify-between py-2 border-t border-blox-border">
-                  <div className="flex items-center gap-2">
-                    <Zap className="w-3.5 h-3.5 text-blox-muted" />
-                    <span className="text-xs text-blox-muted">Power Draw</span>
-                  </div>
-                  <span className="text-[10px] text-blox-muted">Phase 2</span>
-                </div>
+                      {/* Utilization */}
+                      <div>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <div className="flex items-center gap-2">
+                            <Cpu className="w-3.5 h-3.5 text-blox-muted" />
+                            <span className="text-xs text-blox-muted">Utilization</span>
+                          </div>
+                          <span className="text-sm font-semibold text-blox-text tabular-nums">{gpu.util_percent.toFixed(0)}%</span>
+                        </div>
+                        <ProgressBar value={gpu.util_percent} size="md" />
+                      </div>
+
+                      {/* VRAM */}
+                      {gpu.mem_total_bytes > 0 && (
+                        <div>
+                          <div className="flex items-center justify-between mb-1.5">
+                            <div className="flex items-center gap-2">
+                              <MemoryStick className="w-3.5 h-3.5 text-blox-muted" />
+                              <span className="text-xs text-blox-muted">VRAM</span>
+                            </div>
+                            <span className="text-xs text-blox-muted tabular-nums">{formatBytes(gpu.mem_used_bytes)} / {formatBytes(gpu.mem_total_bytes)}</span>
+                          </div>
+                          <ProgressBar value={vramPct} size="md" label={`${vramPct.toFixed(0)}%`} />
+                        </div>
+                      )}
+
+                      {/* Power Draw */}
+                      <div className="flex items-center justify-between py-2 border-t border-blox-border">
+                        <div className="flex items-center gap-2">
+                          <Zap className="w-3.5 h-3.5 text-blox-muted" />
+                          <span className="text-xs text-blox-muted">Power</span>
+                        </div>
+                        <span className="text-xs text-blox-text tabular-nums">
+                          {gpu.power_watts > 0 ? `${gpu.power_watts.toFixed(0)} W` : "N/A"}
+                        </span>
+                      </div>
+
+                      {/* Fan Speed */}
+                      <div className="flex items-center justify-between py-1">
+                        <div className="flex items-center gap-2">
+                          <Activity className="w-3.5 h-3.5 text-blox-muted" />
+                          <span className="text-xs text-blox-muted">Fan</span>
+                        </div>
+                        <span className="text-xs text-blox-text tabular-nums">
+                          {gpu.fan_percent > 0 ? `${gpu.fan_percent.toFixed(0)}%` : "N/A"}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             ) : (
               <div className="flex flex-col items-center justify-center py-8 text-blox-muted">
                 <Zap className="w-8 h-8 mb-2 opacity-20" />
                 <p className="text-xs">No GPU metrics available</p>
-                <p className="text-[10px] mt-1">go-nvml integration in Phase 2</p>
+                <p className="text-[10px] mt-1">nvidia-smi not detected on this machine</p>
               </div>
             )}
           </div>
