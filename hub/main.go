@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
@@ -19,6 +20,7 @@ import (
 
 // AgentMetrics is the JSON payload sent by each agent.
 type AgentMetrics struct {
+	Type           string  `json:"type"`
 	MachineID      string  `json:"machine_id"`
 	Hostname       string  `json:"hostname"`
 	IP             string  `json:"ip,omitempty"`
@@ -35,10 +37,64 @@ type AgentMetrics struct {
 	Timestamp      string  `json:"timestamp"`
 }
 
+// ServiceInfo from agent.
+type ServiceInfo struct {
+	Name        string `json:"name"`
+	Status      string `json:"status"`
+	Description string `json:"description"`
+}
+
+// ServicesMessage from agent.
+type ServicesMessage struct {
+	Type      string        `json:"type"`
+	Hostname  string        `json:"hostname"`
+	MachineID string        `json:"machine_id"`
+	Services  []ServiceInfo `json:"services"`
+}
+
+// ContainerInfo from agent.
+type ContainerInfo struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	Image  string `json:"image"`
+}
+
+// ContainersMessage from agent.
+type ContainersMessage struct {
+	Type       string          `json:"type"`
+	Hostname   string          `json:"hostname"`
+	MachineID  string          `json:"machine_id"`
+	Containers []ContainerInfo `json:"containers"`
+}
+
+// CommandRequest from the dashboard.
+type CommandRequest struct {
+	Type   string `json:"type"`
+	Target string `json:"target"`
+}
+
+// CommandToAgent is forwarded to the agent via WebSocket.
+type CommandToAgent struct {
+	Type   string `json:"type"`
+	Target string `json:"target"`
+	ID     string `json:"id"`
+}
+
+// CommandResponse from agent.
+type CommandResponse struct {
+	Type    string `json:"type"`
+	ID      string `json:"id"`
+	Success bool   `json:"success"`
+	Output  string `json:"output"`
+	Error   string `json:"error"`
+}
+
 // ConnectedAgent tracks a live WebSocket connection from an agent.
 type ConnectedAgent struct {
 	MachineID string
 	Conn      *websocket.Conn
+	WriteMu   sync.Mutex
 }
 
 var (
@@ -51,9 +107,13 @@ var (
 	agents   = make(map[string]*ConnectedAgent)
 	agentsMu sync.RWMutex
 
-	// SSE subscribers: each channel receives JSON-encoded metrics.
+	// SSE subscribers.
 	sseClients   = make(map[chan []byte]struct{})
 	sseClientsMu sync.RWMutex
+
+	// Pending command responses: command ID -> response channel.
+	pendingCmds   = make(map[string]chan CommandResponse)
+	pendingCmdsMu sync.Mutex
 )
 
 func main() {
@@ -78,7 +138,7 @@ func main() {
 			"http://192.168.16.113:3000",
 			"http://localhost:3000",
 		},
-		AllowMethods: []string{http.MethodGet, http.MethodOptions},
+		AllowMethods: []string{http.MethodGet, http.MethodPost, http.MethodOptions},
 		AllowHeaders: []string{"Accept", "Content-Type", "Cache-Control"},
 	}))
 
@@ -87,6 +147,9 @@ func main() {
 	e.GET("/api/events", handleSSE)
 	e.GET("/api/machines", handleListMachines)
 	e.GET("/api/machines/:id", handleGetMachine)
+	e.GET("/api/machines/:id/services", handleGetServices)
+	e.GET("/api/machines/:id/containers", handleGetContainers)
+	e.POST("/api/machines/:id/command", handleCommand)
 
 	log.Println("hub listening on :4000")
 	if err := e.Start(":4000"); err != nil && err != http.ErrServerClosed {
@@ -129,6 +192,25 @@ func initDB() error {
 		used BOOLEAN DEFAULT FALSE
 	);
 
+	CREATE TABLE IF NOT EXISTS services (
+		machine_id TEXT NOT NULL,
+		name TEXT NOT NULL,
+		status TEXT,
+		description TEXT,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (machine_id, name)
+	);
+
+	CREATE TABLE IF NOT EXISTS containers (
+		machine_id TEXT NOT NULL,
+		container_id TEXT NOT NULL,
+		name TEXT NOT NULL,
+		status TEXT,
+		image TEXT,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (machine_id, container_id)
+	);
+
 	CREATE INDEX IF NOT EXISTS idx_metrics_machine_time ON metrics(machine_id, timestamp);
 	`
 	_, err := db.Exec(schema)
@@ -145,7 +227,6 @@ func handleAgentWS(c echo.Context) error {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "token required"})
 	}
 
-	// For now, accept any non-empty token. Phase 5 adds proper auth.
 	h := sha256.Sum256([]byte(token))
 	tokenHash := hex.EncodeToString(h[:8])
 	_ = tokenHash
@@ -157,6 +238,7 @@ func handleAgentWS(c echo.Context) error {
 	defer ws.Close()
 
 	var machineID string
+	agent := &ConnectedAgent{Conn: ws}
 
 	for {
 		_, msg, err := ws.ReadMessage()
@@ -171,24 +253,143 @@ func handleAgentWS(c echo.Context) error {
 			return nil
 		}
 
-		var m AgentMetrics
-		if err := json.Unmarshal(msg, &m); err != nil {
-			log.Printf("invalid metrics JSON: %v", err)
+		// Peek at the type field to route the message.
+		var envelope struct {
+			Type      string `json:"type"`
+			MachineID string `json:"machine_id"`
+		}
+		if err := json.Unmarshal(msg, &envelope); err != nil {
+			log.Printf("invalid JSON from agent: %v", err)
 			continue
 		}
 
-		if machineID == "" {
-			machineID = m.MachineID
-			agentsMu.Lock()
-			agents[machineID] = &ConnectedAgent{MachineID: machineID, Conn: ws}
-			agentsMu.Unlock()
-			log.Printf("agent registered: %s (%s)", m.Hostname, machineID)
-		}
+		switch envelope.Type {
+		case "metrics", "":
+			// Original metrics (type may be empty for backward compat).
+			var m AgentMetrics
+			if err := json.Unmarshal(msg, &m); err != nil {
+				log.Printf("invalid metrics JSON: %v", err)
+				continue
+			}
+			if machineID == "" {
+				machineID = m.MachineID
+				agent.MachineID = machineID
+				agentsMu.Lock()
+				agents[machineID] = agent
+				agentsMu.Unlock()
+				log.Printf("agent registered: %s (%s)", m.Hostname, machineID)
+			}
+			upsertMachine(m)
+			storeMetrics(m)
+			broadcastSSE(msg)
 
-		upsertMachine(m)
-		storeMetrics(m)
-		broadcastSSE(msg)
+		case "services":
+			var sm ServicesMessage
+			if err := json.Unmarshal(msg, &sm); err != nil {
+				log.Printf("invalid services JSON: %v", err)
+				continue
+			}
+			mid := sm.MachineID
+			if mid == "" {
+				mid = machineID
+			}
+			upsertServices(mid, sm.Services)
+			broadcastSSE(msg)
+
+		case "containers":
+			var cm ContainersMessage
+			if err := json.Unmarshal(msg, &cm); err != nil {
+				log.Printf("invalid containers JSON: %v", err)
+				continue
+			}
+			mid := cm.MachineID
+			if mid == "" {
+				mid = machineID
+			}
+			upsertContainers(mid, cm.Containers)
+			broadcastSSE(msg)
+
+		case "command_response":
+			var resp CommandResponse
+			if err := json.Unmarshal(msg, &resp); err != nil {
+				log.Printf("invalid command_response JSON: %v", err)
+				continue
+			}
+			pendingCmdsMu.Lock()
+			ch, ok := pendingCmds[resp.ID]
+			if ok {
+				delete(pendingCmds, resp.ID)
+			}
+			pendingCmdsMu.Unlock()
+			if ok {
+				ch <- resp
+			}
+
+		default:
+			log.Printf("unknown message type from agent: %s", envelope.Type)
+		}
 	}
+}
+
+func upsertServices(machineID string, services []ServiceInfo) {
+	tx, err := db.Begin()
+	if err != nil {
+		log.Printf("begin tx error: %v", err)
+		return
+	}
+	// Delete old services for this machine and re-insert.
+	if _, err := tx.Exec(`DELETE FROM services WHERE machine_id = ?`, machineID); err != nil {
+		tx.Rollback()
+		log.Printf("delete services error: %v", err)
+		return
+	}
+	stmt, err := tx.Prepare(`INSERT INTO services (machine_id, name, status, description, updated_at) VALUES (?, ?, ?, ?, ?)`)
+	if err != nil {
+		tx.Rollback()
+		log.Printf("prepare services error: %v", err)
+		return
+	}
+	defer stmt.Close()
+	now := time.Now().UTC()
+	for _, s := range services {
+		if _, err := stmt.Exec(machineID, s.Name, s.Status, s.Description, now); err != nil {
+			log.Printf("insert service error: %v", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		log.Printf("commit services error: %v", err)
+	}
+	log.Printf("stored %d services for %s", len(services), machineID)
+}
+
+func upsertContainers(machineID string, containers []ContainerInfo) {
+	tx, err := db.Begin()
+	if err != nil {
+		log.Printf("begin tx error: %v", err)
+		return
+	}
+	if _, err := tx.Exec(`DELETE FROM containers WHERE machine_id = ?`, machineID); err != nil {
+		tx.Rollback()
+		log.Printf("delete containers error: %v", err)
+		return
+	}
+	stmt, err := tx.Prepare(`INSERT INTO containers (machine_id, container_id, name, status, image, updated_at) VALUES (?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		tx.Rollback()
+		log.Printf("prepare containers error: %v", err)
+		return
+	}
+	defer stmt.Close()
+	now := time.Now().UTC()
+	for _, c := range containers {
+		if _, err := stmt.Exec(machineID, c.ID, c.Name, c.Status, c.Image, now); err != nil {
+			log.Printf("insert container error: %v", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		log.Printf("commit containers error: %v", err)
+	}
+	log.Printf("stored %d containers for %s", len(containers), machineID)
 }
 
 func upsertMachine(m AgentMetrics) {
@@ -262,7 +463,7 @@ func handleSSE(c echo.Context) error {
 		return fmt.Errorf("streaming not supported")
 	}
 
-	// Send enriched snapshot: machines with their latest metrics merged
+	// Send enriched snapshot.
 	snapshot, _ := getEnrichedMachinesJSON()
 	fmt.Fprintf(c.Response(), "event: snapshot\ndata: %s\n\n", snapshot)
 	flusher.Flush()
@@ -334,8 +535,108 @@ func handleGetMachine(c echo.Context) error {
 	})
 }
 
-// getEnrichedMachinesJSON returns machines merged with their latest metrics,
-// in the same shape as AgentMetrics so the dashboard can use them directly.
+func handleGetServices(c echo.Context) error {
+	id := c.Param("id")
+	rows, err := db.Query(`SELECT name, status, description FROM services WHERE machine_id = ? ORDER BY name`, id)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	defer rows.Close()
+
+	var services []ServiceInfo
+	for rows.Next() {
+		var s ServiceInfo
+		if err := rows.Scan(&s.Name, &s.Status, &s.Description); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		}
+		services = append(services, s)
+	}
+	if services == nil {
+		services = []ServiceInfo{}
+	}
+	return c.JSON(http.StatusOK, services)
+}
+
+func handleGetContainers(c echo.Context) error {
+	id := c.Param("id")
+	rows, err := db.Query(`SELECT container_id, name, status, image FROM containers WHERE machine_id = ? ORDER BY name`, id)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	defer rows.Close()
+
+	var containers []ContainerInfo
+	for rows.Next() {
+		var ct ContainerInfo
+		if err := rows.Scan(&ct.ID, &ct.Name, &ct.Status, &ct.Image); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		}
+		containers = append(containers, ct)
+	}
+	if containers == nil {
+		containers = []ContainerInfo{}
+	}
+	return c.JSON(http.StatusOK, containers)
+}
+
+func handleCommand(c echo.Context) error {
+	machineID := c.Param("id")
+
+	// Check agent is connected.
+	agentsMu.RLock()
+	agent, ok := agents[machineID]
+	agentsMu.RUnlock()
+	if !ok {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "agent not connected"})
+	}
+
+	var req CommandRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+	}
+
+	cmdID := "cmd-" + uuid.New().String()[:8]
+
+	// Create response channel.
+	respCh := make(chan CommandResponse, 1)
+	pendingCmdsMu.Lock()
+	pendingCmds[cmdID] = respCh
+	pendingCmdsMu.Unlock()
+
+	// Clean up on exit.
+	defer func() {
+		pendingCmdsMu.Lock()
+		delete(pendingCmds, cmdID)
+		pendingCmdsMu.Unlock()
+	}()
+
+	// Forward command to agent.
+	cmd := CommandToAgent{
+		Type:   req.Type,
+		Target: req.Target,
+		ID:     cmdID,
+	}
+	cmdData, _ := json.Marshal(cmd)
+	agent.WriteMu.Lock()
+	err := agent.Conn.WriteMessage(websocket.TextMessage, cmdData)
+	agent.WriteMu.Unlock()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to send command to agent"})
+	}
+
+	// Wait for response with 10s timeout.
+	select {
+	case resp := <-respCh:
+		return c.JSON(http.StatusOK, resp)
+	case <-time.After(10 * time.Second):
+		return c.JSON(http.StatusGatewayTimeout, map[string]string{
+			"id":    cmdID,
+			"error": "timeout waiting for agent response",
+		})
+	}
+}
+
+// getEnrichedMachinesJSON returns machines merged with their latest metrics and services/containers.
 func getEnrichedMachinesJSON() ([]byte, error) {
 	rows, err := db.Query(`
 		SELECT m.id, m.hostname, m.ip, m.os, m.status, m.last_seen,
@@ -361,21 +662,23 @@ func getEnrichedMachinesJSON() ([]byte, error) {
 	defer rows.Close()
 
 	type EnrichedMachine struct {
-		MachineID      string  `json:"machine_id"`
-		Hostname       string  `json:"hostname"`
-		IP             *string `json:"ip"`
-		OS             *string `json:"os"`
-		Status         string  `json:"status"`
-		CPUPercent     float64 `json:"cpu_percent"`
-		RAMUsedBytes   int64   `json:"ram_used_bytes"`
-		RAMTotalBytes  int64   `json:"ram_total_bytes"`
-		DiskUsedBytes  int64   `json:"disk_used_bytes"`
-		DiskTotalBytes int64   `json:"disk_total_bytes"`
-		GPUTemp        float64 `json:"gpu_temp"`
-		GPUUtil        float64 `json:"gpu_util_percent"`
-		GPUVRAMUsed    int64   `json:"gpu_vram_used_bytes"`
-		GPUVRAMTotal   int64   `json:"gpu_vram_total_bytes"`
-		Timestamp      *string `json:"timestamp"`
+		MachineID      string          `json:"machine_id"`
+		Hostname       string          `json:"hostname"`
+		IP             *string         `json:"ip"`
+		OS             *string         `json:"os"`
+		Status         string          `json:"status"`
+		CPUPercent     float64         `json:"cpu_percent"`
+		RAMUsedBytes   int64           `json:"ram_used_bytes"`
+		RAMTotalBytes  int64           `json:"ram_total_bytes"`
+		DiskUsedBytes  int64           `json:"disk_used_bytes"`
+		DiskTotalBytes int64           `json:"disk_total_bytes"`
+		GPUTemp        float64         `json:"gpu_temp"`
+		GPUUtil        float64         `json:"gpu_util_percent"`
+		GPUVRAMUsed    int64           `json:"gpu_vram_used_bytes"`
+		GPUVRAMTotal   int64           `json:"gpu_vram_total_bytes"`
+		Timestamp      *string         `json:"timestamp"`
+		Services       []ServiceInfo   `json:"services"`
+		Containers     []ContainerInfo `json:"containers"`
 	}
 
 	var machines []EnrichedMachine
@@ -389,12 +692,57 @@ func getEnrichedMachinesJSON() ([]byte, error) {
 			&m.Timestamp); err != nil {
 			return nil, err
 		}
+
+		// Load services for this machine.
+		m.Services = getServicesForMachine(m.MachineID)
+		m.Containers = getContainersForMachine(m.MachineID)
+
 		machines = append(machines, m)
 	}
 	if machines == nil {
 		machines = []EnrichedMachine{}
 	}
 	return json.Marshal(machines)
+}
+
+func getServicesForMachine(machineID string) []ServiceInfo {
+	rows, err := db.Query(`SELECT name, status, description FROM services WHERE machine_id = ? ORDER BY name`, machineID)
+	if err != nil {
+		return []ServiceInfo{}
+	}
+	defer rows.Close()
+	var services []ServiceInfo
+	for rows.Next() {
+		var s ServiceInfo
+		if err := rows.Scan(&s.Name, &s.Status, &s.Description); err != nil {
+			continue
+		}
+		services = append(services, s)
+	}
+	if services == nil {
+		return []ServiceInfo{}
+	}
+	return services
+}
+
+func getContainersForMachine(machineID string) []ContainerInfo {
+	rows, err := db.Query(`SELECT container_id, name, status, image FROM containers WHERE machine_id = ? ORDER BY name`, machineID)
+	if err != nil {
+		return []ContainerInfo{}
+	}
+	defer rows.Close()
+	var containers []ContainerInfo
+	for rows.Next() {
+		var ct ContainerInfo
+		if err := rows.Scan(&ct.ID, &ct.Name, &ct.Status, &ct.Image); err != nil {
+			continue
+		}
+		containers = append(containers, ct)
+	}
+	if containers == nil {
+		return []ContainerInfo{}
+	}
+	return containers
 }
 
 func getMachinesJSON() ([]byte, error) {
