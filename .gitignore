@@ -1,63 +1,27 @@
+# Binaries
+/hub/bloxos-hub
+/agent/bloxos-agent
+*.exe
+
+# Database
+*.db
+*.db-journal
+*.db-wal
+
 # Dependencies
 node_modules/
-.pnpm-store/
+dashboard/.next/
 
-# Build outputs
-.next/
-dist/
-build/
-out/
-*.tsbuildinfo
-
-# Environment files
+# Environment
 .env
 .env.local
-.env.*.local
-!.env.example
-
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
+*.local
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Logs
-logs/
-*.log
-npm-debug.log*
-pnpm-debug.log*
-
-# Testing
-coverage/
-.nyc_output/
-
-# Turbo
-.turbo/
-
-# Prisma
-packages/database/prisma/*.db
-packages/database/prisma/*.db-journal
-
-# Go
-apps/agent/bloxos-agent
-apps/agent/bloxos-agent.exe
-*.exe
-
-# Docker
-docker/data/
-
-# Misc
-*.bak
-*.tmp
-.cache/
-
-# Continuous Claude cache (local only)
-.claude/cache/
-
-# AI assistant context files (local only)
-CLAUDE.md
-thoughts/
+# IDE
+.idea/
+.vscode/
+*.swp
