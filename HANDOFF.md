@@ -5,9 +5,9 @@
   - [x] Phase 1a: Foundation — repo cleanup, Go hub (Echo+WS+SQLite) + Go agent (gopsutil+WS) + Next.js dark grid
   - [x] Phase 1b: Live Pipeline — agent IP detection, CORS, SSE wiring, machine detail page
   - [x] Phase 1c: Services & Commands — ServicePanel, ContainerPanel, Toast, RebootModal, command relay
-- Now: [→] Phase 1d: Polish + systemd services (so BloxOS survives reboot)
+  - [x] Phase 1d: Polish + systemd services (so BloxOS survives reboot)
+- Now: [→] Phase 2: GPU + Network — go-nvml, network/load metrics
 - Remaining:
-  - [ ] Phase 2: GPU + Network — go-nvml, network/load metrics
   - [ ] Phase 3: Terminal — xterm.js + creack/pty + re-auth gate
   - [ ] Phase 4: Alerts + UX — Telegram push, search/filter, tags/groups, list view
   - [ ] Phase 5: Hardening — metric charts, retention, dashboard auth, agent auto-update, Windows
@@ -16,8 +16,7 @@
 `rewrite/bloxos-v2`
 
 ## Immediate Next Steps
-1. Create systemd services for hub, agent, dashboard (so they auto-start on boot)
-2. Phase 2: GPU metrics via go-nvml (test on a machine with NVIDIA GPU)
+1. Phase 2: GPU metrics via go-nvml (test on a machine with NVIDIA GPU)
 3. Phase 3: Terminal (xterm.js + creack/pty)
 
 ## What Works (Verified 2026-04-21)
@@ -31,23 +30,28 @@
 - REST: /health, /api/machines, /api/machines/:id, /api/machines/:id/services, /api/machines/:id/containers
 - POST /api/machines/:id/command — synchronous relay with 10s timeout
 
-## How to Start (no systemd yet — manual)
+## How to Start (systemd -- auto-starts on boot)
 ```bash
-# SSH into VM
-ssh bokiko@192.168.16.113  # password: see credentials.md
+# All three services are enabled and start automatically on boot.
+# Service files: /etc/systemd/system/bloxos-{hub,agent,dashboard}.service
+# Copies in repo: scripts/systemd/
 
-# Start hub
-cd ~/bloxos/hub && nohup ./bloxos-hub > /tmp/bloxos-hub.log 2>&1 &
+# Manual control:
+sudo systemctl start bloxos-hub bloxos-agent bloxos-dashboard
+sudo systemctl stop bloxos-hub bloxos-agent bloxos-dashboard
+sudo systemctl restart bloxos-hub bloxos-agent bloxos-dashboard
 
-# Start agent
-cd ~/bloxos/agent && nohup ./bloxos-agent --hub ws://localhost:4000/ws/agent --token test-token > /tmp/bloxos-agent.log 2>&1 &
+# Check status:
+systemctl status bloxos-hub bloxos-agent bloxos-dashboard
 
-# Start dashboard
-cd ~/bloxos/dashboard && nohup npx next dev -H 0.0.0.0 -p 3000 > /tmp/bloxos-dashboard.log 2>&1 &
+# View logs:
+journalctl -u bloxos-hub -f
+journalctl -u bloxos-agent -f
+journalctl -u bloxos-dashboard -f
 
-# Verify
-curl http://localhost:4000/health       # → {"status":"ok"}
-curl http://localhost:4000/api/machines  # → machine list
+# Verify:
+curl http://localhost:4000/health       # -> {"status":"ok"}
+curl http://localhost:4000/api/machines  # -> machine list
 # Dashboard at http://192.168.16.113:3000
 ```
 
@@ -63,7 +67,6 @@ curl http://localhost:4000/api/machines  # → machine list
 
 ## Open Questions
 - UNCONFIRMED: go-nvml on consumer GeForce (RTX 3080/3090) — test in Phase 2
-- TODO: systemd units for hub/agent/dashboard (survive reboot)
 - TODO: Decide metric retention policy (7d granular + downsample, or flat 90d?)
 
 ## Key URLs
