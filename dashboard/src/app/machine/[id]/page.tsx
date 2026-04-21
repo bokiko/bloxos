@@ -4,10 +4,13 @@ import { useEffect, useState, useCallback, useRef, use } from "react";
 import Link from "next/link";
 import { ProgressBar } from "@/components/ProgressBar";
 import { StatusBadge, MachineStatus } from "@/components/StatusBadge";
+import { ServicePanel, Service } from "@/components/ServicePanel";
+import { ContainerPanel, Container } from "@/components/ContainerPanel";
+import { RebootModal } from "@/components/RebootModal";
 import {
   ArrowLeft, Cpu, HardDrive, MemoryStick, Thermometer,
   Activity, Network, Zap, Monitor, Terminal, RotateCcw,
-  Lock, Box, Layers
+  Lock,
 } from "lucide-react";
 
 const HUB_URL = process.env.NEXT_PUBLIC_HUB_URL || "http://localhost:4000";
@@ -61,41 +64,44 @@ function getStatus(data: MachineData): MachineStatus {
   return "online";
 }
 
-function PlaceholderPanel({ title, icon: Icon, phase }: { title: string; icon: React.ComponentType<{className?: string}>; phase: string }) {
-  return (
-    <div className="bg-blox-card border border-blox-border rounded-lg p-5">
-      <div className="flex items-center gap-2 mb-4">
-        <Icon className="w-4 h-4 text-blox-muted" />
-        <h3 className="text-sm font-semibold text-blox-text">{title}</h3>
-      </div>
-      <div className="flex flex-col items-center justify-center py-8 text-blox-muted">
-        <Lock className="w-8 h-8 mb-2 opacity-20" />
-        <p className="text-xs">Coming in {phase}</p>
-      </div>
-    </div>
-  );
-}
-
 export default function MachineDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const [data, setData] = useState<MachineData | null>(null);
+  const [services, setServices] = useState<Service[]>([]);
+  const [containers, setContainers] = useState<Container[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
+  const [showReboot, setShowReboot] = useState(false);
   const esRef = useRef<EventSource | null>(null);
 
-  // Fetch initial data
+  // Fetch initial data (machine + services + containers)
   const fetchData = useCallback(async () => {
     try {
-      const res = await fetch(`${HUB_URL}/api/machines/${id}`);
-      if (!res.ok) {
-        setError(res.status === 404 ? "Machine not found" : "Failed to load");
+      const [machineRes, servicesRes, containersRes] = await Promise.all([
+        fetch(`${HUB_URL}/api/machines/${id}`),
+        fetch(`${HUB_URL}/api/machines/${id}/services`),
+        fetch(`${HUB_URL}/api/machines/${id}/containers`),
+      ]);
+
+      if (!machineRes.ok) {
+        setError(machineRes.status === 404 ? "Machine not found" : "Failed to load");
         return;
       }
-      const json = await res.json();
-      setData(json);
+
+      const machineJson = await machineRes.json();
+      setData(machineJson);
       setLastUpdated(new Date().toISOString());
       setError(null);
+
+      if (servicesRes.ok) {
+        const svcJson = await servicesRes.json();
+        setServices(svcJson);
+      }
+      if (containersRes.ok) {
+        const ctrJson = await containersRes.json();
+        setContainers(ctrJson);
+      }
     } catch {
       setError("Cannot reach hub");
     }
@@ -107,6 +113,17 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
 
     const es = new EventSource(`${HUB_URL}/api/events`);
     esRef.current = es;
+
+    es.addEventListener("snapshot", (event) => {
+      try {
+        const list = JSON.parse(event.data);
+        const machine = list.find((m: { machine_id: string }) => m.machine_id === id);
+        if (machine) {
+          if (machine.services) setServices(machine.services);
+          if (machine.containers) setContainers(machine.containers);
+        }
+      } catch { /* ignore */ }
+    });
 
     es.addEventListener("metrics", (event) => {
       try {
@@ -135,9 +152,27 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
       } catch { /* ignore */ }
     });
 
+    // Listen for services/containers SSE events
+    es.addEventListener("services", (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.machine_id === id && msg.services) {
+          setServices(msg.services);
+        }
+      } catch { /* ignore */ }
+    });
+
+    es.addEventListener("containers", (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.machine_id === id && msg.containers) {
+          setContainers(msg.containers);
+        }
+      } catch { /* ignore */ }
+    });
+
     es.onerror = () => {
       es.close();
-      // Reconnect after delay
       setTimeout(() => {
         if (esRef.current === es) fetchData();
       }, 3000);
@@ -184,6 +219,16 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
 
   return (
     <div className="min-h-screen bg-blox-bg">
+      {/* Reboot confirmation modal */}
+      {showReboot && (
+        <RebootModal
+          hostname={machine.hostname}
+          machineId={id}
+          hubUrl={HUB_URL}
+          onClose={() => setShowReboot(false)}
+        />
+      )}
+
       {/* Header */}
       <header className="sticky top-0 z-50 bg-blox-bg/80 backdrop-blur-md border-b border-blox-border">
         <div className="max-w-[1200px] mx-auto px-4 sm:px-6 h-14 flex items-center justify-between">
@@ -206,8 +251,13 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
               </span>
             )}
             <button
-              disabled
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs border border-blox-border text-blox-muted opacity-50 cursor-not-allowed"
+              onClick={() => setShowReboot(true)}
+              disabled={machine.status === "offline"}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs border transition-colors ${
+                machine.status === "offline"
+                  ? "border-blox-border text-blox-muted opacity-50 cursor-not-allowed"
+                  : "border-blox-border text-blox-text hover:border-blox-red/40 hover:text-blox-red hover:bg-blox-red/5"
+              }`}
             >
               <RotateCcw className="w-3.5 h-3.5" />
               Reboot
@@ -231,7 +281,7 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
           <span>ID: <span className="text-blox-text font-mono text-[10px]">{machine.id}</span></span>
         </div>
 
-        {/* Two-column grid */}
+        {/* Two-column grid: System + GPU */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Left: System panel */}
           <div className="bg-blox-card border border-blox-border rounded-lg p-5">
@@ -315,7 +365,7 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
                     <span className={`text-sm font-semibold tabular-nums ${
                       metrics.gpu_temp > 80 ? "text-blox-red" :
                       metrics.gpu_temp > 70 ? "text-blox-amber" : "text-blox-green"
-                    }`}>{metrics.gpu_temp}\u00b0C</span>
+                    }`}>{metrics.gpu_temp}&deg;C</span>
                   </div>
                   <ProgressBar value={metrics.gpu_temp} size="md" />
                 </div>
@@ -365,10 +415,10 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
           </div>
         </div>
 
-        {/* Full-width panels */}
+        {/* Services + Containers panels */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <PlaceholderPanel title="Services" icon={Layers} phase="Phase 2" />
-          <PlaceholderPanel title="Docker Containers" icon={Box} phase="Phase 2" />
+          <ServicePanel services={services} machineId={id} hubUrl={HUB_URL} />
+          <ContainerPanel containers={containers} machineId={id} hubUrl={HUB_URL} />
         </div>
 
         {/* Terminal */}
