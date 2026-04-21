@@ -2,65 +2,79 @@
 
 ## State
 - Done:
-  - [x] Phase 1a: Foundation -- repo cleanup, Go hub + agent + Next.js grid
-  - [x] Phase 1b: Live Pipeline -- agent IP, CORS, SSE wiring, machine detail page
-  - [x] Phase 1c: Services & Containers -- ServicePanel, ContainerPanel, Toast, RebootModal, command relay
-- Now: Phase 1d: Polish -- verify demo/live mode toggle, UX tweaks, mobile responsive
+  - [x] Phase 1a: Foundation — repo cleanup, Go hub (Echo+WS+SQLite) + Go agent (gopsutil+WS) + Next.js dark grid
+  - [x] Phase 1b: Live Pipeline — agent IP detection, CORS, SSE wiring, machine detail page
+  - [x] Phase 1c: Services & Commands — ServicePanel, ContainerPanel, Toast, RebootModal, command relay
+- Now: [→] Phase 1d: Polish + systemd services (so BloxOS survives reboot)
 - Remaining:
-  - [ ] Phase 2: GPU + Network -- go-nvml, network/load metrics, power draw
-  - [ ] Phase 3: Terminal -- xterm.js + creack/pty + re-auth
-  - [ ] Phase 4: Alerts + UX -- Telegram, search/filter, tags, list view
-  - [ ] Phase 5: Hardening -- charts, retention, auth, auto-update
+  - [ ] Phase 2: GPU + Network — go-nvml, network/load metrics
+  - [ ] Phase 3: Terminal — xterm.js + creack/pty + re-auth gate
+  - [ ] Phase 4: Alerts + UX — Telegram push, search/filter, tags/groups, list view
+  - [ ] Phase 5: Hardening — metric charts, retention, dashboard auth, agent auto-update, Windows
 
 ## Current Branch
-rewrite/bloxos-v2
+`rewrite/bloxos-v2`
 
-## What Works (End-to-End Verified)
-- Agent collects CPU/RAM/disk + local IP, sends to hub every 30s via WebSocket
-- Hub stores in SQLite, broadcasts to SSE clients with enriched snapshot
-- Dashboard connects to hub SSE, shows live machine card replacing demo data
-- Machine detail page (/machine/[id]) shows system/GPU panels with live updates
-- **ServicePanel: 7 systemd services displayed with status dots, sorted by status**
-- **ContainerPanel: 8 Docker containers displayed with status, image tags**
-- **Command execution: restart/stop/start services and restart/start containers via hub relay**
-- **Toast notifications: success/error feedback with auto-dismiss**
-- **Reboot button: confirmation modal, sends reboot command to agent**
-- **Service restart verified: redis-server restart via POST /api/machines/:id/command returns success**
-- Demo mode fallback when hub is offline (with badge)
-- GET /api/machines/:id returns machine info + latest metrics
-- GET /api/machines/:id/services returns systemd services
-- GET /api/machines/:id/containers returns Docker containers
-- POST /api/machines/:id/command relays commands to agent, returns result
-- CORS configured for dashboard at :3000
-- SSE snapshot includes services and containers arrays per machine
+## Immediate Next Steps
+1. Create systemd services for hub, agent, dashboard (so they auto-start on boot)
+2. Phase 2: GPU metrics via go-nvml (test on a machine with NVIDIA GPU)
+3. Phase 3: Terminal (xterm.js + creack/pty)
+
+## What Works (Verified 2026-04-21)
+- Agent → Hub → SQLite → SSE → Dashboard: full pipeline working
+- Fleet grid: live machine card with colored status border, "seen: Xs ago"
+- Detail view: CPU/RAM/disk progress bars, services panel (7 services), containers panel (8 containers)
+- Command execution: restart/stop/start services, restart containers, reboot — all via hub relay
+- Toast notifications for command feedback
+- Shell injection blocked (target validation regex)
+- Demo mode fallback when hub offline
+- REST: /health, /api/machines, /api/machines/:id, /api/machines/:id/services, /api/machines/:id/containers
+- POST /api/machines/:id/command — synchronous relay with 10s timeout
+
+## How to Start (no systemd yet — manual)
+```bash
+# SSH into VM
+ssh bokiko@192.168.16.113  # password: see credentials.md
+
+# Start hub
+cd ~/bloxos/hub && nohup ./bloxos-hub > /tmp/bloxos-hub.log 2>&1 &
+
+# Start agent
+cd ~/bloxos/agent && nohup ./bloxos-agent --hub ws://localhost:4000/ws/agent --token test-token > /tmp/bloxos-agent.log 2>&1 &
+
+# Start dashboard
+cd ~/bloxos/dashboard && nohup npx next dev -H 0.0.0.0 -p 3000 > /tmp/bloxos-dashboard.log 2>&1 &
+
+# Verify
+curl http://localhost:4000/health       # → {"status":"ok"}
+curl http://localhost:4000/api/machines  # → machine list
+# Dashboard at http://192.168.16.113:3000
+```
 
 ## Working Set
-- Hub: hub/main.go -- Echo server + WebSocket + SSE broadcast + machine detail API + command relay
-- Agent: agent/main.go -- gopsutil metrics + WebSocket client + IP detection + command handler
-- Dashboard: dashboard/ -- Next.js 15 + Tailwind v4, dark theme
-  - src/app/layout.tsx -- Root layout with ToastProvider
-  - src/app/page.tsx -- Fleet grid with SSE + demo fallback
-  - src/app/machine/[id]/page.tsx -- Machine detail view (system + GPU + services + containers)
-  - src/components/ServicePanel.tsx -- Systemd service list with action dropdowns
-  - src/components/ContainerPanel.tsx -- Docker container list with restart/start
-  - src/components/Toast.tsx -- Toast notifications with ToastProvider context
-  - src/components/RebootModal.tsx -- Reboot confirmation dialog
-  - src/components/MachineCard.tsx -- Card with Link wrapper for navigation
-  - src/components/ProgressBar.tsx -- Color-coded horizontal progress bar
-  - src/components/StatusBadge.tsx -- Online/Warning/Offline badge
-  - src/hooks/useFleetSSE.ts -- SSE hook with auto-reconnect
-  - src/lib/demo-data.ts -- 6 fake machines for UI dev
-- Dev: http://192.168.16.113:3000 (dashboard), :4000 (hub)
+- `hub/main.go` — Go Echo server, WebSocket agent handler, SSE broadcast, SQLite, command relay
+- `agent/main.go` — Go agent, gopsutil metrics, WebSocket client, service/Docker discovery, command executor
+- `dashboard/` — Next.js 15, Tailwind v4, dark mode
+  - `src/app/page.tsx` — Fleet grid
+  - `src/app/machine/[id]/page.tsx` — Machine detail
+  - `src/components/` — MachineCard, ServicePanel, ContainerPanel, Toast, RebootModal, ProgressBar, StatusBadge
+  - `src/hooks/useFleetSSE.ts` — SSE with auto-reconnect
+- `docs/PLAN.md` — Full architecture plan
 
 ## Open Questions
-- UNCONFIRMED: go-nvml on consumer GeForce cards -- test in Phase 2
-- DECIDED: Echo over Fiber for Go API framework
-- DECIDED: go-nvml over nvidia-smi parsing for GPU metrics
-- DECIDED: Separate WebSocket for terminal (not multiplexed with metrics)
-- DECIDED: Tailwind v4 CSS-based config (@theme inline), no tailwind.config.ts
+- UNCONFIRMED: go-nvml on consumer GeForce (RTX 3080/3090) — test in Phase 2
+- TODO: systemd units for hub/agent/dashboard (survive reboot)
+- TODO: Decide metric retention policy (7d granular + downsample, or flat 90d?)
 
-## Quick Reference
-- Hub: cd hub && go run .
-- Agent: cd agent && go run . --hub ws://localhost:4000/ws/agent --token test-token
-- Dashboard: cd dashboard && npx next dev -p 3000 -H 0.0.0.0
-- VM: 192.168.16.113 (BloxOS hub, VLAN 16)
+## Key URLs
+- Dashboard: http://192.168.16.113:3000
+- Hub API: http://192.168.16.113:4000
+- Hub health: http://192.168.16.113:4000/health
+- Repo: https://github.com/bokiko/bloxos (PRIVATE)
+- Plan: /Users/bokiko/.claude/plans/calm-baking-eclipse.md (Mac) or docs/PLAN.md (repo)
+
+## Tech Stack
+- Hub + Agent: Go 1.24.3 (Echo, gorilla/websocket, gopsutil, modernc.org/sqlite)
+- Dashboard: Next.js 15 + React + Tailwind v4 + TypeScript
+- DB: SQLite WAL mode
+- VM: Ubuntu 22.04, 32GB RAM, 322GB disk, VLAN 16
