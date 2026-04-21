@@ -25,3 +25,8 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# Build artifacts
+/agent/agent
+/hub/hub
+*.db-shm
