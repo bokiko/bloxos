@@ -1,0 +1,15 @@
+[Unit]
+Description=BloxOS Agent
+After=network.target bloxos-hub.service
+Wants=bloxos-hub.service
+
+[Service]
+Type=simple
+User=bokiko
+WorkingDirectory=/home/bokiko/bloxos/agent
+ExecStart=/home/bokiko/bloxos/agent/bloxos-agent --hub ws://localhost:4000/ws/agent --token test-token
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
