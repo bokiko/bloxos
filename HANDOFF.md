@@ -6,7 +6,7 @@
   - [x] Phase 1b: Live Pipeline — agent IP detection, CORS, SSE wiring, machine detail page
   - [x] Phase 1c: Services & Commands — ServicePanel, ContainerPanel, Toast, RebootModal, command relay
   - [x] Phase 1d: Polish + systemd services (so BloxOS survives reboot)
-- Now: [→] Phase 2: GPU + Network — go-nvml, network/load metrics
+- Now: [→] Phase 2: GPU + Network — nvidia-smi GPU done, network/load metrics remaining
 - Remaining:
   - [ ] Phase 3: Terminal — xterm.js + creack/pty + re-auth gate
   - [ ] Phase 4: Alerts + UX — Telegram push, search/filter, tags/groups, list view
@@ -16,7 +16,8 @@
 `rewrite/bloxos-v2`
 
 ## Immediate Next Steps
-1. Phase 2: GPU metrics via go-nvml (test on a machine with NVIDIA GPU)
+1. Phase 2 remaining: Network + load metrics
+2. Test GPU metrics on a real GPU machine (ai-09 or ai-03 with RTX 3090/3080)
 3. Phase 3: Terminal (xterm.js + creack/pty)
 
 ## What Works (Verified 2026-04-21)
@@ -66,7 +67,8 @@ curl http://localhost:4000/api/machines  # -> machine list
 - `docs/PLAN.md` — Full architecture plan
 
 ## Open Questions
-- UNCONFIRMED: go-nvml on consumer GeForce (RTX 3080/3090) — test in Phase 2
+- UNCONFIRMED: nvidia-smi XML parsing on real GPU machines — needs testing on ai-09/ai-03
+- Architecture: Using nvidia-smi exec (not go-nvml/CGO) so agent compiles on GPU-less build machines
 - TODO: Decide metric retention policy (7d granular + downsample, or flat 90d?)
 
 ## Key URLs
