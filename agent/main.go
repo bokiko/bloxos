@@ -584,6 +584,8 @@ type nvFBMemory struct {
 
 type nvPower struct {
 	PowerDraw string `xml:"power_draw"`
+	AvgPowerDraw string `xml:"average_power_draw"`
+	InstPowerDraw string `xml:"instant_power_draw"`
 }
 
 // collectGPUMetrics runs nvidia-smi and parses XML output.
@@ -619,6 +621,12 @@ func collectGPUMetrics() []GPUInfo {
 
 		// Power may be in either tag depending on driver version.
 		pw := parseNvValue(g.GPUPowerReadings.PowerDraw)
+		if pw == 0 {
+			pw = parseNvValue(g.GPUPowerReadings.AvgPowerDraw)
+		}
+		if pw == 0 {
+			pw = parseNvValue(g.GPUPowerReadings.InstPowerDraw)
+		}
 		if pw == 0 {
 			pw = parseNvValue(g.PowerReadings.PowerDraw)
 		}
