@@ -142,6 +142,17 @@ func main() {
 	flag.StringVar(&hubURL, "hub", "ws://localhost:4000/ws/agent", "Hub WebSocket URL")
 	flag.StringVar(&token, "token", "", "Registration token")
 	flag.Parse()
+	// Env var fallback.
+	if hubURL == "ws://localhost:4000/ws/agent" {
+		if env := os.Getenv("BLOXOS_HUB"); env != "" {
+			hubURL = env + "/ws/agent"
+		}
+	}
+	if token == "" {
+		if env := os.Getenv("BLOXOS_TOKEN"); env != "" {
+			token = env
+		}
+	}
 
 	if token == "" {
 		log.Fatal("--token is required")

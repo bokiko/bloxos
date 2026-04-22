@@ -19,7 +19,10 @@ export function AddMachineModal({ open, onClose }: AddMachineModalProps) {
   const generateToken = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${HUB_URL}/api/tokens`, { method: "POST" });
+      const authToken = localStorage.getItem("bloxos_token");
+      const headers: Record<string, string> = {};
+      if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
+      const res = await fetch(`${HUB_URL}/api/tokens`, { method: "POST", headers });
       const data = await res.json();
       setToken(data.token);
       setCommand(data.command);
