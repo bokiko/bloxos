@@ -13,6 +13,7 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -125,6 +126,9 @@ type TerminalSession struct {
 	AgentWS       *websocket.Conn
 	BrowserWS     *websocket.Conn
 	CreatedAt     time.Time
+	LastActivity  time.Time
+	SourceIP      string
+	UserID        string
 	mu            sync.Mutex
 }
 
@@ -212,14 +216,11 @@ func main() {
 	// Seed default alert rules.
 	seedAlertRules()
 
-	// Ensure default admin user.
-	ensureDefaultAdmin()
+	// Generate setup token if no users exist (Finding #11 — first-boot setup).
+	generateSetupToken()
 
 	// Generate first-run token if needed (Finding #1).
 	generateFirstRunToken()
-
-	// Warn if still using default password (Finding #2).
-	warnDefaultPassword()
 
 	// Load or generate JWT secret (Finding #2).
 	jwtSecret = loadOrGenerateJWTSecret()
@@ -277,9 +278,11 @@ func main() {
 	e.POST("/api/auth/login", handleLogin)
 	e.GET("/install.sh", handleInstallScript)
 	e.GET("/download/agent", handleDownloadAgent)
+	e.GET("/api/setup/status", handleSetupStatus)
+	e.POST("/api/setup", handleSetup)
 
 	// Protected endpoints.
-	api := e.Group("", jwtMiddleware)
+	api := e.Group("", jwtMiddleware, credentialRotationMiddleware)
 	api.GET("/api/events", handleSSE)
 	api.GET("/api/machines", handleListMachines)
 	api.GET("/api/machines/:id", handleGetMachine)
@@ -332,136 +335,7 @@ func getEnvOrDefault(key, def string) string {
 }
 
 func initDB() error {
-	schema := `
-	CREATE TABLE IF NOT EXISTS machines (
-		id TEXT PRIMARY KEY,
-		hostname TEXT NOT NULL,
-		ip TEXT,
-		os TEXT,
-		status TEXT DEFAULT 'offline',
-		tags TEXT DEFAULT '',
-		last_seen DATETIME,
-		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-	);
-
-	CREATE TABLE IF NOT EXISTS metrics (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		machine_id TEXT NOT NULL,
-		cpu_percent REAL,
-		ram_used_bytes INTEGER,
-		ram_total_bytes INTEGER,
-		disk_used_bytes INTEGER,
-		disk_total_bytes INTEGER,
-		gpu_temp REAL,
-		gpu_util_percent REAL,
-		gpu_vram_used_bytes INTEGER,
-		gpu_vram_total_bytes INTEGER,
-		timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-		FOREIGN KEY (machine_id) REFERENCES machines(id)
-	);
-
-	CREATE TABLE IF NOT EXISTS tokens (
-		token_hash TEXT PRIMARY KEY,
-		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-		expires_at DATETIME NOT NULL,
-		used BOOLEAN DEFAULT FALSE
-	);
-
-	CREATE TABLE IF NOT EXISTS services (
-		machine_id TEXT NOT NULL,
-		name TEXT NOT NULL,
-		status TEXT,
-		description TEXT,
-		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-		PRIMARY KEY (machine_id, name)
-	);
-
-	CREATE TABLE IF NOT EXISTS containers (
-		machine_id TEXT NOT NULL,
-		container_id TEXT NOT NULL,
-		name TEXT NOT NULL,
-		status TEXT,
-		image TEXT,
-		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-		PRIMARY KEY (machine_id, container_id)
-	);
-
-	CREATE INDEX IF NOT EXISTS idx_metrics_machine_time ON metrics(machine_id, timestamp);
-
-	CREATE TABLE IF NOT EXISTS gpu_metrics (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		machine_id TEXT NOT NULL,
-		gpu_index INTEGER NOT NULL,
-		gpu_name TEXT,
-		temp_c REAL,
-		util_percent REAL,
-		mem_used_bytes INTEGER,
-		mem_total_bytes INTEGER,
-		power_watts REAL,
-		fan_percent REAL,
-		timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-		FOREIGN KEY (machine_id) REFERENCES machines(id)
-	);
-
-	CREATE INDEX IF NOT EXISTS idx_gpu_metrics_machine_time ON gpu_metrics(machine_id, timestamp);
-
-	CREATE TABLE IF NOT EXISTS terminal_sessions (
-		id TEXT PRIMARY KEY,
-		machine_id TEXT NOT NULL,
-		started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-		ended_at DATETIME,
-		status TEXT DEFAULT 'active',
-		FOREIGN KEY (machine_id) REFERENCES machines(id)
-	);
-
-	CREATE TABLE IF NOT EXISTS alert_rules (
-		id TEXT PRIMARY KEY,
-		name TEXT NOT NULL,
-		metric TEXT NOT NULL,
-		operator TEXT NOT NULL,
-		threshold REAL NOT NULL,
-		duration_secs INTEGER DEFAULT 0,
-		severity TEXT DEFAULT 'warning',
-		enabled BOOLEAN DEFAULT TRUE,
-		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-	);
-
-	CREATE TABLE IF NOT EXISTS alerts (
-		id TEXT PRIMARY KEY,
-		rule_id TEXT,
-		machine_id TEXT NOT NULL,
-		message TEXT NOT NULL,
-		severity TEXT NOT NULL,
-		status TEXT DEFAULT 'active',
-		triggered_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-		resolved_at DATETIME,
-		FOREIGN KEY (rule_id) REFERENCES alert_rules(id),
-		FOREIGN KEY (machine_id) REFERENCES machines(id)
-	);
-
-	CREATE TABLE IF NOT EXISTS users (
-		id TEXT PRIMARY KEY,
-		username TEXT UNIQUE NOT NULL,
-		password_hash TEXT NOT NULL,
-		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-	);
-	`
-	_, err := db.Exec(schema)
-	if err != nil {
-		return err
-	}
-
-	// Add tags column if missing (migration for existing DBs).
-	_, _ = db.Exec(`ALTER TABLE machines ADD COLUMN tags TEXT DEFAULT ''`)
-
-	// Add terminal_pin_hash column if missing (Finding #3 migration).
-	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN terminal_pin_hash TEXT`)
-
-	// Add password_changed and pin_changed columns (Finding #2 migration).
-	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN password_changed BOOLEAN DEFAULT FALSE`)
-	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN pin_changed BOOLEAN DEFAULT FALSE`)
-
-	return nil
+	return runMigrations(db)
 }
 
 // --- Auth ---
@@ -491,6 +365,170 @@ func ensureDefaultAdmin() {
 		return
 	}
 	log.Println("created default admin user (admin/bloxos)")
+}
+
+// --- First-Boot Setup (Finding #11) ---
+
+// setupTokenValue holds the current setup token in memory (for env-provided tokens
+// or file-based tokens). Cleared after successful setup.
+var setupTokenValue string
+
+// generateSetupToken creates a one-time setup token if no users exist.
+// Token source priority: BLOXOS_SETUP_TOKEN env var > file > auto-generate.
+func generateSetupToken() {
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count); err != nil {
+		log.Printf("setup: error checking user count: %v", err)
+		return
+	}
+	if count > 0 {
+		return // Users exist, no setup needed.
+	}
+
+	// Check env var first.
+	if envToken := os.Getenv("BLOXOS_SETUP_TOKEN"); envToken != "" {
+		setupTokenValue = envToken
+		log.Println("Setup token loaded from BLOXOS_SETUP_TOKEN env var")
+		log.Println("==========================================================")
+		log.Println("FIRST-BOOT SETUP REQUIRED")
+		log.Println("  POST /api/setup with the provided setup token")
+		log.Println("==========================================================")
+		return
+	}
+
+	// Check if token file already exists.
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		log.Printf("setup: cannot determine home dir: %v", err)
+		return
+	}
+	tokenDir := homeDir + "/.bloxos"
+	tokenFile := tokenDir + "/setup-token"
+
+	if data, err := os.ReadFile(tokenFile); err == nil && len(data) > 0 {
+		setupTokenValue = strings.TrimSpace(string(data))
+		log.Printf("Setup token loaded from %s", tokenFile)
+		log.Println("==========================================================")
+		log.Println("FIRST-BOOT SETUP REQUIRED")
+		log.Printf("  Setup token is in %s", tokenFile)
+		log.Println("  POST /api/setup with the token to create your admin user")
+		log.Println("==========================================================")
+		return
+	}
+
+	// Generate new token.
+	tokenBytes := make([]byte, 16)
+	if _, err := cryptoRand.Read(tokenBytes); err != nil {
+		log.Printf("setup: failed to generate random token: %v", err)
+		return
+	}
+	token := hex.EncodeToString(tokenBytes) // 32-char hex string
+
+	if err := os.MkdirAll(tokenDir, 0700); err != nil {
+		log.Printf("setup: cannot create %s: %v", tokenDir, err)
+		return
+	}
+	if err := os.WriteFile(tokenFile, []byte(token), 0600); err != nil {
+		log.Printf("setup: cannot write token file: %v", err)
+		return
+	}
+
+	setupTokenValue = token
+	log.Printf("Setup token written to %s", tokenFile)
+	log.Println("==========================================================")
+	log.Println("FIRST-BOOT SETUP REQUIRED")
+	log.Printf("  Setup token is in %s", tokenFile)
+	log.Println("  POST /api/setup with the token to create your admin user")
+	log.Println("==========================================================")
+}
+
+// handleSetupStatus returns whether the system needs first-boot setup.
+func handleSetupStatus(c echo.Context) error {
+	var count int
+	err := db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database error"})
+	}
+	return c.JSON(http.StatusOK, map[string]bool{"needs_setup": count == 0})
+}
+
+// handleSetup processes the first-boot setup request.
+func handleSetup(c echo.Context) error {
+	// Check if setup is still needed.
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database error"})
+	}
+	if count > 0 {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "setup already completed"})
+	}
+
+	// Rate limit.
+	ip := getRealIP(c)
+	if !rateLimiter.Allow("setup", ip, 5) {
+		log.Printf("rate limit exceeded: setup from %s", ip)
+		return c.JSON(http.StatusTooManyRequests, map[string]string{"error": "rate limit exceeded"})
+	}
+
+	var body struct {
+		SetupToken string `json:"setup_token"`
+		Username   string `json:"username"`
+		Password   string `json:"password"`
+		PIN        string `json:"pin"`
+	}
+	if err := c.Bind(&body); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid body"})
+	}
+
+	// Validate setup token.
+	if setupTokenValue == "" || body.SetupToken != setupTokenValue {
+		log.Printf("setup: invalid setup token attempt from %s", ip)
+		return c.JSON(http.StatusForbidden, map[string]string{"error": "invalid setup token"})
+	}
+
+	// Validate inputs.
+	body.Username = strings.TrimSpace(body.Username)
+	if body.Username == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "username is required"})
+	}
+	if len(body.Password) < 8 {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "password must be at least 8 characters"})
+	}
+	if !regexp.MustCompile(`^\d{4,}$`).MatchString(body.PIN) {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "PIN must be at least 4 digits"})
+	}
+
+	// Hash password and PIN.
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte(body.Password), bcrypt.DefaultCost)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to hash password"})
+	}
+	pinHash, err := bcrypt.GenerateFromPassword([]byte(body.PIN), bcrypt.DefaultCost)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to hash PIN"})
+	}
+
+	// Create admin user with credentials already rotated.
+	id := uuid.New().String()
+	_, err = db.Exec(`INSERT INTO users (id, username, password_hash, terminal_pin_hash, password_changed, pin_changed) VALUES (?, ?, ?, ?, TRUE, TRUE)`,
+		id, body.Username, string(passwordHash), string(pinHash))
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to create user"})
+	}
+
+	// Clear the setup token and delete the file.
+	setupTokenValue = ""
+	homeDir, err := os.UserHomeDir()
+	if err == nil {
+		tokenFile := homeDir + "/.bloxos/setup-token"
+		os.Remove(tokenFile) // Best-effort deletion.
+	}
+
+	log.Printf("setup: admin user '%s' created via first-boot setup", body.Username)
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"message":  "Setup complete",
+		"username": body.Username,
+	})
 }
 
 func handleLogin(c echo.Context) error {
@@ -592,6 +630,76 @@ func jwtMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 	}
 }
 
+
+// rotationAllowlist contains paths that work even when credential rotation is incomplete.
+var rotationAllowlist = map[string]bool{
+	"/api/auth/login":           true,
+	"/api/auth/change-password": true,
+	"/api/auth/change-pin":      true,
+	"/api/auth/sse-token":       true,
+	"/health":                   true,
+}
+
+// credentialRotationMiddleware blocks access to protected endpoints until the user
+// has changed both the default password and PIN (Finding #10).
+func credentialRotationMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		// Skip allowlisted paths.
+		path := c.Request().URL.Path
+		if rotationAllowlist[path] {
+			return next(c)
+		}
+
+		// Extract user_id from JWT claims (token already validated by jwtMiddleware).
+		auth := c.Request().Header.Get("Authorization")
+		tokenStr := ""
+		if strings.HasPrefix(auth, "Bearer ") {
+			tokenStr = auth[7:]
+		}
+		if tokenStr == "" {
+			tokenStr = c.QueryParam("token")
+		}
+		if tokenStr == "" {
+			return next(c) // no token means jwtMiddleware will reject anyway
+		}
+
+		tkn, _ := jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
+			return jwtSecret, nil
+		})
+		if tkn == nil {
+			return next(c)
+		}
+		claims, ok := tkn.Claims.(jwt.MapClaims)
+		if !ok {
+			return next(c)
+		}
+		userID, _ := claims["user_id"].(string)
+		if userID == "" {
+			return next(c)
+		}
+
+		var passwordChanged, pinChanged sql.NullBool
+		err := db.QueryRow(`SELECT password_changed, pin_changed FROM users WHERE id = ?`, userID).Scan(&passwordChanged, &pinChanged)
+		if err != nil {
+			// User not found or DB error — let the request proceed (handler will fail on its own).
+			return next(c)
+		}
+
+		pwOK := passwordChanged.Valid && passwordChanged.Bool
+		pinOK := pinChanged.Valid && pinChanged.Bool
+
+		if !pwOK || !pinOK {
+			return c.JSON(http.StatusForbidden, map[string]interface{}{
+				"error":            "credentials_not_rotated",
+				"message":          "You must change your default password and PIN before accessing this resource",
+				"password_changed": pwOK,
+				"pin_changed":      pinOK,
+			})
+		}
+
+		return next(c)
+	}
+}
 // --- Cleanup ---
 
 func cleanupLoop() {
@@ -1312,7 +1420,14 @@ fi
 # Install binary.
 sudo mv /tmp/bloxos-agent /usr/local/bin/bloxos-agent
 
+# Create credential directory for agent secret (post-enrollment).
+sudo mkdir -p /etc/bloxos
+sudo chmod 700 /etc/bloxos
+
 # Create systemd service.
+# The agent uses the token for initial enrollment only.
+# After enrollment, it stores a durable secret in /etc/bloxos/agent-secret
+# and uses that for all future connections.
 sudo tee /etc/systemd/system/bloxos-agent.service > /dev/null << SVCEOF
 [Unit]
 Description=BloxOS Agent
@@ -1421,18 +1536,41 @@ func handleHealth(c echo.Context) error {
 
 func handleAgentWS(c echo.Context) error {
 	token := c.QueryParam("token")
-	if token == "" {
-		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "token required"})
+	agentSecret := c.QueryParam("secret")
+
+	// Auth priority: secret > token. If neither, reject.
+	if token == "" && agentSecret == "" {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "token or secret required"})
 	}
 
-	// Validate token format and expiry (but don't consume yet).
-	tokenHash, err := validateAgentToken(token)
-	if err != nil {
-		// Token is invalid/expired/used — but it might be a reconnecting agent.
-		// We'll check machine_id on first metrics message. For now, allow
-		// the connection but remember validation failed.
-		tokenHash = ""
-		log.Printf("agent token validation deferred (may be reconnecting agent): %v", err)
+	// Mode B: Agent reconnecting with durable secret.
+	var secretMachineID string
+	if agentSecret != "" {
+		var err error
+		secretMachineID, err = validateAgentSecret(agentSecret)
+		if err != nil {
+			log.Printf("agent secret validation failed: %v", err)
+			// If secret was provided but invalid, and no token fallback, reject.
+			if token == "" {
+				return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid agent secret"})
+			}
+			// Fall through to token-based auth.
+			agentSecret = ""
+		}
+	}
+
+	// Mode A: Token-based enrollment (only if not already authenticated via secret).
+	var tokenHash string
+	tokenValidated := false
+	if agentSecret == "" && token != "" {
+		var err error
+		tokenHash, err = validateAgentToken(token)
+		if err != nil {
+			tokenHash = ""
+			log.Printf("agent token validation deferred (may be reconnecting agent): %v", err)
+		} else {
+			tokenValidated = true
+		}
 	}
 
 	ws, wsErr := upgrader.Upgrade(c.Response(), c.Request(), nil)
@@ -1441,9 +1579,17 @@ func handleAgentWS(c echo.Context) error {
 	}
 	defer ws.Close()
 
+	// If authenticated via secret, we already know the machine_id.
 	var machineID string
 	agent := &ConnectedAgent{Conn: ws}
-	tokenValidated := tokenHash != ""
+	if secretMachineID != "" {
+		machineID = secretMachineID
+		agent.MachineID = machineID
+		agentsMu.Lock()
+		agents[machineID] = agent
+		agentsMu.Unlock()
+		log.Printf("agent authenticated via secret: machine_id=%s", machineID)
+	}
 
 	for {
 		_, msg, err := ws.ReadMessage()
@@ -1482,14 +1628,28 @@ func handleAgentWS(c echo.Context) error {
 				knownMachine := db.QueryRow(`SELECT id FROM machines WHERE id = ?`, machineID).Scan(&existingID) == nil
 
 				if knownMachine {
-					// Known agent reconnecting — no token consumption needed.
 					log.Printf("known agent reconnecting: %s (%s)", m.Hostname, machineID)
 				} else if tokenValidated {
-					// New enrollment with valid token — consume it.
+					// New enrollment with valid token - consume it and issue durable secret.
 					consumeToken(tokenHash)
-					log.Printf("new agent enrolled: %s (%s)", m.Hostname, machineID)
+					rawSecret, secretHash, err := generateAgentSecret()
+					if err != nil {
+						log.Printf("failed to generate agent secret: %v", err)
+						ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","message":"enrollment failed"}`))
+						return nil
+					}
+					if err := storeAgentCredential(machineID, secretHash); err != nil {
+						log.Printf("failed to store agent credential: %v", err)
+						ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","message":"enrollment failed"}`))
+						return nil
+					}
+					enrolledMsg, _ := json.Marshal(map[string]string{
+						"type":         "enrolled",
+						"agent_secret": rawSecret,
+					})
+					ws.WriteMessage(websocket.TextMessage, enrolledMsg)
+					log.Printf("new agent enrolled with durable secret: %s (%s)", m.Hostname, machineID)
 				} else {
-					// New machine but no valid token — reject.
 					log.Printf("rejecting unknown agent %s (%s): no valid token", m.Hostname, machineID)
 					ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","message":"invalid or used token"}`))
 					return nil
@@ -1579,6 +1739,37 @@ func handleAgentWS(c echo.Context) error {
 	}
 }
 
+// maxTerminalSessions is the maximum number of concurrent terminal sessions allowed.
+// TODO: make this per-user when multi-user support is added.
+const maxTerminalSessions = 3
+
+// extractUserIDFromRequest extracts user_id from the JWT in the Authorization header.
+func extractUserIDFromRequest(c echo.Context) string {
+	auth := c.Request().Header.Get("Authorization")
+	tokenStr := ""
+	if len(auth) > 7 && auth[:7] == "Bearer " {
+		tokenStr = auth[7:]
+	}
+	if tokenStr == "" {
+		tokenStr = c.QueryParam("token")
+	}
+	if tokenStr == "" {
+		return ""
+	}
+	tkn, _ := jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
+		return jwtSecret, nil
+	})
+	if tkn == nil {
+		return ""
+	}
+	claims, ok := tkn.Claims.(jwt.MapClaims)
+	if !ok {
+		return ""
+	}
+	userID, _ := claims["user_id"].(string)
+	return userID
+}
+
 // handleStartTerminal creates a terminal session and tells the agent to spawn a PTY.
 func handleStartTerminal(c echo.Context) error {
 	ip := getRealIP(c)
@@ -1600,6 +1791,16 @@ func handleStartTerminal(c echo.Context) error {
 		return c.JSON(http.StatusForbidden, map[string]string{"error": "invalid PIN"})
 	}
 
+	// Enforce max concurrent terminal sessions (hardening plan #13).
+	// TODO: count per-user when multi-user support is added.
+	termSessionsMu.RLock()
+	activeCount := len(termSessions)
+	termSessionsMu.RUnlock()
+	if activeCount >= maxTerminalSessions {
+		log.Printf("terminal session rejected: max concurrent sessions reached (%d)", maxTerminalSessions)
+		return c.JSON(http.StatusTooManyRequests, map[string]string{"error": "max concurrent terminal sessions reached (3)"})
+	}
+
 	agentsMu.RLock()
 	agent, ok := agents[machineID]
 	agentsMu.RUnlock()
@@ -1607,14 +1808,22 @@ func handleStartTerminal(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "agent not connected"})
 	}
 
+	// Extract audit metadata.
+	userID := extractUserIDFromRequest(c)
+	sourceIP := getRealIP(c)
+
 	sessionID := uuid.New().String()
 	terminalToken := uuid.New().String()
 
+	now := time.Now()
 	session := &TerminalSession{
 		ID:            sessionID,
 		MachineID:     machineID,
 		TerminalToken: terminalToken,
-		CreatedAt:     time.Now(),
+		CreatedAt:     now,
+		LastActivity:  now,
+		SourceIP:      sourceIP,
+		UserID:        userID,
 	}
 	termSessionsMu.Lock()
 	termSessions[sessionID] = session
@@ -1637,7 +1846,7 @@ func handleStartTerminal(c echo.Context) error {
 		}
 	}()
 
-	_, err := db.Exec(`INSERT INTO terminal_sessions (id, machine_id) VALUES (?, ?)`, sessionID, machineID)
+	_, err := db.Exec(`INSERT INTO terminal_sessions (id, machine_id, source_ip, user_id) VALUES (?, ?, ?, ?)`, sessionID, machineID, sourceIP, userID)
 	if err != nil {
 		log.Printf("terminal session DB insert error: %v", err)
 	}
@@ -1819,6 +2028,7 @@ func waitForSessionEnd(sessionID string) <-chan struct{} {
 
 func terminalRelay(sessionID string, session *TerminalSession) {
 	log.Printf("terminal %s: relay started", sessionID)
+	// Terminal audit: session metadata only. No command capture by design â see hardening plan item #13.
 
 	session.mu.Lock()
 	agentWS := session.AgentWS
@@ -1826,6 +2036,31 @@ func terminalRelay(sessionID string, session *TerminalSession) {
 	session.mu.Unlock()
 
 	done := make(chan struct{})
+
+	// Inactivity timeout goroutine: close session after 30 minutes of no traffic.
+	go func() {
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				session.mu.Lock()
+				idle := time.Since(session.LastActivity)
+				session.mu.Unlock()
+				if idle > 30*time.Minute {
+					log.Printf("terminal %s: closing due to inactivity (%s)", sessionID, idle.Truncate(time.Second))
+					select {
+					case <-done:
+					default:
+						close(done)
+					}
+					return
+				}
+			}
+		}
+	}()
 
 	go func() {
 		defer func() {
@@ -1841,6 +2076,9 @@ func terminalRelay(sessionID string, session *TerminalSession) {
 				log.Printf("terminal %s: browser read error: %v", sessionID, err)
 				return
 			}
+			session.mu.Lock()
+			session.LastActivity = time.Now()
+			session.mu.Unlock()
 			if err := agentWS.WriteMessage(msgType, msg); err != nil {
 				log.Printf("terminal %s: agent write error: %v", sessionID, err)
 				return
@@ -1862,6 +2100,9 @@ func terminalRelay(sessionID string, session *TerminalSession) {
 				log.Printf("terminal %s: agent read error: %v", sessionID, err)
 				return
 			}
+			session.mu.Lock()
+			session.LastActivity = time.Now()
+			session.mu.Unlock()
 			if err := browserWS.WriteMessage(msgType, msg); err != nil {
 				log.Printf("terminal %s: browser write error: %v", sessionID, err)
 				return
@@ -1894,6 +2135,11 @@ func cleanupTerminalSession(sessionID string) {
 		session.BrowserWS.Close()
 	}
 	session.mu.Unlock()
+
+	// Terminal audit: log session metadata on close (hardening plan #13).
+	duration := time.Since(session.CreatedAt).Truncate(time.Second)
+	log.Printf("terminal session %s closed: machine=%s user=%s ip=%s duration=%s",
+		sessionID, session.MachineID, session.UserID, session.SourceIP, duration)
 
 	_, _ = db.Exec(`UPDATE terminal_sessions SET ended_at = CURRENT_TIMESTAMP, status = 'closed' WHERE id = ?`, sessionID)
 }
@@ -2481,6 +2727,53 @@ func consumeToken(tokenHash string) {
 	} else {
 		log.Printf("install token consumed")
 	}
+}
+
+// generateAgentSecret creates a 32-byte random secret for agent enrollment.
+// Returns the hex-encoded raw secret and its SHA-256 hash.
+func generateAgentSecret() (raw string, hash string, err error) {
+	secretBytes := make([]byte, 32)
+	if _, err := cryptoRand.Read(secretBytes); err != nil {
+		return "", "", fmt.Errorf("generate random secret: %w", err)
+	}
+	raw = hex.EncodeToString(secretBytes)
+	h := sha256.Sum256([]byte(raw))
+	hash = hex.EncodeToString(h[:])
+	return raw, hash, nil
+}
+
+// storeAgentCredential saves (or replaces) the hashed secret for a machine.
+func storeAgentCredential(machineID, secretHash string) error {
+	_, err := db.Exec(`INSERT OR REPLACE INTO agent_credentials (machine_id, secret_hash, created_at, last_used_at)
+		VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`, machineID, secretHash)
+	return err
+}
+
+// validateAgentSecret looks up a credential by the SHA-256 hash of the provided secret.
+// Returns the associated machine_id if found.
+func validateAgentSecret(secret string) (string, error) {
+	h := sha256.Sum256([]byte(secret))
+	secretHash := hex.EncodeToString(h[:])
+
+	var machineID string
+	err := db.QueryRow(`SELECT machine_id FROM agent_credentials WHERE secret_hash = ?`, secretHash).Scan(&machineID)
+	if err == sql.ErrNoRows {
+		return "", fmt.Errorf("invalid agent secret")
+	}
+	if err != nil {
+		return "", fmt.Errorf("database error: %w", err)
+	}
+
+	// Update last_used_at.
+	_, _ = db.Exec(`UPDATE agent_credentials SET last_used_at = CURRENT_TIMESTAMP WHERE secret_hash = ?`, secretHash)
+
+	return machineID, nil
+}
+
+// revokeAgentCredential removes the stored credential for a machine.
+func revokeAgentCredential(machineID string) error {
+	_, err := db.Exec(`DELETE FROM agent_credentials WHERE machine_id = ?`, machineID)
+	return err
 }
 
 // generateFirstRunToken creates a one-time token on first startup when no tokens and no machines exist.
