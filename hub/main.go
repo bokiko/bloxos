@@ -243,8 +243,18 @@ func main() {
 		Output: &tokenRedactingWriter{w: os.Stderr},
 	}))
 	e.Use(middleware.Recover())
+	// CORS: use ALLOWED_ORIGINS env var (comma-separated), fall back to PUBLIC_URL, then wildcard.
+	corsOrigins := []string{"*"}
+	if ao := os.Getenv("ALLOWED_ORIGINS"); ao != "" {
+		corsOrigins = strings.Split(ao, ",")
+		for i := range corsOrigins {
+			corsOrigins[i] = strings.TrimSpace(corsOrigins[i])
+		}
+	} else if pu := os.Getenv("PUBLIC_URL"); pu != "" {
+		corsOrigins = []string{pu}
+	}
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
-		AllowOrigins: []string{"*"},
+		AllowOrigins: corsOrigins,
 		AllowMethods: []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodOptions},
 		AllowHeaders: []string{"Accept", "Content-Type", "Cache-Control", "Authorization"},
 	}))
@@ -291,8 +301,12 @@ func main() {
 	// Bulk endpoints.
 	api.POST("/api/bulk/command", handleBulkCommand)
 
-	log.Println("hub listening on :4000")
-	if err := e.Start(":4000"); err != nil && err != http.ErrServerClosed {
+	listenAddr := os.Getenv("HUB_LISTEN")
+	if listenAddr == "" {
+		listenAddr = "127.0.0.1:4000"
+	}
+	log.Printf("hub listening on %s", listenAddr)
+	if err := e.Start(listenAddr); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("server error: %v", err)
 	}
 }
@@ -1214,19 +1228,29 @@ func handleCreateToken(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
-	// Use request Host header instead of hardcoded IP (Finding #7).
-	host := c.Request().Host
-	proto := "ws"
-	httpProto := "http"
-	if c.Request().TLS != nil {
-		proto = "wss"
-		httpProto = "https"
+	// Use PUBLIC_URL if set, otherwise derive from request headers.
+	publicURL := os.Getenv("PUBLIC_URL")
+	var httpBase, wsBase string
+	if publicURL != "" {
+		httpBase = publicURL
+		wsBase = strings.Replace(publicURL, "https://", "wss://", 1)
+		wsBase = strings.Replace(wsBase, "http://", "ws://", 1)
+	} else {
+		host := c.Request().Host
+		proto := "ws"
+		httpProto := "http"
+		if c.Request().TLS != nil {
+			proto = "wss"
+			httpProto = "https"
+		}
+		httpBase = fmt.Sprintf("%s://%s", httpProto, host)
+		wsBase = fmt.Sprintf("%s://%s", proto, host)
 	}
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"token":      token,
 		"expires_at": expiresAt.Format(time.RFC3339),
-		"command":    fmt.Sprintf("curl -sL %s://%s/install.sh | BLOXOS_HUB=%s://%s BLOXOS_TOKEN=%s bash", httpProto, host, proto, host, token),
+		"command":    fmt.Sprintf("curl -sL %s/install.sh | BLOXOS_HUB=%s BLOXOS_TOKEN=%s bash", httpBase, wsBase, token),
 	})
 }
 
