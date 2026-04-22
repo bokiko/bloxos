@@ -541,7 +541,12 @@ func handleStartTerminal(cmd Command, rawMsg []byte) {
 		return
 	}
 	// Build terminal relay URL with terminal_token for auth (Finding #4).
-	termURL := fmt.Sprintf("ws://%s/ws/terminal/%s?role=agent&terminal_token=%s", u.Host, sessionID, url.QueryEscape(terminalToken))
+	// Derive scheme from hubURL so terminal connections go through Caddy too.
+	wsScheme := "ws"
+	if u.Scheme == "wss" {
+		wsScheme = "wss"
+	}
+	termURL := fmt.Sprintf("%s://%s/ws/terminal/%s?role=agent&terminal_token=%s", wsScheme, u.Host, sessionID, url.QueryEscape(terminalToken))
 
 	// Spawn bash PTY.
 	bashCmd := exec.Command("bash")
