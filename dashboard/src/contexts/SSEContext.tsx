@@ -242,7 +242,8 @@ export function SSEProvider({ children }: { children: ReactNode }) {
         headers: { Authorization: `Bearer ${token}` },
       })
         .then((r) => r.json())
-        .then((data: AlertData[]) => {
+        .then((data) => {
+          if (!Array.isArray(data)) return;
           if (mountedRef.current) {
             setAlerts(data);
             setAlertCount(data.length);
