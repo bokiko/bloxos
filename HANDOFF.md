@@ -2,44 +2,33 @@
 
 ## State
 - Done:
-  - [x] Phase 1: Foundation — Go hub (Echo+WS+SQLite) + Go agent (gopsutil+WS) + Next.js dark grid
-  - [x] Phase 2: GPU + Services — nvidia-smi, systemd, Docker discovery, command relay
-  - [x] Phase 3: Terminal — xterm.js + creack/pty + PTY relay + PIN gate
-  - [x] Phase 4: Alerts + UX — alert engine, Telegram ready, search/filter/sort, tags, list view, one-line install
-  - [x] Phase 5: Hardening — metric charts, JWT auth, retention cleanup, latency, bulk actions
-  - [x] UI Redesign — shadcn/ui + Framer Motion + Geist fonts
-  - [x] Codex Security Audit (3 rounds) — 6/8 fixed, 2 accepted
-  - [x] Hardening (Do Now) — creds rotated, DB perms, token logging, single-use tokens, Caddy TLS, config, rate limiting
-- Now: Stable. All "Do Now" hardening complete.
-- Remaining (Do Next Sprint):
-  - [ ] Migration versioning (do FIRST before schema changes)
-  - [ ] Smoke tests (auth, enrollment, terminal — ~10-15 tests)
-  - [ ] Backend-enforce password/PIN rotation (middleware, not just UI modal)
-  - [ ] First-boot setup flow (no default creds, bootstrap proof required)
-  - [ ] Enrollment redesign (bootstrap token → hashed durable agent credential)
-  - [ ] Terminal privilege tightening (30min timeout, max 3 sessions, metadata audit)
+  - [x] Phase 1-5: All features (hub, agent, dashboard, GPU, terminal, alerts, charts, auth)
+  - [x] UI Redesign: shadcn/ui + Framer Motion + Geist fonts
+  - [x] Codex Security Audit: 3 rounds, 6/8 fixed, 2 accepted
+  - [x] Hardening Do Now: creds rotated, DB 0600, token logging stopped, single-use tokens, Caddy TLS, config model, rate limiting
+- Now: Stable. Deploying agents to fleet machines.
+- Remaining (Do Next Sprint — plan at /Users/bokiko/.claude/plans/calm-baking-eclipse.md):
+  - [ ] Migration versioning (before schema changes)
+  - [ ] Smoke tests (auth, enrollment, terminal)
+  - [ ] Backend-enforce password/PIN rotation
+  - [ ] First-boot setup flow (no default creds)
+  - [ ] Enrollment redesign (bootstrap → durable hashed agent credential)
+  - [ ] Terminal privilege tightening
 
-## Current Branch
-`main`
+## Known Issues (2026-04-22)
+- **Old agent binary problem:** The install script downloads the agent binary from the hub at `/usr/local/bin/bloxos-agent`. After rebuilding the agent, you MUST run `sudo cp ~/bloxos/agent/bloxos-agent /usr/local/bin/bloxos-agent` on the hub VM, or the install script serves the stale binary.
+- **Self-signed TLS:** Agents need `InsecureSkipVerify: true` for Caddy's self-signed cert. This is in the current agent code. Install script uses `curl -k`.
+- **IC-Brain sudo:** requires password (123Kdd) piped via `echo 123Kdd | sudo -S`
+
+## Current Fleet
+- **bloxOs** (192.168.16.113) — hub VM itself, online
+- **ic-brain** (192.168.16.78) — InContext Research, online
 
 ## Credentials (rotated 2026-04-22)
-- Admin password: `Bl0x0s!Fleet#2026`
-- Terminal PIN: `8371`
-- First-run token: `~/.bloxos/first-run-token` (if fresh DB)
-- JWT secret: `~/.bloxos/jwt-secret` (auto-generated)
-
-## Security Posture (2026-04-22, Codex-audited)
-- Install tokens: single-use (consumed on enrollment)
-- Known agents: reconnect without re-validating token
-- Terminal PIN: server-side enforced (bcrypt)
-- Terminal WebSocket: browser=JWT, agent=terminal_token
-- Caddy TLS: reverse proxy on :443, hub/dashboard localhost only
-- Config: PUBLIC_URL, HUB_LISTEN, ALLOWED_ORIGINS via env
-- Rate limiting: login 5/min, terminal 5/min, token 3/min, enrollment 10/min
-- Trusted proxy: real IP from X-Forwarded-For (127.0.0.1 only)
-- DB: 0600 permissions
-- Tokens: never logged, written to file only
-- Accepted: default creds with forced change UI, scoped SSE tokens in URL
+- **Dashboard:** https://192.168.16.113 — admin / Bl0x0s!Fleet#2026
+- **Terminal PIN:** 8371
+- **JWT secret:** ~/.bloxos/jwt-secret (auto-generated)
+- **VM SSH:** bokiko / 123Kdd
 
 ## Architecture
 ```
@@ -48,33 +37,37 @@ LAN → Caddy (:443 TLS) → Hub (127.0.0.1:4000) + Dashboard (127.0.0.1:3000)
                      Agents (WSS through Caddy)
 ```
 
-## Service Management (systemd, auto-start on boot)
+## Service Management
 ```bash
+# All 4 services (auto-start on boot)
 systemctl is-active bloxos-hub bloxos-agent bloxos-dashboard caddy
+
+# Restart
 sudo systemctl restart bloxos-hub
+
+# Logs
 journalctl -u bloxos-hub -f
+
+# Add a machine (from dashboard or CLI)
+# 1. Generate token: POST /api/tokens (needs JWT auth)
+# 2. On target: export BLOXOS_HUB=wss://192.168.16.113 BLOXOS_TOKEN=<token>; curl -sk https://192.168.16.113/install.sh | sudo -E bash
+# 3. IMPORTANT: ensure /usr/local/bin/bloxos-agent on hub VM is the latest build
 ```
 
 ## Key URLs
 - Dashboard: https://192.168.16.113
 - Hub health: https://192.168.16.113/health
-- Hub direct (localhost): http://127.0.0.1:4000
 - Repo: https://github.com/bokiko/bloxos (PRIVATE)
+- Branch: main
 
 ## Working Set
-- `hub/main.go` — ~2700 lines. API, WS, SSE, auth, alerts, rate limiting, config
-- `agent/main.go` — ~800 lines. Metrics, services, Docker, GPU, PTY, commands
-- `dashboard/` — Next.js 15, shadcn/ui, Framer Motion, Geist, dark mode
-- `scripts/caddy/Caddyfile` — Caddy reverse proxy
-- `scripts/systemd/` — systemd unit files
-- Hardening plan: see /Users/bokiko/.claude/plans/calm-baking-eclipse.md
-
-## Quick Reference
-- Hub: `cd hub && go run .`
-- Agent: `cd agent && go run . --hub ws://localhost:4000/ws/agent --token <token>`
-- Dashboard: `cd dashboard && pnpm dev`
+- hub/main.go — ~2700 lines
+- agent/main.go — ~800 lines
+- dashboard/ — Next.js 16, shadcn/ui, dark mode
+- scripts/caddy/Caddyfile — reverse proxy
+- Hardening plan: /Users/bokiko/.claude/plans/calm-baking-eclipse.md
 
 ## Tech Stack
-- Go 1.25, Echo, gorilla/websocket, gopsutil, modernc.org/sqlite, creack/pty, golang-jwt, bcrypt
-- Next.js 16, React 19, Tailwind v4, shadcn/ui, Framer Motion, Recharts, xterm.js
-- Caddy (internal TLS), SQLite WAL (0600), Ubuntu 22.04
+Go 1.25, Echo, gorilla/websocket, gopsutil, modernc.org/sqlite, creack/pty, golang-jwt, bcrypt
+Next.js 16, React 19, Tailwind v4, shadcn/ui, Framer Motion, Recharts, xterm.js
+Caddy (internal TLS), SQLite WAL (0600), Ubuntu 22.04
