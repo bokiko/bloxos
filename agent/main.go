@@ -54,6 +54,7 @@ type Metrics struct {
 	DiskTotalBytes uint64    `json:"disk_total_bytes"`
 	GPUs           []GPUInfo `json:"gpus"`
 	Timestamp      string    `json:"timestamp"`
+	SentAt         string    `json:"sent_at,omitempty"`
 }
 
 // Command is received from the hub.
@@ -317,6 +318,7 @@ func collectMetrics(machineID string) (*Metrics, error) {
 		DiskTotalBytes: diskInfo.Total,
 		GPUs:           gpus,
 		Timestamp:      time.Now().UTC().Format(time.RFC3339),
+		SentAt:         time.Now().UTC().Format(time.RFC3339Nano),
 	}, nil
 }
 

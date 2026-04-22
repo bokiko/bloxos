@@ -2,6 +2,7 @@
 
 import { useState, useMemo, useCallback } from "react";
 import { useFleetSSE } from "@/hooks/useFleetSSE";
+import { useAuth } from "@/contexts/AuthContext";
 import { demoMachines, MachineMetrics, AlertData } from "@/lib/demo-data";
 import { MachineCard } from "@/components/MachineCard";
 import { MachineStatus } from "@/components/StatusBadge";
@@ -9,13 +10,15 @@ import { AlertPanel } from "@/components/AlertPanel";
 import { AddMachineModal } from "@/components/AddMachineModal";
 import {
   Bell, Plus, Wifi, WifiOff, Search, LayoutGrid, List,
-  ChevronDown,
+  ChevronDown, LogOut, Square, CheckSquare, RotateCcw,
 } from "lucide-react";
 import Link from "next/link";
 
 type SortOption = "name" | "status" | "cpu" | "gpu_temp";
 type StatusFilter = "all" | "online" | "warning" | "offline";
 type ViewMode = "grid" | "list";
+
+const HUB_URL = process.env.NEXT_PUBLIC_HUB_URL || "http://localhost:4000";
 
 function getStatus(m: MachineMetrics): MachineStatus {
   const age = Date.now() - (m.last_seen || 0);
@@ -54,6 +57,7 @@ function timeSince(ms: number): string {
 
 export default function Home() {
   const { machines: liveMachines, connected, hasReceivedData, alertCount, alerts, setAlerts, setAlertCount } = useFleetSSE();
+  const { logout, authFetch } = useAuth();
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [sortBy, setSortBy] = useState<SortOption>("name");
@@ -61,6 +65,8 @@ export default function Home() {
   const [tagFilter, setTagFilter] = useState<string | null>(null);
   const [alertPanelOpen, setAlertPanelOpen] = useState(false);
   const [addMachineOpen, setAddMachineOpen] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkLoading, setBulkLoading] = useState(false);
 
   const machines = hasReceivedData && liveMachines.length > 0
     ? liveMachines
@@ -132,24 +138,74 @@ export default function Home() {
   }, [machines]);
 
   const handleAcknowledge = useCallback(async (id: string) => {
-    const HUB_URL = process.env.NEXT_PUBLIC_HUB_URL || "http://localhost:4000";
     try {
-      await fetch(`${HUB_URL}/api/alerts/${id}/acknowledge`, { method: "POST" });
+      await authFetch(`${HUB_URL}/api/alerts/${id}/acknowledge`, { method: "POST" });
       setAlerts((prev: AlertData[]) => prev.filter((a: AlertData) => a.id !== id));
       setAlertCount((prev: number) => Math.max(0, prev - 1));
     } catch { /* ignore */ }
-  }, [setAlerts, setAlertCount]);
+  }, [authFetch, setAlerts, setAlertCount]);
 
   const handleAcknowledgeAll = useCallback(async () => {
-    const HUB_URL = process.env.NEXT_PUBLIC_HUB_URL || "http://localhost:4000";
     for (const a of alerts) {
       try {
-        await fetch(`${HUB_URL}/api/alerts/${a.id}/acknowledge`, { method: "POST" });
+        await authFetch(`${HUB_URL}/api/alerts/${a.id}/acknowledge`, { method: "POST" });
       } catch { /* ignore */ }
     }
     setAlerts([]);
     setAlertCount(0);
-  }, [alerts, setAlerts, setAlertCount]);
+  }, [alerts, authFetch, setAlerts, setAlertCount]);
+
+  const toggleSelect = useCallback((id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const toggleSelectAll = useCallback(() => {
+    if (selected.size === filteredMachines.length) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(filteredMachines.map((m) => m.machine_id)));
+    }
+  }, [selected.size, filteredMachines]);
+
+  const handleBulkReboot = useCallback(async () => {
+    if (!confirm(`Reboot ${selected.size} machine(s)? This cannot be undone.`)) return;
+    setBulkLoading(true);
+    try {
+      await authFetch(`${HUB_URL}/api/bulk/command`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          machine_ids: Array.from(selected),
+          type: "reboot",
+          target: "",
+        }),
+      });
+    } catch { /* ignore */ }
+    setBulkLoading(false);
+    setSelected(new Set());
+  }, [selected, authFetch]);
+
+  const handleBulkRestart = useCallback(async (service: string) => {
+    setBulkLoading(true);
+    try {
+      await authFetch(`${HUB_URL}/api/bulk/command`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          machine_ids: Array.from(selected),
+          type: "restart_service",
+          target: service,
+        }),
+      });
+    } catch { /* ignore */ }
+    setBulkLoading(false);
+    setSelected(new Set());
+  }, [selected, authFetch]);
 
   return (
     <div className="min-h-screen bg-blox-bg">
@@ -215,9 +271,54 @@ export default function Home() {
               <Plus className="w-3.5 h-3.5" />
               <span className="hidden sm:inline">Add Machine</span>
             </button>
+
+            <button
+              onClick={logout}
+              className="p-2 rounded-md hover:bg-blox-border/50 transition-colors"
+              title="Logout"
+            >
+              <LogOut className="w-4 h-4 text-blox-muted" />
+            </button>
           </div>
         </div>
       </header>
+
+      {/* Bulk action bar */}
+      {selected.size > 0 && viewMode === "list" && (
+        <div className="bg-blox-blue/5 border-b border-blox-blue/20 px-4 sm:px-6 py-2">
+          <div className="max-w-[1600px] mx-auto flex items-center gap-3">
+            <span className="text-xs text-blox-blue font-medium">{selected.size} selected</span>
+            <button
+              onClick={() => handleBulkRestart("ollama")}
+              disabled={bulkLoading}
+              className="text-xs px-3 py-1.5 rounded-md bg-blox-card border border-blox-border text-blox-text hover:border-blox-blue/40 transition-colors disabled:opacity-50"
+            >
+              Restart Ollama
+            </button>
+            <button
+              onClick={() => handleBulkRestart("docker")}
+              disabled={bulkLoading}
+              className="text-xs px-3 py-1.5 rounded-md bg-blox-card border border-blox-border text-blox-text hover:border-blox-blue/40 transition-colors disabled:opacity-50"
+            >
+              Restart Docker
+            </button>
+            <button
+              onClick={handleBulkReboot}
+              disabled={bulkLoading}
+              className="text-xs px-3 py-1.5 rounded-md bg-blox-red/10 border border-blox-red/20 text-blox-red hover:bg-blox-red/20 transition-colors disabled:opacity-50"
+            >
+              <RotateCcw className="w-3 h-3 inline mr-1" />
+              Reboot All
+            </button>
+            <button
+              onClick={() => setSelected(new Set())}
+              className="text-xs text-blox-muted hover:text-blox-text ml-auto transition-colors"
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Search + Filter Bar */}
       <div className="max-w-[1600px] mx-auto px-4 sm:px-6 py-4">
@@ -335,6 +436,15 @@ export default function Home() {
             <table className="w-full text-xs">
               <thead>
                 <tr className="border-b border-blox-border text-left">
+                  <th className="px-4 py-3 w-8">
+                    <button onClick={toggleSelectAll} className="text-blox-muted hover:text-blox-text">
+                      {selected.size === filteredMachines.length && filteredMachines.length > 0 ? (
+                        <CheckSquare className="w-3.5 h-3.5 text-blox-blue" />
+                      ) : (
+                        <Square className="w-3.5 h-3.5" />
+                      )}
+                    </button>
+                  </th>
                   <th className="px-4 py-3 text-blox-muted font-medium">Status</th>
                   <th className="px-4 py-3 text-blox-muted font-medium">Hostname</th>
                   <th className="px-4 py-3 text-blox-muted font-medium hidden md:table-cell">IP</th>
@@ -342,6 +452,7 @@ export default function Home() {
                   <th className="px-4 py-3 text-blox-muted font-medium">RAM</th>
                   <th className="px-4 py-3 text-blox-muted font-medium hidden lg:table-cell">GPU</th>
                   <th className="px-4 py-3 text-blox-muted font-medium hidden lg:table-cell">VRAM</th>
+                  <th className="px-4 py-3 text-blox-muted font-medium hidden xl:table-cell">Latency</th>
                   <th className="px-4 py-3 text-blox-muted font-medium hidden xl:table-cell">Last Seen</th>
                   <th className="px-4 py-3 text-blox-muted font-medium hidden xl:table-cell">Tags</th>
                 </tr>
@@ -352,56 +463,75 @@ export default function Home() {
                   const ramPct = m.ram_total_bytes > 0 ? (m.ram_used_bytes / m.ram_total_bytes) * 100 : 0;
                   const tags = m.tags ? m.tags.split(",").filter((t) => t.trim()) : [];
                   const dotColor = status === "online" ? "bg-blox-green" : status === "warning" ? "bg-blox-amber" : "bg-blox-red";
+                  const isSelected = selected.has(m.machine_id);
 
                   return (
-                    <Link key={m.machine_id} href={`/machine/${m.machine_id}`} className="contents">
-                      <tr className="border-b border-blox-border/50 hover:bg-blox-border/20 cursor-pointer transition-colors">
-                        <td className="px-4 py-3">
+                    <tr key={m.machine_id} className={`border-b border-blox-border/50 hover:bg-blox-border/20 transition-colors ${isSelected ? "bg-blox-blue/5" : ""}`}>
+                      <td className="px-4 py-3">
+                        <button onClick={(e) => { e.stopPropagation(); toggleSelect(m.machine_id); }} className="text-blox-muted hover:text-blox-text">
+                          {isSelected ? (
+                            <CheckSquare className="w-3.5 h-3.5 text-blox-blue" />
+                          ) : (
+                            <Square className="w-3.5 h-3.5" />
+                          )}
+                        </button>
+                      </td>
+                      <td className="px-4 py-3">
+                        <Link href={`/machine/${m.machine_id}`}>
                           <span className={`inline-block w-2 h-2 rounded-full ${dotColor}`} />
-                        </td>
-                        <td className="px-4 py-3 font-medium text-blox-text">{m.hostname}</td>
-                        <td className="px-4 py-3 text-blox-muted font-mono hidden md:table-cell">{m.ip || "-"}</td>
-                        <td className="px-4 py-3">
+                        </Link>
+                      </td>
+                      <td className="px-4 py-3 font-medium text-blox-text">
+                        <Link href={`/machine/${m.machine_id}`}>{m.hostname}</Link>
+                      </td>
+                      <td className="px-4 py-3 text-blox-muted font-mono hidden md:table-cell">{m.ip || "-"}</td>
+                      <td className="px-4 py-3">
+                        <span className={`tabular-nums ${
+                          m.cpu_percent > 85 ? "text-blox-red" : m.cpu_percent > 60 ? "text-blox-amber" : "text-blox-text"
+                        }`}>{m.cpu_percent.toFixed(0)}%</span>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className="tabular-nums text-blox-text">{ramPct.toFixed(0)}%</span>
+                        <span className="text-blox-muted ml-1">{formatBytes(m.ram_used_bytes)}</span>
+                      </td>
+                      <td className="px-4 py-3 hidden lg:table-cell">
+                        {m.gpu_temp ? (
                           <span className={`tabular-nums ${
-                            m.cpu_percent > 85 ? "text-blox-red" : m.cpu_percent > 60 ? "text-blox-amber" : "text-blox-text"
-                          }`}>{m.cpu_percent.toFixed(0)}%</span>
-                        </td>
-                        <td className="px-4 py-3">
-                          <span className="tabular-nums text-blox-text">{ramPct.toFixed(0)}%</span>
-                          <span className="text-blox-muted ml-1">{formatBytes(m.ram_used_bytes)}</span>
-                        </td>
-                        <td className="px-4 py-3 hidden lg:table-cell">
-                          {m.gpu_temp ? (
-                            <span className={`tabular-nums ${
-                              m.gpu_temp > 80 ? "text-blox-red" : m.gpu_temp > 70 ? "text-blox-amber" : "text-blox-text"
-                            }`}>{m.gpu_temp}&deg;C</span>
-                          ) : (
-                            <span className="text-blox-muted">-</span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3 hidden lg:table-cell">
-                          {m.gpu_vram_total_bytes && m.gpu_vram_total_bytes > 0 ? (
-                            <span className="tabular-nums text-blox-text">
-                              {formatBytes(m.gpu_vram_used_bytes || 0)}/{formatBytes(m.gpu_vram_total_bytes)}
+                            m.gpu_temp > 80 ? "text-blox-red" : m.gpu_temp > 70 ? "text-blox-amber" : "text-blox-text"
+                          }`}>{m.gpu_temp}&deg;C</span>
+                        ) : (
+                          <span className="text-blox-muted">-</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 hidden lg:table-cell">
+                        {m.gpu_vram_total_bytes && m.gpu_vram_total_bytes > 0 ? (
+                          <span className="tabular-nums text-blox-text">
+                            {formatBytes(m.gpu_vram_used_bytes || 0)}/{formatBytes(m.gpu_vram_total_bytes)}
+                          </span>
+                        ) : (
+                          <span className="text-blox-muted">-</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 hidden xl:table-cell">
+                        {m.latency_ms && m.latency_ms > 0 ? (
+                          <span className="tabular-nums text-blox-muted">{m.latency_ms}ms</span>
+                        ) : (
+                          <span className="text-blox-muted">-</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-blox-muted hidden xl:table-cell">
+                        {m.last_seen ? timeSince(m.last_seen) : "never"}
+                      </td>
+                      <td className="px-4 py-3 hidden xl:table-cell">
+                        <div className="flex gap-1 flex-wrap">
+                          {tags.map((tag) => (
+                            <span key={tag} className="text-[9px] px-1.5 py-0.5 rounded bg-blox-border text-blox-muted">
+                              {tag}
                             </span>
-                          ) : (
-                            <span className="text-blox-muted">-</span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3 text-blox-muted hidden xl:table-cell">
-                          {m.last_seen ? timeSince(m.last_seen) : "never"}
-                        </td>
-                        <td className="px-4 py-3 hidden xl:table-cell">
-                          <div className="flex gap-1 flex-wrap">
-                            {tags.map((tag) => (
-                              <span key={tag} className="text-[9px] px-1.5 py-0.5 rounded bg-blox-border text-blox-muted">
-                                {tag}
-                              </span>
-                            ))}
-                          </div>
-                        </td>
-                      </tr>
-                    </Link>
+                          ))}
+                        </div>
+                      </td>
+                    </tr>
                   );
                 })}
               </tbody>
