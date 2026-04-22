@@ -94,18 +94,28 @@ curl -X POST http://localhost:4000/api/auth/login -H "Content-Type: application/
   - `src/lib/demo-data.ts` — Type definitions + demo data
 - `docs/PLAN.md` — Full architecture plan
 
-## Security (2026-04-22)
-All 8 Codex audit findings fixed:
-- **Agent tokens validated** against DB (SHA256 hash lookup, expiry check, single-use). Bootstrap mode: "test-token" allowed only when no tokens exist in DB.
-- **JWT secret auto-generated** on first startup and persisted to `~/.bloxos/jwt-secret`. No more hardcoded default.
-- **Default admin password warning** logged prominently on startup if still using "bloxos".
-- **Password change API**: `POST /api/auth/change-password` (requires valid JWT).
-- **Terminal PIN enforced server-side** (bcrypt hash in DB, default "1234"). Change via `POST /api/auth/change-pin`.
-- **Terminal WebSocket auth**: browser connections require JWT token in query param.
-- **Auth headers added** to ServicePanel, ContainerPanel, RebootModal fetch calls.
-- **start_container** command implemented in agent.
-- **Install paths dynamic**: use request Host header, `BLOXOS_AGENT_BINARY` env var.
-- **Token redaction** in hub access logs (Finding #8).
+## Security (2026-04-22, Codex-audited)
+3 rounds of Codex security audit. Final score: **6/8 FIXED, 2 accepted**.
+
+**Fixed (verified by Codex):**
+1. Agent tokens validated against DB (hash + expiry check)
+2. Terminal PIN enforced server-side (bcrypt)
+3. Terminal WebSocket auth: browser=JWT, agent=terminal_token
+4. Auth headers on all dashboard command calls
+5. start_container implemented in agent
+6. Install paths dynamic (no hardcoded IPs or paths)
+
+**Accepted (with mitigations):**
+- Default credentials (admin/bloxos, PIN 1234): standard first-run pattern. Forced password+PIN change on first login.
+- Token in SSE URL: EventSource API limitation. Mitigated with scoped SSE tokens (5-min TTL, API-unusable).
+
+**Additional hardening:**
+- JWT secret auto-generated, persisted to ~/.bloxos/jwt-secret
+- First-run auto-generates real agent token (1-hour expiry, printed to logs)
+- Password/PIN change APIs available
+- Token redaction in hub access logs
+- Agent runs as non-root with sudo whitelist
+- Terminal sessions audited in DB
 
 ## Open Questions
 - TODO: Make terminal PIN configurable (env var or hub config)
