@@ -24,9 +24,9 @@ function getStatus(m: MachineMetrics): MachineStatus {
   const age = Date.now() - (m.last_seen || 0);
   if (age > 120_000) return "offline";
   if (m.gpu_temp && m.gpu_temp > 80) return "warning";
-  const diskPct = m.disk_total_bytes > 0 ? (m.disk_used_bytes / m.disk_total_bytes) * 100 : 0;
+  const diskPct = (m.disk_total_bytes ?? 0) > 0 ? ((m.disk_used_bytes ?? 0) / m.disk_total_bytes) * 100 : 0;
   if (diskPct > 90) return "warning";
-  const ramPct = m.ram_total_bytes > 0 ? (m.ram_used_bytes / m.ram_total_bytes) * 100 : 0;
+  const ramPct = (m.ram_total_bytes ?? 0) > 0 ? ((m.ram_used_bytes ?? 0) / m.ram_total_bytes) * 100 : 0;
   if (ramPct > 95) return "warning";
   return "online";
 }
@@ -37,8 +37,8 @@ const statusOrder: Record<MachineStatus, number> = {
   online: 2,
 };
 
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return "0";
+function formatBytes(bytes: number | undefined | null): string {
+  if (!bytes || bytes === 0) return "0";
   const gb = bytes / (1024 ** 3);
   if (gb >= 1) return `${gb.toFixed(0)} GB`;
   const mb = bytes / (1024 ** 2);
@@ -115,7 +115,7 @@ export default function Home() {
         case "status":
           return statusOrder[getStatus(a)] - statusOrder[getStatus(b)];
         case "cpu":
-          return b.cpu_percent - a.cpu_percent;
+          return (b.cpu_percent ?? 0) - (a.cpu_percent ?? 0);
         case "gpu_temp":
           return (b.gpu_temp || 0) - (a.gpu_temp || 0);
         default:
@@ -460,7 +460,7 @@ export default function Home() {
               <tbody>
                 {filteredMachines.map((m) => {
                   const status = getStatus(m);
-                  const ramPct = m.ram_total_bytes > 0 ? (m.ram_used_bytes / m.ram_total_bytes) * 100 : 0;
+                  const ramPct = (m.ram_total_bytes ?? 0) > 0 ? ((m.ram_used_bytes ?? 0) / m.ram_total_bytes) * 100 : 0;
                   const tags = m.tags ? m.tags.split(",").filter((t) => t.trim()) : [];
                   const dotColor = status === "online" ? "bg-blox-green" : status === "warning" ? "bg-blox-amber" : "bg-blox-red";
                   const isSelected = selected.has(m.machine_id);
@@ -487,8 +487,8 @@ export default function Home() {
                       <td className="px-4 py-3 text-blox-muted font-mono hidden md:table-cell">{m.ip || "-"}</td>
                       <td className="px-4 py-3">
                         <span className={`tabular-nums ${
-                          m.cpu_percent > 85 ? "text-blox-red" : m.cpu_percent > 60 ? "text-blox-amber" : "text-blox-text"
-                        }`}>{m.cpu_percent.toFixed(0)}%</span>
+                          (m.cpu_percent ?? 0) > 85 ? "text-blox-red" : (m.cpu_percent ?? 0) > 60 ? "text-blox-amber" : "text-blox-text"
+                        }`}>{(m.cpu_percent ?? 0).toFixed(0)}%</span>
                       </td>
                       <td className="px-4 py-3">
                         <span className="tabular-nums text-blox-text">{ramPct.toFixed(0)}%</span>

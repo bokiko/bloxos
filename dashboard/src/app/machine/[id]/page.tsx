@@ -67,8 +67,8 @@ interface MachineData {
 
 type TerminalState = "locked" | "pin_entry" | "connecting" | "active" | "disconnected";
 
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return "0";
+function formatBytes(bytes: number | undefined | null): string {
+  if (!bytes || bytes === 0) return "0";
   const gb = bytes / (1024 ** 3);
   if (gb >= 1) return `${gb.toFixed(1)} GB`;
   const mb = bytes / (1024 ** 2);
@@ -89,13 +89,13 @@ function getStatus(data: MachineData): MachineStatus {
   if (data.machine.status === "offline") return "offline";
   if (data.gpus && data.gpus.length > 0) {
     for (const g of data.gpus) {
-      if (g.temp_c > 80) return "warning";
+      if ((g.temp_c ?? 0) > 80) return "warning";
     }
-  } else if (data.metrics.gpu_temp > 80) {
+  } else if ((data.metrics?.gpu_temp ?? 0) > 80) {
     return "warning";
   }
-  const diskPct = data.metrics.disk_total_bytes > 0
-    ? (data.metrics.disk_used_bytes / data.metrics.disk_total_bytes) * 100 : 0;
+  const diskPct = (data.metrics?.disk_total_bytes ?? 0) > 0
+    ? ((data.metrics?.disk_used_bytes ?? 0) / data.metrics.disk_total_bytes) * 100 : 0;
   if (diskPct > 90) return "warning";
   return "online";
 }
@@ -258,8 +258,8 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
 
   const { machine, metrics } = data;
   const status = getStatus(data);
-  const ramPct = metrics.ram_total_bytes > 0 ? (metrics.ram_used_bytes / metrics.ram_total_bytes) * 100 : 0;
-  const diskPct = metrics.disk_total_bytes > 0 ? (metrics.disk_used_bytes / metrics.disk_total_bytes) * 100 : 0;
+  const ramPct = (metrics?.ram_total_bytes ?? 0) > 0 ? ((metrics?.ram_used_bytes ?? 0) / metrics.ram_total_bytes) * 100 : 0;
+  const diskPct = (metrics?.disk_total_bytes ?? 0) > 0 ? ((metrics?.disk_used_bytes ?? 0) / metrics.disk_total_bytes) * 100 : 0;
   const gpus = data.gpus || [];
   const hasGpu = gpus.length > 0;
   const isOnline = machine.status !== "offline";
@@ -296,7 +296,7 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
                 Live
               </span>
             )}
-            {data.latency_ms > 0 && (
+            {(data.latency_ms ?? 0) > 0 && (
               <span className="flex items-center gap-1 text-[10px] text-blox-muted mr-2">
                 <Wifi className="w-3 h-3" />
                 {data.latency_ms}ms
@@ -345,7 +345,7 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
           {machine.ip && <span>IP: <span className="text-blox-text">{machine.ip}</span></span>}
           {machine.os && <span>OS: <span className="text-blox-text">{machine.os}</span></span>}
           <span>ID: <span className="text-blox-text font-mono text-[10px]">{machine.id}</span></span>
-          {data.latency_ms > 0 && (
+          {(data.latency_ms ?? 0) > 0 && (
             <span>Latency: <span className="text-blox-text">{data.latency_ms}ms</span></span>
           )}
         </div>
@@ -363,9 +363,9 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
                     <Cpu className="w-3.5 h-3.5 text-blox-muted" />
                     <span className="text-xs text-blox-muted">CPU</span>
                   </div>
-                  <span className="text-sm font-semibold text-blox-text tabular-nums">{metrics.cpu_percent.toFixed(1)}%</span>
+                  <span className="text-sm font-semibold text-blox-text tabular-nums">{(metrics?.cpu_percent ?? 0).toFixed(1)}%</span>
                 </div>
-                <ProgressBar value={metrics.cpu_percent} size="md" />
+                <ProgressBar value={metrics?.cpu_percent ?? 0} size="md" />
               </div>
               <div>
                 <div className="flex items-center justify-between mb-1.5">
@@ -373,7 +373,7 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
                     <MemoryStick className="w-3.5 h-3.5 text-blox-muted" />
                     <span className="text-xs text-blox-muted">RAM</span>
                   </div>
-                  <span className="text-xs text-blox-muted tabular-nums">{formatBytes(metrics.ram_used_bytes)} / {formatBytes(metrics.ram_total_bytes)}</span>
+                  <span className="text-xs text-blox-muted tabular-nums">{formatBytes(metrics?.ram_used_bytes)} / {formatBytes(metrics?.ram_total_bytes)}</span>
                 </div>
                 <ProgressBar value={ramPct} size="md" label={`${ramPct.toFixed(0)}%`} />
               </div>
@@ -383,7 +383,7 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
                     <HardDrive className="w-3.5 h-3.5 text-blox-muted" />
                     <span className="text-xs text-blox-muted">Disk</span>
                   </div>
-                  <span className="text-xs text-blox-muted tabular-nums">{formatBytes(metrics.disk_used_bytes)} / {formatBytes(metrics.disk_total_bytes)}</span>
+                  <span className="text-xs text-blox-muted tabular-nums">{formatBytes(metrics?.disk_used_bytes)} / {formatBytes(metrics?.disk_total_bytes)}</span>
                 </div>
                 <ProgressBar value={diskPct} size="md" label={`${diskPct.toFixed(0)}%`} />
               </div>
@@ -393,7 +393,7 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
                   <span className="text-xs text-blox-muted">Network Latency</span>
                 </div>
                 <span className="text-xs text-blox-text tabular-nums">
-                  {data.latency_ms > 0 ? `${data.latency_ms}ms` : "N/A"}
+                  {(data.latency_ms ?? 0) > 0 ? `${data.latency_ms}ms` : "N/A"}
                 </span>
               </div>
             </div>
@@ -408,7 +408,7 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
             {hasGpu ? (
               <div className="space-y-5">
                 {gpus.map((gpu) => {
-                  const vramPct = gpu.mem_total_bytes > 0 ? (gpu.mem_used_bytes / gpu.mem_total_bytes) * 100 : 0;
+                  const vramPct = (gpu.mem_total_bytes ?? 0) > 0 ? ((gpu.mem_used_bytes ?? 0) / gpu.mem_total_bytes) * 100 : 0;
                   return (
                     <div key={gpu.index} className="space-y-3">
                       {gpus.length > 1 && (
@@ -426,11 +426,11 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
                             <span className="text-xs text-blox-muted">Temperature</span>
                           </div>
                           <span className={`text-sm font-semibold tabular-nums ${
-                            gpu.temp_c > 80 ? "text-blox-red" :
-                            gpu.temp_c > 70 ? "text-blox-amber" : "text-blox-green"
-                          }`}>{gpu.temp_c}&deg;C</span>
+                            (gpu.temp_c ?? 0) > 80 ? "text-blox-red" :
+                            (gpu.temp_c ?? 0) > 70 ? "text-blox-amber" : "text-blox-green"
+                          }`}>{gpu.temp_c ?? 0}&deg;C</span>
                         </div>
-                        <ProgressBar value={gpu.temp_c} size="md" />
+                        <ProgressBar value={gpu.temp_c ?? 0} size="md" />
                       </div>
                       <div>
                         <div className="flex items-center justify-between mb-1.5">
@@ -438,11 +438,11 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
                             <Cpu className="w-3.5 h-3.5 text-blox-muted" />
                             <span className="text-xs text-blox-muted">Utilization</span>
                           </div>
-                          <span className="text-sm font-semibold text-blox-text tabular-nums">{gpu.util_percent.toFixed(0)}%</span>
+                          <span className="text-sm font-semibold text-blox-text tabular-nums">{(gpu.util_percent ?? 0).toFixed(0)}%</span>
                         </div>
-                        <ProgressBar value={gpu.util_percent} size="md" />
+                        <ProgressBar value={gpu.util_percent ?? 0} size="md" />
                       </div>
-                      {gpu.mem_total_bytes > 0 && (
+                      {(gpu.mem_total_bytes ?? 0) > 0 && (
                         <div>
                           <div className="flex items-center justify-between mb-1.5">
                             <div className="flex items-center gap-2">
@@ -460,7 +460,7 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
                           <span className="text-xs text-blox-muted">Power</span>
                         </div>
                         <span className="text-xs text-blox-text tabular-nums">
-                          {gpu.power_watts > 0 ? `${gpu.power_watts.toFixed(0)} W` : "N/A"}
+                          {(gpu.power_watts ?? 0) > 0 ? `${(gpu.power_watts ?? 0).toFixed(0)} W` : "N/A"}
                         </span>
                       </div>
                       <div className="flex items-center justify-between py-1">
@@ -469,7 +469,7 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
                           <span className="text-xs text-blox-muted">Fan</span>
                         </div>
                         <span className="text-xs text-blox-text tabular-nums">
-                          {gpu.fan_percent > 0 ? `${gpu.fan_percent.toFixed(0)}%` : "N/A"}
+                          {(gpu.fan_percent ?? 0) > 0 ? `${(gpu.fan_percent ?? 0).toFixed(0)}%` : "N/A"}
                         </span>
                       </div>
                     </div>

@@ -30,8 +30,8 @@ function formatTime(ts: any): string {
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-function formatGB(bytes: number): string {
-  return (bytes / (1024 ** 3)).toFixed(1);
+function formatGB(bytes: number | undefined | null): string {
+  return ((bytes ?? 0) / (1024 ** 3)).toFixed(1);
 }
 
 const periods: { label: string; value: Period }[] = [
@@ -70,14 +70,14 @@ export function MetricCharts({ machineId, hasGpu }: MetricChartsProps) {
 
   const ramData = data.map((p) => ({
     ...p,
-    ram_pct: p.ram_total > 0 ? (p.ram_used / p.ram_total) * 100 : 0,
-    ram_gb: p.ram_used / (1024 ** 3),
+    ram_pct: (p.ram_total ?? 0) > 0 ? ((p.ram_used ?? 0) / p.ram_total) * 100 : 0,
+    ram_gb: (p.ram_used ?? 0) / (1024 ** 3),
   }));
 
   const gpuData = data.map((p) => ({
     ...p,
-    vram_pct: p.gpu_vram_total > 0 ? (p.gpu_vram_used / p.gpu_vram_total) * 100 : 0,
-    vram_gb: p.gpu_vram_used / (1024 ** 3),
+    vram_pct: (p.gpu_vram_total ?? 0) > 0 ? ((p.gpu_vram_used ?? 0) / p.gpu_vram_total) * 100 : 0,
+    vram_gb: (p.gpu_vram_used ?? 0) / (1024 ** 3),
   }));
 
   return (
@@ -134,7 +134,7 @@ export function MetricCharts({ machineId, hasGpu }: MetricChartsProps) {
                 <Tooltip
                   contentStyle={{ background: "#1a1a2e", border: "1px solid #2a2a3e", borderRadius: 6, fontSize: 11 }}
                   labelFormatter={formatTime}
-                  formatter={(v: any) => [`${v.toFixed(1)}%`, "CPU"]}
+                  formatter={(v: any) => [`${(v ?? 0).toFixed(1)}%`, "CPU"]}
                 />
                 <Area type="monotone" dataKey="cpu_percent" stroke="#3b82f6" fill="url(#cpuGrad)" strokeWidth={1.5} />
               </AreaChart>
@@ -164,12 +164,12 @@ export function MetricCharts({ machineId, hasGpu }: MetricChartsProps) {
                   axisLine={false}
                   tickLine={false}
                   width={30}
-                  tickFormatter={(v: number) => formatGB(v * 1024 ** 3)}
+                  tickFormatter={(v: number) => formatGB((v ?? 0) * 1024 ** 3)}
                 />
                 <Tooltip
                   contentStyle={{ background: "#1a1a2e", border: "1px solid #2a2a3e", borderRadius: 6, fontSize: 11 }}
                   labelFormatter={formatTime}
-                  formatter={(v: any) => [`${v.toFixed(1)} GB`, "RAM"]}
+                  formatter={(v: any) => [`${(v ?? 0).toFixed(1)} GB`, "RAM"]}
                 />
                 <Area type="monotone" dataKey="ram_gb" stroke="#8b5cf6" fill="url(#ramGrad)" strokeWidth={1.5} />
               </AreaChart>
@@ -204,7 +204,7 @@ export function MetricCharts({ machineId, hasGpu }: MetricChartsProps) {
                   <Tooltip
                     contentStyle={{ background: "#1a1a2e", border: "1px solid #2a2a3e", borderRadius: 6, fontSize: 11 }}
                     labelFormatter={formatTime}
-                    formatter={(v: any) => [`${v.toFixed(0)} C`, "GPU Temp"]}
+                    formatter={(v: any) => [`${(v ?? 0).toFixed(0)} C`, "GPU Temp"]}
                   />
                   <Area type="monotone" dataKey="gpu_temp" stroke="#f59e0b" fill="url(#gpuTempGrad)" strokeWidth={1.5} />
                 </AreaChart>
@@ -240,7 +240,7 @@ export function MetricCharts({ machineId, hasGpu }: MetricChartsProps) {
                   <Tooltip
                     contentStyle={{ background: "#1a1a2e", border: "1px solid #2a2a3e", borderRadius: 6, fontSize: 11 }}
                     labelFormatter={formatTime}
-                    formatter={(v: any) => [`${v.toFixed(1)} GB`, "VRAM"]}
+                    formatter={(v: any) => [`${(v ?? 0).toFixed(1)} GB`, "VRAM"]}
                   />
                   <Area type="monotone" dataKey="vram_gb" stroke="#10b981" fill="url(#vramGrad)" strokeWidth={1.5} />
                 </AreaChart>
