@@ -1,13 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -117,6 +121,32 @@ type TerminalSession struct {
 	mu        sync.Mutex
 }
 
+// AlertRule represents an alert rule from the database.
+type AlertRule struct {
+	ID           string  `json:"id"`
+	Name         string  `json:"name"`
+	Metric       string  `json:"metric"`
+	Operator     string  `json:"operator"`
+	Threshold    float64 `json:"threshold"`
+	DurationSecs int     `json:"duration_secs"`
+	Severity     string  `json:"severity"`
+	Enabled      bool    `json:"enabled"`
+	CreatedAt    string  `json:"created_at"`
+}
+
+// Alert represents a fired alert.
+type Alert struct {
+	ID          string  `json:"id"`
+	RuleID      *string `json:"rule_id"`
+	MachineID   string  `json:"machine_id"`
+	Message     string  `json:"message"`
+	Severity    string  `json:"severity"`
+	Status      string  `json:"status"`
+	TriggeredAt string  `json:"triggered_at"`
+	ResolvedAt  *string `json:"resolved_at"`
+	Hostname    string  `json:"hostname,omitempty"`
+}
+
 var (
 	db       *sql.DB
 	upgrader = websocket.Upgrader{
@@ -138,6 +168,10 @@ var (
 	// Terminal sessions keyed by session ID.
 	termSessions   = make(map[string]*TerminalSession)
 	termSessionsMu sync.RWMutex
+
+	// Telegram config.
+	telegramToken  string
+	telegramChatID string
 )
 
 func main() {
@@ -153,6 +187,21 @@ func main() {
 	}
 	log.Println("database initialized")
 
+	// Seed default alert rules.
+	seedAlertRules()
+
+	// Load Telegram config.
+	telegramToken = os.Getenv("BLOXOS_TELEGRAM_TOKEN")
+	telegramChatID = os.Getenv("BLOXOS_TELEGRAM_CHAT_ID")
+	if telegramToken == "" || telegramChatID == "" {
+		log.Println("WARNING: BLOXOS_TELEGRAM_TOKEN or BLOXOS_TELEGRAM_CHAT_ID not set — Telegram notifications disabled")
+	} else {
+		log.Println("Telegram notifications enabled")
+	}
+
+	// Start alert evaluation loop.
+	go alertEvalLoop()
+
 	e := echo.New()
 	e.HideBanner = true
 	e.Use(middleware.Logger())
@@ -162,7 +211,7 @@ func main() {
 			"http://192.168.16.113:3000",
 			"http://localhost:3000",
 		},
-		AllowMethods: []string{http.MethodGet, http.MethodPost, http.MethodDelete, http.MethodOptions},
+		AllowMethods: []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodOptions},
 		AllowHeaders: []string{"Accept", "Content-Type", "Cache-Control"},
 	}))
 
@@ -174,11 +223,24 @@ func main() {
 	e.GET("/api/machines/:id/services", handleGetServices)
 	e.GET("/api/machines/:id/containers", handleGetContainers)
 	e.POST("/api/machines/:id/command", handleCommand)
+	e.PUT("/api/machines/:id/tags", handleSetTags)
 
 	// Terminal endpoints.
 	e.POST("/api/machines/:id/terminal", handleStartTerminal)
 	e.DELETE("/api/machines/:id/terminal/:session_id", handleCloseTerminal)
 	e.GET("/ws/terminal/:session_id", handleTerminalWS)
+
+	// Alert endpoints.
+	e.GET("/api/alerts", handleListAlerts)
+	e.GET("/api/alerts/active/count", handleAlertCount)
+	e.POST("/api/alerts/:id/acknowledge", handleAcknowledgeAlert)
+	e.GET("/api/alert-rules", handleListAlertRules)
+	e.PUT("/api/alert-rules/:id", handleUpdateAlertRule)
+
+	// Install endpoints.
+	e.POST("/api/tokens", handleCreateToken)
+	e.GET("/install.sh", handleInstallScript)
+	e.GET("/download/agent", handleDownloadAgent)
 
 	log.Println("hub listening on :4000")
 	if err := e.Start(":4000"); err != nil && err != http.ErrServerClosed {
@@ -194,6 +256,7 @@ func initDB() error {
 		ip TEXT,
 		os TEXT,
 		status TEXT DEFAULT 'offline',
+		tags TEXT DEFAULT '',
 		last_seen DATETIME,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
@@ -267,10 +330,544 @@ func initDB() error {
 		status TEXT DEFAULT 'active',
 		FOREIGN KEY (machine_id) REFERENCES machines(id)
 	);
+
+	CREATE TABLE IF NOT EXISTS alert_rules (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		metric TEXT NOT NULL,
+		operator TEXT NOT NULL,
+		threshold REAL NOT NULL,
+		duration_secs INTEGER DEFAULT 0,
+		severity TEXT DEFAULT 'warning',
+		enabled BOOLEAN DEFAULT TRUE,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE TABLE IF NOT EXISTS alerts (
+		id TEXT PRIMARY KEY,
+		rule_id TEXT,
+		machine_id TEXT NOT NULL,
+		message TEXT NOT NULL,
+		severity TEXT NOT NULL,
+		status TEXT DEFAULT 'active',
+		triggered_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		resolved_at DATETIME,
+		FOREIGN KEY (rule_id) REFERENCES alert_rules(id),
+		FOREIGN KEY (machine_id) REFERENCES machines(id)
+	);
 	`
 	_, err := db.Exec(schema)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Add tags column if missing (migration for existing DBs).
+	_, _ = db.Exec(`ALTER TABLE machines ADD COLUMN tags TEXT DEFAULT ''`)
+
+	return nil
 }
+
+// seedAlertRules inserts default alert rules if the table is empty.
+func seedAlertRules() {
+	var count int
+	err := db.QueryRow(`SELECT COUNT(*) FROM alert_rules`).Scan(&count)
+	if err != nil {
+		log.Printf("error checking alert_rules count: %v", err)
+		return
+	}
+	if count > 0 {
+		return
+	}
+
+	defaults := []struct {
+		name      string
+		metric    string
+		operator  string
+		threshold float64
+		duration  int
+		severity  string
+	}{
+		{"CPU > 90%", "cpu", "gt", 90.0, 0, "warning"},
+		{"RAM > 95%", "ram", "gt", 95.0, 0, "warning"},
+		{"Disk > 90%", "disk", "gt", 90.0, 0, "warning"},
+		{"GPU Temp > 80C", "gpu_temp", "gt", 80.0, 0, "warning"},
+		{"GPU Temp > 90C", "gpu_temp", "gt", 90.0, 0, "critical"},
+		{"Machine Offline > 120s", "machine_offline", "gt", 120.0, 0, "critical"},
+	}
+
+	for _, d := range defaults {
+		id := uuid.New().String()
+		_, err := db.Exec(`INSERT INTO alert_rules (id, name, metric, operator, threshold, duration_secs, severity) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			id, d.name, d.metric, d.operator, d.threshold, d.duration, d.severity)
+		if err != nil {
+			log.Printf("error seeding alert rule %s: %v", d.name, err)
+		}
+	}
+	log.Println("seeded 6 default alert rules")
+}
+
+// alertEvalLoop runs every 30 seconds to evaluate alert rules.
+func alertEvalLoop() {
+	time.Sleep(5 * time.Second) // Wait for startup.
+	log.Println("alert evaluation loop started")
+	for {
+		evaluateAlerts()
+		time.Sleep(30 * time.Second)
+	}
+}
+
+func evaluateAlerts() {
+	// Get all enabled rules.
+	rules, err := getAlertRules(true)
+	if err != nil {
+		log.Printf("alert eval: error getting rules: %v", err)
+		return
+	}
+
+	// Get all machines with latest metrics.
+	rows, err := db.Query(`
+		SELECT m.id, m.hostname, m.last_seen,
+			COALESCE(met.cpu_percent, 0),
+			COALESCE(met.ram_used_bytes, 0), COALESCE(met.ram_total_bytes, 0),
+			COALESCE(met.disk_used_bytes, 0), COALESCE(met.disk_total_bytes, 0),
+			COALESCE(met.gpu_temp, 0)
+		FROM machines m
+		LEFT JOIN (
+			SELECT machine_id, cpu_percent, ram_used_bytes, ram_total_bytes,
+				disk_used_bytes, disk_total_bytes, gpu_temp,
+				ROW_NUMBER() OVER (PARTITION BY machine_id ORDER BY timestamp DESC) as rn
+			FROM metrics
+		) met ON met.machine_id = m.id AND met.rn = 1
+	`)
+	if err != nil {
+		log.Printf("alert eval: error querying machines: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	type machineMetrics struct {
+		id             string
+		hostname       string
+		lastSeen       *string
+		cpuPercent     float64
+		ramUsedBytes   int64
+		ramTotalBytes  int64
+		diskUsedBytes  int64
+		diskTotalBytes int64
+		gpuTemp        float64
+	}
+
+	var machines []machineMetrics
+	for rows.Next() {
+		var m machineMetrics
+		if err := rows.Scan(&m.id, &m.hostname, &m.lastSeen, &m.cpuPercent,
+			&m.ramUsedBytes, &m.ramTotalBytes, &m.diskUsedBytes, &m.diskTotalBytes, &m.gpuTemp); err != nil {
+			continue
+		}
+		machines = append(machines, m)
+	}
+
+	for _, rule := range rules {
+		for _, m := range machines {
+			var metricValue float64
+			var triggered bool
+			var msg string
+
+			switch rule.Metric {
+			case "cpu":
+				metricValue = m.cpuPercent
+				triggered = compareValue(metricValue, rule.Operator, rule.Threshold)
+				msg = fmt.Sprintf("CPU is %.0f%% (threshold: %.0f%%)", metricValue, rule.Threshold)
+			case "ram":
+				if m.ramTotalBytes > 0 {
+					metricValue = float64(m.ramUsedBytes) / float64(m.ramTotalBytes) * 100
+				}
+				triggered = compareValue(metricValue, rule.Operator, rule.Threshold)
+				msg = fmt.Sprintf("RAM is %.0f%% (threshold: %.0f%%)", metricValue, rule.Threshold)
+			case "disk":
+				if m.diskTotalBytes > 0 {
+					metricValue = float64(m.diskUsedBytes) / float64(m.diskTotalBytes) * 100
+				}
+				triggered = compareValue(metricValue, rule.Operator, rule.Threshold)
+				msg = fmt.Sprintf("Disk is %.0f%% (threshold: %.0f%%)", metricValue, rule.Threshold)
+			case "gpu_temp":
+				metricValue = m.gpuTemp
+				if metricValue == 0 {
+					continue // No GPU data, skip.
+				}
+				triggered = compareValue(metricValue, rule.Operator, rule.Threshold)
+				msg = fmt.Sprintf("GPU temperature is %.0f°C (threshold: %.0f°C)", metricValue, rule.Threshold)
+			case "machine_offline":
+				if m.lastSeen == nil {
+					continue
+				}
+				lastSeenTime, err := time.Parse("2006-01-02 15:04:05", *m.lastSeen)
+				if err != nil {
+					// Try with timezone.
+					lastSeenTime, err = time.Parse(time.RFC3339, *m.lastSeen)
+					if err != nil {
+						continue
+					}
+				}
+				offlineSecs := time.Since(lastSeenTime).Seconds()
+				triggered = offlineSecs > rule.Threshold
+				msg = fmt.Sprintf("Machine offline for %.0fs (threshold: %.0fs)", offlineSecs, rule.Threshold)
+			default:
+				continue
+			}
+
+			// Check for existing active alert for this machine+rule.
+			var existingID string
+			err := db.QueryRow(`SELECT id FROM alerts WHERE rule_id = ? AND machine_id = ? AND status = 'active'`,
+				rule.ID, m.id).Scan(&existingID)
+			hasActive := err == nil
+
+			if triggered && !hasActive {
+				// Create new alert.
+				alertID := uuid.New().String()
+				_, err := db.Exec(`INSERT INTO alerts (id, rule_id, machine_id, message, severity) VALUES (?, ?, ?, ?, ?)`,
+					alertID, rule.ID, m.id, msg, rule.Severity)
+				if err != nil {
+					log.Printf("alert eval: error creating alert: %v", err)
+					continue
+				}
+				log.Printf("ALERT [%s] %s on %s: %s", rule.Severity, rule.Name, m.hostname, msg)
+
+				// Send SSE.
+				alert := Alert{
+					ID:        alertID,
+					RuleID:    &rule.ID,
+					MachineID: m.id,
+					Message:   msg,
+					Severity:  rule.Severity,
+					Status:    "active",
+					Hostname:  m.hostname,
+				}
+				broadcastAlertSSE(alert)
+
+				// Send Telegram.
+				icon := "⚠️"
+				if rule.Severity == "critical" {
+					icon = "🔴"
+				}
+				sendTelegram(fmt.Sprintf("%s <b>BloxOS Alert</b>\n\nMachine: <b>%s</b>\nSeverity: %s\n%s",
+					icon, m.hostname, rule.Severity, msg))
+
+			} else if !triggered && hasActive {
+				// Resolve the alert.
+				_, err := db.Exec(`UPDATE alerts SET status = 'resolved', resolved_at = CURRENT_TIMESTAMP WHERE id = ?`, existingID)
+				if err != nil {
+					log.Printf("alert eval: error resolving alert: %v", err)
+					continue
+				}
+				log.Printf("RESOLVED: %s on %s", rule.Name, m.hostname)
+
+				alert := Alert{
+					ID:        existingID,
+					RuleID:    &rule.ID,
+					MachineID: m.id,
+					Message:   msg,
+					Severity:  rule.Severity,
+					Status:    "resolved",
+					Hostname:  m.hostname,
+				}
+				broadcastAlertSSE(alert)
+
+				sendTelegram(fmt.Sprintf("✅ <b>Resolved</b>: %s on <b>%s</b> is back to normal", rule.Name, m.hostname))
+			}
+		}
+	}
+}
+
+func compareValue(value float64, operator string, threshold float64) bool {
+	switch operator {
+	case "gt":
+		return value > threshold
+	case "lt":
+		return value < threshold
+	case "eq":
+		return value == threshold
+	default:
+		return false
+	}
+}
+
+func getAlertRules(enabledOnly bool) ([]AlertRule, error) {
+	query := `SELECT id, name, metric, operator, threshold, duration_secs, severity, enabled, created_at FROM alert_rules`
+	if enabledOnly {
+		query += ` WHERE enabled = TRUE`
+	}
+	query += ` ORDER BY created_at`
+
+	rows, err := db.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var rules []AlertRule
+	for rows.Next() {
+		var r AlertRule
+		if err := rows.Scan(&r.ID, &r.Name, &r.Metric, &r.Operator, &r.Threshold,
+			&r.DurationSecs, &r.Severity, &r.Enabled, &r.CreatedAt); err != nil {
+			continue
+		}
+		rules = append(rules, r)
+	}
+	if rules == nil {
+		rules = []AlertRule{}
+	}
+	return rules, nil
+}
+
+func broadcastAlertSSE(alert Alert) {
+	data, err := json.Marshal(alert)
+	if err != nil {
+		return
+	}
+	// Wrap as SSE event.
+	event := fmt.Sprintf("event: alert\ndata: %s\n\n", string(data))
+	sseClientsMu.RLock()
+	defer sseClientsMu.RUnlock()
+	for ch := range sseClients {
+		select {
+		case ch <- []byte(event):
+		default:
+		}
+	}
+}
+
+func sendTelegram(text string) {
+	if telegramToken == "" || telegramChatID == "" {
+		return
+	}
+	payload := map[string]string{
+		"chat_id":    telegramChatID,
+		"text":       text,
+		"parse_mode": "HTML",
+	}
+	body, _ := json.Marshal(payload)
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", telegramToken)
+	resp, err := http.Post(url, "application/json", bytes.NewReader(body))
+	if err != nil {
+		log.Printf("telegram send error: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		b, _ := io.ReadAll(resp.Body)
+		log.Printf("telegram API error %d: %s", resp.StatusCode, string(b))
+	}
+}
+
+// --- Alert REST API ---
+
+func handleListAlerts(c echo.Context) error {
+	status := c.QueryParam("status")
+	query := `SELECT a.id, a.rule_id, a.machine_id, a.message, a.severity, a.status, a.triggered_at, a.resolved_at,
+		COALESCE(m.hostname, a.machine_id) as hostname
+		FROM alerts a LEFT JOIN machines m ON m.id = a.machine_id`
+	if status == "" || status == "active" {
+		query += ` WHERE a.status = 'active'`
+	}
+	query += ` ORDER BY a.triggered_at DESC LIMIT 200`
+
+	rows, err := db.Query(query)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	defer rows.Close()
+
+	var alerts []Alert
+	for rows.Next() {
+		var a Alert
+		if err := rows.Scan(&a.ID, &a.RuleID, &a.MachineID, &a.Message, &a.Severity,
+			&a.Status, &a.TriggeredAt, &a.ResolvedAt, &a.Hostname); err != nil {
+			continue
+		}
+		alerts = append(alerts, a)
+	}
+	if alerts == nil {
+		alerts = []Alert{}
+	}
+	return c.JSON(http.StatusOK, alerts)
+}
+
+func handleAlertCount(c echo.Context) error {
+	var count int
+	err := db.QueryRow(`SELECT COUNT(*) FROM alerts WHERE status = 'active'`).Scan(&count)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	return c.JSON(http.StatusOK, map[string]int{"count": count})
+}
+
+func handleAcknowledgeAlert(c echo.Context) error {
+	id := c.Param("id")
+	res, err := db.Exec(`UPDATE alerts SET status = 'acknowledged' WHERE id = ? AND status = 'active'`, id)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "alert not found or already resolved"})
+	}
+	return c.JSON(http.StatusOK, map[string]string{"status": "acknowledged"})
+}
+
+func handleListAlertRules(c echo.Context) error {
+	rules, err := getAlertRules(false)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	return c.JSON(http.StatusOK, rules)
+}
+
+func handleUpdateAlertRule(c echo.Context) error {
+	id := c.Param("id")
+	var body struct {
+		Enabled   *bool    `json:"enabled"`
+		Threshold *float64 `json:"threshold"`
+		Name      *string  `json:"name"`
+	}
+	if err := c.Bind(&body); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid body"})
+	}
+
+	if body.Enabled != nil {
+		_, err := db.Exec(`UPDATE alert_rules SET enabled = ? WHERE id = ?`, *body.Enabled, id)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		}
+	}
+	if body.Threshold != nil {
+		_, err := db.Exec(`UPDATE alert_rules SET threshold = ? WHERE id = ?`, *body.Threshold, id)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		}
+	}
+	if body.Name != nil {
+		_, err := db.Exec(`UPDATE alert_rules SET name = ? WHERE id = ?`, *body.Name, id)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		}
+	}
+
+	return c.JSON(http.StatusOK, map[string]string{"status": "updated"})
+}
+
+// --- Tags ---
+
+func handleSetTags(c echo.Context) error {
+	id := c.Param("id")
+	var body struct {
+		Tags []string `json:"tags"`
+	}
+	if err := c.Bind(&body); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid body"})
+	}
+	tagsStr := strings.Join(body.Tags, ",")
+	_, err := db.Exec(`UPDATE machines SET tags = ? WHERE id = ?`, tagsStr, id)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	return c.JSON(http.StatusOK, map[string]string{"status": "updated", "tags": tagsStr})
+}
+
+// --- Install Script + Token ---
+
+func handleCreateToken(c echo.Context) error {
+	token := uuid.New().String()
+	h := sha256.Sum256([]byte(token))
+	tokenHash := hex.EncodeToString(h[:])
+	expiresAt := time.Now().Add(15 * time.Minute)
+
+	_, err := db.Exec(`INSERT INTO tokens (token_hash, expires_at) VALUES (?, ?)`, tokenHash, expiresAt)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"token":      token,
+		"expires_at": expiresAt.Format(time.RFC3339),
+		"command":    fmt.Sprintf("curl -sL http://192.168.16.113:4000/install.sh | BLOXOS_HUB=ws://192.168.16.113:4000 BLOXOS_TOKEN=%s bash", token),
+	})
+}
+
+func handleInstallScript(c echo.Context) error {
+	script := `#!/bin/bash
+set -euo pipefail
+
+echo "=== BloxOS Agent Installer ==="
+
+# Detect architecture.
+ARCH=$(uname -m)
+case "$ARCH" in
+  x86_64)  ARCH="amd64" ;;
+  aarch64) ARCH="arm64" ;;
+  *) echo "Unsupported architecture: $ARCH"; exit 1 ;;
+esac
+
+HUB="${BLOXOS_HUB:?BLOXOS_HUB must be set}"
+TOKEN="${BLOXOS_TOKEN:?BLOXOS_TOKEN must be set}"
+HUB_HTTP=$(echo "$HUB" | sed 's|^ws://|http://|; s|^wss://|https://|')
+
+echo "Hub: $HUB_HTTP"
+echo "Arch: $ARCH"
+
+# Download agent binary.
+echo "Downloading agent binary..."
+curl -fsSL -o /tmp/bloxos-agent "${HUB_HTTP}/download/agent?arch=${ARCH}"
+chmod +x /tmp/bloxos-agent
+
+# Create system user (if not exists).
+if ! id -u bloxos &>/dev/null; then
+  sudo useradd -r -s /usr/sbin/nologin bloxos || true
+fi
+
+# Install binary.
+sudo mv /tmp/bloxos-agent /usr/local/bin/bloxos-agent
+
+# Create systemd service.
+sudo tee /etc/systemd/system/bloxos-agent.service > /dev/null << SVCEOF
+[Unit]
+Description=BloxOS Agent
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Environment="BLOXOS_HUB=${HUB}"
+Environment="BLOXOS_TOKEN=${TOKEN}"
+ExecStart=/usr/local/bin/bloxos-agent
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+
+# Enable and start.
+sudo systemctl daemon-reload
+sudo systemctl enable bloxos-agent
+sudo systemctl start bloxos-agent
+
+echo "=== BloxOS Agent installed and running ==="
+echo "Check status: systemctl status bloxos-agent"
+`
+	return c.String(http.StatusOK, script)
+}
+
+func handleDownloadAgent(c echo.Context) error {
+	// Serve the pre-built agent binary.
+	binaryPath := "/home/bokiko/bloxos/agent/bloxos-agent"
+	if _, err := os.Stat(binaryPath); os.IsNotExist(err) {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "agent binary not found"})
+	}
+	return c.File(binaryPath)
+}
+
+// --- Existing Handlers ---
 
 func handleHealth(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
@@ -388,7 +985,6 @@ func handleAgentWS(c echo.Context) error {
 func handleStartTerminal(c echo.Context) error {
 	machineID := c.Param("id")
 
-	// Check agent is connected.
 	agentsMu.RLock()
 	agent, ok := agents[machineID]
 	agentsMu.RUnlock()
@@ -398,7 +994,6 @@ func handleStartTerminal(c echo.Context) error {
 
 	sessionID := uuid.New().String()
 
-	// Create session in memory.
 	session := &TerminalSession{
 		ID:        sessionID,
 		MachineID: machineID,
@@ -408,13 +1003,11 @@ func handleStartTerminal(c echo.Context) error {
 	termSessions[sessionID] = session
 	termSessionsMu.Unlock()
 
-	// Record in DB.
 	_, err := db.Exec(`INSERT INTO terminal_sessions (id, machine_id) VALUES (?, ?)`, sessionID, machineID)
 	if err != nil {
 		log.Printf("terminal session DB insert error: %v", err)
 	}
 
-	// Tell the agent to start a terminal with this session ID.
 	cmd := CommandToAgent{
 		Type:      "start_terminal",
 		ID:        "term-" + sessionID[:8],
@@ -425,7 +1018,6 @@ func handleStartTerminal(c echo.Context) error {
 	err = agent.Conn.WriteMessage(websocket.TextMessage, cmdData)
 	agent.WriteMu.Unlock()
 	if err != nil {
-		// Clean up.
 		termSessionsMu.Lock()
 		delete(termSessions, sessionID)
 		termSessionsMu.Unlock()
@@ -436,7 +1028,6 @@ func handleStartTerminal(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]string{"session_id": sessionID})
 }
 
-// handleCloseTerminal closes a terminal session.
 func handleCloseTerminal(c echo.Context) error {
 	sessionID := c.Param("session_id")
 
@@ -451,7 +1042,6 @@ func handleCloseTerminal(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "session not found"})
 	}
 
-	// Close both WebSocket connections.
 	session.mu.Lock()
 	if session.AgentWS != nil {
 		session.AgentWS.Close()
@@ -461,14 +1051,12 @@ func handleCloseTerminal(c echo.Context) error {
 	}
 	session.mu.Unlock()
 
-	// Update DB.
 	_, _ = db.Exec(`UPDATE terminal_sessions SET ended_at = CURRENT_TIMESTAMP, status = 'closed' WHERE id = ?`, sessionID)
 
 	log.Printf("terminal session %s closed", sessionID)
 	return c.JSON(http.StatusOK, map[string]string{"status": "closed"})
 }
 
-// handleTerminalWS handles WebSocket connections for terminal relay (both agent and browser).
 func handleTerminalWS(c echo.Context) error {
 	sessionID := c.Param("session_id")
 	role := c.QueryParam("role")
@@ -498,7 +1086,6 @@ func handleTerminalWS(c echo.Context) error {
 		log.Printf("terminal %s: browser connected", sessionID)
 	}
 
-	// Check if both sides are connected — start relay.
 	agentWS := session.AgentWS
 	browserWS := session.BrowserWS
 	session.mu.Unlock()
@@ -506,7 +1093,6 @@ func handleTerminalWS(c echo.Context) error {
 	if agentWS != nil && browserWS != nil {
 		go terminalRelay(sessionID, session)
 	} else {
-		// Wait for the other side. If it doesn't connect within 30s, clean up.
 		go func() {
 			time.Sleep(30 * time.Second)
 			session.mu.Lock()
@@ -520,14 +1106,10 @@ func handleTerminalWS(c echo.Context) error {
 		}()
 	}
 
-	// Block until session is done (the relay goroutine will handle the piping).
-	// We need to block here for the WebSocket connection to stay alive.
-	// Wait for the session to be cleaned up.
 	<-waitForSessionEnd(sessionID)
 	return nil
 }
 
-// waitForSessionEnd returns a channel that closes when the session is removed.
 func waitForSessionEnd(sessionID string) <-chan struct{} {
 	ch := make(chan struct{})
 	go func() {
@@ -545,7 +1127,6 @@ func waitForSessionEnd(sessionID string) <-chan struct{} {
 	return ch
 }
 
-// terminalRelay pipes data between the agent and browser WebSockets.
 func terminalRelay(sessionID string, session *TerminalSession) {
 	log.Printf("terminal %s: relay started", sessionID)
 
@@ -556,7 +1137,6 @@ func terminalRelay(sessionID string, session *TerminalSession) {
 
 	done := make(chan struct{})
 
-	// Browser -> Agent.
 	go func() {
 		defer func() {
 			select {
@@ -578,7 +1158,6 @@ func terminalRelay(sessionID string, session *TerminalSession) {
 		}
 	}()
 
-	// Agent -> Browser.
 	go func() {
 		defer func() {
 			select {
@@ -600,14 +1179,11 @@ func terminalRelay(sessionID string, session *TerminalSession) {
 		}
 	}()
 
-	// Wait for either direction to end.
 	<-done
-
 	log.Printf("terminal %s: relay ended, cleaning up", sessionID)
 	cleanupTerminalSession(sessionID)
 }
 
-// cleanupTerminalSession closes both WebSockets and removes the session.
 func cleanupTerminalSession(sessionID string) {
 	termSessionsMu.Lock()
 	session, ok := termSessions[sessionID]
@@ -629,7 +1205,6 @@ func cleanupTerminalSession(sessionID string) {
 	}
 	session.mu.Unlock()
 
-	// Update DB.
 	_, _ = db.Exec(`UPDATE terminal_sessions SET ended_at = CURRENT_TIMESTAMP, status = 'closed' WHERE id = ?`, sessionID)
 }
 
@@ -784,14 +1359,27 @@ func handleSSE(c echo.Context) error {
 		return fmt.Errorf("streaming not supported")
 	}
 
+	// Send snapshot with alert count.
 	snapshot, _ := getEnrichedMachinesJSON()
 	fmt.Fprintf(c.Response(), "event: snapshot\ndata: %s\n\n", snapshot)
+	flusher.Flush()
+
+	// Send initial alert count.
+	var alertCount int
+	db.QueryRow(`SELECT COUNT(*) FROM alerts WHERE status = 'active'`).Scan(&alertCount)
+	alertCountJSON, _ := json.Marshal(map[string]int{"count": alertCount})
+	fmt.Fprintf(c.Response(), "event: alert_count\ndata: %s\n\n", alertCountJSON)
 	flusher.Flush()
 
 	for {
 		select {
 		case data := <-ch:
-			fmt.Fprintf(c.Response(), "event: metrics\ndata: %s\n\n", data)
+			// Check if it's a pre-formatted SSE event (starts with "event:").
+			if bytes.HasPrefix(data, []byte("event:")) {
+				fmt.Fprintf(c.Response(), "%s", data)
+			} else {
+				fmt.Fprintf(c.Response(), "event: metrics\ndata: %s\n\n", data)
+			}
 			flusher.Flush()
 		case <-c.Request().Context().Done():
 			return nil
@@ -816,10 +1404,11 @@ func handleGetMachine(c echo.Context) error {
 		IP       *string `json:"ip"`
 		OS       *string `json:"os"`
 		Status   string  `json:"status"`
+		Tags     *string `json:"tags"`
 		LastSeen *string `json:"last_seen"`
 	}
-	err := db.QueryRow(`SELECT id, hostname, ip, os, status, last_seen FROM machines WHERE id = ?`, id).
-		Scan(&m.ID, &m.Hostname, &m.IP, &m.OS, &m.Status, &m.LastSeen)
+	err := db.QueryRow(`SELECT id, hostname, ip, os, status, tags, last_seen FROM machines WHERE id = ?`, id).
+		Scan(&m.ID, &m.Hostname, &m.IP, &m.OS, &m.Status, &m.Tags, &m.LastSeen)
 	if err == sql.ErrNoRows {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "machine not found"})
 	}
@@ -989,7 +1578,7 @@ func handleCommand(c echo.Context) error {
 
 func getEnrichedMachinesJSON() ([]byte, error) {
 	rows, err := db.Query(`
-		SELECT m.id, m.hostname, m.ip, m.os, m.status, m.last_seen,
+		SELECT m.id, m.hostname, m.ip, m.os, m.status, m.last_seen, COALESCE(m.tags, ''),
 			COALESCE(met.cpu_percent, 0),
 			COALESCE(met.ram_used_bytes, 0), COALESCE(met.ram_total_bytes, 0),
 			COALESCE(met.disk_used_bytes, 0), COALESCE(met.disk_total_bytes, 0),
@@ -1017,6 +1606,7 @@ func getEnrichedMachinesJSON() ([]byte, error) {
 		IP             *string         `json:"ip"`
 		OS             *string         `json:"os"`
 		Status         string          `json:"status"`
+		Tags           string          `json:"tags"`
 		CPUPercent     float64         `json:"cpu_percent"`
 		RAMUsedBytes   int64           `json:"ram_used_bytes"`
 		RAMTotalBytes  int64           `json:"ram_total_bytes"`
@@ -1036,7 +1626,7 @@ func getEnrichedMachinesJSON() ([]byte, error) {
 	for rows.Next() {
 		var m EnrichedMachine
 		var lastSeen *string
-		if err := rows.Scan(&m.MachineID, &m.Hostname, &m.IP, &m.OS, &m.Status, &lastSeen,
+		if err := rows.Scan(&m.MachineID, &m.Hostname, &m.IP, &m.OS, &m.Status, &lastSeen, &m.Tags,
 			&m.CPUPercent, &m.RAMUsedBytes, &m.RAMTotalBytes,
 			&m.DiskUsedBytes, &m.DiskTotalBytes,
 			&m.GPUTemp, &m.GPUUtil, &m.GPUVRAMUsed, &m.GPUVRAMTotal,
@@ -1097,7 +1687,7 @@ func getContainersForMachine(machineID string) []ContainerInfo {
 }
 
 func getMachinesJSON() ([]byte, error) {
-	rows, err := db.Query(`SELECT id, hostname, ip, os, status, last_seen, created_at FROM machines ORDER BY hostname`)
+	rows, err := db.Query(`SELECT id, hostname, ip, os, status, COALESCE(tags, ''), last_seen, created_at FROM machines ORDER BY hostname`)
 	if err != nil {
 		return nil, err
 	}
@@ -1109,6 +1699,7 @@ func getMachinesJSON() ([]byte, error) {
 		IP        *string `json:"ip"`
 		OS        *string `json:"os"`
 		Status    string  `json:"status"`
+		Tags      string  `json:"tags"`
 		LastSeen  *string `json:"last_seen"`
 		CreatedAt string  `json:"created_at"`
 	}
@@ -1116,7 +1707,7 @@ func getMachinesJSON() ([]byte, error) {
 	var machines []Machine
 	for rows.Next() {
 		var m Machine
-		if err := rows.Scan(&m.ID, &m.Hostname, &m.IP, &m.OS, &m.Status, &m.LastSeen, &m.CreatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.Hostname, &m.IP, &m.OS, &m.Status, &m.Tags, &m.LastSeen, &m.CreatedAt); err != nil {
 			return nil, err
 		}
 		machines = append(machines, m)

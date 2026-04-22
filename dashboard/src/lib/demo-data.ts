@@ -24,8 +24,21 @@ export interface MachineMetrics {
   gpu_vram_used_bytes?: number;
   gpu_vram_total_bytes?: number;
   gpus?: GPUInfo[];
+  tags?: string;
   timestamp: string;
   last_seen?: number; // epoch ms, set by dashboard
+}
+
+export interface AlertData {
+  id: string;
+  rule_id?: string;
+  machine_id: string;
+  message: string;
+  severity: string;
+  status: string;
+  triggered_at?: string;
+  resolved_at?: string;
+  hostname?: string;
 }
 
 export const demoMachines: MachineMetrics[] = [
@@ -43,6 +56,7 @@ export const demoMachines: MachineMetrics[] = [
     gpu_util_percent: 30,
     gpu_vram_used_bytes: 4 * 1024 ** 3,
     gpu_vram_total_bytes: 8 * 1024 ** 3,
+    tags: "inference,production",
     timestamp: new Date().toISOString(),
     last_seen: Date.now(),
   },
@@ -60,6 +74,7 @@ export const demoMachines: MachineMetrics[] = [
     gpu_util_percent: 85,
     gpu_vram_used_bytes: 18 * 1024 ** 3,
     gpu_vram_total_bytes: 24 * 1024 ** 3,
+    tags: "inference",
     timestamp: new Date().toISOString(),
     last_seen: Date.now(),
   },
@@ -77,6 +92,7 @@ export const demoMachines: MachineMetrics[] = [
     gpu_util_percent: 92,
     gpu_vram_used_bytes: 6 * 1024 ** 3,
     gpu_vram_total_bytes: 8 * 1024 ** 3,
+    tags: "dev",
     timestamp: new Date().toISOString(),
     last_seen: Date.now(),
   },
@@ -90,6 +106,7 @@ export const demoMachines: MachineMetrics[] = [
     ram_total_bytes: 16 * 1024 ** 3,
     disk_used_bytes: 200 * 1024 ** 3,
     disk_total_bytes: 500 * 1024 ** 3,
+    tags: "proxmox",
     timestamp: new Date().toISOString(),
     last_seen: Date.now(),
   },
@@ -107,6 +124,7 @@ export const demoMachines: MachineMetrics[] = [
     gpu_util_percent: 60,
     gpu_vram_used_bytes: 8 * 1024 ** 3,
     gpu_vram_total_bytes: 12 * 1024 ** 3,
+    tags: "inference",
     timestamp: new Date().toISOString(),
     last_seen: Date.now(),
   },

@@ -8,17 +8,19 @@
   - [x] Phase 1d: Polish + systemd services (so BloxOS survives reboot)
   - [x] Phase 2: GPU + Network — nvidia-smi GPU done, network/load metrics remaining
   - [x] Phase 3: Terminal — xterm.js + creack/pty + PIN gate + audit logging
-- Now: [→] Phase 4: Alerts + UX — Telegram push, search/filter, tags/groups, list view
+  - [x] Phase 4: Alerts + UX — alert engine, Telegram push, search/filter, tags, list view, alert panel, add machine flow
+- Now: [→] Phase 5: Hardening — metric charts, retention, dashboard auth, agent auto-update, Windows
 - Remaining:
-  - [ ] Phase 5: Hardening — metric charts, retention, dashboard auth, agent auto-update, Windows
+  - [ ] Phase 5: Hardening
 
 ## Current Branch
 `rewrite/bloxos-v2`
 
 ## Immediate Next Steps
-1. Phase 4: Alerts + UX (Telegram push, search/filter)
-2. Test terminal on remote GPU machines (ai-03 with RTX 3080)
-3. Make terminal PIN configurable (env var or settings)
+1. Set BLOXOS_TELEGRAM_TOKEN and BLOXOS_TELEGRAM_CHAT_ID env vars in bloxos-hub.service for Telegram notifications
+2. Phase 5: Metric charts (recharts), retention policy, dashboard auth, agent auto-update
+3. Test terminal on remote GPU machines (ai-03 with RTX 3090)
+4. Make terminal PIN configurable (env var or settings)
 
 ## What Works (Verified 2026-04-22)
 - Agent → Hub → SQLite → SSE → Dashboard: full pipeline working
@@ -28,62 +30,65 @@
 - Toast notifications for command feedback
 - GPU metrics: nvidia-smi XML parsing, per-GPU display (temp, util, VRAM, power, fan)
 - **Terminal: xterm.js + PTY via creack/pty, PIN gate (hardcoded 1234), WebSocket relay, audit logging**
-  - Browser ↔ Hub (relay) ↔ Agent (PTY) — full bidirectional I/O
-  - Terminal resize handling (FitAddon + resize messages to PTY)
-  - Expand/collapse toggle (360px / 600px)
-  - Connection state management: locked → PIN entry → connecting → active → disconnected
-  - Reconnect button on disconnect
-  - Session tracking in terminal_sessions table (start/end times, status)
-  - PTY runs as bokiko user (not root)
-  - Session IDs are UUIDs (not guessable)
+- **Alert Engine (Phase 4):**
+  - 6 default alert rules: CPU>90%, RAM>95%, Disk>90%, GPU>80C (warn), GPU>90C (crit), Offline>120s (crit)
+  - Evaluation loop every 30s — auto-creates and auto-resolves alerts
+  - Telegram push notifications (new alert + resolved) — requires BLOXOS_TELEGRAM_TOKEN + BLOXOS_TELEGRAM_CHAT_ID env vars
+  - REST API: GET /api/alerts, GET /api/alerts/active/count, POST /api/alerts/:id/acknowledge
+  - GET /api/alert-rules, PUT /api/alert-rules/:id (enable/disable, change threshold)
+  - SSE alert events for real-time dashboard updates
+- **UX Polish (Phase 4):**
+  - Search bar: filter machines by hostname/IP (live, case-insensitive)
+  - Status filter dropdown: All / Online / Warning / Offline
+  - Sort dropdown: Name (A-Z) / Status (worst first) / CPU% / GPU Temp
+  - Grid/List view toggle — list view is a dense table with all key metrics
+  - Machine tags: comma-separated, shown as pills on MachineCard, filterable in search bar
+  - PUT /api/machines/:id/tags — set tags for a machine
+  - Alert slide-out panel: lists active alerts, acknowledge individual or all, real-time via SSE
+  - Add Machine modal: generates one-time install token, shows curl command
+  - POST /api/tokens, GET /install.sh, GET /download/agent — one-line agent install flow
 - Shell injection blocked (target validation regex)
 - Demo mode fallback when hub offline
-- REST: /health, /api/machines, /api/machines/:id, /api/machines/:id/services, /api/machines/:id/containers
-- POST /api/machines/:id/command — synchronous relay with 10s timeout
-- POST /api/machines/:id/terminal — create terminal session
-- DELETE /api/machines/:id/terminal/:session_id — close terminal session
-- GET /ws/terminal/:session_id — WebSocket relay for terminal I/O
+
+## Telegram Setup
+To enable Telegram notifications, add env vars to the hub systemd service:
+```bash
+sudo systemctl edit bloxos-hub
+# Add under [Service]:
+# Environment="BLOXOS_TELEGRAM_TOKEN=your-bot-token"
+# Environment="BLOXOS_TELEGRAM_CHAT_ID=your-chat-id"
+sudo systemctl restart bloxos-hub
+```
 
 ## How to Start (systemd -- auto-starts on boot)
 ```bash
-# All three services are enabled and start automatically on boot.
-# Service files: /etc/systemd/system/bloxos-{hub,agent,dashboard}.service
-# Copies in repo: scripts/systemd/
-
-# Manual control:
 sudo systemctl start bloxos-hub bloxos-agent bloxos-dashboard
 sudo systemctl stop bloxos-hub bloxos-agent bloxos-dashboard
 sudo systemctl restart bloxos-hub bloxos-agent bloxos-dashboard
-
-# Check status:
 systemctl status bloxos-hub bloxos-agent bloxos-dashboard
-
-# View logs:
 journalctl -u bloxos-hub -f
-journalctl -u bloxos-agent -f
-journalctl -u bloxos-dashboard -f
-
-# Verify:
-curl http://localhost:4000/health       # -> {"status":"ok"}
-curl http://localhost:4000/api/machines  # -> machine list
+curl http://localhost:4000/health
+curl http://localhost:4000/api/machines
+curl http://localhost:4000/api/alert-rules
+curl http://localhost:4000/api/alerts
 # Dashboard at http://192.168.16.113:3000
 ```
 
 ## Working Set
-- `hub/main.go` — Go Echo server, WebSocket agent handler, SSE broadcast, SQLite, command relay, terminal relay
+- `hub/main.go` — Go Echo server, WebSocket agent handler, SSE broadcast, SQLite, command relay, terminal relay, alert engine, Telegram, install flow
 - `agent/main.go` — Go agent, gopsutil metrics, WebSocket client, service/Docker discovery, command executor, PTY terminal
-- `dashboard/` — Next.js 15, Tailwind v4, dark mode
-  - `src/app/page.tsx` — Fleet grid
+- `dashboard/` — Next.js 16, Tailwind v4, dark mode
+  - `src/app/page.tsx` — Fleet grid + list view + search/filter/sort + alert panel + add machine
   - `src/app/machine/[id]/page.tsx` — Machine detail + terminal UI
-  - `src/components/` — MachineCard, ServicePanel, ContainerPanel, Toast, RebootModal, ProgressBar, StatusBadge, Terminal
-  - `src/hooks/useFleetSSE.ts` — SSE with auto-reconnect
+  - `src/components/` — MachineCard, AlertPanel, AddMachineModal, ServicePanel, ContainerPanel, Toast, RebootModal, ProgressBar, StatusBadge, Terminal
+  - `src/hooks/useFleetSSE.ts` — SSE with auto-reconnect + alert events
+  - `src/lib/demo-data.ts` — Type definitions + demo data
 - `docs/PLAN.md` — Full architecture plan
 
 ## Open Questions
 - UNCONFIRMED: Terminal on remote machines (tested only on bloxOs local agent)
 - TODO: Make terminal PIN configurable (env var or hub config)
 - TODO: Full I/O audit logging for terminal sessions (Phase 5)
-- Architecture: Using nvidia-smi exec (not go-nvml/CGO) so agent compiles on GPU-less build machines
 - TODO: Decide metric retention policy (7d granular + downsample, or flat 90d?)
 
 ## Key URLs
@@ -91,7 +96,6 @@ curl http://localhost:4000/api/machines  # -> machine list
 - Hub API: http://192.168.16.113:4000
 - Hub health: http://192.168.16.113:4000/health
 - Repo: https://github.com/bokiko/bloxos (PRIVATE)
-- Plan: /Users/bokiko/.claude/plans/calm-baking-eclipse.md (Mac) or docs/PLAN.md (repo)
 
 ## Tech Stack
 - Hub + Agent: Go 1.25.0 (Echo, gorilla/websocket, gopsutil, modernc.org/sqlite, creack/pty)

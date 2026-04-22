@@ -30,3 +30,4 @@ Thumbs.db
 /agent/agent
 /hub/hub
 *.db-shm
+.bak
