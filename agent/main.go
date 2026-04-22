@@ -344,7 +344,7 @@ func handleCommand(conn *websocket.Conn, mu *sync.Mutex, msg []byte) {
 
 	// Handle start_terminal separately — it has its own flow.
 	if cmd.Type == "start_terminal" {
-		handleStartTerminal(cmd)
+		handleStartTerminal(cmd, msg)
 		return
 	}
 
@@ -419,10 +419,28 @@ func handleCommand(conn *websocket.Conn, mu *sync.Mutex, msg []byte) {
 }
 
 // handleStartTerminal spawns a PTY and connects it to the hub via a dedicated WebSocket.
-func handleStartTerminal(cmd Command) {
-	sessionID := cmd.SessionID
+// TerminalCommand extends Command with terminal_token.
+type TerminalCommand struct {
+	Type          string `json:"type"`
+	Target        string `json:"target"`
+	ID            string `json:"id"`
+	SessionID     string `json:"session_id,omitempty"`
+	TerminalToken string `json:"terminal_token,omitempty"`
+}
+
+func handleStartTerminal(cmd Command, rawMsg []byte) {
+	// Re-parse to get terminal_token field.
+	var termCmd TerminalCommand
+	json.Unmarshal(rawMsg, &termCmd)
+
+	sessionID := termCmd.SessionID
 	if sessionID == "" {
 		log.Printf("start_terminal: missing session_id")
+		return
+	}
+	terminalToken := termCmd.TerminalToken
+	if terminalToken == "" {
+		log.Printf("start_terminal: missing terminal_token")
 		return
 	}
 	log.Printf("starting terminal session: %s", sessionID)
@@ -433,8 +451,8 @@ func handleStartTerminal(cmd Command) {
 		log.Printf("terminal: invalid hub URL: %v", err)
 		return
 	}
-	// Build terminal relay URL: ws://host:port/ws/terminal/{session_id}?role=agent
-	termURL := fmt.Sprintf("ws://%s/ws/terminal/%s?role=agent", u.Host, sessionID)
+	// Build terminal relay URL with terminal_token for auth (Finding #4).
+	termURL := fmt.Sprintf("ws://%s/ws/terminal/%s?role=agent&terminal_token=%s", u.Host, sessionID, url.QueryEscape(terminalToken))
 
 	// Spawn bash PTY.
 	bashCmd := exec.Command("bash")

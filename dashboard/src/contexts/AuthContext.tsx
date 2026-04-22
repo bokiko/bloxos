@@ -2,6 +2,7 @@
 
 import { createContext, useContext, useEffect, useState, useCallback, ReactNode } from "react";
 import { useRouter, usePathname } from "next/navigation";
+import { ChangePasswordModal } from "@/components/ChangePasswordModal";
 
 interface AuthContextType {
   token: string | null;
@@ -24,6 +25,8 @@ const HUB_URL = process.env.NEXT_PUBLIC_HUB_URL || "http://localhost:4000";
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(null);
   const [checked, setChecked] = useState(false);
+  const [passwordChangeRequired, setPasswordChangeRequired] = useState(false);
+  const [pinChangeRequired, setPinChangeRequired] = useState(false);
   const router = useRouter();
   const pathname = usePathname();
 
@@ -35,8 +38,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const payload = JSON.parse(atob(stored.split(".")[1]));
         if (payload.exp * 1000 > Date.now()) {
           setToken(stored);
+          // Check stored change requirements.
+          const pwReq = localStorage.getItem("bloxos_pw_change_required");
+          const pinReq = localStorage.getItem("bloxos_pin_change_required");
+          if (pwReq === "true") setPasswordChangeRequired(true);
+          if (pinReq === "true") setPinChangeRequired(true);
         } else {
           localStorage.removeItem("bloxos_token");
+          localStorage.removeItem("bloxos_pw_change_required");
+          localStorage.removeItem("bloxos_pin_change_required");
         }
       } catch {
         localStorage.removeItem("bloxos_token");
@@ -62,6 +72,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const data = await res.json();
       localStorage.setItem("bloxos_token", data.token);
       setToken(data.token);
+
+      // Check if password/PIN change is required (Finding #2).
+      if (data.password_change_required) {
+        setPasswordChangeRequired(true);
+        localStorage.setItem("bloxos_pw_change_required", "true");
+      }
+      if (data.pin_change_required) {
+        setPinChangeRequired(true);
+        localStorage.setItem("bloxos_pin_change_required", "true");
+      }
+
       return true;
     } catch {
       return false;
@@ -70,7 +91,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(() => {
     localStorage.removeItem("bloxos_token");
+    localStorage.removeItem("bloxos_pw_change_required");
+    localStorage.removeItem("bloxos_pin_change_required");
     setToken(null);
+    setPasswordChangeRequired(false);
+    setPinChangeRequired(false);
     router.push("/login");
   }, [router]);
 
@@ -81,20 +106,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       headers.set("Authorization", `Bearer ${currentToken}`);
     }
     const res = await fetch(url, { ...init, headers });
-    // Only logout on 401 for explicit auth endpoints, not background fetches.
-    // Background SSE reconnects and sparkline fetches should not crash the page.
     if (res.status === 401) {
-      // Check if token is actually expired vs transient error.
       try {
         const payload = JSON.parse(atob((currentToken || "").split(".")[1]));
         if (payload.exp * 1000 < Date.now()) {
-          // Token genuinely expired — logout.
           localStorage.removeItem("bloxos_token");
           setToken(null);
           router.push("/login");
         }
       } catch {
-        // Can't parse token — logout.
         localStorage.removeItem("bloxos_token");
         setToken(null);
         router.push("/login");
@@ -102,6 +122,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     return res;
   }, [router]);
+
+  const handlePasswordChanged = useCallback(() => {
+    setPasswordChangeRequired(false);
+    localStorage.removeItem("bloxos_pw_change_required");
+  }, []);
+
+  const handlePinChanged = useCallback(() => {
+    setPinChangeRequired(false);
+    localStorage.removeItem("bloxos_pin_change_required");
+  }, []);
 
   if (!checked) {
     return (
@@ -113,6 +143,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   return (
     <AuthContext.Provider value={{ token, login, logout, isAuthenticated: !!token, authFetch }}>
+      {/* Force password change modal (Finding #2) */}
+      {token && passwordChangeRequired && (
+        <ChangePasswordModal type="password" onComplete={handlePasswordChanged} />
+      )}
+      {/* Force PIN change modal after password is changed (Finding #2) */}
+      {token && !passwordChangeRequired && pinChangeRequired && (
+        <ChangePasswordModal type="pin" onComplete={handlePinChanged} />
+      )}
       {children}
     </AuthContext.Provider>
   );
