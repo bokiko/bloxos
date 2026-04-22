@@ -548,9 +548,33 @@ func handleStartTerminal(cmd Command, rawMsg []byte) {
 	}
 	termURL := fmt.Sprintf("%s://%s/ws/terminal/%s?role=agent&terminal_token=%s", wsScheme, u.Host, sessionID, url.QueryEscape(terminalToken))
 
-	// Spawn bash PTY.
-	bashCmd := exec.Command("bash")
-	bashCmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	// Spawn bash PTY as non-root user for security.
+	// Uses BLOXOS_TERMINAL_USER env var, or falls back to the owner of the
+	// agent binary's parent directory, or "bokiko", or current user.
+	bashCmd := exec.Command("bash", "-l")
+	termUser := resolveTerminalUser()
+	if termUser != nil && termUser.Uid != "0" {
+		uid, _ := strconv.ParseUint(termUser.Uid, 10, 32)
+		gid, _ := strconv.ParseUint(termUser.Gid, 10, 32)
+		bashCmd.SysProcAttr = &syscall.SysProcAttr{
+			Credential: &syscall.Credential{
+				Uid: uint32(uid),
+				Gid: uint32(gid),
+			},
+		}
+		bashCmd.Dir = termUser.HomeDir
+		bashCmd.Env = []string{
+			"TERM=xterm-256color",
+			"HOME=" + termUser.HomeDir,
+			"USER=" + termUser.Username,
+			"SHELL=/bin/bash",
+			fmt.Sprintf("PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"),
+		}
+		log.Printf("terminal: spawning shell as user %s (uid=%s)", termUser.Username, termUser.Uid)
+	} else {
+		bashCmd.Env = append(os.Environ(), "TERM=xterm-256color")
+		log.Printf("terminal: WARNING spawning shell as current user (root)")
+	}
 	ptmx, err := pty.Start(bashCmd)
 	if err != nil {
 		log.Printf("terminal: pty.Start failed: %v", err)
@@ -659,6 +683,28 @@ func handleStartTerminal(cmd Command, rawMsg []byte) {
 	case err := <-waitCh:
 		log.Printf("terminal session %s: bash exited: %v", sessionID, err)
 	}
+}
+
+// resolveTerminalUser determines which user to run terminal sessions as.
+// Priority: BLOXOS_TERMINAL_USER env var > "bokiko" > current user.
+func resolveTerminalUser() *user.User {
+	if envUser := os.Getenv("BLOXOS_TERMINAL_USER"); envUser != "" {
+		if u, err := user.Lookup(envUser); err == nil {
+			return u
+		}
+		log.Printf("terminal: BLOXOS_TERMINAL_USER=%s not found, falling back", envUser)
+	}
+	// Try common non-root user.
+	for _, name := range []string{"bokiko", "ubuntu", "admin"} {
+		if u, err := user.Lookup(name); err == nil {
+			return u
+		}
+	}
+	// Fall back to current user (may be root).
+	if u, err := user.Current(); err == nil {
+		return u
+	}
+	return nil
 }
 
 // sendServices discovers systemd services and sends them to the hub.
