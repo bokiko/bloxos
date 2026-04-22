@@ -1,0 +1,15 @@
+[Unit]
+Description=BloxOS Hub API Server
+After=network.target
+
+[Service]
+Type=simple
+User=bokiko
+WorkingDirectory=/home/bokiko/bloxos/hub
+ExecStart=/home/bokiko/bloxos/hub/bloxos-hub
+Restart=always
+RestartSec=5
+Environment=PATH=/usr/local/go/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=multi-user.target

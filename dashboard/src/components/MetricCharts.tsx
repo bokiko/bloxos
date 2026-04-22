@@ -1,0 +1,254 @@
+"use client";
+
+import { useEffect, useState, useCallback } from "react";
+import {
+  AreaChart, Area, XAxis, YAxis, ResponsiveContainer, Tooltip,
+} from "recharts";
+
+const HUB_URL = process.env.NEXT_PUBLIC_HUB_URL || "http://localhost:4000";
+
+type Period = "30m" | "1h" | "6h" | "24h" | "7d";
+
+interface MetricPoint {
+  timestamp: string;
+  cpu_percent: number;
+  ram_used: number;
+  ram_total: number;
+  gpu_temp: number;
+  gpu_util: number;
+  gpu_vram_used: number;
+  gpu_vram_total: number;
+}
+
+interface MetricChartsProps {
+  machineId: string;
+  hasGpu: boolean;
+}
+
+function formatTime(ts: any): string {
+  const d = new Date(ts);
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function formatGB(bytes: number): string {
+  return (bytes / (1024 ** 3)).toFixed(1);
+}
+
+const periods: { label: string; value: Period }[] = [
+  { label: "30m", value: "30m" },
+  { label: "1h", value: "1h" },
+  { label: "6h", value: "6h" },
+  { label: "24h", value: "24h" },
+  { label: "7d", value: "7d" },
+];
+
+export function MetricCharts({ machineId, hasGpu }: MetricChartsProps) {
+  const [period, setPeriod] = useState<Period>("1h");
+  const [data, setData] = useState<MetricPoint[]>([]);
+
+  const fetchData = useCallback(async () => {
+    const token = localStorage.getItem("bloxos_token");
+    const headers: Record<string, string> = {};
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+
+    try {
+      const res = await fetch(
+        `${HUB_URL}/api/machines/${machineId}/metrics/history?period=${period}`,
+        { headers }
+      );
+      if (!res.ok) return;
+      const json = await res.json();
+      setData(json.points || []);
+    } catch { /* ignore */ }
+  }, [machineId, period]);
+
+  useEffect(() => {
+    fetchData();
+    const interval = setInterval(fetchData, 30000);
+    return () => clearInterval(interval);
+  }, [fetchData]);
+
+  const ramData = data.map((p) => ({
+    ...p,
+    ram_pct: p.ram_total > 0 ? (p.ram_used / p.ram_total) * 100 : 0,
+    ram_gb: p.ram_used / (1024 ** 3),
+  }));
+
+  const gpuData = data.map((p) => ({
+    ...p,
+    vram_pct: p.gpu_vram_total > 0 ? (p.gpu_vram_used / p.gpu_vram_total) * 100 : 0,
+    vram_gb: p.gpu_vram_used / (1024 ** 3),
+  }));
+
+  return (
+    <div className="space-y-6">
+      {/* Period selector */}
+      <div className="flex items-center gap-1">
+        <span className="text-xs text-blox-muted mr-2">Period:</span>
+        {periods.map((p) => (
+          <button
+            key={p.value}
+            onClick={() => setPeriod(p.value)}
+            className={`px-2.5 py-1 text-[11px] rounded-md transition-colors ${
+              period === p.value
+                ? "bg-blox-blue/10 text-blox-blue border border-blox-blue/30"
+                : "text-blox-muted hover:text-blox-text border border-transparent"
+            }`}
+          >
+            {p.label}
+          </button>
+        ))}
+      </div>
+
+      {data.length < 2 ? (
+        <div className="text-center py-8 text-blox-muted text-xs">
+          Not enough data yet. Metrics are collected every 30 seconds.
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* CPU Chart */}
+          <div className="bg-blox-card border border-blox-border rounded-lg p-4">
+            <h4 className="text-xs font-medium text-blox-text mb-3">CPU Usage (%)</h4>
+            <ResponsiveContainer width="100%" height={200}>
+              <AreaChart data={data}>
+                <defs>
+                  <linearGradient id="cpuGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
+                    <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <XAxis
+                  dataKey="timestamp"
+                  tickFormatter={formatTime}
+                  tick={{ fontSize: 10, fill: "#6b7280" }}
+                  axisLine={false}
+                  tickLine={false}
+                />
+                <YAxis
+                  domain={[0, 100]}
+                  tick={{ fontSize: 10, fill: "#6b7280" }}
+                  axisLine={false}
+                  tickLine={false}
+                  width={30}
+                />
+                <Tooltip
+                  contentStyle={{ background: "#1a1a2e", border: "1px solid #2a2a3e", borderRadius: 6, fontSize: 11 }}
+                  labelFormatter={formatTime}
+                  formatter={(v: any) => [`${v.toFixed(1)}%`, "CPU"]}
+                />
+                <Area type="monotone" dataKey="cpu_percent" stroke="#3b82f6" fill="url(#cpuGrad)" strokeWidth={1.5} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+
+          {/* RAM Chart */}
+          <div className="bg-blox-card border border-blox-border rounded-lg p-4">
+            <h4 className="text-xs font-medium text-blox-text mb-3">RAM Usage (GB)</h4>
+            <ResponsiveContainer width="100%" height={200}>
+              <AreaChart data={ramData}>
+                <defs>
+                  <linearGradient id="ramGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.3} />
+                    <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <XAxis
+                  dataKey="timestamp"
+                  tickFormatter={formatTime}
+                  tick={{ fontSize: 10, fill: "#6b7280" }}
+                  axisLine={false}
+                  tickLine={false}
+                />
+                <YAxis
+                  tick={{ fontSize: 10, fill: "#6b7280" }}
+                  axisLine={false}
+                  tickLine={false}
+                  width={30}
+                  tickFormatter={(v: number) => formatGB(v * 1024 ** 3)}
+                />
+                <Tooltip
+                  contentStyle={{ background: "#1a1a2e", border: "1px solid #2a2a3e", borderRadius: 6, fontSize: 11 }}
+                  labelFormatter={formatTime}
+                  formatter={(v: any) => [`${v.toFixed(1)} GB`, "RAM"]}
+                />
+                <Area type="monotone" dataKey="ram_gb" stroke="#8b5cf6" fill="url(#ramGrad)" strokeWidth={1.5} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+
+          {/* GPU Temp Chart */}
+          {hasGpu && (
+            <div className="bg-blox-card border border-blox-border rounded-lg p-4">
+              <h4 className="text-xs font-medium text-blox-text mb-3">GPU Temperature (C)</h4>
+              <ResponsiveContainer width="100%" height={200}>
+                <AreaChart data={gpuData}>
+                  <defs>
+                    <linearGradient id="gpuTempGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.3} />
+                      <stop offset="95%" stopColor="#f59e0b" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <XAxis
+                    dataKey="timestamp"
+                    tickFormatter={formatTime}
+                    tick={{ fontSize: 10, fill: "#6b7280" }}
+                    axisLine={false}
+                    tickLine={false}
+                  />
+                  <YAxis
+                    tick={{ fontSize: 10, fill: "#6b7280" }}
+                    axisLine={false}
+                    tickLine={false}
+                    width={30}
+                  />
+                  <Tooltip
+                    contentStyle={{ background: "#1a1a2e", border: "1px solid #2a2a3e", borderRadius: 6, fontSize: 11 }}
+                    labelFormatter={formatTime}
+                    formatter={(v: any) => [`${v.toFixed(0)} C`, "GPU Temp"]}
+                  />
+                  <Area type="monotone" dataKey="gpu_temp" stroke="#f59e0b" fill="url(#gpuTempGrad)" strokeWidth={1.5} />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+
+          {/* VRAM Chart */}
+          {hasGpu && (
+            <div className="bg-blox-card border border-blox-border rounded-lg p-4">
+              <h4 className="text-xs font-medium text-blox-text mb-3">VRAM Usage (GB)</h4>
+              <ResponsiveContainer width="100%" height={200}>
+                <AreaChart data={gpuData}>
+                  <defs>
+                    <linearGradient id="vramGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#10b981" stopOpacity={0.3} />
+                      <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <XAxis
+                    dataKey="timestamp"
+                    tickFormatter={formatTime}
+                    tick={{ fontSize: 10, fill: "#6b7280" }}
+                    axisLine={false}
+                    tickLine={false}
+                  />
+                  <YAxis
+                    tick={{ fontSize: 10, fill: "#6b7280" }}
+                    axisLine={false}
+                    tickLine={false}
+                    width={30}
+                  />
+                  <Tooltip
+                    contentStyle={{ background: "#1a1a2e", border: "1px solid #2a2a3e", borderRadius: 6, fontSize: 11 }}
+                    labelFormatter={formatTime}
+                    formatter={(v: any) => [`${v.toFixed(1)} GB`, "VRAM"]}
+                  />
+                  <Area type="monotone" dataKey="vram_gb" stroke="#10b981" fill="url(#vramGrad)" strokeWidth={1.5} />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}

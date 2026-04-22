@@ -1,0 +1,31 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-blox-bg: #0a0a0f;
+  --color-blox-card: #12121a;
+  --color-blox-border: #1e1e2e;
+  --color-blox-text: #e4e4ef;
+  --color-blox-muted: #6b6b80;
+  --color-blox-green: #22c55e;
+  --color-blox-amber: #f59e0b;
+  --color-blox-red: #ef4444;
+  --color-blox-blue: #3b82f6;
+}
+
+body {
+  background: var(--color-blox-bg);
+  color: var(--color-blox-text);
+  font-family: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-blox-bg);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-blox-border);
+  border-radius: 3px;
+}
