@@ -1208,3 +1208,217 @@ func TestTerminalAuditFields(t *testing.T) {
 	}
 	termSessionsMu.Unlock()
 }
+
+
+// --- API Machine Tests ---
+
+func TestCreateAPIMachine(t *testing.T) {
+	e := setupTestServer(t)
+	markCredentialsRotated(t)
+	token := loginAndGetToken(t, e)
+
+	// Register API machine routes.
+	api := e.Group("", jwtMiddleware, credentialRotationMiddleware)
+	api.GET("/api/api-machines", handleListAPIMachines)
+	api.POST("/api/api-machines", handleCreateAPIMachine)
+	api.DELETE("/api/api-machines/:id", handleDeleteAPIMachine)
+	api.POST("/api/api-machines/:id/poll", handleForceAPIPoll)
+
+	body := `{"name":"Test Proxmox","adapter_type":"proxmox","base_url":"https://192.168.3.2:8006","auth_config":{"token_id":"root@pam!monitor","token_secret":"xxx"},"poll_interval_secs":120}`
+	req := httptest.NewRequest(http.MethodPost, "/api/api-machines", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp["name"] != "Test Proxmox" {
+		t.Errorf("expected name 'Test Proxmox', got %v", resp["name"])
+	}
+	if resp["adapter_type"] != "proxmox" {
+		t.Errorf("expected adapter_type 'proxmox', got %v", resp["adapter_type"])
+	}
+	if resp["id"] == nil || resp["id"] == "" {
+		t.Error("expected non-empty id")
+	}
+	pollInterval, _ := resp["poll_interval_secs"].(float64)
+	if pollInterval != 120 {
+		t.Errorf("expected poll_interval_secs 120, got %v", pollInterval)
+	}
+
+	// Stop any pollers started during the test.
+	stopAllAPIPollers()
+	t.Log("create api machine: OK")
+}
+
+func TestCreateAPIMachineInvalidAdapter(t *testing.T) {
+	e := setupTestServer(t)
+	markCredentialsRotated(t)
+	token := loginAndGetToken(t, e)
+
+	api := e.Group("", jwtMiddleware, credentialRotationMiddleware)
+	api.POST("/api/api-machines", handleCreateAPIMachine)
+
+	body := `{"name":"Bad","adapter_type":"unknown","base_url":"http://x","auth_config":{}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/api-machines", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	t.Log("invalid adapter rejected: OK")
+}
+
+func TestListAPIMachines(t *testing.T) {
+	e := setupTestServer(t)
+	markCredentialsRotated(t)
+	token := loginAndGetToken(t, e)
+
+	api := e.Group("", jwtMiddleware, credentialRotationMiddleware)
+	api.GET("/api/api-machines", handleListAPIMachines)
+	api.POST("/api/api-machines", handleCreateAPIMachine)
+
+	// Create two machines.
+	for _, name := range []string{"Machine A", "Machine B"} {
+		body := fmt.Sprintf(`{"name":"%s","adapter_type":"synology","base_url":"http://192.168.1.1:5000","auth_config":{"username":"u","password":"p"}}`, name)
+		req := httptest.NewRequest(http.MethodPost, "/api/api-machines", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		e.ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create %s: expected 201, got %d", name, rec.Code)
+		}
+	}
+
+	// List.
+	req := httptest.NewRequest(http.MethodGet, "/api/api-machines", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var machines []APIMachine
+	if err := json.Unmarshal(rec.Body.Bytes(), &machines); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(machines) != 2 {
+		t.Fatalf("expected 2 machines, got %d", len(machines))
+	}
+
+	stopAllAPIPollers()
+	t.Logf("list api machines: got %d", len(machines))
+}
+
+func TestDeleteAPIMachine(t *testing.T) {
+	e := setupTestServer(t)
+	markCredentialsRotated(t)
+	token := loginAndGetToken(t, e)
+
+	api := e.Group("", jwtMiddleware, credentialRotationMiddleware)
+	api.GET("/api/api-machines", handleListAPIMachines)
+	api.POST("/api/api-machines", handleCreateAPIMachine)
+	api.DELETE("/api/api-machines/:id", handleDeleteAPIMachine)
+
+	// Create a machine.
+	body := `{"name":"ToDelete","adapter_type":"proxmox","base_url":"https://x:8006","auth_config":{"token_id":"a","token_secret":"b"}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/api-machines", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create: expected 201, got %d", rec.Code)
+	}
+
+	var createResp map[string]interface{}
+	json.Unmarshal(rec.Body.Bytes(), &createResp)
+	id := createResp["id"].(string)
+
+	// Delete it.
+	req = httptest.NewRequest(http.MethodDelete, "/api/api-machines/"+id, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec = httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete: expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Verify it's gone.
+	req = httptest.NewRequest(http.MethodGet, "/api/api-machines", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec = httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	var machines []APIMachine
+	json.Unmarshal(rec.Body.Bytes(), &machines)
+	if len(machines) != 0 {
+		t.Fatalf("expected 0 machines after delete, got %d", len(machines))
+	}
+
+	stopAllAPIPollers()
+	t.Log("delete api machine: OK")
+}
+
+func TestDeleteAPIMachineNotFound(t *testing.T) {
+	e := setupTestServer(t)
+	markCredentialsRotated(t)
+	token := loginAndGetToken(t, e)
+
+	api := e.Group("", jwtMiddleware, credentialRotationMiddleware)
+	api.DELETE("/api/api-machines/:id", handleDeleteAPIMachine)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/api-machines/nonexistent-id", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+	t.Log("delete nonexistent: 404 OK")
+}
+
+func TestValidateBaseURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		url     string
+		wantErr bool
+	}{
+		{"valid http", "http://192.168.16.234:5000", false},
+		{"valid https", "https://192.168.7.99:8006", false},
+		{"empty", "", true},
+		{"no scheme", "192.168.1.1:8006", true},
+		{"ftp scheme", "ftp://192.168.1.1", true},
+		{"localhost", "http://localhost:8080", true},
+		{"127.0.0.1", "http://127.0.0.1:8080", true},
+		{"ipv6 loopback", "http://[::1]:8080", true},
+		{"0.0.0.0", "http://0.0.0.0:8080", true},
+		{"cloud metadata", "http://169.254.169.254/latest/meta-data/", true},
+		{"link-local", "http://169.254.1.1/foo", true},
+		{"valid internal ip", "http://192.168.0.199:5000", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateBaseURL(tt.url)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateBaseURL(%q) error = %v, wantErr %v", tt.url, err, tt.wantErr)
+			}
+		})
+	}
+}

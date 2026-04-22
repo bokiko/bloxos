@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"crypto/tls"
 	cryptoRand "crypto/rand"
 	"crypto/sha256"
 	"database/sql"
@@ -12,6 +14,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -243,6 +246,7 @@ func main() {
 
 	// Start cleanup goroutine.
 	go cleanupLoop()
+	startAPIPollers()
 
 	e := echo.New()
 	e.HideBanner = true
@@ -315,6 +319,10 @@ func main() {
 
 	// Bulk endpoints.
 	api.POST("/api/bulk/command", handleBulkCommand)
+	api.GET("/api/api-machines", handleListAPIMachines)
+	api.POST("/api/api-machines", handleCreateAPIMachine)
+	api.DELETE("/api/api-machines/:id", handleDeleteAPIMachine)
+	api.POST("/api/api-machines/:id/poll", handleForceAPIPoll)
 
 	listenAddr := os.Getenv("HUB_LISTEN")
 	if listenAddr == "" {
@@ -3146,5 +3154,664 @@ func getRealIP(c echo.Context) string {
 }
 
 // Suppress unused import warnings.
+// --- API-Polled Machines ---
+
+// APIPollResult holds normalized metrics from an API adapter poll.
+type APIPollResult struct {
+	Hostname   string
+	IP         string
+	OS         string
+	CPUPercent float64
+	RAMUsed    int64
+	RAMTotal   int64
+	DiskUsed   int64
+	DiskTotal  int64
+	Uptime     int64 // seconds
+	Services   []ServiceInfo
+	Containers []ContainerInfo
+}
+
+// APIMachine represents a row in the api_machines table.
+type APIMachine struct {
+	ID               string          `json:"id"`
+	Name             string          `json:"name"`
+	AdapterType      string          `json:"adapter_type"`
+	BaseURL          string          `json:"base_url"`
+	AuthConfig       json.RawMessage `json:"auth_config"`
+	PollIntervalSecs int             `json:"poll_interval_secs"`
+	Enabled          bool            `json:"enabled"`
+	LastPollAt       *string         `json:"last_poll_at"`
+	LastError        *string         `json:"last_error"`
+	CreatedAt        string          `json:"created_at"`
+}
+
+// apiPollerEntry tracks a running poller goroutine for an API machine.
+type apiPollerEntry struct {
+	cancel context.CancelFunc
+}
+
+var (
+	apiPollers   = make(map[string]*apiPollerEntry)
+	apiPollersMu sync.Mutex
+)
+
+// insecureHTTPClient is used for polling self-signed internal APIs.
+var insecureHTTPClient = &http.Client{
+	Timeout: 30 * time.Second,
+	Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	},
+}
+
+// --- Proxmox Adapter ---
+
+func pollProxmox(baseURL string, authConfig json.RawMessage) (*APIPollResult, error) {
+	var auth struct {
+		TokenID     string `json:"token_id"`
+		TokenSecret string `json:"token_secret"`
+	}
+	if err := json.Unmarshal(authConfig, &auth); err != nil {
+		return nil, fmt.Errorf("invalid proxmox auth_config: %w", err)
+	}
+	if auth.TokenID == "" || auth.TokenSecret == "" {
+		return nil, fmt.Errorf("proxmox auth_config requires token_id and token_secret")
+	}
+
+	authHeader := fmt.Sprintf("PVEAPIToken=%s=%s", auth.TokenID, auth.TokenSecret)
+
+	// GET /api2/json/nodes
+	nodesReq, err := http.NewRequest("GET", baseURL+"/api2/json/nodes", nil)
+	if err != nil {
+		return nil, fmt.Errorf("create nodes request: %w", err)
+	}
+	nodesReq.Header.Set("Authorization", authHeader)
+	nodesResp, err := insecureHTTPClient.Do(nodesReq)
+	if err != nil {
+		return nil, fmt.Errorf("proxmox nodes request: %w", err)
+	}
+	defer nodesResp.Body.Close()
+	if nodesResp.StatusCode != 200 {
+		body, _ := io.ReadAll(nodesResp.Body)
+		return nil, fmt.Errorf("proxmox nodes: HTTP %d: %s", nodesResp.StatusCode, string(body))
+	}
+
+	var nodesData struct {
+		Data []struct {
+			Node   string  `json:"node"`
+			Status string  `json:"status"`
+			CPU    float64 `json:"cpu"`
+			Mem    int64   `json:"mem"`
+			MaxMem int64   `json:"maxmem"`
+			Disk   int64   `json:"disk"`
+			MaxDisk int64  `json:"maxdisk"`
+			Uptime int64   `json:"uptime"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(nodesResp.Body).Decode(&nodesData); err != nil {
+		return nil, fmt.Errorf("decode proxmox nodes: %w", err)
+	}
+
+	result := &APIPollResult{OS: "Proxmox VE"}
+
+	// Aggregate across all nodes (typically 1 for standalone).
+	for i, node := range nodesData.Data {
+		if i == 0 {
+			result.Hostname = node.Node
+			result.Uptime = node.Uptime
+		}
+		result.CPUPercent += node.CPU * 100
+		result.RAMUsed += node.Mem
+		result.RAMTotal += node.MaxMem
+		result.DiskUsed += node.Disk
+		result.DiskTotal += node.MaxDisk
+	}
+	if len(nodesData.Data) > 1 {
+		result.CPUPercent /= float64(len(nodesData.Data))
+		result.Hostname = fmt.Sprintf("%s (+%d nodes)", result.Hostname, len(nodesData.Data)-1)
+	}
+
+	// GET /api2/json/cluster/resources for VMs/containers
+	resReq, err := http.NewRequest("GET", baseURL+"/api2/json/cluster/resources", nil)
+	if err != nil {
+		return nil, fmt.Errorf("create resources request: %w", err)
+	}
+	resReq.Header.Set("Authorization", authHeader)
+	resResp, err := insecureHTTPClient.Do(resReq)
+	if err != nil {
+		// Non-fatal: we have node data at least.
+		log.Printf("proxmox resources request failed (non-fatal): %v", err)
+		return result, nil
+	}
+	defer resResp.Body.Close()
+
+	if resResp.StatusCode == 200 {
+		var resData struct {
+			Data []struct {
+				Type   string `json:"type"`
+				VMID   int    `json:"vmid"`
+				Name   string `json:"name"`
+				Status string `json:"status"`
+				Node   string `json:"node"`
+			} `json:"data"`
+		}
+		if err := json.NewDecoder(resResp.Body).Decode(&resData); err == nil {
+			for _, r := range resData.Data {
+				if r.Type == "qemu" || r.Type == "lxc" {
+					result.Containers = append(result.Containers, ContainerInfo{
+						ID:     fmt.Sprintf("%d", r.VMID),
+						Name:   r.Name,
+						Status: r.Status,
+						Image:  r.Type, // "qemu" or "lxc"
+					})
+				}
+			}
+		}
+	}
+
+	return result, nil
+}
+
+// --- Synology Adapter ---
+
+func pollSynology(baseURL string, authConfig json.RawMessage) (*APIPollResult, error) {
+	var auth struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.Unmarshal(authConfig, &auth); err != nil {
+		return nil, fmt.Errorf("invalid synology auth_config: %w", err)
+	}
+	if auth.Username == "" || auth.Password == "" {
+		return nil, fmt.Errorf("synology auth_config requires username and password")
+	}
+
+	// Login — use POST to avoid credentials in URL/logs
+	loginURL := baseURL + "/webapi/auth.cgi"
+	loginResp, err := insecureHTTPClient.PostForm(loginURL, url.Values{
+		"api":     {"SYNO.API.Auth"},
+		"version": {"6"},
+		"method":  {"login"},
+		"account": {auth.Username},
+		"passwd":  {auth.Password},
+		"format":  {"json"},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("synology login request: %w", err)
+	}
+	defer loginResp.Body.Close()
+
+	var loginData struct {
+		Success bool `json:"success"`
+		Data    struct {
+			SID string `json:"sid"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(loginResp.Body).Decode(&loginData); err != nil {
+		return nil, fmt.Errorf("decode synology login: %w", err)
+	}
+	if !loginData.Success || loginData.Data.SID == "" {
+		return nil, fmt.Errorf("synology login failed")
+	}
+	sid := loginData.Data.SID
+
+	// Ensure logout
+	defer func() {
+		logoutURL := fmt.Sprintf("%s/webapi/entry.cgi?api=SYNO.API.Auth&version=6&method=logout&_sid=%s", baseURL, sid)
+		resp, err := insecureHTTPClient.Get(logoutURL)
+		if err == nil {
+			resp.Body.Close()
+		}
+	}()
+
+	result := &APIPollResult{OS: "Synology DSM"}
+
+	// System utilization
+	utilURL := fmt.Sprintf("%s/webapi/entry.cgi?api=SYNO.Core.System.Utilization&version=1&method=get&_sid=%s", baseURL, sid)
+	utilResp, err := insecureHTTPClient.Get(utilURL)
+	if err != nil {
+		return nil, fmt.Errorf("synology utilization request: %w", err)
+	}
+	defer utilResp.Body.Close()
+
+	var utilData struct {
+		Success bool `json:"success"`
+		Data    struct {
+			CPU struct {
+				UserLoad   int `json:"user_load"`
+				SystemLoad int `json:"system_load"`
+			} `json:"cpu"`
+			Memory struct {
+				RealUsage  int `json:"real_usage"` // percentage
+				TotalReal  int `json:"total_real"`  // KB
+			} `json:"memory"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(utilResp.Body).Decode(&utilData); err != nil {
+		return nil, fmt.Errorf("decode synology utilization: %w", err)
+	}
+	if utilData.Success {
+		result.CPUPercent = float64(utilData.Data.CPU.UserLoad + utilData.Data.CPU.SystemLoad)
+		totalBytes := int64(utilData.Data.Memory.TotalReal) * 1024
+		result.RAMTotal = totalBytes
+		result.RAMUsed = totalBytes * int64(utilData.Data.Memory.RealUsage) / 100
+	}
+
+	// Storage
+	storageURL := fmt.Sprintf("%s/webapi/entry.cgi?api=SYNO.Storage.CGI.Storage&version=1&method=load_info&_sid=%s", baseURL, sid)
+	storageResp, err := insecureHTTPClient.Get(storageURL)
+	if err != nil {
+		log.Printf("synology storage request failed (non-fatal): %v", err)
+		return result, nil
+	}
+	defer storageResp.Body.Close()
+
+	var storageData struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Volumes []struct {
+				TotalSize json.RawMessage `json:"total_size"`
+				UsedSize  json.RawMessage `json:"used_size"`
+			} `json:"volumes"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(storageResp.Body).Decode(&storageData); err == nil && storageData.Success {
+		for _, vol := range storageData.Data.Volumes {
+			total := parseJSONInt(vol.TotalSize)
+			used := parseJSONInt(vol.UsedSize)
+			result.DiskTotal += total
+			result.DiskUsed += used
+		}
+	}
+
+	return result, nil
+}
+
+// parseJSONInt tries to parse a JSON value as int64 (handles both string and number).
+func parseJSONInt(raw json.RawMessage) int64 {
+	var n int64
+	if json.Unmarshal(raw, &n) == nil {
+		return n
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		n, _ = strconv.ParseInt(s, 10, 64)
+		return n
+	}
+	return 0
+}
+
+
+// validateBaseURL checks that a base URL is safe to poll (prevents SSRF).
+func validateBaseURL(rawURL string) error {
+	if rawURL == "" {
+		return fmt.Errorf("base_url is required")
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("base_url is not a valid URL")
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("base_url must use http or https scheme")
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if host == "" {
+		return fmt.Errorf("base_url must include a hostname")
+	}
+	// Block localhost variants
+	if host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "0.0.0.0" {
+		return fmt.Errorf("base_url must not target localhost")
+	}
+	// Block cloud metadata endpoint
+	if host == "169.254.169.254" {
+		return fmt.Errorf("base_url must not target cloud metadata service")
+	}
+	// Block link-local range 169.254.x.x
+	if strings.HasPrefix(host, "169.254.") {
+		return fmt.Errorf("base_url must not target link-local addresses")
+	}
+	return nil
+}
+
+// --- API Machine Handlers ---
+
+func handleListAPIMachines(c echo.Context) error {
+	rows, err := db.Query(`SELECT id, name, adapter_type, base_url, auth_config, poll_interval_secs, enabled, last_poll_at, last_error, created_at FROM api_machines ORDER BY name`)
+	if err != nil {
+		log.Printf("api machines: list query error: %v", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal error"})
+	}
+	defer rows.Close()
+
+	var machines []APIMachine
+	for rows.Next() {
+		var m APIMachine
+		var authCfg string
+		if err := rows.Scan(&m.ID, &m.Name, &m.AdapterType, &m.BaseURL, &authCfg, &m.PollIntervalSecs, &m.Enabled, &m.LastPollAt, &m.LastError, &m.CreatedAt); err != nil {
+			log.Printf("api machines: list scan error: %v", err)
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		}
+		// Redact auth_config — never expose credentials to the dashboard
+		m.AuthConfig = json.RawMessage(`"[REDACTED]"`)
+		machines = append(machines, m)
+	}
+	if machines == nil {
+		machines = []APIMachine{}
+	}
+	return c.JSON(http.StatusOK, machines)
+}
+
+func handleCreateAPIMachine(c echo.Context) error {
+	ip := getRealIP(c)
+	if !rateLimiter.Allow("api-machines-create", ip, 3) {
+		return c.JSON(http.StatusTooManyRequests, map[string]string{"error": "rate limit exceeded"})
+	}
+
+	var body struct {
+		Name             string          `json:"name"`
+		AdapterType      string          `json:"adapter_type"`
+		BaseURL          string          `json:"base_url"`
+		AuthConfig       json.RawMessage `json:"auth_config"`
+		PollIntervalSecs int             `json:"poll_interval_secs"`
+	}
+	if err := c.Bind(&body); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+	}
+
+	if body.Name == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "name is required"})
+	}
+	if body.AdapterType != "proxmox" && body.AdapterType != "synology" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "adapter_type must be proxmox or synology"})
+	}
+	if err := validateBaseURL(body.BaseURL); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+	if len(body.AuthConfig) == 0 {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "auth_config is required"})
+	}
+	if body.PollIntervalSecs < 30 {
+		body.PollIntervalSecs = 30
+	}
+	if body.PollIntervalSecs > 3600 {
+		body.PollIntervalSecs = 3600
+	}
+
+	// Enforce max API machines limit
+	var machineCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM api_machines").Scan(&machineCount); err != nil {
+		log.Printf("api machines: count query error: %v", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal error"})
+	}
+	if machineCount >= 50 {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "maximum of 50 API machines reached"})
+	}
+
+	id := uuid.New().String()
+	_, err := db.Exec(`INSERT INTO api_machines (id, name, adapter_type, base_url, auth_config, poll_interval_secs) VALUES (?, ?, ?, ?, ?, ?)`,
+		id, body.Name, body.AdapterType, body.BaseURL, string(body.AuthConfig), body.PollIntervalSecs)
+	if err != nil {
+		log.Printf("api machines: create insert error: %v", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal error"})
+	}
+
+	log.Printf("api machine created: %s (%s, %s)", body.Name, body.AdapterType, id)
+
+	// Start poller for the new machine.
+	startAPIPoller(id, body.Name, body.AdapterType, body.BaseURL, body.AuthConfig, body.PollIntervalSecs)
+
+	return c.JSON(http.StatusCreated, map[string]interface{}{
+		"id":                id,
+		"name":              body.Name,
+		"adapter_type":      body.AdapterType,
+		"base_url":          body.BaseURL,
+		"poll_interval_secs": body.PollIntervalSecs,
+	})
+}
+
+func handleDeleteAPIMachine(c echo.Context) error {
+	id := c.Param("id")
+
+	var name string
+	err := db.QueryRow("SELECT name FROM api_machines WHERE id = ?", id).Scan(&name)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "api machine not found"})
+	}
+
+	// Stop poller.
+	stopAPIPoller(id)
+
+	// Delete api_machine row.
+	if _, err := db.Exec("DELETE FROM api_machines WHERE id = ?", id); err != nil {
+		log.Printf("api machines: delete error: %v", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal error"})
+	}
+
+	// Delete associated machine and metrics.
+	machineID := "api-" + id
+	tx, err := db.Begin()
+	if err == nil {
+		// Note: table names are hardcoded constants, not user input — safe from SQL injection
+		for _, table := range []string{"metrics", "gpu_metrics", "services", "containers", "alerts"} {
+			tx.Exec("DELETE FROM "+table+" WHERE machine_id = ?", machineID)
+		}
+		tx.Exec("DELETE FROM machines WHERE id = ?", machineID)
+		tx.Commit()
+	}
+
+	log.Printf("api machine deleted: %s (%s)", name, id)
+	return c.JSON(http.StatusOK, map[string]string{"status": "deleted", "name": name})
+}
+
+func handleForceAPIPoll(c echo.Context) error {
+	id := c.Param("id")
+
+	var m struct {
+		Name        string `json:"name"`
+		AdapterType string `json:"adapter_type"`
+		BaseURL     string `json:"base_url"`
+		AuthConfig  string `json:"auth_config"`
+	}
+	err := db.QueryRow("SELECT name, adapter_type, base_url, auth_config FROM api_machines WHERE id = ?", id).
+		Scan(&m.Name, &m.AdapterType, &m.BaseURL, &m.AuthConfig)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "api machine not found"})
+	}
+
+	result, pollErr := doPoll(m.AdapterType, m.BaseURL, json.RawMessage(m.AuthConfig))
+	if pollErr != nil {
+		db.Exec("UPDATE api_machines SET last_error = ?, last_poll_at = CURRENT_TIMESTAMP WHERE id = ?", pollErr.Error(), id)
+		return c.JSON(http.StatusBadGateway, map[string]string{"error": pollErr.Error()})
+	}
+
+	storeAPIPollResult(id, m.Name, m.AdapterType, result)
+	db.Exec("UPDATE api_machines SET last_poll_at = CURRENT_TIMESTAMP, last_error = NULL WHERE id = ?", id)
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"hostname":    result.Hostname,
+		"cpu_percent": result.CPUPercent,
+		"ram_used":    result.RAMUsed,
+		"ram_total":   result.RAMTotal,
+		"disk_used":   result.DiskUsed,
+		"disk_total":  result.DiskTotal,
+		"containers":  len(result.Containers),
+	})
+}
+
+// doPoll dispatches to the correct adapter.
+func doPoll(adapterType, baseURL string, authConfig json.RawMessage) (*APIPollResult, error) {
+	switch adapterType {
+	case "proxmox":
+		return pollProxmox(baseURL, authConfig)
+	case "synology":
+		return pollSynology(baseURL, authConfig)
+	default:
+		return nil, fmt.Errorf("unknown adapter type: %s", adapterType)
+	}
+}
+
+// storeAPIPollResult upserts the machine and inserts metrics.
+func storeAPIPollResult(apiMachineID, name, adapterType string, result *APIPollResult) {
+	machineID := "api-" + apiMachineID
+	hostname := result.Hostname
+	if hostname == "" {
+		hostname = name
+	}
+
+	// Extract IP from base_url if not provided.
+	ip := result.IP
+	if ip == "" {
+		// Try to extract host from URL.
+		parts := strings.Split(strings.TrimPrefix(strings.TrimPrefix(name, "https://"), "http://"), ":")
+		if len(parts) > 0 {
+			ip = parts[0]
+		}
+	}
+
+	// Upsert machine.
+	_, err := db.Exec(`INSERT INTO machines (id, hostname, ip, os, status, tags, last_seen)
+		VALUES (?, ?, ?, ?, online, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(id) DO UPDATE SET
+			hostname = excluded.hostname,
+			ip = excluded.ip,
+			os = excluded.os,
+			status = online,
+			tags = excluded.tags,
+			last_seen = CURRENT_TIMESTAMP`,
+		machineID, hostname, ip, result.OS, adapterType)
+	if err != nil {
+		log.Printf("api poll: failed to upsert machine %s: %v", machineID, err)
+	}
+
+	// Insert metrics.
+	_, err = db.Exec(`INSERT INTO metrics (machine_id, cpu_percent, ram_used_bytes, ram_total_bytes, disk_used_bytes, disk_total_bytes)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		machineID, result.CPUPercent, result.RAMUsed, result.RAMTotal, result.DiskUsed, result.DiskTotal)
+	if err != nil {
+		log.Printf("api poll: failed to insert metrics for %s: %v", machineID, err)
+	}
+
+	// Update services.
+	if len(result.Services) > 0 {
+		for _, svc := range result.Services {
+			db.Exec(`INSERT OR REPLACE INTO services (machine_id, name, status, description, updated_at)
+				VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)`, machineID, svc.Name, svc.Status, svc.Description)
+		}
+	}
+
+	// Update containers.
+	if len(result.Containers) > 0 {
+		// Clear old containers first.
+		db.Exec("DELETE FROM containers WHERE machine_id = ?", machineID)
+		for _, ct := range result.Containers {
+			db.Exec(`INSERT INTO containers (machine_id, container_id, name, status, image, updated_at)
+				VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`, machineID, ct.ID, ct.Name, ct.Status, ct.Image)
+		}
+	}
+
+	log.Printf("api poll: %s (%s) cpu=%.1f%% ram=%d/%dMB",
+		hostname, adapterType,
+		result.CPUPercent,
+		result.RAMUsed/1024/1024, result.RAMTotal/1024/1024)
+
+	// Broadcast SSE update.
+	data, _ := getMachinesJSON()
+	sseMsg, _ := json.Marshal(map[string]interface{}{
+		"type": "machines",
+		"data": json.RawMessage(data),
+	})
+	broadcastSSE(sseMsg)
+}
+
+// --- Background Poller ---
+
+func startAPIPollers() {
+	rows, err := db.Query("SELECT id, name, adapter_type, base_url, auth_config, poll_interval_secs FROM api_machines WHERE enabled = TRUE")
+	if err != nil {
+		log.Printf("failed to load api_machines: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	count := 0
+	for rows.Next() {
+		var id, name, adapterType, baseURL, authConfig string
+		var pollInterval int
+		if err := rows.Scan(&id, &name, &adapterType, &baseURL, &authConfig, &pollInterval); err != nil {
+			log.Printf("failed to scan api_machine: %v", err)
+			continue
+		}
+		startAPIPoller(id, name, adapterType, baseURL, json.RawMessage(authConfig), pollInterval)
+		count++
+	}
+	if count > 0 {
+		log.Printf("started %d API poller(s)", count)
+	}
+}
+
+func startAPIPoller(id, name, adapterType, baseURL string, authConfig json.RawMessage, intervalSecs int) {
+	apiPollersMu.Lock()
+	defer apiPollersMu.Unlock()
+
+	// Stop existing poller if any.
+	if entry, ok := apiPollers[id]; ok {
+		entry.cancel()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	apiPollers[id] = &apiPollerEntry{cancel: cancel}
+
+	go func() {
+		// Initial poll after a short delay.
+		time.Sleep(2 * time.Second)
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			result, err := doPoll(adapterType, baseURL, authConfig)
+			if err != nil {
+				log.Printf("api poll error: %s (%s): %v", name, adapterType, err)
+				db.Exec("UPDATE api_machines SET last_error = ?, last_poll_at = CURRENT_TIMESTAMP WHERE id = ?", err.Error(), id)
+				// Set machine status to error.
+				machineID := "api-" + id
+				db.Exec(`INSERT INTO machines (id, hostname, status, tags, last_seen)
+					VALUES (?, ?, error, ?, CURRENT_TIMESTAMP)
+					ON CONFLICT(id) DO UPDATE SET status = error, last_seen = CURRENT_TIMESTAMP`,
+					machineID, name, adapterType)
+			} else {
+				storeAPIPollResult(id, name, adapterType, result)
+				db.Exec("UPDATE api_machines SET last_poll_at = CURRENT_TIMESTAMP, last_error = NULL WHERE id = ?", id)
+			}
+
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Duration(intervalSecs) * time.Second):
+			}
+		}
+	}()
+}
+
+func stopAPIPoller(id string) {
+	apiPollersMu.Lock()
+	defer apiPollersMu.Unlock()
+	if entry, ok := apiPollers[id]; ok {
+		entry.cancel()
+		delete(apiPollers, id)
+	}
+}
+
+func stopAllAPIPollers() {
+	apiPollersMu.Lock()
+	defer apiPollersMu.Unlock()
+	for id, entry := range apiPollers {
+		entry.cancel()
+		delete(apiPollers, id)
+	}
+}
+
 var _ = math.Abs
 var _ = strconv.Itoa

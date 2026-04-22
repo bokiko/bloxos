@@ -192,6 +192,26 @@ var migrations = []migration{
 			return nil
 		},
 	},
+	{
+		description: "add api_machines table for API-polled machines",
+		apply: func(tx *sql.Tx) error {
+			_, err := tx.Exec(`
+			CREATE TABLE IF NOT EXISTS api_machines (
+				id TEXT PRIMARY KEY,
+				name TEXT NOT NULL,
+				adapter_type TEXT NOT NULL,
+				base_url TEXT NOT NULL,
+				auth_config TEXT NOT NULL,
+				poll_interval_secs INTEGER DEFAULT 60,
+				enabled BOOLEAN DEFAULT TRUE,
+				last_poll_at DATETIME,
+				last_error TEXT,
+				created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			);
+			`)
+			return err
+		},
+	},
 }
 
 // isDuplicateColumnErr returns true when SQLite rejects an ALTER TABLE ADD
