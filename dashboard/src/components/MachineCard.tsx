@@ -2,11 +2,12 @@
 
 import { useState, useEffect } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { MachineMetrics, GPUInfo } from "@/lib/demo-data";
 import { ProgressBar } from "./ProgressBar";
 import { StatusBadge, MachineStatus } from "./StatusBadge";
 import { Sparkline } from "./Sparkline";
-import { Cpu, HardDrive, MemoryStick, Thermometer, Clock, Monitor, Wifi } from "lucide-react";
+import { Cpu, HardDrive, MemoryStick, Thermometer, Clock, Monitor, Wifi, Trash2 } from "lucide-react";
 
 function formatBytes(bytes: number | undefined | null): string {
   if (!bytes || bytes === 0) return "0";
@@ -50,9 +51,10 @@ const borderColors: Record<MachineStatus, string> = {
 interface MachineCardProps {
   machine: MachineMetrics;
   onClick?: () => void;
+  onDelete?: (machineId: string, hostname: string) => void;
 }
 
-export function MachineCard({ machine, onClick }: MachineCardProps) {
+export function MachineCard({ machine, onClick, onDelete }: MachineCardProps) {
   const [now, setNow] = useState(Date.now());
   const { status, reason } = getStatus(machine);
 
@@ -83,7 +85,7 @@ export function MachineCard({ machine, onClick }: MachineCardProps) {
       <div
         onClick={onClick}
         className={`
-          bg-blox-card border-l-[3px] ${borderColors[status]}
+          group bg-blox-card border-l-[3px] ${borderColors[status]}
           rounded-lg p-4 cursor-pointer
           border border-blox-border
           hover:border-blox-muted/30 hover:shadow-lg hover:shadow-black/20
@@ -98,7 +100,22 @@ export function MachineCard({ machine, onClick }: MachineCardProps) {
               {machine.hostname}
             </span>
           </div>
-          <StatusBadge status={status} reason={reason} />
+          <div className="flex items-center gap-2">
+            <StatusBadge status={status} reason={reason} />
+            {onDelete && (
+              <button
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onDelete(machine.machine_id, machine.hostname);
+                }}
+                className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-blox-red/10 text-blox-muted hover:text-blox-red transition-all duration-200"
+                title="Delete machine"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Sparkline */}

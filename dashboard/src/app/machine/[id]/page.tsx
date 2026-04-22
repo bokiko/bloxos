@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef, use } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
 import { useSSE } from "@/contexts/SSEContext";
 import { ProgressBar } from "@/components/ProgressBar";
@@ -13,7 +14,7 @@ import { MetricCharts } from "@/components/MetricCharts";
 import {
   ArrowLeft, Cpu, HardDrive, MemoryStick, Thermometer,
   Activity, Zap, Monitor, Terminal as TerminalIcon, RotateCcw,
-  Lock, Unlock, X, Maximize2, Minimize2, Wifi, BarChart3,
+  Lock, Unlock, X, Maximize2, Minimize2, Wifi, BarChart3, Trash2,
 } from "lucide-react";
 
 const TerminalComponent = dynamic(
@@ -110,6 +111,9 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
   const [tick, setTick] = useState(0);
   const [showReboot, setShowReboot] = useState(false);
   const [showCharts, setShowCharts] = useState(true);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const router = useRouter();
 
   const [termState, setTermState] = useState<TerminalState>("locked");
   const [termSessionId, setTermSessionId] = useState<string | null>(null);
@@ -235,6 +239,25 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
     setTermState("disconnected");
   }, []);
 
+  const handleDeleteMachine = useCallback(async () => {
+    setDeleting(true);
+    try {
+      const res = await fetch(`${HUB_URL}/api/machines/${id}`, {
+        method: "DELETE",
+        headers: authHeaders(),
+      });
+      if (res.ok) {
+        router.push("/");
+      } else {
+        setDeleting(false);
+        setShowDeleteConfirm(false);
+      }
+    } catch {
+      setDeleting(false);
+      setShowDeleteConfirm(false);
+    }
+  }, [id, router]);
+
   useEffect(() => {
     if (termState === "pin_entry") {
       setTimeout(() => pinInputRef.current?.focus(), 100);
@@ -270,6 +293,38 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
 
   return (
     <div className="min-h-screen bg-blox-bg">
+      {showDeleteConfirm && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-blox-card border border-blox-border rounded-lg p-6 max-w-md w-full mx-4 shadow-2xl">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="p-2 rounded-full bg-blox-red/10">
+                <Trash2 className="w-5 h-5 text-blox-red" />
+              </div>
+              <h3 className="text-base font-semibold text-blox-text">Delete Machine</h3>
+            </div>
+            <p className="text-sm text-blox-muted mb-6">
+              Are you sure you want to remove <span className="text-blox-text font-medium">{machine.hostname}</span> from BloxOS? This will delete all historical data for this machine.
+            </p>
+            <div className="flex items-center justify-end gap-3">
+              <button
+                onClick={() => setShowDeleteConfirm(false)}
+                disabled={deleting}
+                className="px-4 py-2 text-xs rounded-md border border-blox-border text-blox-muted hover:text-blox-text transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDeleteMachine}
+                disabled={deleting}
+                className="px-4 py-2 text-xs rounded-md bg-blox-red/10 text-blox-red border border-blox-red/30 hover:bg-blox-red/20 transition-colors disabled:opacity-50"
+              >
+                {deleting ? "Deleting..." : "Delete Machine"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showReboot && (
         <RebootModal
           hostname={machine.hostname}
@@ -311,6 +366,13 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
                 updated: {timeSince(lastUpdated)}
               </span>
             )}
+            <button
+              onClick={() => setShowDeleteConfirm(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs border border-blox-border text-blox-muted hover:border-blox-red/40 hover:text-blox-red hover:bg-blox-red/5 transition-colors"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              Delete
+            </button>
             <button
               onClick={() => setShowReboot(true)}
               disabled={!isOnline}

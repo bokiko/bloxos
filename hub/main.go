@@ -261,6 +261,7 @@ func main() {
 	api.POST("/api/machines/:id/command", handleCommand)
 	api.PUT("/api/machines/:id/tags", handleSetTags)
 	api.GET("/api/machines/:id/metrics/history", handleMetricsHistory)
+	api.DELETE("/api/machines/:id", handleDeleteMachine)
 
 	// Terminal endpoints.
 	api.POST("/api/machines/:id/terminal", handleStartTerminal)
@@ -1318,6 +1319,48 @@ func handleDownloadAgent(c echo.Context) error {
 }
 
 // --- Existing Handlers ---
+
+func handleDeleteMachine(c echo.Context) error {
+	id := c.Param("id")
+
+	// Check machine exists and get hostname
+	var hostname string
+	err := db.QueryRow("SELECT hostname FROM machines WHERE id = ?", id).Scan(&hostname)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "machine not found"})
+	}
+
+	// Delete all related data in a transaction
+	tx, err := db.Begin()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to start transaction"})
+	}
+	defer tx.Rollback()
+
+	tables := []string{"metrics", "gpu_metrics", "services", "containers", "alerts", "terminal_sessions"}
+	for _, table := range tables {
+		if _, err := tx.Exec("DELETE FROM "+table+" WHERE machine_id = ?", id); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to delete " + table})
+		}
+	}
+	if _, err := tx.Exec("DELETE FROM machines WHERE id = ?", id); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to delete machine"})
+	}
+	if err := tx.Commit(); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to commit"})
+	}
+
+	// Remove from live cache
+	agentsMu.Lock()
+	delete(agents, id)
+	agentsMu.Unlock()
+	machineLatencyMu.Lock()
+	delete(machineLatency, id)
+	machineLatencyMu.Unlock()
+
+	log.Printf("machine deleted: %s (%s)", hostname, id)
+	return c.JSON(http.StatusOK, map[string]string{"status": "deleted", "hostname": hostname})
+}
 
 func handleHealth(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
