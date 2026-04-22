@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	cryptoRand "crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -205,8 +206,11 @@ func main() {
 	// Ensure default admin user.
 	ensureDefaultAdmin()
 
-	// Load or generate JWT secret.
-	jwtSecret = []byte(getEnvOrDefault("BLOXOS_JWT_SECRET", "bloxos-jwt-secret-change-me"))
+	// Warn if still using default password (Finding #2).
+	warnDefaultPassword()
+
+	// Load or generate JWT secret (Finding #2).
+	jwtSecret = loadOrGenerateJWTSecret()
 
 	// Load Telegram config.
 	telegramToken = os.Getenv("BLOXOS_TELEGRAM_TOKEN")
@@ -225,7 +229,10 @@ func main() {
 
 	e := echo.New()
 	e.HideBanner = true
-	e.Use(middleware.Logger())
+	e.Use(middleware.LoggerWithConfig(middleware.LoggerConfig{
+		Format: "${time_rfc3339} ${method} ${uri} ${status} ${latency_human}\n",
+		Output: &tokenRedactingWriter{w: os.Stderr},
+	}))
 	e.Use(middleware.Recover())
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
 		AllowOrigins: []string{"*"},
@@ -262,6 +269,10 @@ func main() {
 	api.POST("/api/alerts/:id/acknowledge", handleAcknowledgeAlert)
 	api.GET("/api/alert-rules", handleListAlertRules)
 	api.PUT("/api/alert-rules/:id", handleUpdateAlertRule)
+
+	// Auth management endpoints (Finding #2, #3).
+	api.POST("/api/auth/change-password", handleChangePassword)
+	api.POST("/api/auth/change-pin", handleChangePIN)
 
 	// Install endpoints.
 	api.POST("/api/tokens", handleCreateToken)
@@ -405,6 +416,9 @@ func initDB() error {
 
 	// Add tags column if missing (migration for existing DBs).
 	_, _ = db.Exec(`ALTER TABLE machines ADD COLUMN tags TEXT DEFAULT ''`)
+
+	// Add terminal_pin_hash column if missing (Finding #3 migration).
+	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN terminal_pin_hash TEXT`)
 
 	return nil
 }
@@ -1163,10 +1177,19 @@ func handleCreateToken(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
+	// Use request Host header instead of hardcoded IP (Finding #7).
+	host := c.Request().Host
+	proto := "ws"
+	httpProto := "http"
+	if c.Request().TLS != nil {
+		proto = "wss"
+		httpProto = "https"
+	}
+
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"token":      token,
 		"expires_at": expiresAt.Format(time.RFC3339),
-		"command":    fmt.Sprintf("curl -sL http://192.168.16.113:4000/install.sh | BLOXOS_HUB=ws://192.168.16.113:4000 BLOXOS_TOKEN=%s bash", token),
+		"command":    fmt.Sprintf("curl -sL %s://%s/install.sh | BLOXOS_HUB=%s://%s BLOXOS_TOKEN=%s bash", httpProto, host, proto, host, token),
 	})
 }
 
@@ -1235,10 +1258,22 @@ echo "Check status: systemctl status bloxos-agent"
 }
 
 func handleDownloadAgent(c echo.Context) error {
-	// Serve the pre-built agent binary.
-	binaryPath := "/home/bokiko/bloxos/agent/bloxos-agent"
+	// Configurable binary path (Finding #7).
+	binaryPath := os.Getenv("BLOXOS_AGENT_BINARY")
+	if binaryPath == "" {
+		binaryPath = "/home/bokiko/bloxos/agent/bloxos-agent"
+	}
 	if _, err := os.Stat(binaryPath); os.IsNotExist(err) {
-		return c.JSON(http.StatusNotFound, map[string]string{"error": "agent binary not found"})
+		// Try working directory fallback.
+		binaryPath = "./agent/bloxos-agent"
+		if _, err := os.Stat(binaryPath); os.IsNotExist(err) {
+			return c.JSON(http.StatusNotFound, map[string]string{"error": "agent binary not found"})
+		}
+	}
+	// Log requested arch for future multi-arch support.
+	arch := c.QueryParam("arch")
+	if arch != "" {
+		log.Printf("agent download: arch=%s (serving default binary)", arch)
 	}
 	return c.File(binaryPath)
 }
@@ -1255,9 +1290,11 @@ func handleAgentWS(c echo.Context) error {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "token required"})
 	}
 
-	h := sha256.Sum256([]byte(token))
-	tokenHash := hex.EncodeToString(h[:8])
-	_ = tokenHash
+	// Validate token against DB (Finding #1).
+	if err := validateAgentToken(token); err != nil {
+		log.Printf("agent token rejected: %v", err)
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": err.Error()})
+	}
 
 	ws, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
 	if err != nil {
@@ -1387,6 +1424,17 @@ func handleAgentWS(c echo.Context) error {
 func handleStartTerminal(c echo.Context) error {
 	machineID := c.Param("id")
 
+	// Server-side PIN verification (Finding #3).
+	var body struct {
+		Pin string `json:"pin"`
+	}
+	if err := c.Bind(&body); err != nil || body.Pin == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "pin is required"})
+	}
+	if err := verifyTerminalPIN(body.Pin); err != nil {
+		return c.JSON(http.StatusForbidden, map[string]string{"error": "invalid PIN"})
+	}
+
 	agentsMu.RLock()
 	agent, ok := agents[machineID]
 	agentsMu.RUnlock()
@@ -1467,6 +1515,23 @@ func handleTerminalWS(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "role must be 'agent' or 'browser'"})
 	}
 
+	// Auth check for browser role (Finding #4).
+	if role == "browser" {
+		tokenStr := c.QueryParam("token")
+		if tokenStr == "" {
+			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "token required for browser role"})
+		}
+		tkn, err := jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
+			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, fmt.Errorf("unexpected signing method")
+			}
+			return jwtSecret, nil
+		})
+		if err != nil || !tkn.Valid {
+			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid or expired token"})
+		}
+	}
+
 	termSessionsMu.RLock()
 	session, ok := termSessions[sessionID]
 	termSessionsMu.RUnlock()
@@ -1474,7 +1539,28 @@ func handleTerminalWS(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "session not found"})
 	}
 
-	ws, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
+	// Use origin-checking upgrader for terminal WebSocket (Finding #4).
+	termUpgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool {
+			origin := r.Header.Get("Origin")
+			if origin == "" {
+				return true // agent connections have no origin
+			}
+			// Allow known origins.
+			for _, allowed := range []string{"http://localhost:3000", "http://192.168.16.113:3000", "http://localhost:4000", "http://192.168.16.113:4000"} {
+				if origin == allowed {
+					return true
+				}
+			}
+			// Also allow if origin matches the request host.
+			if strings.Contains(origin, r.Host) {
+				return true
+			}
+			log.Printf("terminal WS: rejected origin %s", origin)
+			return false
+		},
+	}
+	ws, err := termUpgrader.Upgrade(c.Response(), c.Request(), nil)
 	if err != nil {
 		return err
 	}
@@ -2148,6 +2234,252 @@ func getMachinesJSON() ([]byte, error) {
 		machines = []Machine{}
 	}
 	return json.Marshal(machines)
+}
+
+// --- Security Functions ---
+
+// validateAgentToken checks a token against the DB (Finding #1).
+func validateAgentToken(token string) error {
+	// Bootstrap mode: if no tokens exist and token is "test-token", allow it.
+	var tokenCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM tokens`).Scan(&tokenCount); err != nil {
+		return fmt.Errorf("database error: %w", err)
+	}
+	if tokenCount == 0 && token == "test-token" {
+		log.Println("WARNING: Bootstrap mode — accepting 'test-token' because no tokens exist in DB. Generate a proper token via the API.")
+		return nil
+	}
+
+	h := sha256.Sum256([]byte(token))
+	tokenHash := hex.EncodeToString(h[:])
+
+	var expiresAt string
+	var used bool
+	err := db.QueryRow(`SELECT expires_at, used FROM tokens WHERE token_hash = ?`, tokenHash).Scan(&expiresAt, &used)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("invalid token")
+	}
+	if err != nil {
+		return fmt.Errorf("database error: %w", err)
+	}
+	if used {
+		return fmt.Errorf("token already used")
+	}
+
+	expTime, err := time.Parse("2006-01-02 15:04:05", expiresAt)
+	if err != nil {
+		expTime, err = time.Parse(time.RFC3339, expiresAt)
+		if err != nil {
+			return fmt.Errorf("invalid expiry format")
+		}
+	}
+	if time.Now().After(expTime) {
+		return fmt.Errorf("token expired")
+	}
+
+	// Mark as used.
+	_, err = db.Exec(`UPDATE tokens SET used = TRUE WHERE token_hash = ?`, tokenHash)
+	if err != nil {
+		log.Printf("warning: failed to mark token as used: %v", err)
+	}
+	log.Printf("agent token validated and marked as used")
+	return nil
+}
+
+// loadOrGenerateJWTSecret loads from file or generates a new secret (Finding #2).
+func loadOrGenerateJWTSecret() []byte {
+	// Check env var first (explicit override).
+	if envSecret := os.Getenv("BLOXOS_JWT_SECRET"); envSecret != "" {
+		log.Println("JWT secret loaded from BLOXOS_JWT_SECRET env var")
+		return []byte(envSecret)
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		log.Printf("WARNING: cannot determine home dir, using random JWT secret: %v", err)
+		return generateRandomSecret()
+	}
+
+	secretDir := homeDir + "/.bloxos"
+	secretFile := secretDir + "/jwt-secret"
+
+	// Try to read existing secret.
+	data, err := os.ReadFile(secretFile)
+	if err == nil && len(data) >= 32 {
+		log.Printf("JWT secret loaded from %s", secretFile)
+		return data
+	}
+
+	// Generate new secret.
+	secret := generateRandomSecret()
+	if err := os.MkdirAll(secretDir, 0700); err != nil {
+		log.Printf("WARNING: cannot create %s: %v", secretDir, err)
+		return secret
+	}
+	if err := os.WriteFile(secretFile, secret, 0600); err != nil {
+		log.Printf("WARNING: cannot write %s: %v", secretFile, err)
+		return secret
+	}
+	log.Printf("JWT secret generated and saved to %s", secretFile)
+	return secret
+}
+
+func generateRandomSecret() []byte {
+	secret := make([]byte, 32)
+	if _, err := cryptoRand.Read(secret); err != nil {
+		log.Fatalf("failed to generate random JWT secret: %v", err)
+	}
+	return secret
+}
+
+// warnDefaultPassword logs a warning if admin still uses default password (Finding #2).
+func warnDefaultPassword() {
+	var passwordHash string
+	err := db.QueryRow(`SELECT password_hash FROM users WHERE username = 'admin'`).Scan(&passwordHash)
+	if err != nil {
+		return
+	}
+	if bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte("bloxos")) == nil {
+		log.Println("==========================================================")
+		log.Println("WARNING: Using default admin password. Change it via the API.")
+		log.Println("  POST /api/auth/change-password")
+		log.Println("==========================================================")
+	}
+}
+
+// handleChangePassword allows authenticated users to change their password (Finding #2).
+func handleChangePassword(c echo.Context) error {
+	var body struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+	}
+	if err := c.Bind(&body); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid body"})
+	}
+	if body.NewPassword == "" || len(body.NewPassword) < 6 {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "new password must be at least 6 characters"})
+	}
+
+	// Get user from JWT.
+	auth := c.Request().Header.Get("Authorization")
+	tokenStr := ""
+	if strings.HasPrefix(auth, "Bearer ") {
+		tokenStr = auth[7:]
+	}
+	if tokenStr == "" {
+		tokenStr = c.QueryParam("token")
+	}
+
+	tkn, _ := jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
+		return jwtSecret, nil
+	})
+	claims, ok := tkn.Claims.(jwt.MapClaims)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid token"})
+	}
+	username, _ := claims["username"].(string)
+	if username == "" {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid token"})
+	}
+
+	var passwordHash string
+	err := db.QueryRow(`SELECT password_hash FROM users WHERE username = ?`, username).Scan(&passwordHash)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "user not found"})
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(body.CurrentPassword)); err != nil {
+		return c.JSON(http.StatusForbidden, map[string]string{"error": "current password is incorrect"})
+	}
+
+	newHash, err := bcrypt.GenerateFromPassword([]byte(body.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to hash password"})
+	}
+	_, err = db.Exec(`UPDATE users SET password_hash = ? WHERE username = ?`, string(newHash), username)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to update password"})
+	}
+
+	log.Printf("password changed for user: %s", username)
+	return c.JSON(http.StatusOK, map[string]string{"status": "password changed"})
+}
+
+// verifyTerminalPIN checks a PIN against the stored hash (Finding #3).
+func verifyTerminalPIN(pin string) error {
+	var pinHash sql.NullString
+	err := db.QueryRow(`SELECT terminal_pin_hash FROM users WHERE username = 'admin'`).Scan(&pinHash)
+	if err != nil || !pinHash.Valid || pinHash.String == "" {
+		// No PIN set yet — seed default PIN hash.
+		defaultHash, _ := bcrypt.GenerateFromPassword([]byte("1234"), bcrypt.DefaultCost)
+		db.Exec(`UPDATE users SET terminal_pin_hash = ? WHERE username = 'admin'`, string(defaultHash))
+		// Verify against default.
+		if pin == "1234" {
+			return nil
+		}
+		return fmt.Errorf("invalid PIN")
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(pinHash.String), []byte(pin)); err != nil {
+		return fmt.Errorf("invalid PIN")
+	}
+	return nil
+}
+
+// handleChangePIN allows authenticated users to change the terminal PIN (Finding #3).
+func handleChangePIN(c echo.Context) error {
+	var body struct {
+		CurrentPIN string `json:"current_pin"`
+		NewPIN     string `json:"new_pin"`
+	}
+	if err := c.Bind(&body); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid body"})
+	}
+	if body.NewPIN == "" || len(body.NewPIN) < 4 {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "new PIN must be at least 4 characters"})
+	}
+
+	if err := verifyTerminalPIN(body.CurrentPIN); err != nil {
+		return c.JSON(http.StatusForbidden, map[string]string{"error": "current PIN is incorrect"})
+	}
+
+	newHash, err := bcrypt.GenerateFromPassword([]byte(body.NewPIN), bcrypt.DefaultCost)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to hash PIN"})
+	}
+	_, err = db.Exec(`UPDATE users SET terminal_pin_hash = ? WHERE username = 'admin'`, string(newHash))
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to update PIN"})
+	}
+
+	log.Println("terminal PIN changed")
+	return c.JSON(http.StatusOK, map[string]string{"status": "PIN changed"})
+}
+
+// tokenRedactingWriter redacts JWT tokens from log output (Finding #8).
+type tokenRedactingWriter struct {
+	w io.Writer
+}
+
+func (t *tokenRedactingWriter) Write(p []byte) (n int, err error) {
+	s := string(p)
+	// Redact token= query parameter values.
+	for {
+		idx := strings.Index(s, "token=")
+		if idx == -1 {
+			break
+		}
+		end := idx + 6
+		// Find the end of the token value (next & or space or quote or newline).
+		tokenEnd := end
+		for tokenEnd < len(s) && s[tokenEnd] != '&' && s[tokenEnd] != ' ' && s[tokenEnd] != '"' && s[tokenEnd] != '\n' {
+			tokenEnd++
+		}
+		if tokenEnd > end {
+			s = s[:end] + "[REDACTED]" + s[tokenEnd:]
+		} else {
+			break
+		}
+	}
+	return t.w.Write([]byte(s))
 }
 
 // Suppress unused import warnings.

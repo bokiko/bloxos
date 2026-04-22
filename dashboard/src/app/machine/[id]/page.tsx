@@ -23,7 +23,6 @@ const TerminalComponent = dynamic(
 
 const HUB_URL = process.env.NEXT_PUBLIC_HUB_URL || "http://localhost:4000";
 const HUB_WS_URL = HUB_URL.replace(/^http/, "ws");
-const TERMINAL_PIN = "1234";
 
 function authHeaders(): Record<string, string> {
   const token = typeof window !== "undefined" ? localStorage.getItem("bloxos_token") : null;
@@ -189,30 +188,35 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
   void tick;
 
   const handlePinSubmit = useCallback(() => {
-    if (pinInput === TERMINAL_PIN) {
-      setPinError(false);
-      setPinInput("");
-      setTermState("connecting");
-      fetch(`${HUB_URL}/api/machines/${id}/terminal`, {
-        method: "POST",
-        headers: authHeaders(),
+    setPinError(false);
+    setTermState("connecting");
+    const hdrs = authHeaders();
+    hdrs["Content-Type"] = "application/json";
+    fetch(`${HUB_URL}/api/machines/${id}/terminal`, {
+      method: "POST",
+      headers: hdrs,
+      body: JSON.stringify({ pin: pinInput }),
+    })
+      .then((res) => {
+        if (res.status === 403) {
+          setPinError(true);
+          setPinInput("");
+          setTermState("pin_entry");
+          pinInputRef.current?.focus();
+          return null;
+        }
+        if (!res.ok) throw new Error("Failed to start terminal");
+        return res.json();
       })
-        .then((res) => {
-          if (!res.ok) throw new Error("Failed to start terminal");
-          return res.json();
-        })
-        .then((d) => {
-          setTermSessionId(d.session_id);
-          setTermState("active");
-        })
-        .catch(() => {
-          setTermState("disconnected");
-        });
-    } else {
-      setPinError(true);
-      setPinInput("");
-      pinInputRef.current?.focus();
-    }
+      .then((d) => {
+        if (!d) return;
+        setPinInput("");
+        setTermSessionId(d.session_id);
+        setTermState("active");
+      })
+      .catch(() => {
+        setTermState("disconnected");
+      });
   }, [pinInput, id]);
 
   const handleTerminalClose = useCallback(() => {

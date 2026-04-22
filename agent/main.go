@@ -128,6 +128,7 @@ var (
 		"reboot":            true,
 		"shutdown":          true,
 		"start_terminal":    true,
+		"start_container":    true,
 	}
 
 	// interestingServicePatterns are services we report to the hub.
@@ -394,6 +395,8 @@ func handleCommand(conn *websocket.Conn, mu *sync.Mutex, msg []byte) {
 		execCmd = exec.Command("sudo", "systemctl", "start", cmd.Target)
 	case "restart_container":
 		execCmd = exec.Command("sudo", "docker", "restart", cmd.Target)
+	case "start_container":
+		execCmd = exec.Command("sudo", "docker", "start", cmd.Target)
 	case "reboot":
 		execCmd = exec.Command("sudo", "reboot")
 	case "shutdown":

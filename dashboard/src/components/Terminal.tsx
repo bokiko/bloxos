@@ -82,7 +82,8 @@ export function Terminal({ sessionId, hubWsUrl, onDisconnect }: TerminalProps) {
     term.writeln("\x1b[36mConnecting to terminal session...\x1b[0m");
 
     // Connect WebSocket.
-    const wsUrl = `${hubWsUrl}/ws/terminal/${sessionId}?role=browser`;
+    const jwtToken = localStorage.getItem("bloxos_token") || "";
+    const wsUrl = `${hubWsUrl}/ws/terminal/${sessionId}?role=browser&token=${encodeURIComponent(jwtToken)}`;
     const ws = new WebSocket(wsUrl);
     ws.binaryType = "arraybuffer";
     wsRef.current = ws;

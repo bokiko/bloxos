@@ -56,9 +56,12 @@ function ServiceActions({
     setOpen(false);
     setLoading(true);
     try {
+      const token = localStorage.getItem("bloxos_token");
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (token) headers["Authorization"] = `Bearer ${token}`;
       const res = await fetch(`${hubUrl}/api/machines/${machineId}/command`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({ type, target: service.name }),
       });
       const data = await res.json();
