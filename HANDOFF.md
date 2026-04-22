@@ -6,22 +6,50 @@
   - [x] UI Redesign: shadcn/ui + Framer Motion + Geist fonts
   - [x] Codex Security Audit: 3 rounds, 6/8 fixed, 2 accepted
   - [x] Hardening Do Now: creds rotated, DB 0600, token logging stopped, single-use tokens, Caddy TLS, config model, rate limiting
-- Now: Stable. Deploying agents to fleet machines.
-- Remaining (Do Next Sprint — plan at /Users/bokiko/.claude/plans/calm-baking-eclipse.md):
-  - [ ] Migration versioning (before schema changes)
-  - [ ] Smoke tests (auth, enrollment, terminal)
-  - [ ] Backend-enforce password/PIN rotation
-  - [ ] First-boot setup flow (no default creds)
-  - [ ] Enrollment redesign (bootstrap → durable hashed agent credential)
-  - [ ] Terminal privilege tightening
+  - [x] Hardening Do Next Sprint (all 6 items complete, 2026-04-22):
+    - [x] #8 Migration versioning (hub/migrations.go — schema_version table, 4 migrations)
+    - [x] #9 Smoke tests (33 tests in hub/main_test.go, all passing)
+    - [x] #10 Backend-enforce password/PIN rotation (credentialRotationMiddleware, allowlist-based)
+    - [x] #11 First-boot setup flow (POST /api/setup, bootstrap token, no default creds)
+    - [x] #12 Enrollment redesign (durable agent secrets, SHA-256 hashed, revocable)
+    - [x] #13 Terminal privilege tightening (30min inactivity timeout, max 3 sessions, audit logging)
+- Now: Stable. All hardening complete. Service restart needed to activate changes.
+- Remaining (deferred items from hardening plan):
+  - [ ] Split hub/main.go into packages (do at ~4000 LOC or second contributor)
+  - [ ] Separate terminal-gateway service
+  - [ ] Full test suite beyond smoke tests
+  - [ ] Dashboard setup page (/setup) — frontend for first-boot flow
 
-## Known Issues (2026-04-22)
-- **Old agent binary problem:** The install script downloads the agent binary from the hub at `/usr/local/bin/bloxos-agent`. After rebuilding the agent, you MUST run `sudo cp ~/bloxos/agent/bloxos-agent /usr/local/bin/bloxos-agent` on the hub VM, or the install script serves the stale binary.
-- **Self-signed TLS:** Agents need `InsecureSkipVerify: true` for Caddy's self-signed cert. This is in the current agent code. Install script uses `curl -k`.
-- **IC-Brain sudo:** requires password (123Kdd) piped via `echo 123Kdd | sudo -S`
+## Deployment Notes (IMPORTANT)
+The hardening sprint code is committed and pushed but NOT deployed. To activate:
+1. Stop services: 
+2. Rebuild hub: 
+3. Copy hub binary: 
+4. Rebuild agent: 
+5. Copy agent binary: 
+6. Restart: 
+7. On first start with new code: schema migrations run automatically (0→4)
+8. Existing admin user works but will hit rotation enforcement — change password and PIN via API
+
+### First-boot setup (new deployments only)
+- Hub writes setup token to  (0600) if no users exist
+-  returns 
+-  with  creates admin
+- Dashboard needs a setup page at  (not built yet)
+
+### Agent enrollment (re-enrollment for existing agents)
+- Existing agents continue working via machine_id recognition (backward compatible)
+- New agents get a durable secret on enrollment (stored at /etc/bloxos/agent-secret)
+- To re-enroll existing agents: delete from machines table, generate new install token
+
+## Known Issues
+- **Old agent binary:** After rebuilding agent, MUST copy to /usr/local/bin/bloxos-agent on hub
+- **Self-signed TLS:** Agents need InsecureSkipVerify for Caddy's self-signed cert
+- **IC-Brain sudo:** requires password (123Kdd) piped via 
+- **Dashboard setup page:** Not built yet — first-boot setup works via API only
 
 ## Current Fleet
-- **bloxOs** (192.168.16.113) — hub VM itself, online
+- **bloxOs** (192.168.16.113) — hub VM, online
 - **ic-brain** (192.168.16.78) — InContext Research, online
 
 ## Credentials (rotated 2026-04-22)
@@ -31,40 +59,12 @@
 - **VM SSH:** bokiko / 123Kdd
 
 ## Architecture
-```
-LAN → Caddy (:443 TLS) → Hub (127.0.0.1:4000) + Dashboard (127.0.0.1:3000)
-                           ↑
-                     Agents (WSS through Caddy)
-```
 
-## Service Management
-```bash
-# All 4 services (auto-start on boot)
-systemctl is-active bloxos-hub bloxos-agent bloxos-dashboard caddy
-
-# Restart
-sudo systemctl restart bloxos-hub
-
-# Logs
-journalctl -u bloxos-hub -f
-
-# Add a machine (from dashboard or CLI)
-# 1. Generate token: POST /api/tokens (needs JWT auth)
-# 2. On target: export BLOXOS_HUB=wss://192.168.16.113 BLOXOS_TOKEN=<token>; curl -sk https://192.168.16.113/install.sh | sudo -E bash
-# 3. IMPORTANT: ensure /usr/local/bin/bloxos-agent on hub VM is the latest build
-```
 
 ## Key URLs
 - Dashboard: https://192.168.16.113
-- Hub health: https://192.168.16.113/health
 - Repo: https://github.com/bokiko/bloxos (PRIVATE)
 - Branch: main
-
-## Working Set
-- hub/main.go — ~2700 lines
-- agent/main.go — ~800 lines
-- dashboard/ — Next.js 16, shadcn/ui, dark mode
-- scripts/caddy/Caddyfile — reverse proxy
 - Hardening plan: /Users/bokiko/.claude/plans/calm-baking-eclipse.md
 
 ## Tech Stack
