@@ -60,7 +60,6 @@ export function MachineCard({ machine, onClick }: MachineCardProps) {
     return () => clearInterval(interval);
   }, []);
 
-  // Suppress unused var lint
   void now;
 
   const ramPct = machine.ram_total_bytes > 0
@@ -77,6 +76,8 @@ export function MachineCard({ machine, onClick }: MachineCardProps) {
   const gpuUtil = gpu0 ? gpu0.util_percent : (machine.gpu_util_percent || 0);
   const gpuVramUsed = gpu0 ? gpu0.mem_used_bytes : (machine.gpu_vram_used_bytes || 0);
   const gpuVramTotal = gpu0 ? gpu0.mem_total_bytes : (machine.gpu_vram_total_bytes || 0);
+
+  const tags = machine.tags ? machine.tags.split(",").filter((t) => t.trim()) : [];
 
   return (
     <Link href={`/machine/${machine.machine_id}`} className="block">
@@ -187,6 +188,17 @@ export function MachineCard({ machine, onClick }: MachineCardProps) {
             </span>
           )}
         </div>
+
+        {/* Tags */}
+        {tags.length > 0 && (
+          <div className="flex gap-1 flex-wrap mt-2 pt-2 border-t border-blox-border">
+            {tags.map((tag) => (
+              <span key={tag} className="text-[9px] px-1.5 py-0.5 rounded bg-blox-blue/10 text-blox-blue border border-blox-blue/20">
+                {tag.trim()}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
     </Link>
   );
