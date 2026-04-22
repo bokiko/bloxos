@@ -1274,7 +1274,7 @@ func handleCreateToken(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"token":      token,
 		"expires_at": expiresAt.Format(time.RFC3339),
-		"command":    fmt.Sprintf("curl -sL %s/install.sh | BLOXOS_HUB=%s BLOXOS_TOKEN=%s bash", httpBase, wsBase, token),
+		"command":    fmt.Sprintf("export BLOXOS_HUB=%s BLOXOS_TOKEN=%s; curl -sk %s/install.sh | bash", wsBase, token, httpBase),
 	})
 }
 
@@ -1301,7 +1301,7 @@ echo "Arch: $ARCH"
 
 # Download agent binary.
 echo "Downloading agent binary..."
-curl -fsSL -o /tmp/bloxos-agent "${HUB_HTTP}/download/agent?arch=${ARCH}"
+curl -fsSLk -o /tmp/bloxos-agent "${HUB_HTTP}/download/agent?arch=${ARCH}"
 chmod +x /tmp/bloxos-agent
 
 # Create system user (if not exists).

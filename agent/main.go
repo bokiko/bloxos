@@ -9,6 +9,7 @@ import (
 	"log"
 	"math/rand"
 	"net"
+	"crypto/tls"
 	"net/url"
 	"os"
 	"os/exec"
@@ -207,7 +208,10 @@ func runAgent(machineID string) error {
 	u.RawQuery = q.Encode()
 
 	log.Printf("connecting to %s", hubURL)
-	conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
+	tlsDialer := &websocket.Dialer{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+	conn, _, err := tlsDialer.Dial(u.String(), nil)
 	if err != nil {
 		return fmt.Errorf("dial failed: %w", err)
 	}
@@ -474,7 +478,10 @@ func handleStartTerminal(cmd Command, rawMsg []byte) {
 
 	// Connect to hub terminal relay.
 	log.Printf("terminal: connecting to %s", termURL)
-	ws, _, err := websocket.DefaultDialer.Dial(termURL, nil)
+	tlsDialer := &websocket.Dialer{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+	ws, _, err := tlsDialer.Dial(termURL, nil)
 	if err != nil {
 		log.Printf("terminal: dial hub failed: %v", err)
 		return
