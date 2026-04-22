@@ -196,6 +196,11 @@ func main() {
 	}
 	defer db.Close()
 
+	// Set DB file permissions to 0600 (owner read/write only).
+	if err := os.Chmod("bloxos.db", 0600); err != nil && !os.IsNotExist(err) {
+		log.Printf("WARNING: failed to set DB permissions: %v", err)
+	}
+
 	if err := initDB(); err != nil {
 		log.Fatalf("failed to init database: %v", err)
 	}
@@ -1372,20 +1377,25 @@ func handleAgentWS(c echo.Context) error {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "token required"})
 	}
 
-	// Validate token against DB (Finding #1).
-	if err := validateAgentToken(token); err != nil {
-		log.Printf("agent token rejected: %v", err)
-		return c.JSON(http.StatusUnauthorized, map[string]string{"error": err.Error()})
+	// Validate token format and expiry (but don't consume yet).
+	tokenHash, err := validateAgentToken(token)
+	if err != nil {
+		// Token is invalid/expired/used — but it might be a reconnecting agent.
+		// We'll check machine_id on first metrics message. For now, allow
+		// the connection but remember validation failed.
+		tokenHash = ""
+		log.Printf("agent token validation deferred (may be reconnecting agent): %v", err)
 	}
 
-	ws, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
-	if err != nil {
-		return err
+	ws, wsErr := upgrader.Upgrade(c.Response(), c.Request(), nil)
+	if wsErr != nil {
+		return wsErr
 	}
 	defer ws.Close()
 
 	var machineID string
 	agent := &ConnectedAgent{Conn: ws}
+	tokenValidated := tokenHash != ""
 
 	for {
 		_, msg, err := ws.ReadMessage()
@@ -1418,6 +1428,25 @@ func handleAgentWS(c echo.Context) error {
 			}
 			if machineID == "" {
 				machineID = m.MachineID
+
+				// Check if this machine_id already exists (reconnecting agent).
+				var existingID string
+				knownMachine := db.QueryRow(`SELECT id FROM machines WHERE id = ?`, machineID).Scan(&existingID) == nil
+
+				if knownMachine {
+					// Known agent reconnecting — no token consumption needed.
+					log.Printf("known agent reconnecting: %s (%s)", m.Hostname, machineID)
+				} else if tokenValidated {
+					// New enrollment with valid token — consume it.
+					consumeToken(tokenHash)
+					log.Printf("new agent enrolled: %s (%s)", m.Hostname, machineID)
+				} else {
+					// New machine but no valid token — reject.
+					log.Printf("rejecting unknown agent %s (%s): no valid token", m.Hostname, machineID)
+					ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","message":"invalid or used token"}`))
+					return nil
+				}
+
 				agent.MachineID = machineID
 				agentsMu.Lock()
 				agents[machineID] = agent
@@ -2358,7 +2387,8 @@ func getMachinesJSON() ([]byte, error) {
 // --- Security Functions ---
 
 // validateAgentToken checks a token against the DB (Finding #1).
-func validateAgentToken(token string) error {
+// Returns the token hash so the caller can mark it as used after enrollment.
+func validateAgentToken(token string) (string, error) {
 	h := sha256.Sum256([]byte(token))
 	tokenHash := hex.EncodeToString(h[:])
 
@@ -2366,24 +2396,37 @@ func validateAgentToken(token string) error {
 	var used bool
 	err := db.QueryRow(`SELECT expires_at, used FROM tokens WHERE token_hash = ?`, tokenHash).Scan(&expiresAt, &used)
 	if err == sql.ErrNoRows {
-		return fmt.Errorf("invalid token")
+		return "", fmt.Errorf("invalid token")
 	}
 	if err != nil {
-		return fmt.Errorf("database error: %w", err)
+		return "", fmt.Errorf("database error: %w", err)
+	}
+	if used {
+		return "", fmt.Errorf("token already used")
 	}
 	expTime, err := time.Parse("2006-01-02 15:04:05", expiresAt)
 	if err != nil {
 		expTime, err = time.Parse(time.RFC3339, expiresAt)
 		if err != nil {
-			return fmt.Errorf("invalid expiry format")
+			return "", fmt.Errorf("invalid expiry format")
 		}
 	}
 	if time.Now().After(expTime) {
-		return fmt.Errorf("token expired")
+		return "", fmt.Errorf("token expired")
 	}
 
 	log.Printf("agent token validated successfully")
-	return nil
+	return tokenHash, nil
+}
+
+// consumeToken marks a token as used after successful enrollment.
+func consumeToken(tokenHash string) {
+	_, err := db.Exec(`UPDATE tokens SET used = TRUE WHERE token_hash = ?`, tokenHash)
+	if err != nil {
+		log.Printf("failed to mark token as used: %v", err)
+	} else {
+		log.Printf("install token consumed")
+	}
 }
 
 // generateFirstRunToken creates a one-time token on first startup when no tokens and no machines exist.
@@ -2418,12 +2461,23 @@ func generateFirstRunToken() {
 		return
 	}
 
-	log.Println("============================================")
-	log.Println("FIRST RUN: No tokens found.")
-	log.Println("Use this one-time token to register your first agent:")
-	log.Printf("TOKEN: %s", token)
-	log.Printf("This token expires in 1 hour (at %s).", expiresAt.Format(time.RFC3339))
-	log.Println("============================================")
+	// Write token to file instead of logging it (security hardening).
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		log.Printf("first-run: cannot determine home dir: %v", err)
+		return
+	}
+	tokenDir := homeDir + "/.bloxos"
+	if err := os.MkdirAll(tokenDir, 0700); err != nil {
+		log.Printf("first-run: cannot create %s: %v", tokenDir, err)
+		return
+	}
+	tokenFile := tokenDir + "/first-run-token"
+	if err := os.WriteFile(tokenFile, []byte(token), 0600); err != nil {
+		log.Printf("first-run: cannot write token file: %v", err)
+		return
+	}
+	log.Printf("First-run token written to %s (expires in 1 hour)", tokenFile)
 }
 
 // loadOrGenerateJWTSecret loads from file or generates a new secret (Finding #2).
