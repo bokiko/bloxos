@@ -27,10 +27,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
 
+  // Check token on mount and refresh if expiring soon.
   useEffect(() => {
     const stored = localStorage.getItem("bloxos_token");
     if (stored) {
-      // Check if expired by decoding JWT payload.
       try {
         const payload = JSON.parse(atob(stored.split(".")[1]));
         if (payload.exp * 1000 > Date.now()) {
@@ -81,10 +81,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       headers.set("Authorization", `Bearer ${currentToken}`);
     }
     const res = await fetch(url, { ...init, headers });
+    // Only logout on 401 for explicit auth endpoints, not background fetches.
+    // Background SSE reconnects and sparkline fetches should not crash the page.
     if (res.status === 401) {
-      localStorage.removeItem("bloxos_token");
-      setToken(null);
-      router.push("/login");
+      // Check if token is actually expired vs transient error.
+      try {
+        const payload = JSON.parse(atob((currentToken || "").split(".")[1]));
+        if (payload.exp * 1000 < Date.now()) {
+          // Token genuinely expired — logout.
+          localStorage.removeItem("bloxos_token");
+          setToken(null);
+          router.push("/login");
+        }
+      } catch {
+        // Can't parse token — logout.
+        localStorage.removeItem("bloxos_token");
+        setToken(null);
+        router.push("/login");
+      }
     }
     return res;
   }, [router]);
