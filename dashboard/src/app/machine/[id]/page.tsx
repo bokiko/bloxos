@@ -11,6 +11,14 @@ import { ServicePanel, Service } from "@/components/ServicePanel";
 import { ContainerPanel, Container } from "@/components/ContainerPanel";
 import { RebootModal } from "@/components/RebootModal";
 import { MetricCharts } from "@/components/MetricCharts";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle,
+  DialogDescription, DialogFooter,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { motion } from "framer-motion";
 import {
   ArrowLeft, Cpu, HardDrive, MemoryStick, Thermometer,
   Activity, Zap, Monitor, Terminal as TerminalIcon, RotateCcw,
@@ -148,12 +156,10 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
     }
   }, [id]);
 
-  // Initial REST fetch for full machine data (gpus, services, containers)
   useEffect(() => {
     fetchData();
   }, [fetchData]);
 
-  // Update metrics from the global SSE stream
   useEffect(() => {
     const sseData = getMachine(id);
     if (!sseData) return;
@@ -179,7 +185,6 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
     });
     setLastUpdated(new Date().toISOString());
 
-    // Update services/containers if SSE carried them
     const raw = sseData as unknown as Record<string, unknown>;
     if (raw._services) setServices(raw._services as Service[]);
     if (raw._containers) setContainers(raw._containers as Container[]);
@@ -268,7 +273,7 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
     return (
       <div className="min-h-screen bg-blox-bg flex items-center justify-center">
         <div className="text-center">
-          <p className="text-blox-red text-sm mb-4">{error}</p>
+          <p className="text-red-400 text-sm mb-4">{error}</p>
           <Link href="/" className="text-blox-blue text-sm hover:underline">Back to Fleet</Link>
         </div>
       </div>
@@ -278,7 +283,10 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
   if (!data) {
     return (
       <div className="min-h-screen bg-blox-bg flex items-center justify-center">
-        <div className="text-blox-muted text-sm">Loading...</div>
+        <div className="flex items-center gap-2 text-blox-muted text-sm">
+          <div className="w-4 h-4 border-2 border-blox-blue border-t-transparent rounded-full animate-spin" />
+          Loading...
+        </div>
       </div>
     );
   }
@@ -292,38 +300,36 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
   const isOnline = machine.status !== "offline";
 
   return (
-    <div className="min-h-screen bg-blox-bg">
-      {showDeleteConfirm && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm">
-          <div className="bg-blox-card border border-blox-border rounded-lg p-6 max-w-md w-full mx-4 shadow-2xl">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="p-2 rounded-full bg-blox-red/10">
-                <Trash2 className="w-5 h-5 text-blox-red" />
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.3 }}
+      className="min-h-screen bg-blox-bg"
+    >
+      {/* Delete dialog */}
+      <Dialog open={showDeleteConfirm} onOpenChange={(o) => { if (!o) setShowDeleteConfirm(false); }}>
+        <DialogContent className="bg-blox-card border-blox-border text-blox-text ring-0 sm:max-w-md" showCloseButton={false}>
+          <DialogHeader>
+            <div className="flex items-center gap-3">
+              <div className="p-2 rounded-xl bg-red-500/10">
+                <Trash2 className="w-5 h-5 text-red-400" />
               </div>
-              <h3 className="text-base font-semibold text-blox-text">Delete Machine</h3>
+              <DialogTitle className="text-blox-text">Delete Machine</DialogTitle>
             </div>
-            <p className="text-sm text-blox-muted mb-6">
-              Are you sure you want to remove <span className="text-blox-text font-medium">{machine.hostname}</span> from BloxOS? This will delete all historical data for this machine.
-            </p>
-            <div className="flex items-center justify-end gap-3">
-              <button
-                onClick={() => setShowDeleteConfirm(false)}
-                disabled={deleting}
-                className="px-4 py-2 text-xs rounded-md border border-blox-border text-blox-muted hover:text-blox-text transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleDeleteMachine}
-                disabled={deleting}
-                className="px-4 py-2 text-xs rounded-md bg-blox-red/10 text-blox-red border border-blox-red/30 hover:bg-blox-red/20 transition-colors disabled:opacity-50"
-              >
-                {deleting ? "Deleting..." : "Delete Machine"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+            <DialogDescription className="text-blox-muted text-xs mt-2">
+              Are you sure you want to remove <span className="text-blox-text font-medium">{machine.hostname}</span> from BloxOS? This will delete all historical data.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="bg-transparent border-t-blox-border">
+            <Button variant="outline" size="sm" onClick={() => setShowDeleteConfirm(false)} disabled={deleting} className="text-xs text-blox-muted border-blox-border">
+              Cancel
+            </Button>
+            <Button variant="destructive" size="sm" onClick={handleDeleteMachine} disabled={deleting} className="text-xs">
+              {deleting ? "Deleting..." : "Delete Machine"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {showReboot && (
         <RebootModal
@@ -334,92 +340,105 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
         />
       )}
 
-      <header className="sticky top-0 z-50 bg-blox-bg/80 backdrop-blur-md border-b border-blox-border">
+      {/* Header */}
+      <header className="sticky top-0 z-50 bg-blox-bg/80 backdrop-blur-xl border-b border-blox-border/50">
         <div className="max-w-[1200px] mx-auto px-4 sm:px-6 h-14 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <Link href="/" className="flex items-center gap-1.5 text-blox-muted hover:text-blox-text transition-colors text-sm">
               <ArrowLeft className="w-4 h-4" />
               Fleet
             </Link>
-            <span className="text-blox-border">/</span>
-            <div className="flex items-center gap-2">
-              <Monitor className="w-4 h-4 text-blox-muted" />
-              <h1 className="font-semibold text-blox-text">{machine.hostname}</h1>
+            <span className="text-blox-border/50">/</span>
+            <div className="flex items-center gap-2.5">
+              <div className="p-1.5 rounded-lg bg-blox-border/50">
+                <Monitor className="w-3.5 h-3.5 text-blox-muted" />
+              </div>
+              <h1 className="font-semibold text-blox-text tracking-tight">{machine.hostname}</h1>
               <StatusBadge status={status} />
             </div>
           </div>
           <div className="flex items-center gap-2">
             {connected && (
-              <span className="flex items-center gap-1 text-[10px] text-blox-green mr-1">
+              <span className="flex items-center gap-1 text-[10px] text-emerald-400 mr-1">
                 <Wifi className="w-3 h-3" />
                 Live
               </span>
             )}
             {(data.latency_ms ?? 0) > 0 && (
-              <span className="flex items-center gap-1 text-[10px] text-blox-muted mr-2">
+              <span className="flex items-center gap-1 text-[10px] text-blox-muted font-mono tabular-nums mr-2">
                 <Wifi className="w-3 h-3" />
                 {data.latency_ms}ms
               </span>
             )}
             {lastUpdated && (
-              <span className="text-[10px] text-blox-muted mr-2">
-                updated: {timeSince(lastUpdated)}
+              <span className="text-[10px] text-blox-muted font-mono tabular-nums mr-2">
+                {timeSince(lastUpdated)}
               </span>
             )}
-            <button
+            <Button
+              variant="outline"
+              size="sm"
               onClick={() => setShowDeleteConfirm(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs border border-blox-border text-blox-muted hover:border-blox-red/40 hover:text-blox-red hover:bg-blox-red/5 transition-colors"
+              className="text-xs border-blox-border text-blox-muted hover:text-red-400 hover:border-red-500/30 gap-1.5"
             >
               <Trash2 className="w-3.5 h-3.5" />
               Delete
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
               onClick={() => setShowReboot(true)}
               disabled={!isOnline}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs border transition-colors ${
-                !isOnline
-                  ? "border-blox-border text-blox-muted opacity-50 cursor-not-allowed"
-                  : "border-blox-border text-blox-text hover:border-blox-red/40 hover:text-blox-red hover:bg-blox-red/5"
-              }`}
+              className="text-xs border-blox-border text-blox-text gap-1.5"
             >
               <RotateCcw className="w-3.5 h-3.5" />
               Reboot
-            </button>
-            <button
+            </Button>
+            <Button
+              variant={termState === "active" ? "outline" : "outline"}
+              size="sm"
               onClick={() => {
                 if (termState === "locked") setTermState("pin_entry");
                 else if (termState === "active" || termState === "connecting") handleTerminalClose();
               }}
               disabled={!isOnline}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs border transition-colors ${
-                !isOnline
-                  ? "border-blox-border text-blox-muted opacity-50 cursor-not-allowed"
-                  : termState === "active"
-                    ? "border-blox-green/40 text-blox-green hover:bg-blox-green/10"
-                    : "border-blox-border text-blox-text hover:border-blox-blue/40 hover:text-blox-blue hover:bg-blox-blue/5"
+              className={`text-xs gap-1.5 ${
+                termState === "active"
+                  ? "border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10"
+                  : "border-blox-border text-blox-text"
               }`}
             >
               <TerminalIcon className="w-3.5 h-3.5" />
               {termState === "active" ? "Terminal Active" : "Terminal"}
-            </button>
+            </Button>
           </div>
         </div>
       </header>
 
       <main className="max-w-[1200px] mx-auto px-4 sm:px-6 py-6 space-y-6">
+        {/* Info bar */}
         <div className="flex flex-wrap gap-4 text-xs text-blox-muted">
-          {machine.ip && <span>IP: <span className="text-blox-text">{machine.ip}</span></span>}
+          {machine.ip && <span>IP: <span className="text-blox-text font-mono tabular-nums">{machine.ip}</span></span>}
           {machine.os && <span>OS: <span className="text-blox-text">{machine.os}</span></span>}
-          <span>ID: <span className="text-blox-text font-mono text-[10px]">{machine.id}</span></span>
+          <span>ID: <span className="text-blox-text font-mono text-[10px] tabular-nums">{machine.id}</span></span>
           {(data.latency_ms ?? 0) > 0 && (
-            <span>Latency: <span className="text-blox-text">{data.latency_ms}ms</span></span>
+            <span>Latency: <span className="text-blox-text font-mono tabular-nums">{data.latency_ms}ms</span></span>
           )}
         </div>
 
+        {/* System + GPU panels */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <div className="bg-blox-card border border-blox-border rounded-lg p-5">
-            <div className="flex items-center gap-2 mb-5">
-              <Activity className="w-4 h-4 text-blox-blue" />
+          {/* System Panel */}
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.1 }}
+            className="bg-blox-card border border-blox-border rounded-xl p-5"
+          >
+            <div className="flex items-center gap-2.5 mb-5">
+              <div className="p-1.5 rounded-lg bg-blox-blue/10">
+                <Activity className="w-3.5 h-3.5 text-blox-blue" />
+              </div>
               <h3 className="text-sm font-semibold text-blox-text">System</h3>
             </div>
             <div className="space-y-4">
@@ -429,7 +448,7 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
                     <Cpu className="w-3.5 h-3.5 text-blox-muted" />
                     <span className="text-xs text-blox-muted">CPU</span>
                   </div>
-                  <span className="text-sm font-semibold text-blox-text tabular-nums">{(metrics?.cpu_percent ?? 0).toFixed(1)}%</span>
+                  <span className="text-sm font-semibold text-blox-text tabular-nums font-mono">{(metrics?.cpu_percent ?? 0).toFixed(1)}%</span>
                 </div>
                 <ProgressBar value={metrics?.cpu_percent ?? 0} size="md" />
               </div>
@@ -439,7 +458,7 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
                     <MemoryStick className="w-3.5 h-3.5 text-blox-muted" />
                     <span className="text-xs text-blox-muted">RAM</span>
                   </div>
-                  <span className="text-xs text-blox-muted tabular-nums">{formatBytes(metrics?.ram_used_bytes)} / {formatBytes(metrics?.ram_total_bytes)}</span>
+                  <span className="text-xs text-blox-muted tabular-nums font-mono">{formatBytes(metrics?.ram_used_bytes)} / {formatBytes(metrics?.ram_total_bytes)}</span>
                 </div>
                 <ProgressBar value={ramPct} size="md" label={`${ramPct.toFixed(0)}%`} />
               </div>
@@ -449,25 +468,33 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
                     <HardDrive className="w-3.5 h-3.5 text-blox-muted" />
                     <span className="text-xs text-blox-muted">Disk</span>
                   </div>
-                  <span className="text-xs text-blox-muted tabular-nums">{formatBytes(metrics?.disk_used_bytes)} / {formatBytes(metrics?.disk_total_bytes)}</span>
+                  <span className="text-xs text-blox-muted tabular-nums font-mono">{formatBytes(metrics?.disk_used_bytes)} / {formatBytes(metrics?.disk_total_bytes)}</span>
                 </div>
                 <ProgressBar value={diskPct} size="md" label={`${diskPct.toFixed(0)}%`} />
               </div>
-              <div className="flex items-center justify-between py-2 border-t border-blox-border">
+              <div className="flex items-center justify-between py-2.5 border-t border-blox-border/50">
                 <div className="flex items-center gap-2">
                   <Wifi className="w-3.5 h-3.5 text-blox-muted" />
                   <span className="text-xs text-blox-muted">Network Latency</span>
                 </div>
-                <span className="text-xs text-blox-text tabular-nums">
+                <span className="text-xs text-blox-text tabular-nums font-mono">
                   {(data.latency_ms ?? 0) > 0 ? `${data.latency_ms}ms` : "N/A"}
                 </span>
               </div>
             </div>
-          </div>
+          </motion.div>
 
-          <div className="bg-blox-card border border-blox-border rounded-lg p-5">
-            <div className="flex items-center gap-2 mb-5">
-              <Zap className="w-4 h-4 text-blox-blue" />
+          {/* GPU Panel */}
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.15 }}
+            className="bg-blox-card border border-blox-border rounded-xl p-5"
+          >
+            <div className="flex items-center gap-2.5 mb-5">
+              <div className="p-1.5 rounded-lg bg-blox-blue/10">
+                <Zap className="w-3.5 h-3.5 text-blox-blue" />
+              </div>
               <h3 className="text-sm font-semibold text-blox-text">GPU</h3>
               {!hasGpu && <span className="text-[10px] text-blox-muted">(no GPU detected)</span>}
             </div>
@@ -478,12 +505,14 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
                   return (
                     <div key={gpu.index} className="space-y-3">
                       {gpus.length > 1 && (
-                        <div className="text-[10px] text-blox-muted font-mono border-b border-blox-border pb-1">
+                        <div className="text-[10px] text-blox-muted font-mono border-b border-blox-border/50 pb-1">
                           GPU {gpu.index}: {gpu.name}
                         </div>
                       )}
                       {gpus.length === 1 && gpu.name && (
-                        <div className="text-[10px] text-blox-muted font-mono mb-1">{gpu.name}</div>
+                        <Badge variant="outline" className="text-[10px] border-blox-border text-blox-muted font-mono h-auto py-0 px-2 mb-1">
+                          {gpu.name}
+                        </Badge>
                       )}
                       <div>
                         <div className="flex items-center justify-between mb-1.5">
@@ -491,9 +520,9 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
                             <Thermometer className="w-3.5 h-3.5 text-blox-muted" />
                             <span className="text-xs text-blox-muted">Temperature</span>
                           </div>
-                          <span className={`text-sm font-semibold tabular-nums ${
-                            (gpu.temp_c ?? 0) > 80 ? "text-blox-red" :
-                            (gpu.temp_c ?? 0) > 70 ? "text-blox-amber" : "text-blox-green"
+                          <span className={`text-sm font-semibold tabular-nums font-mono ${
+                            (gpu.temp_c ?? 0) > 80 ? "text-red-400" :
+                            (gpu.temp_c ?? 0) > 60 ? "text-amber-400" : "text-emerald-400"
                           }`}>{gpu.temp_c ?? 0}&deg;C</span>
                         </div>
                         <ProgressBar value={gpu.temp_c ?? 0} size="md" />
@@ -504,7 +533,7 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
                             <Cpu className="w-3.5 h-3.5 text-blox-muted" />
                             <span className="text-xs text-blox-muted">Utilization</span>
                           </div>
-                          <span className="text-sm font-semibold text-blox-text tabular-nums">{(gpu.util_percent ?? 0).toFixed(0)}%</span>
+                          <span className="text-sm font-semibold text-blox-text tabular-nums font-mono">{(gpu.util_percent ?? 0).toFixed(0)}%</span>
                         </div>
                         <ProgressBar value={gpu.util_percent ?? 0} size="md" />
                       </div>
@@ -515,17 +544,17 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
                               <MemoryStick className="w-3.5 h-3.5 text-blox-muted" />
                               <span className="text-xs text-blox-muted">VRAM</span>
                             </div>
-                            <span className="text-xs text-blox-muted tabular-nums">{formatBytes(gpu.mem_used_bytes)} / {formatBytes(gpu.mem_total_bytes)}</span>
+                            <span className="text-xs text-blox-muted tabular-nums font-mono">{formatBytes(gpu.mem_used_bytes)} / {formatBytes(gpu.mem_total_bytes)}</span>
                           </div>
                           <ProgressBar value={vramPct} size="md" label={`${vramPct.toFixed(0)}%`} />
                         </div>
                       )}
-                      <div className="flex items-center justify-between py-2 border-t border-blox-border">
+                      <div className="flex items-center justify-between py-2 border-t border-blox-border/50">
                         <div className="flex items-center gap-2">
                           <Zap className="w-3.5 h-3.5 text-blox-muted" />
                           <span className="text-xs text-blox-muted">Power</span>
                         </div>
-                        <span className="text-xs text-blox-text tabular-nums">
+                        <span className="text-xs text-blox-text tabular-nums font-mono">
                           {(gpu.power_watts ?? 0) > 0 ? `${(gpu.power_watts ?? 0).toFixed(0)} W` : "N/A"}
                         </span>
                       </div>
@@ -534,7 +563,7 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
                           <Activity className="w-3.5 h-3.5 text-blox-muted" />
                           <span className="text-xs text-blox-muted">Fan</span>
                         </div>
-                        <span className="text-xs text-blox-text tabular-nums">
+                        <span className="text-xs text-blox-text tabular-nums font-mono">
                           {(gpu.fan_percent ?? 0) > 0 ? `${(gpu.fan_percent ?? 0).toFixed(0)}%` : "N/A"}
                         </span>
                       </div>
@@ -546,85 +575,154 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
               <div className="flex flex-col items-center justify-center py-8 text-blox-muted">
                 <Zap className="w-8 h-8 mb-2 opacity-20" />
                 <p className="text-xs">No GPU metrics available</p>
-                <p className="text-[10px] mt-1">nvidia-smi not detected on this machine</p>
+                <p className="text-[10px] mt-1 text-blox-muted/60">nvidia-smi not detected on this machine</p>
               </div>
             )}
-          </div>
+          </motion.div>
         </div>
 
-        <div className="bg-blox-card border border-blox-border rounded-lg p-5">
+        {/* Charts */}
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.2 }}
+          className="bg-blox-card border border-blox-border rounded-xl p-5"
+        >
           <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2">
-              <BarChart3 className="w-4 h-4 text-blox-blue" />
+            <div className="flex items-center gap-2.5">
+              <div className="p-1.5 rounded-lg bg-blox-blue/10">
+                <BarChart3 className="w-3.5 h-3.5 text-blox-blue" />
+              </div>
               <h3 className="text-sm font-semibold text-blox-text">Metric History</h3>
             </div>
-            <button
+            <Button
+              variant="ghost"
+              size="xs"
               onClick={() => setShowCharts(!showCharts)}
-              className="text-xs text-blox-muted hover:text-blox-text transition-colors"
+              className="text-xs text-blox-muted hover:text-blox-text"
             >
               {showCharts ? "Hide" : "Show"}
-            </button>
+            </Button>
           </div>
           {showCharts && <MetricCharts machineId={id} hasGpu={hasGpu} />}
-        </div>
+        </motion.div>
 
+        {/* Services + Containers */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <ServicePanel services={services} machineId={id} hubUrl={HUB_URL} />
-          <ContainerPanel containers={containers} machineId={id} hubUrl={HUB_URL} />
+          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.25 }}>
+            <ServicePanel services={services} machineId={id} hubUrl={HUB_URL} />
+          </motion.div>
+          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}>
+            <ContainerPanel containers={containers} machineId={id} hubUrl={HUB_URL} />
+          </motion.div>
         </div>
 
-        <div className="bg-blox-card border border-blox-border rounded-lg overflow-hidden">
-          <div className="flex items-center justify-between px-5 py-3 border-b border-blox-border">
-            <div className="flex items-center gap-2">
-              <TerminalIcon className="w-4 h-4 text-blox-blue" />
-              <h3 className="text-sm font-semibold text-blox-text">Terminal</h3>
-              {termState === "active" && <span className="text-[10px] px-1.5 py-0.5 rounded bg-blox-green/10 text-blox-green border border-blox-green/20">connected</span>}
-              {termState === "connecting" && <span className="text-[10px] px-1.5 py-0.5 rounded bg-blox-blue/10 text-blox-blue border border-blox-blue/20">connecting...</span>}
-              {termState === "disconnected" && <span className="text-[10px] px-1.5 py-0.5 rounded bg-blox-red/10 text-blox-red border border-blox-red/20">disconnected</span>}
+        {/* Terminal */}
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.35 }}
+          className="bg-blox-card border border-blox-border rounded-xl overflow-hidden"
+        >
+          {/* Terminal header bar - macOS style */}
+          <div className="flex items-center justify-between px-5 py-3 border-b border-blox-border/50 bg-blox-bg/30">
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-1.5">
+                <span className="w-3 h-3 rounded-full bg-red-500/80" />
+                <span className="w-3 h-3 rounded-full bg-amber-500/80" />
+                <span className="w-3 h-3 rounded-full bg-emerald-500/80" />
+              </div>
+              <div className="flex items-center gap-2">
+                <TerminalIcon className="w-3.5 h-3.5 text-blox-muted" />
+                <h3 className="text-sm font-semibold text-blox-text">Terminal</h3>
+                {termState === "active" && (
+                  <Badge variant="outline" className="text-[10px] border-emerald-500/30 bg-emerald-500/10 text-emerald-400 h-auto py-0 px-1.5">
+                    connected
+                  </Badge>
+                )}
+                {termState === "connecting" && (
+                  <Badge variant="outline" className="text-[10px] border-blox-blue/30 bg-blox-blue/10 text-blox-blue h-auto py-0 px-1.5">
+                    connecting...
+                  </Badge>
+                )}
+                {termState === "disconnected" && (
+                  <Badge variant="outline" className="text-[10px] border-red-500/30 bg-red-500/10 text-red-400 h-auto py-0 px-1.5">
+                    disconnected
+                  </Badge>
+                )}
+              </div>
             </div>
             <div className="flex items-center gap-1">
               {termState === "active" && (
                 <>
-                  <button onClick={() => setTermExpanded(!termExpanded)} className="p-1.5 rounded hover:bg-blox-border/50 text-blox-muted hover:text-blox-text transition-colors" title={termExpanded ? "Collapse" : "Expand"}>
+                  <Button variant="ghost" size="icon-xs" onClick={() => setTermExpanded(!termExpanded)} className="text-blox-muted hover:text-blox-text" title={termExpanded ? "Collapse" : "Expand"}>
                     {termExpanded ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
-                  </button>
-                  <button onClick={handleTerminalClose} className="p-1.5 rounded hover:bg-blox-red/10 text-blox-muted hover:text-blox-red transition-colors" title="Close terminal">
+                  </Button>
+                  <Button variant="ghost" size="icon-xs" onClick={handleTerminalClose} className="text-blox-muted hover:text-red-400" title="Close terminal">
                     <X className="w-3.5 h-3.5" />
-                  </button>
+                  </Button>
                 </>
               )}
               {termState === "disconnected" && (
-                <button onClick={() => setTermState("pin_entry")} className="text-xs text-blox-blue hover:text-blox-blue/80 transition-colors">Reconnect</button>
+                <Button variant="ghost" size="xs" onClick={() => setTermState("pin_entry")} className="text-xs text-blox-blue">
+                  Reconnect
+                </Button>
               )}
             </div>
           </div>
 
           {termState === "locked" && (
-            <div className="flex flex-col items-center justify-center py-12 bg-black/30">
+            <div className="flex flex-col items-center justify-center py-12 bg-black/20">
               <Lock className="w-10 h-10 text-blox-muted mb-3 opacity-20" />
               <p className="text-sm text-blox-muted">Remote Terminal</p>
-              <p className="text-xs text-blox-muted mt-1 mb-4">Enter PIN to unlock terminal access</p>
-              <button onClick={() => isOnline && setTermState("pin_entry")} disabled={!isOnline} className={`flex items-center gap-2 px-4 py-2 rounded-md text-xs font-medium transition-colors ${isOnline ? "bg-blox-blue/10 text-blox-blue border border-blox-blue/30 hover:bg-blox-blue/20" : "bg-blox-border text-blox-muted cursor-not-allowed border border-blox-border"}`}>
-                <Unlock className="w-3.5 h-3.5" />Unlock Terminal
-              </button>
+              <p className="text-xs text-blox-muted/60 mt-1 mb-4">Enter PIN to unlock terminal access</p>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => isOnline && setTermState("pin_entry")}
+                disabled={!isOnline}
+                className="text-xs text-blox-blue border-blox-blue/20 hover:bg-blox-blue/10 gap-2"
+              >
+                <Unlock className="w-3.5 h-3.5" />
+                Unlock Terminal
+              </Button>
             </div>
           )}
 
           {termState === "pin_entry" && (
-            <div className="flex flex-col items-center justify-center py-12 bg-black/30">
+            <div className="flex flex-col items-center justify-center py-12 bg-black/20">
               <Lock className="w-8 h-8 text-blox-blue mb-3 opacity-50" />
               <p className="text-sm text-blox-text mb-4">Enter PIN to open terminal</p>
               <form onSubmit={(e) => { e.preventDefault(); handlePinSubmit(); }} className="flex items-center gap-2">
-                <input ref={pinInputRef} type="password" maxLength={8} value={pinInput} onChange={(e) => { setPinInput(e.target.value); setPinError(false); }} placeholder="PIN" className={`w-32 px-3 py-2 text-sm text-center font-mono rounded-md bg-blox-bg border ${pinError ? "border-blox-red" : "border-blox-border"} text-blox-text placeholder:text-blox-muted focus:outline-none focus:border-blox-blue`} autoComplete="off" />
-                <button type="submit" className="px-4 py-2 text-xs font-medium rounded-md bg-blox-blue/10 text-blox-blue border border-blox-blue/30 hover:bg-blox-blue/20 transition-colors">Open</button>
-                <button type="button" onClick={() => { setTermState("locked"); setPinInput(""); setPinError(false); }} className="px-3 py-2 text-xs text-blox-muted hover:text-blox-text transition-colors">Cancel</button>
+                <Input
+                  ref={pinInputRef}
+                  type="password"
+                  maxLength={8}
+                  value={pinInput}
+                  onChange={(e) => { setPinInput(e.target.value); setPinError(false); }}
+                  placeholder="PIN"
+                  className={`w-32 text-center font-mono bg-blox-bg border-blox-border text-blox-text h-9 text-sm ${pinError ? "border-red-500" : ""}`}
+                  autoComplete="off"
+                />
+                <Button type="submit" variant="outline" size="sm" className="text-xs text-blox-blue border-blox-blue/20 hover:bg-blox-blue/10">
+                  Open
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => { setTermState("locked"); setPinInput(""); setPinError(false); }}
+                  className="text-xs text-blox-muted"
+                >
+                  Cancel
+                </Button>
               </form>
-              {pinError && <p className="text-xs text-blox-red mt-2">Invalid PIN</p>}
+              {pinError && <p className="text-xs text-red-400 mt-2">Invalid PIN</p>}
             </div>
           )}
 
           {termState === "connecting" && (
-            <div className="flex flex-col items-center justify-center py-12 bg-black/30">
+            <div className="flex flex-col items-center justify-center py-12 bg-black/20">
               <div className="w-6 h-6 border-2 border-blox-blue border-t-transparent rounded-full animate-spin mb-3" />
               <p className="text-sm text-blox-muted">Starting terminal session...</p>
             </div>
@@ -637,17 +735,21 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
           )}
 
           {termState === "disconnected" && (
-            <div className="flex flex-col items-center justify-center py-12 bg-black/30">
-              <TerminalIcon className="w-8 h-8 text-blox-red mb-3 opacity-30" />
+            <div className="flex flex-col items-center justify-center py-12 bg-black/20">
+              <TerminalIcon className="w-8 h-8 text-red-400 mb-3 opacity-30" />
               <p className="text-sm text-blox-muted">Terminal disconnected</p>
               <div className="flex items-center gap-2 mt-4">
-                <button onClick={() => setTermState("pin_entry")} className="px-4 py-2 text-xs font-medium rounded-md bg-blox-blue/10 text-blox-blue border border-blox-blue/30 hover:bg-blox-blue/20 transition-colors">Reconnect</button>
-                <button onClick={() => { setTermState("locked"); setTermSessionId(null); }} className="px-3 py-2 text-xs text-blox-muted hover:text-blox-text transition-colors">Close</button>
+                <Button variant="outline" size="sm" onClick={() => setTermState("pin_entry")} className="text-xs text-blox-blue border-blox-blue/20 hover:bg-blox-blue/10">
+                  Reconnect
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => { setTermState("locked"); setTermSessionId(null); }} className="text-xs text-blox-muted">
+                  Close
+                </Button>
               </div>
             </div>
           )}
-        </div>
+        </motion.div>
       </main>
-    </div>
+    </motion.div>
   );
 }

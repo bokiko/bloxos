@@ -3,6 +3,11 @@
 import { useState, useRef, useEffect, useMemo } from "react";
 import { Layers, RotateCcw, Play, Square, Loader2, ChevronDown } from "lucide-react";
 import { useToast } from "./Toast";
+import {
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent,
+  DropdownMenuItem, DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
+import { Button } from "@/components/ui/button";
 
 export interface Service {
   name: string;
@@ -19,14 +24,14 @@ interface ServicePanelProps {
 const statusOrder: Record<string, number> = { failed: 0, active: 1, inactive: 2 };
 
 function statusDot(status: string) {
-  if (status === "active") return "bg-blox-green";
-  if (status === "failed") return "bg-blox-red";
-  return "bg-blox-muted";
+  if (status === "active") return "bg-emerald-500";
+  if (status === "failed") return "bg-red-500";
+  return "bg-blox-muted/50";
 }
 
 function statusLabel(status: string) {
-  if (status === "active") return "text-blox-green";
-  if (status === "failed") return "text-blox-red";
+  if (status === "active") return "text-emerald-400";
+  if (status === "failed") return "text-red-400";
   return "text-blox-muted";
 }
 
@@ -40,20 +45,9 @@ function ServiceActions({
   hubUrl: string;
 }) {
   const [loading, setLoading] = useState(false);
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
   const { addToast } = useToast();
 
-  useEffect(() => {
-    function handleClick(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    }
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, []);
-
   async function runCommand(type: string) {
-    setOpen(false);
     setLoading(true);
     try {
       const token = localStorage.getItem("bloxos_token");
@@ -84,49 +78,40 @@ function ServiceActions({
 
   if (service.status === "inactive") {
     return (
-      <button
+      <Button
+        variant="ghost"
+        size="icon-xs"
         onClick={() => runCommand("start_service")}
-        className="flex items-center gap-1 px-2 py-1 rounded text-[10px] text-blox-green border border-blox-border hover:border-blox-green/40 hover:bg-blox-green/5 transition-colors"
+        className="text-emerald-400 hover:bg-emerald-500/10"
         title="Start"
       >
         <Play className="w-3 h-3" />
-        Start
-      </button>
+      </Button>
     );
   }
 
   return (
-    <div ref={ref} className="relative">
-      <button
-        onClick={() => setOpen(!open)}
-        className="flex items-center gap-1 px-2 py-1 rounded text-[10px] text-blox-blue border border-blox-border hover:border-blox-blue/40 hover:bg-blox-blue/5 transition-colors"
-      >
-        <RotateCcw className="w-3 h-3" />
-        <ChevronDown className="w-2.5 h-2.5" />
-      </button>
-      {open && (
-        <div className="absolute right-0 top-full mt-1 bg-blox-card border border-blox-border rounded-md shadow-xl z-50 min-w-[100px] py-1">
-          <button
-            onClick={() => runCommand("restart_service")}
-            className="w-full text-left px-3 py-1.5 text-[11px] text-blox-text hover:bg-blox-border/50 flex items-center gap-2"
-          >
-            <RotateCcw className="w-3 h-3" /> Restart
-          </button>
-          <button
-            onClick={() => runCommand("stop_service")}
-            className="w-full text-left px-3 py-1.5 text-[11px] text-blox-red hover:bg-blox-border/50 flex items-center gap-2"
-          >
-            <Square className="w-3 h-3" /> Stop
-          </button>
-          <button
-            onClick={() => runCommand("start_service")}
-            className="w-full text-left px-3 py-1.5 text-[11px] text-blox-green hover:bg-blox-border/50 flex items-center gap-2"
-          >
-            <Play className="w-3 h-3" /> Start
-          </button>
-        </div>
-      )}
-    </div>
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        render={
+          <Button variant="ghost" size="icon-xs" className="text-blox-blue hover:bg-blox-blue/10">
+            <RotateCcw className="w-3 h-3" />
+          </Button>
+        }
+      />
+      <DropdownMenuContent align="end" className="bg-blox-card border-blox-border min-w-[120px]">
+        <DropdownMenuItem onClick={() => runCommand("restart_service")} className="text-xs gap-2 text-blox-text">
+          <RotateCcw className="w-3 h-3" /> Restart
+        </DropdownMenuItem>
+        <DropdownMenuSeparator className="bg-blox-border" />
+        <DropdownMenuItem onClick={() => runCommand("stop_service")} className="text-xs gap-2 text-red-400">
+          <Square className="w-3 h-3" /> Stop
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={() => runCommand("start_service")} className="text-xs gap-2 text-emerald-400">
+          <Play className="w-3 h-3" /> Start
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -141,12 +126,14 @@ export function ServicePanel({ services, machineId, hubUrl }: ServicePanelProps)
   }, [services]);
 
   return (
-    <div className="bg-blox-card border border-blox-border rounded-lg p-5">
+    <div className="bg-blox-card border border-blox-border rounded-xl p-5">
       <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2">
-          <Layers className="w-4 h-4 text-blox-blue" />
+        <div className="flex items-center gap-2.5">
+          <div className="p-1.5 rounded-lg bg-blox-blue/10">
+            <Layers className="w-3.5 h-3.5 text-blox-blue" />
+          </div>
           <h3 className="text-sm font-semibold text-blox-text">Services</h3>
-          <span className="text-[10px] text-blox-muted">({services.length})</span>
+          <span className="text-[10px] text-blox-muted font-mono tabular-nums">({services.length})</span>
         </div>
       </div>
       {sorted.length === 0 ? (
@@ -159,14 +146,14 @@ export function ServicePanel({ services, machineId, hubUrl }: ServicePanelProps)
           {sorted.map((s) => (
             <div
               key={s.name}
-              className="flex items-center justify-between px-2 py-1.5 rounded hover:bg-blox-border/20 group"
+              className="flex items-center justify-between px-2 py-2 rounded-lg hover:bg-blox-border/20 group transition-colors"
             >
               <div className="flex items-center gap-2.5 min-w-0">
-                <div className={`w-2 h-2 rounded-full flex-shrink-0 ${statusDot(s.status)}`} />
+                <div className={`w-2 h-2 rounded-full flex-shrink-0 ${statusDot(s.status)} ${s.status === "active" ? "shadow-sm shadow-emerald-500/50" : ""}`} />
                 <span className="text-xs text-blox-text font-mono truncate">{s.name}</span>
               </div>
               <div className="flex items-center gap-3">
-                <span className={`text-[10px] ${statusLabel(s.status)}`}>{s.status}</span>
+                <span className={`text-[10px] font-medium ${statusLabel(s.status)}`}>{s.status}</span>
                 <ServiceActions service={s} machineId={machineId} hubUrl={hubUrl} />
               </div>
             </div>

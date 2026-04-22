@@ -4,10 +4,12 @@ import { ToastProvider } from "@/components/Toast";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { SSEProvider } from "@/contexts/SSEContext";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
-import { Geist } from "next/font/google";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { Geist, Geist_Mono } from "next/font/google";
 import { cn } from "@/lib/utils";
 
-const geist = Geist({subsets:['latin'],variable:'--font-sans'});
+const geistSans = Geist({ subsets: ["latin"], variable: "--font-sans" });
+const geistMono = Geist_Mono({ subsets: ["latin"], variable: "--font-mono" });
 
 export const metadata: Metadata = {
   title: "BloxOS",
@@ -20,14 +22,16 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={cn("dark", "font-sans", geist.variable)}>
-      <body className="min-h-screen bg-blox-bg text-blox-text antialiased">
+    <html lang="en" className={cn("dark", geistSans.variable, geistMono.variable)}>
+      <body className="min-h-screen bg-blox-bg text-blox-text antialiased font-sans">
         <AuthProvider>
           <ErrorBoundary>
             <SSEProvider>
-              <ToastProvider>
-                {children}
-              </ToastProvider>
+              <TooltipProvider>
+                <ToastProvider>
+                  {children}
+                </ToastProvider>
+              </TooltipProvider>
             </SSEProvider>
           </ErrorBoundary>
         </AuthProvider>

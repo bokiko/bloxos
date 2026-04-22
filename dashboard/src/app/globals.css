@@ -16,6 +16,7 @@
   --color-blox-blue: #3b82f6;
   --font-heading: var(--font-sans);
   --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -59,7 +60,6 @@
 body {
   background: var(--color-blox-bg);
   color: var(--color-blox-text);
-  font-family: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
 }
 
 /* Scrollbar styling */
@@ -72,6 +72,31 @@ body {
 ::-webkit-scrollbar-thumb {
   background: var(--color-blox-border);
   border-radius: 3px;
+}
+
+/* Tabular nums utility */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Pulse animation for online status */
+@keyframes status-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+.animate-status-pulse {
+  animation: status-pulse 2s ease-in-out infinite;
+}
+
+/* Shimmer loading effect */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.animate-shimmer {
+  background: linear-gradient(90deg, var(--color-blox-border) 25%, var(--color-blox-card) 50%, var(--color-blox-border) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
 }
 
 :root {

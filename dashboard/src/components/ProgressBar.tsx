@@ -7,9 +7,15 @@ interface ProgressBarProps {
 }
 
 function getBarColor(value: number): string {
-  if (value < 60) return "bg-blox-green";
-  if (value <= 85) return "bg-blox-amber";
-  return "bg-blox-red";
+  if (value < 60) return "from-emerald-500 to-emerald-400";
+  if (value <= 85) return "from-amber-500 to-amber-400";
+  return "from-red-500 to-red-400";
+}
+
+function getBarBg(value: number): string {
+  if (value < 60) return "bg-emerald-500/10";
+  if (value <= 85) return "bg-amber-500/10";
+  return "bg-red-500/10";
 }
 
 export function ProgressBar({ value, label, size = "sm" }: ProgressBarProps) {
@@ -18,14 +24,14 @@ export function ProgressBar({ value, label, size = "sm" }: ProgressBarProps) {
 
   return (
     <div className="flex items-center gap-3">
-      <div className={`flex-1 ${height} rounded-full bg-blox-border overflow-hidden`}>
+      <div className={`flex-1 ${height} rounded-full ${getBarBg(clamped)} overflow-hidden`}>
         <div
-          className={`${height} rounded-full transition-all duration-500 ${getBarColor(clamped)}`}
+          className={`${height} rounded-full bg-gradient-to-r ${getBarColor(clamped)} transition-all duration-700 ease-out`}
           style={{ width: `${clamped}%` }}
         />
       </div>
       {label && (
-        <span className="text-xs text-blox-muted tabular-nums w-10 text-right">
+        <span className="text-xs text-blox-muted tabular-nums font-mono w-10 text-right">
           {label}
         </span>
       )}

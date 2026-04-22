@@ -2,12 +2,12 @@
 
 import { useState, useEffect } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { MachineMetrics, GPUInfo } from "@/lib/demo-data";
+import { MachineMetrics } from "@/lib/demo-data";
 import { ProgressBar } from "./ProgressBar";
 import { StatusBadge, MachineStatus } from "./StatusBadge";
 import { Sparkline } from "./Sparkline";
 import { Cpu, HardDrive, MemoryStick, Thermometer, Clock, Monitor, Wifi, Trash2 } from "lucide-react";
+import { motion } from "framer-motion";
 
 function formatBytes(bytes: number | undefined | null): string {
   if (!bytes || bytes === 0) return "0";
@@ -42,10 +42,16 @@ function timeSince(ms: number): string {
   return `${d}d ${hr % 24}h ago`;
 }
 
-const borderColors: Record<MachineStatus, string> = {
-  online: "border-l-blox-green",
-  warning: "border-l-blox-amber",
-  offline: "border-l-blox-red",
+const statusBorderColor: Record<MachineStatus, string> = {
+  online: "border-l-emerald-500",
+  warning: "border-l-amber-500",
+  offline: "border-l-red-500/50",
+};
+
+const statusGlow: Record<MachineStatus, string> = {
+  online: "hover:shadow-emerald-500/5",
+  warning: "hover:shadow-amber-500/5",
+  offline: "hover:shadow-red-500/5",
 };
 
 interface MachineCardProps {
@@ -82,21 +88,25 @@ export function MachineCard({ machine, onClick, onDelete }: MachineCardProps) {
 
   return (
     <Link href={`/machine/${machine.machine_id}`} className="block">
-      <div
+      <motion.div
+        whileHover={{ scale: 1.02 }}
+        transition={{ type: "spring", stiffness: 400, damping: 25 }}
         onClick={onClick}
         className={`
-          group bg-blox-card border-l-[3px] ${borderColors[status]}
-          rounded-lg p-4 cursor-pointer
+          group bg-blox-card border-l-[3px] ${statusBorderColor[status]}
+          rounded-xl p-5 cursor-pointer
           border border-blox-border
-          hover:border-blox-muted/30 hover:shadow-lg hover:shadow-black/20
-          transition-all duration-200
+          hover:border-blox-muted/20 hover:shadow-xl ${statusGlow[status]}
+          transition-all duration-300
         `}
       >
         {/* Header */}
         <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-2">
-            <Monitor className="w-4 h-4 text-blox-muted" />
-            <span className="font-semibold text-sm text-blox-text">
+          <div className="flex items-center gap-2.5">
+            <div className="p-1.5 rounded-lg bg-blox-border/50">
+              <Monitor className="w-3.5 h-3.5 text-blox-muted" />
+            </div>
+            <span className="font-semibold text-sm text-blox-text tracking-tight">
               {machine.hostname}
             </span>
           </div>
@@ -109,7 +119,7 @@ export function MachineCard({ machine, onClick, onDelete }: MachineCardProps) {
                   e.stopPropagation();
                   onDelete(machine.machine_id, machine.hostname);
                 }}
-                className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-blox-red/10 text-blox-muted hover:text-blox-red transition-all duration-200"
+                className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg hover:bg-red-500/10 text-blox-muted hover:text-red-400 transition-all duration-200"
                 title="Delete machine"
               >
                 <Trash2 className="w-3.5 h-3.5" />
@@ -120,14 +130,14 @@ export function MachineCard({ machine, onClick, onDelete }: MachineCardProps) {
 
         {/* Sparkline */}
         {status !== "offline" && (
-          <div className="mb-2.5 flex items-center gap-2">
-            <span className="text-[9px] text-blox-muted uppercase tracking-wider">CPU 30m</span>
+          <div className="mb-3 flex items-center gap-2">
+            <span className="text-[9px] text-blox-muted uppercase tracking-wider font-medium">CPU 30m</span>
             <Sparkline machineId={machine.machine_id} width={100} height={24} />
           </div>
         )}
 
         {/* Metrics */}
-        <div className="space-y-2.5">
+        <div className="space-y-3">
           {/* CPU */}
           <div className="flex items-center gap-2">
             <Cpu className="w-3.5 h-3.5 text-blox-muted shrink-0" />
@@ -144,7 +154,7 @@ export function MachineCard({ machine, onClick, onDelete }: MachineCardProps) {
             <div className="flex-1">
               <ProgressBar value={ramPct} label={`${ramPct.toFixed(0)}%`} />
             </div>
-            <span className="text-[10px] text-blox-muted tabular-nums">
+            <span className="text-[10px] text-blox-muted tabular-nums font-mono">
               {formatBytes(machine.ram_used_bytes)}/{formatBytes(machine.ram_total_bytes)}
             </span>
           </div>
@@ -156,7 +166,7 @@ export function MachineCard({ machine, onClick, onDelete }: MachineCardProps) {
             <div className="flex-1">
               <ProgressBar value={diskPct} label={`${diskPct.toFixed(0)}%`} />
             </div>
-            <span className="text-[10px] text-blox-muted tabular-nums">
+            <span className="text-[10px] text-blox-muted tabular-nums font-mono">
               {formatBytes(machine.disk_used_bytes)}/{formatBytes(machine.disk_total_bytes)}
             </span>
           </div>
@@ -166,14 +176,14 @@ export function MachineCard({ machine, onClick, onDelete }: MachineCardProps) {
             <div className="flex items-center gap-2">
               <Thermometer className="w-3.5 h-3.5 text-blox-muted shrink-0" />
               <span className="text-xs text-blox-muted w-8">GPU</span>
-              <span className={`text-xs tabular-nums ${
-                machine.gpu_temp > 80 ? "text-blox-red" :
-                machine.gpu_temp > 70 ? "text-blox-amber" : "text-blox-green"
+              <span className={`text-xs tabular-nums font-mono font-medium ${
+                machine.gpu_temp > 80 ? "text-red-400" :
+                machine.gpu_temp > 60 ? "text-amber-400" : "text-emerald-400"
               }`}>
-                {machine.gpu_temp}\u00b0C
+                {machine.gpu_temp}&deg;C
               </span>
               {machine.gpu_util_percent !== undefined && (
-                <span className="text-[10px] text-blox-muted ml-1">
+                <span className="text-[10px] text-blox-muted font-mono ml-1">
                   ({(machine.gpu_util_percent ?? 0).toFixed(0)}% util)
                 </span>
               )}
@@ -191,7 +201,7 @@ export function MachineCard({ machine, onClick, onDelete }: MachineCardProps) {
                   label={`${(gpuVramTotal > 0 ? (gpuVramUsed / gpuVramTotal * 100) : 0).toFixed(0)}%`}
                 />
               </div>
-              <span className="text-[10px] text-blox-muted tabular-nums">
+              <span className="text-[10px] text-blox-muted tabular-nums font-mono">
                 {formatBytes(gpuVramUsed)}/{formatBytes(gpuVramTotal)}
               </span>
             </div>
@@ -199,22 +209,22 @@ export function MachineCard({ machine, onClick, onDelete }: MachineCardProps) {
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-between mt-3 pt-2 border-t border-blox-border">
-          <div className="flex items-center gap-1">
+        <div className="flex items-center justify-between mt-4 pt-3 border-t border-blox-border/50">
+          <div className="flex items-center gap-1.5">
             <Clock className="w-3 h-3 text-blox-muted" />
-            <span className="text-[10px] text-blox-muted">
-              seen: {machine.last_seen ? timeSince(machine.last_seen) : "never"}
+            <span className="text-[10px] text-blox-muted font-mono tabular-nums">
+              {machine.last_seen ? timeSince(machine.last_seen) : "never"}
             </span>
           </div>
           <div className="flex items-center gap-2">
             {machine.latency_ms !== undefined && machine.latency_ms > 0 && (
-              <span className="flex items-center gap-0.5 text-[10px] text-blox-muted">
+              <span className="flex items-center gap-0.5 text-[10px] text-blox-muted font-mono tabular-nums">
                 <Wifi className="w-2.5 h-2.5" />
                 {machine.latency_ms}ms
               </span>
             )}
             {machine.os && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-blox-border text-blox-muted">
+              <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-blox-border/50 text-blox-muted font-mono">
                 {machine.os}
               </span>
             )}
@@ -223,15 +233,15 @@ export function MachineCard({ machine, onClick, onDelete }: MachineCardProps) {
 
         {/* Tags */}
         {tags.length > 0 && (
-          <div className="flex gap-1 flex-wrap mt-2 pt-2 border-t border-blox-border">
+          <div className="flex gap-1.5 flex-wrap mt-2.5 pt-2.5 border-t border-blox-border/50">
             {tags.map((tag) => (
-              <span key={tag} className="text-[9px] px-1.5 py-0.5 rounded bg-blox-blue/10 text-blox-blue border border-blox-blue/20">
+              <span key={tag} className="text-[9px] px-2 py-0.5 rounded-full bg-blox-blue/10 text-blox-blue/80 border border-blox-blue/20 font-medium">
                 {tag.trim()}
               </span>
             ))}
           </div>
         )}
-      </div>
+      </motion.div>
     </Link>
   );
 }

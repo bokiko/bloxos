@@ -1,7 +1,12 @@
 "use client";
 
 import { AlertData } from "@/lib/demo-data";
-import { X, AlertTriangle, CheckCircle } from "lucide-react";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Separator } from "@/components/ui/separator";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { AlertTriangle, CheckCircle, AlertOctagon } from "lucide-react";
 
 interface AlertPanelProps {
   open: boolean;
@@ -25,93 +30,92 @@ function timeAgo(dateStr?: string): string {
 }
 
 export function AlertPanel({ open, onClose, alerts, onAcknowledge, onAcknowledgeAll }: AlertPanelProps) {
-  if (!open) return null;
-
   return (
-    <>
-      {/* Backdrop */}
-      <div className="fixed inset-0 z-[60] bg-black/40" onClick={onClose} />
-
-      {/* Panel */}
-      <div className="fixed right-0 top-0 bottom-0 z-[70] w-full max-w-md bg-blox-bg border-l border-blox-border shadow-2xl flex flex-col">
-        {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-blox-border">
-          <div className="flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-blox-amber" />
-            <h2 className="text-sm font-semibold text-blox-text">Active Alerts</h2>
-            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blox-red/10 text-blox-red border border-blox-red/20">
-              {alerts.length}
-            </span>
-          </div>
-          <div className="flex items-center gap-2">
+    <Sheet open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
+      <SheetContent
+        side="right"
+        className="bg-blox-bg border-l-blox-border w-full sm:max-w-md p-0 gap-0"
+      >
+        <SheetHeader className="px-5 pt-5 pb-4 border-b border-blox-border">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <AlertTriangle className="w-4 h-4 text-amber-400" />
+              <SheetTitle className="text-sm font-semibold text-blox-text">Active Alerts</SheetTitle>
+              <Badge variant="outline" className="border-red-500/30 bg-red-500/10 text-red-400 text-[10px] px-1.5 h-auto py-0">
+                {alerts.length}
+              </Badge>
+            </div>
             {alerts.length > 0 && (
-              <button
+              <Button
+                variant="ghost"
+                size="xs"
                 onClick={onAcknowledgeAll}
-                className="text-[10px] px-2 py-1 rounded bg-blox-blue/10 text-blox-blue border border-blox-blue/20 hover:bg-blox-blue/20 transition-colors"
+                className="text-[10px] text-blox-blue hover:bg-blox-blue/10"
               >
                 Acknowledge All
-              </button>
+              </Button>
             )}
-            <button
-              onClick={onClose}
-              className="p-1.5 rounded hover:bg-blox-border/50 text-blox-muted hover:text-blox-text transition-colors"
-            >
-              <X className="w-4 h-4" />
-            </button>
           </div>
-        </div>
+        </SheetHeader>
 
-        {/* Alert list */}
-        <div className="flex-1 overflow-y-auto">
+        <ScrollArea className="flex-1 h-[calc(100vh-80px)]">
           {alerts.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-16 text-blox-muted">
+            <div className="flex flex-col items-center justify-center py-20 text-blox-muted">
               <CheckCircle className="w-10 h-10 mb-3 opacity-20" />
               <p className="text-sm">No active alerts</p>
-              <p className="text-xs mt-1">All systems operating normally</p>
+              <p className="text-xs mt-1 text-blox-muted/60">All systems operating normally</p>
             </div>
           ) : (
-            <div className="divide-y divide-blox-border/50">
-              {alerts.map((alert) => (
-                <div key={alert.id} className="px-5 py-4 hover:bg-blox-card/50 transition-colors">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="flex items-start gap-3 min-w-0">
-                      <div className="mt-0.5">
-                        {alert.severity === "critical" ? (
-                          <span className="text-blox-red text-sm">&#x1F534;</span>
-                        ) : (
-                          <span className="text-blox-amber text-sm">&#x26A0;&#xFE0F;</span>
-                        )}
-                      </div>
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2 mb-1">
-                          <span className="text-xs font-medium text-blox-text truncate">
-                            {alert.hostname || alert.machine_id}
-                          </span>
-                          <span className={`text-[9px] px-1.5 py-0.5 rounded-full border ${
-                            alert.severity === "critical"
-                              ? "bg-blox-red/10 text-blox-red border-blox-red/20"
-                              : "bg-blox-amber/10 text-blox-amber border-blox-amber/20"
-                          }`}>
-                            {alert.severity}
-                          </span>
+            <div>
+              {alerts.map((alert, i) => (
+                <div key={alert.id}>
+                  <div className="px-5 py-4 hover:bg-blox-card/50 transition-colors">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex items-start gap-3 min-w-0">
+                        <div className="mt-0.5 shrink-0">
+                          {alert.severity === "critical" ? (
+                            <AlertOctagon className="w-4 h-4 text-red-400" />
+                          ) : (
+                            <AlertTriangle className="w-4 h-4 text-amber-400" />
+                          )}
                         </div>
-                        <p className="text-xs text-blox-muted leading-relaxed">{alert.message}</p>
-                        <p className="text-[10px] text-blox-muted mt-1">{timeAgo(alert.triggered_at)}</p>
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className="text-xs font-medium text-blox-text truncate">
+                              {alert.hostname || alert.machine_id}
+                            </span>
+                            <Badge
+                              variant="outline"
+                              className={`text-[9px] px-1.5 h-auto py-0 ${
+                                alert.severity === "critical"
+                                  ? "border-red-500/30 bg-red-500/10 text-red-400"
+                                  : "border-amber-500/30 bg-amber-500/10 text-amber-400"
+                              }`}
+                            >
+                              {alert.severity}
+                            </Badge>
+                          </div>
+                          <p className="text-xs text-blox-muted leading-relaxed">{alert.message}</p>
+                          <p className="text-[10px] text-blox-muted/60 mt-1 font-mono tabular-nums">{timeAgo(alert.triggered_at)}</p>
+                        </div>
                       </div>
+                      <Button
+                        variant="outline"
+                        size="xs"
+                        onClick={() => onAcknowledge(alert.id)}
+                        className="text-[10px] text-blox-muted border-blox-border hover:text-blox-text shrink-0"
+                      >
+                        Ack
+                      </Button>
                     </div>
-                    <button
-                      onClick={() => onAcknowledge(alert.id)}
-                      className="text-[10px] px-2 py-1 rounded bg-blox-border text-blox-muted hover:text-blox-text hover:bg-blox-border/80 transition-colors shrink-0"
-                    >
-                      Ack
-                    </button>
                   </div>
+                  {i < alerts.length - 1 && <Separator className="bg-blox-border/50" />}
                 </div>
               ))}
             </div>
           )}
-        </div>
-      </div>
-    </>
+        </ScrollArea>
+      </SheetContent>
+    </Sheet>
   );
 }

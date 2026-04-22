@@ -3,6 +3,10 @@
 import { useState, FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/contexts/AuthContext";
+import { motion } from "framer-motion";
+import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 
 export default function LoginPage() {
   const [username, setUsername] = useState("");
@@ -26,54 +30,77 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen bg-blox-bg flex items-center justify-center">
-      <div className="w-full max-w-sm">
+    <div className="min-h-screen bg-blox-bg flex items-center justify-center relative overflow-hidden">
+      {/* Background pattern */}
+      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_var(--color-blox-blue)_0%,_transparent_70%)] opacity-[0.03]" />
+      <div className="absolute inset-0 bg-[linear-gradient(rgba(59,130,246,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(59,130,246,0.03)_1px,transparent_1px)] bg-[size:64px_64px]" />
+
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5, ease: "easeOut" }}
+        className="w-full max-w-sm relative z-10"
+      >
         <div className="text-center mb-8">
           <h1 className="text-3xl font-bold tracking-tight">
             <span className="text-blox-blue">Blox</span>
             <span className="text-blox-text">OS</span>
           </h1>
-          <p className="text-sm text-blox-muted mt-2">Fleet Management</p>
+          <p className="text-sm text-blox-muted mt-2">Fleet Management Dashboard</p>
         </div>
 
-        <form onSubmit={handleSubmit} className="bg-blox-card border border-blox-border rounded-lg p-6 space-y-4">
-          <div>
-            <label className="block text-xs text-blox-muted mb-1.5">Username</label>
-            <input
-              type="text"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              className="w-full px-3 py-2 text-sm rounded-md bg-blox-bg border border-blox-border text-blox-text placeholder:text-blox-muted focus:outline-none focus:border-blox-blue/50"
-              placeholder="admin"
-              autoFocus
-              autoComplete="username"
-            />
-          </div>
-          <div>
-            <label className="block text-xs text-blox-muted mb-1.5">Password</label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full px-3 py-2 text-sm rounded-md bg-blox-bg border border-blox-border text-blox-text placeholder:text-blox-muted focus:outline-none focus:border-blox-blue/50"
-              placeholder="password"
-              autoComplete="current-password"
-            />
-          </div>
+        <Card className="bg-blox-card/80 backdrop-blur-sm border-blox-border ring-0 shadow-2xl shadow-black/40">
+          <CardContent className="pt-6 px-6 pb-6">
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div>
+                <label className="block text-xs text-blox-muted mb-1.5 font-medium">Username</label>
+                <Input
+                  type="text"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  className="bg-blox-bg border-blox-border text-blox-text placeholder:text-blox-muted/50 h-9 text-sm"
+                  placeholder="admin"
+                  autoFocus
+                  autoComplete="username"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-blox-muted mb-1.5 font-medium">Password</label>
+                <Input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="bg-blox-bg border-blox-border text-blox-text placeholder:text-blox-muted/50 h-9 text-sm"
+                  placeholder="password"
+                  autoComplete="current-password"
+                />
+              </div>
 
-          {error && (
-            <p className="text-xs text-blox-red">{error}</p>
-          )}
+              {error && (
+                <motion.p
+                  initial={{ opacity: 0, y: -4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="text-xs text-blox-red"
+                >
+                  {error}
+                </motion.p>
+              )}
 
-          <button
-            type="submit"
-            disabled={loading || !username || !password}
-            className="w-full py-2.5 rounded-md text-sm font-medium bg-blox-blue text-white hover:bg-blox-blue/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            {loading ? "Signing in..." : "Sign In"}
-          </button>
-        </form>
-      </div>
+              <Button
+                type="submit"
+                disabled={loading || !username || !password}
+                className="w-full bg-blox-blue hover:bg-blox-blue/90 text-white h-9 text-sm font-medium"
+              >
+                {loading ? "Signing in..." : "Sign In"}
+              </Button>
+            </form>
+          </CardContent>
+        </Card>
+
+        <p className="text-center text-[10px] text-blox-muted/40 mt-6">
+          Secure fleet monitoring and management
+        </p>
+      </motion.div>
     </div>
   );
 }
