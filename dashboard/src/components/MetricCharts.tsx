@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from "react";
 import {
   AreaChart, Area, XAxis, YAxis, ResponsiveContainer, Tooltip,
 } from "recharts";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 const HUB_URL = process.env.NEXT_PUBLIC_HUB_URL || "http://localhost:4000";
 
@@ -34,13 +35,15 @@ function formatGB(bytes: number | undefined | null): string {
   return ((bytes ?? 0) / (1024 ** 3)).toFixed(1);
 }
 
-const periods: { label: string; value: Period }[] = [
-  { label: "30m", value: "30m" },
-  { label: "1h", value: "1h" },
-  { label: "6h", value: "6h" },
-  { label: "24h", value: "24h" },
-  { label: "7d", value: "7d" },
-];
+const periods: Period[] = ["30m", "1h", "6h", "24h", "7d"];
+
+const tooltipStyle = {
+  background: "#12121a",
+  border: "1px solid #1e1e2e",
+  borderRadius: 10,
+  fontSize: 11,
+  boxShadow: "0 8px 32px rgba(0,0,0,0.4)",
+};
 
 export function MetricCharts({ machineId, hasGpu }: MetricChartsProps) {
   const [period, setPeriod] = useState<Period>("1h");
@@ -83,56 +86,49 @@ export function MetricCharts({ machineId, hasGpu }: MetricChartsProps) {
   return (
     <div className="space-y-6">
       {/* Period selector */}
-      <div className="flex items-center gap-1">
-        <span className="text-xs text-blox-muted mr-2">Period:</span>
-        {periods.map((p) => (
-          <button
-            key={p.value}
-            onClick={() => setPeriod(p.value)}
-            className={`px-2.5 py-1 text-[11px] rounded-md transition-colors ${
-              period === p.value
-                ? "bg-blox-blue/10 text-blox-blue border border-blox-blue/30"
-                : "text-blox-muted hover:text-blox-text border border-transparent"
-            }`}
-          >
-            {p.label}
-          </button>
-        ))}
-      </div>
+      <Tabs value={period} onValueChange={(v) => setPeriod(v as Period)}>
+        <TabsList variant="line" className="gap-0.5">
+          {periods.map((p) => (
+            <TabsTrigger key={p} value={p} className="text-[11px] px-3 py-1 font-mono tabular-nums">
+              {p}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+      </Tabs>
 
       {data.length < 2 ? (
         <div className="text-center py-8 text-blox-muted text-xs">
           Not enough data yet. Metrics are collected every 30 seconds.
         </div>
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {/* CPU Chart */}
-          <div className="bg-blox-card border border-blox-border rounded-lg p-4">
+          <div className="bg-blox-bg/50 border border-blox-border/50 rounded-xl p-4">
             <h4 className="text-xs font-medium text-blox-text mb-3">CPU Usage (%)</h4>
-            <ResponsiveContainer width="100%" height={200}>
+            <ResponsiveContainer width="100%" height={180}>
               <AreaChart data={data}>
                 <defs>
                   <linearGradient id="cpuGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
+                    <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.25} />
                     <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
                   </linearGradient>
                 </defs>
                 <XAxis
                   dataKey="timestamp"
                   tickFormatter={formatTime}
-                  tick={{ fontSize: 10, fill: "#6b7280" }}
+                  tick={{ fontSize: 10, fill: "#6b6b80", fontFamily: "var(--font-mono)" }}
                   axisLine={false}
                   tickLine={false}
                 />
                 <YAxis
                   domain={[0, 100]}
-                  tick={{ fontSize: 10, fill: "#6b7280" }}
+                  tick={{ fontSize: 10, fill: "#6b6b80", fontFamily: "var(--font-mono)" }}
                   axisLine={false}
                   tickLine={false}
                   width={30}
                 />
                 <Tooltip
-                  contentStyle={{ background: "#1a1a2e", border: "1px solid #2a2a3e", borderRadius: 6, fontSize: 11 }}
+                  contentStyle={tooltipStyle}
                   labelFormatter={formatTime}
                   formatter={(v: any) => [`${(v ?? 0).toFixed(1)}%`, "CPU"]}
                 />
@@ -142,32 +138,32 @@ export function MetricCharts({ machineId, hasGpu }: MetricChartsProps) {
           </div>
 
           {/* RAM Chart */}
-          <div className="bg-blox-card border border-blox-border rounded-lg p-4">
+          <div className="bg-blox-bg/50 border border-blox-border/50 rounded-xl p-4">
             <h4 className="text-xs font-medium text-blox-text mb-3">RAM Usage (GB)</h4>
-            <ResponsiveContainer width="100%" height={200}>
+            <ResponsiveContainer width="100%" height={180}>
               <AreaChart data={ramData}>
                 <defs>
                   <linearGradient id="ramGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.3} />
+                    <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.25} />
                     <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0} />
                   </linearGradient>
                 </defs>
                 <XAxis
                   dataKey="timestamp"
                   tickFormatter={formatTime}
-                  tick={{ fontSize: 10, fill: "#6b7280" }}
+                  tick={{ fontSize: 10, fill: "#6b6b80", fontFamily: "var(--font-mono)" }}
                   axisLine={false}
                   tickLine={false}
                 />
                 <YAxis
-                  tick={{ fontSize: 10, fill: "#6b7280" }}
+                  tick={{ fontSize: 10, fill: "#6b6b80", fontFamily: "var(--font-mono)" }}
                   axisLine={false}
                   tickLine={false}
                   width={30}
                   tickFormatter={(v: number) => formatGB((v ?? 0) * 1024 ** 3)}
                 />
                 <Tooltip
-                  contentStyle={{ background: "#1a1a2e", border: "1px solid #2a2a3e", borderRadius: 6, fontSize: 11 }}
+                  contentStyle={tooltipStyle}
                   labelFormatter={formatTime}
                   formatter={(v: any) => [`${(v ?? 0).toFixed(1)} GB`, "RAM"]}
                 />
@@ -178,31 +174,31 @@ export function MetricCharts({ machineId, hasGpu }: MetricChartsProps) {
 
           {/* GPU Temp Chart */}
           {hasGpu && (
-            <div className="bg-blox-card border border-blox-border rounded-lg p-4">
+            <div className="bg-blox-bg/50 border border-blox-border/50 rounded-xl p-4">
               <h4 className="text-xs font-medium text-blox-text mb-3">GPU Temperature (C)</h4>
-              <ResponsiveContainer width="100%" height={200}>
+              <ResponsiveContainer width="100%" height={180}>
                 <AreaChart data={gpuData}>
                   <defs>
                     <linearGradient id="gpuTempGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.3} />
+                      <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.25} />
                       <stop offset="95%" stopColor="#f59e0b" stopOpacity={0} />
                     </linearGradient>
                   </defs>
                   <XAxis
                     dataKey="timestamp"
                     tickFormatter={formatTime}
-                    tick={{ fontSize: 10, fill: "#6b7280" }}
+                    tick={{ fontSize: 10, fill: "#6b6b80", fontFamily: "var(--font-mono)" }}
                     axisLine={false}
                     tickLine={false}
                   />
                   <YAxis
-                    tick={{ fontSize: 10, fill: "#6b7280" }}
+                    tick={{ fontSize: 10, fill: "#6b6b80", fontFamily: "var(--font-mono)" }}
                     axisLine={false}
                     tickLine={false}
                     width={30}
                   />
                   <Tooltip
-                    contentStyle={{ background: "#1a1a2e", border: "1px solid #2a2a3e", borderRadius: 6, fontSize: 11 }}
+                    contentStyle={tooltipStyle}
                     labelFormatter={formatTime}
                     formatter={(v: any) => [`${(v ?? 0).toFixed(0)} C`, "GPU Temp"]}
                   />
@@ -214,31 +210,31 @@ export function MetricCharts({ machineId, hasGpu }: MetricChartsProps) {
 
           {/* VRAM Chart */}
           {hasGpu && (
-            <div className="bg-blox-card border border-blox-border rounded-lg p-4">
+            <div className="bg-blox-bg/50 border border-blox-border/50 rounded-xl p-4">
               <h4 className="text-xs font-medium text-blox-text mb-3">VRAM Usage (GB)</h4>
-              <ResponsiveContainer width="100%" height={200}>
+              <ResponsiveContainer width="100%" height={180}>
                 <AreaChart data={gpuData}>
                   <defs>
                     <linearGradient id="vramGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#10b981" stopOpacity={0.3} />
+                      <stop offset="5%" stopColor="#10b981" stopOpacity={0.25} />
                       <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
                     </linearGradient>
                   </defs>
                   <XAxis
                     dataKey="timestamp"
                     tickFormatter={formatTime}
-                    tick={{ fontSize: 10, fill: "#6b7280" }}
+                    tick={{ fontSize: 10, fill: "#6b6b80", fontFamily: "var(--font-mono)" }}
                     axisLine={false}
                     tickLine={false}
                   />
                   <YAxis
-                    tick={{ fontSize: 10, fill: "#6b7280" }}
+                    tick={{ fontSize: 10, fill: "#6b6b80", fontFamily: "var(--font-mono)" }}
                     axisLine={false}
                     tickLine={false}
                     width={30}
                   />
                   <Tooltip
-                    contentStyle={{ background: "#1a1a2e", border: "1px solid #2a2a3e", borderRadius: 6, fontSize: 11 }}
+                    contentStyle={tooltipStyle}
                     labelFormatter={formatTime}
                     formatter={(v: any) => [`${(v ?? 0).toFixed(1)} GB`, "VRAM"]}
                   />

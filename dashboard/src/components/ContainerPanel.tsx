@@ -3,6 +3,7 @@
 import { useState, useMemo } from "react";
 import { Box, RotateCcw, Play, Loader2 } from "lucide-react";
 import { useToast } from "./Toast";
+import { Button } from "@/components/ui/button";
 
 export interface Container {
   id: string;
@@ -18,19 +19,18 @@ interface ContainerPanelProps {
 }
 
 function statusDot(status: string) {
-  if (status === "running") return "bg-blox-green";
-  if (status === "dead" || status === "removing") return "bg-blox-red";
-  return "bg-blox-muted";
+  if (status === "running") return "bg-emerald-500";
+  if (status === "dead" || status === "removing") return "bg-red-500";
+  return "bg-blox-muted/50";
 }
 
 function statusLabel(status: string) {
-  if (status === "running") return "text-blox-green";
-  if (status === "dead") return "text-blox-red";
+  if (status === "running") return "text-emerald-400";
+  if (status === "dead") return "text-red-400";
   return "text-blox-muted";
 }
 
 function truncateImage(image: string): string {
-  // Show last part: "redis:7" from "docker.io/library/redis:7"
   const parts = image.split("/");
   const last = parts[parts.length - 1];
   return last.length > 20 ? last.slice(0, 20) + "..." : last;
@@ -79,24 +79,28 @@ function ContainerActions({
 
   if (container.status === "running") {
     return (
-      <button
+      <Button
+        variant="ghost"
+        size="icon-xs"
         onClick={() => runCommand("restart_container")}
-        className="flex items-center gap-1 px-2 py-1 rounded text-[10px] text-blox-blue border border-blox-border hover:border-blox-blue/40 hover:bg-blox-blue/5 transition-colors"
+        className="text-blox-blue hover:bg-blox-blue/10"
         title="Restart"
       >
         <RotateCcw className="w-3 h-3" />
-      </button>
+      </Button>
     );
   }
 
   return (
-    <button
+    <Button
+      variant="ghost"
+      size="icon-xs"
       onClick={() => runCommand("start_container")}
-      className="flex items-center gap-1 px-2 py-1 rounded text-[10px] text-blox-green border border-blox-border hover:border-blox-green/40 hover:bg-blox-green/5 transition-colors"
+      className="text-emerald-400 hover:bg-emerald-500/10"
       title="Start"
     >
       <Play className="w-3 h-3" />
-    </button>
+    </Button>
   );
 }
 
@@ -110,12 +114,14 @@ export function ContainerPanel({ containers, machineId, hubUrl }: ContainerPanel
   }, [containers]);
 
   return (
-    <div className="bg-blox-card border border-blox-border rounded-lg p-5">
+    <div className="bg-blox-card border border-blox-border rounded-xl p-5">
       <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2">
-          <Box className="w-4 h-4 text-blox-blue" />
+        <div className="flex items-center gap-2.5">
+          <div className="p-1.5 rounded-lg bg-blox-blue/10">
+            <Box className="w-3.5 h-3.5 text-blox-blue" />
+          </div>
           <h3 className="text-sm font-semibold text-blox-text">Docker Containers</h3>
-          <span className="text-[10px] text-blox-muted">({containers.length})</span>
+          <span className="text-[10px] text-blox-muted font-mono tabular-nums">({containers.length})</span>
         </div>
       </div>
       {sorted.length === 0 ? (
@@ -128,14 +134,14 @@ export function ContainerPanel({ containers, machineId, hubUrl }: ContainerPanel
           {sorted.map((c) => (
             <div
               key={c.id || c.name}
-              className="flex items-center justify-between px-2 py-1.5 rounded hover:bg-blox-border/20 group"
+              className="flex items-center justify-between px-2 py-2 rounded-lg hover:bg-blox-border/20 group transition-colors"
             >
               <div className="flex items-center gap-2.5 min-w-0">
-                <div className={`w-2 h-2 rounded-full flex-shrink-0 ${statusDot(c.status)}`} />
+                <div className={`w-2 h-2 rounded-full flex-shrink-0 ${statusDot(c.status)} ${c.status === "running" ? "shadow-sm shadow-emerald-500/50" : ""}`} />
                 <span className="text-xs text-blox-text font-mono truncate">{c.name}</span>
               </div>
               <div className="flex items-center gap-3">
-                <span className={`text-[10px] ${statusLabel(c.status)}`}>{c.status}</span>
+                <span className={`text-[10px] font-medium ${statusLabel(c.status)}`}>{c.status}</span>
                 <span className="text-[10px] text-blox-muted font-mono hidden sm:inline">{truncateImage(c.image)}</span>
                 <ContainerActions container={c} machineId={machineId} hubUrl={hubUrl} />
               </div>

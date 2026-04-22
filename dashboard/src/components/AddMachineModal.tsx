@@ -1,7 +1,12 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import { X, Copy, Check, Terminal } from "lucide-react";
+import { Copy, Check, Terminal } from "lucide-react";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
 
 const HUB_URL = process.env.NEXT_PUBLIC_HUB_URL || "http://localhost:4000";
 
@@ -48,83 +53,74 @@ export function AddMachineModal({ open, onClose }: AddMachineModalProps) {
     onClose();
   }, [onClose]);
 
-  if (!open) return null;
-
   return (
-    <>
-      <div className="fixed inset-0 z-[60] bg-black/40" onClick={handleClose} />
-      <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
-        <div className="bg-blox-card border border-blox-border rounded-xl shadow-2xl w-full max-w-lg">
-          {/* Header */}
-          <div className="flex items-center justify-between px-5 py-4 border-b border-blox-border">
-            <div className="flex items-center gap-2">
+    <Dialog open={open} onOpenChange={(o) => { if (!o) handleClose(); }}>
+      <DialogContent className="bg-blox-card border-blox-border text-blox-text ring-0 sm:max-w-lg" showCloseButton>
+        <DialogHeader>
+          <div className="flex items-center gap-2.5">
+            <div className="p-1.5 rounded-lg bg-blox-blue/10">
               <Terminal className="w-4 h-4 text-blox-blue" />
-              <h2 className="text-sm font-semibold text-blox-text">Add Machine</h2>
             </div>
-            <button
-              onClick={handleClose}
-              className="p-1.5 rounded hover:bg-blox-border/50 text-blox-muted hover:text-blox-text transition-colors"
-            >
-              <X className="w-4 h-4" />
-            </button>
+            <DialogTitle className="text-blox-text">Add Machine</DialogTitle>
           </div>
+        </DialogHeader>
 
-          {/* Body */}
-          <div className="px-5 py-5 space-y-4">
-            {!token ? (
-              <>
-                <p className="text-xs text-blox-muted leading-relaxed">
-                  Generate a one-time install token and run the command on the target machine.
-                  The token expires in 15 minutes.
-                </p>
-                <button
-                  onClick={generateToken}
-                  disabled={loading}
-                  className="w-full py-2.5 rounded-md bg-blox-blue/10 text-blox-blue text-xs font-medium border border-blox-blue/20 hover:bg-blox-blue/20 transition-colors disabled:opacity-50"
-                >
-                  {loading ? "Generating..." : "Generate Install Token"}
-                </button>
-              </>
-            ) : (
-              <>
-                <div>
-                  <label className="text-[10px] text-blox-muted uppercase tracking-wider mb-1.5 block">
-                    Install Command
-                  </label>
-                  <div className="relative">
-                    <pre className="text-[10px] text-blox-text bg-blox-bg border border-blox-border rounded-md p-3 pr-10 overflow-x-auto font-mono leading-relaxed whitespace-pre-wrap break-all">
-                      {command}
-                    </pre>
-                    <button
-                      onClick={copyCommand}
-                      className="absolute top-2 right-2 p-1.5 rounded hover:bg-blox-border/50 text-blox-muted hover:text-blox-text transition-colors"
-                      title="Copy to clipboard"
-                    >
-                      {copied ? (
-                        <Check className="w-3.5 h-3.5 text-blox-green" />
-                      ) : (
-                        <Copy className="w-3.5 h-3.5" />
-                      )}
-                    </button>
-                  </div>
+        <div className="space-y-4">
+          {!token ? (
+            <>
+              <DialogDescription className="text-blox-muted text-xs leading-relaxed">
+                Generate a one-time install token and run the command on the target machine.
+                The token expires in 15 minutes.
+              </DialogDescription>
+              <Button
+                onClick={generateToken}
+                disabled={loading}
+                variant="outline"
+                className="w-full text-blox-blue border-blox-blue/20 bg-blox-blue/5 hover:bg-blox-blue/10 text-xs"
+              >
+                {loading ? "Generating..." : "Generate Install Token"}
+              </Button>
+            </>
+          ) : (
+            <>
+              <div>
+                <label className="text-[10px] text-blox-muted uppercase tracking-wider mb-1.5 block font-medium">
+                  Install Command
+                </label>
+                <div className="relative">
+                  <pre className="text-[10px] text-blox-text bg-blox-bg border border-blox-border rounded-xl p-3 pr-10 overflow-x-auto font-mono leading-relaxed whitespace-pre-wrap break-all">
+                    {command}
+                  </pre>
+                  <button
+                    onClick={copyCommand}
+                    className="absolute top-2 right-2 p-1.5 rounded-lg hover:bg-blox-border/50 text-blox-muted hover:text-blox-text transition-colors"
+                    title="Copy to clipboard"
+                  >
+                    {copied ? (
+                      <Check className="w-3.5 h-3.5 text-emerald-400" />
+                    ) : (
+                      <Copy className="w-3.5 h-3.5" />
+                    )}
+                  </button>
                 </div>
+              </div>
 
-                <div className="text-[10px] text-blox-muted space-y-1">
-                  <p>Run this command as root on the target machine.</p>
-                  <p>It will download the agent, create a systemd service, and start reporting metrics.</p>
-                </div>
+              <div className="text-[10px] text-blox-muted space-y-1">
+                <p>Run this command as root on the target machine.</p>
+                <p>It will download the agent, create a systemd service, and start reporting metrics.</p>
+              </div>
 
-                <button
-                  onClick={handleClose}
-                  className="w-full py-2 rounded-md bg-blox-border text-blox-text text-xs hover:bg-blox-border/80 transition-colors"
-                >
-                  Done
-                </button>
-              </>
-            )}
-          </div>
+              <Button
+                onClick={handleClose}
+                variant="outline"
+                className="w-full text-xs border-blox-border text-blox-text"
+              >
+                Done
+              </Button>
+            </>
+          )}
         </div>
-      </div>
-    </>
+      </DialogContent>
+    </Dialog>
   );
 }
