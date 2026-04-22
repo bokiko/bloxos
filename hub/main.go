@@ -119,12 +119,13 @@ type ConnectedAgent struct {
 
 // TerminalSession tracks an active terminal relay session.
 type TerminalSession struct {
-	ID        string
-	MachineID string
-	AgentWS   *websocket.Conn
-	BrowserWS *websocket.Conn
-	CreatedAt time.Time
-	mu        sync.Mutex
+	ID            string
+	MachineID     string
+	TerminalToken string
+	AgentWS       *websocket.Conn
+	BrowserWS     *websocket.Conn
+	CreatedAt     time.Time
+	mu            sync.Mutex
 }
 
 // AlertRule represents an alert rule from the database.
@@ -206,6 +207,9 @@ func main() {
 	// Ensure default admin user.
 	ensureDefaultAdmin()
 
+	// Generate first-run token if needed (Finding #1).
+	generateFirstRunToken()
+
 	// Warn if still using default password (Finding #2).
 	warnDefaultPassword()
 
@@ -273,6 +277,7 @@ func main() {
 	// Auth management endpoints (Finding #2, #3).
 	api.POST("/api/auth/change-password", handleChangePassword)
 	api.POST("/api/auth/change-pin", handleChangePIN)
+	api.POST("/api/auth/sse-token", handleSSEToken)
 
 	// Install endpoints.
 	api.POST("/api/tokens", handleCreateToken)
@@ -420,6 +425,10 @@ func initDB() error {
 	// Add terminal_pin_hash column if missing (Finding #3 migration).
 	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN terminal_pin_hash TEXT`)
 
+	// Add password_changed and pin_changed columns (Finding #2 migration).
+	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN password_changed BOOLEAN DEFAULT FALSE`)
+	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN pin_changed BOOLEAN DEFAULT FALSE`)
+
 	return nil
 }
 
@@ -487,9 +496,21 @@ func handleLogin(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "token generation failed"})
 	}
 
+	// Check if password change is required (Finding #2).
+	var passwordChanged sql.NullBool
+	db.QueryRow(`SELECT password_changed FROM users WHERE username = ?`, body.Username).Scan(&passwordChanged)
+	pwChangeRequired := !passwordChanged.Valid || !passwordChanged.Bool
+
+	// Check if PIN change is required (Finding #2).
+	var pinChanged sql.NullBool
+	db.QueryRow(`SELECT pin_changed FROM users WHERE username = ?`, body.Username).Scan(&pinChanged)
+	pinChangeRequired := !pinChanged.Valid || !pinChanged.Bool
+
 	return c.JSON(http.StatusOK, map[string]interface{}{
-		"token":      tokenStr,
-		"expires_in": 86400,
+		"token":                    tokenStr,
+		"expires_in":               86400,
+		"password_change_required": pwChangeRequired,
+		"pin_change_required":      pinChangeRequired,
 	})
 }
 
@@ -517,6 +538,16 @@ func jwtMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 
 		if err != nil || !token.Valid {
 			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid or expired token"})
+		}
+
+		// Reject SSE-scoped tokens from non-SSE endpoints (Finding #8).
+		if claims, ok := token.Claims.(jwt.MapClaims); ok {
+			if tokenType, _ := claims["type"].(string); tokenType == "sse" {
+				path := c.Request().URL.Path
+				if path != "/api/events" {
+					return c.JSON(http.StatusForbidden, map[string]string{"error": "SSE token cannot access this endpoint"})
+				}
+			}
 		}
 
 		return next(c)
@@ -1259,16 +1290,24 @@ echo "Check status: systemctl status bloxos-agent"
 
 func handleDownloadAgent(c echo.Context) error {
 	// Configurable binary path (Finding #7).
-	binaryPath := os.Getenv("BLOXOS_AGENT_BINARY")
-	if binaryPath == "" {
-		binaryPath = "/home/bokiko/bloxos/agent/bloxos-agent"
+	// Resolution order: env var -> relative to working dir -> standard install path -> 404.
+	binaryPath := ""
+	candidates := []string{
+		os.Getenv("BLOXOS_AGENT_BINARY"),
+		"./agent/bloxos-agent",
+		"/usr/local/bin/bloxos-agent",
 	}
-	if _, err := os.Stat(binaryPath); os.IsNotExist(err) {
-		// Try working directory fallback.
-		binaryPath = "./agent/bloxos-agent"
-		if _, err := os.Stat(binaryPath); os.IsNotExist(err) {
-			return c.JSON(http.StatusNotFound, map[string]string{"error": "agent binary not found"})
+	for _, p := range candidates {
+		if p == "" {
+			continue
 		}
+		if _, err := os.Stat(p); err == nil {
+			binaryPath = p
+			break
+		}
+	}
+	if binaryPath == "" {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "agent binary not found; set BLOXOS_AGENT_BINARY env var"})
 	}
 	// Log requested arch for future multi-arch support.
 	arch := c.QueryParam("arch")
@@ -1443,25 +1482,45 @@ func handleStartTerminal(c echo.Context) error {
 	}
 
 	sessionID := uuid.New().String()
+	terminalToken := uuid.New().String()
 
 	session := &TerminalSession{
-		ID:        sessionID,
-		MachineID: machineID,
-		CreatedAt: time.Now(),
+		ID:            sessionID,
+		MachineID:     machineID,
+		TerminalToken: terminalToken,
+		CreatedAt:     time.Now(),
 	}
 	termSessionsMu.Lock()
 	termSessions[sessionID] = session
 	termSessionsMu.Unlock()
+
+	// Expire terminal token after 30 seconds if agent hasn't connected.
+	go func() {
+		time.Sleep(30 * time.Second)
+		termSessionsMu.RLock()
+		s, exists := termSessions[sessionID]
+		termSessionsMu.RUnlock()
+		if exists {
+			s.mu.Lock()
+			agentConnected := s.AgentWS != nil
+			s.mu.Unlock()
+			if !agentConnected {
+				log.Printf("terminal %s: terminal_token expired (agent never connected)", sessionID)
+				cleanupTerminalSession(sessionID)
+			}
+		}
+	}()
 
 	_, err := db.Exec(`INSERT INTO terminal_sessions (id, machine_id) VALUES (?, ?)`, sessionID, machineID)
 	if err != nil {
 		log.Printf("terminal session DB insert error: %v", err)
 	}
 
-	cmd := CommandToAgent{
-		Type:      "start_terminal",
-		ID:        "term-" + sessionID[:8],
-		SessionID: sessionID,
+	cmd := map[string]string{
+		"type":           "start_terminal",
+		"id":             "term-" + sessionID[:8],
+		"session_id":     sessionID,
+		"terminal_token": terminalToken,
 	}
 	cmdData, _ := json.Marshal(cmd)
 	agent.WriteMu.Lock()
@@ -1515,7 +1574,24 @@ func handleTerminalWS(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "role must be 'agent' or 'browser'"})
 	}
 
-	// Auth check for browser role (Finding #4).
+	// Auth check (Finding #4).
+	if role == "agent" {
+		// Agent must present a valid terminal_token matching the session.
+		termToken := c.QueryParam("terminal_token")
+		if termToken == "" {
+			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "terminal_token required for agent role"})
+		}
+		termSessionsMu.RLock()
+		sess, exists := termSessions[sessionID]
+		termSessionsMu.RUnlock()
+		if !exists {
+			return c.JSON(http.StatusNotFound, map[string]string{"error": "session not found"})
+		}
+		if sess.TerminalToken != termToken {
+			log.Printf("terminal %s: agent presented invalid terminal_token", sessionID)
+			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid terminal_token"})
+		}
+	}
 	if role == "browser" {
 		tokenStr := c.QueryParam("token")
 		if tokenStr == "" {
@@ -2240,16 +2316,6 @@ func getMachinesJSON() ([]byte, error) {
 
 // validateAgentToken checks a token against the DB (Finding #1).
 func validateAgentToken(token string) error {
-	// Bootstrap mode: if no tokens exist and token is "test-token", allow it.
-	var tokenCount int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM tokens`).Scan(&tokenCount); err != nil {
-		return fmt.Errorf("database error: %w", err)
-	}
-	if tokenCount == 0 && token == "test-token" {
-		log.Println("WARNING: Bootstrap mode — accepting 'test-token' because no tokens exist in DB. Generate a proper token via the API.")
-		return nil
-	}
-
 	h := sha256.Sum256([]byte(token))
 	tokenHash := hex.EncodeToString(h[:])
 
@@ -2262,10 +2328,6 @@ func validateAgentToken(token string) error {
 	if err != nil {
 		return fmt.Errorf("database error: %w", err)
 	}
-	if used {
-		return fmt.Errorf("token already used")
-	}
-
 	expTime, err := time.Parse("2006-01-02 15:04:05", expiresAt)
 	if err != nil {
 		expTime, err = time.Parse(time.RFC3339, expiresAt)
@@ -2277,13 +2339,48 @@ func validateAgentToken(token string) error {
 		return fmt.Errorf("token expired")
 	}
 
-	// Mark as used.
-	_, err = db.Exec(`UPDATE tokens SET used = TRUE WHERE token_hash = ?`, tokenHash)
-	if err != nil {
-		log.Printf("warning: failed to mark token as used: %v", err)
-	}
-	log.Printf("agent token validated and marked as used")
+	log.Printf("agent token validated successfully")
 	return nil
+}
+
+// generateFirstRunToken creates a one-time token on first startup when no tokens and no machines exist.
+func generateFirstRunToken() {
+	var tokenCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM tokens`).Scan(&tokenCount); err != nil {
+		log.Printf("first-run check: token count error: %v", err)
+		return
+	}
+	if tokenCount > 0 {
+		return
+	}
+
+	var machineCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM machines`).Scan(&machineCount); err != nil {
+		log.Printf("first-run check: machine count error: %v", err)
+		return
+	}
+	if machineCount > 0 {
+		return
+	}
+
+	// First run: generate a real token with 1-hour expiry.
+	token := uuid.New().String()
+	h := sha256.Sum256([]byte(token))
+	tokenHash := hex.EncodeToString(h[:])
+	expiresAt := time.Now().Add(1 * time.Hour)
+
+	_, err := db.Exec(`INSERT INTO tokens (token_hash, expires_at) VALUES (?, ?)`, tokenHash, expiresAt)
+	if err != nil {
+		log.Printf("first-run: failed to insert token: %v", err)
+		return
+	}
+
+	log.Println("============================================")
+	log.Println("FIRST RUN: No tokens found.")
+	log.Println("Use this one-time token to register your first agent:")
+	log.Printf("TOKEN: %s", token)
+	log.Printf("This token expires in 1 hour (at %s).", expiresAt.Format(time.RFC3339))
+	log.Println("============================================")
 }
 
 // loadOrGenerateJWTSecret loads from file or generates a new secret (Finding #2).
@@ -2395,7 +2492,7 @@ func handleChangePassword(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to hash password"})
 	}
-	_, err = db.Exec(`UPDATE users SET password_hash = ? WHERE username = ?`, string(newHash), username)
+	_, err = db.Exec(`UPDATE users SET password_hash = ?, password_changed = TRUE WHERE username = ?`, string(newHash), username)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to update password"})
 	}
@@ -2445,13 +2542,56 @@ func handleChangePIN(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to hash PIN"})
 	}
-	_, err = db.Exec(`UPDATE users SET terminal_pin_hash = ? WHERE username = 'admin'`, string(newHash))
+	_, err = db.Exec(`UPDATE users SET terminal_pin_hash = ?, pin_changed = TRUE WHERE username = 'admin'`, string(newHash))
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to update PIN"})
 	}
 
 	log.Println("terminal PIN changed")
 	return c.JSON(http.StatusOK, map[string]string{"status": "PIN changed"})
+}
+
+// handleSSEToken generates a short-lived SSE-scoped JWT (Finding #8).
+func handleSSEToken(c echo.Context) error {
+	// Get user info from the current (full) JWT.
+	auth := c.Request().Header.Get("Authorization")
+	tokenStr := ""
+	if strings.HasPrefix(auth, "Bearer ") {
+		tokenStr = auth[7:]
+	}
+	if tokenStr == "" {
+		tokenStr = c.QueryParam("token")
+	}
+
+	tkn, _ := jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
+		return jwtSecret, nil
+	})
+	claims, ok := tkn.Claims.(jwt.MapClaims)
+	if !ok {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid token"})
+	}
+
+	userID, _ := claims["user_id"].(string)
+	username, _ := claims["username"].(string)
+
+	// Generate SSE-scoped token with 5-minute expiry.
+	sseClaims := jwt.MapClaims{
+		"user_id":  userID,
+		"username": username,
+		"type":     "sse",
+		"exp":      time.Now().Add(5 * time.Minute).Unix(),
+	}
+	sseToken := jwt.NewWithClaims(jwt.SigningMethodHS256, sseClaims)
+	sseTokenStr, err := sseToken.SignedString(jwtSecret)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "token generation failed"})
+	}
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"token":      sseTokenStr,
+		"type":       "sse",
+		"expires_in": 300,
+	})
 }
 
 // tokenRedactingWriter redacts JWT tokens from log output (Finding #8).

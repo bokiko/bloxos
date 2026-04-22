@@ -32,6 +32,23 @@ export function useSSE() {
   return ctx;
 }
 
+// Fetch a short-lived SSE-scoped token (Finding #8).
+async function fetchSSEToken(): Promise<string | null> {
+  const apiToken = typeof window !== "undefined" ? localStorage.getItem("bloxos_token") : null;
+  if (!apiToken) return null;
+  try {
+    const res = await fetch(`${HUB_URL}/api/auth/sse-token`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiToken}` },
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.token || null;
+  } catch {
+    return null;
+  }
+}
+
 export function SSEProvider({ children }: { children: ReactNode }) {
   const [machineMap, setMachineMap] = useState<Map<string, MachineMetrics>>(
     new Map()
@@ -44,8 +61,10 @@ export function SSEProvider({ children }: { children: ReactNode }) {
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const backoffRef = useRef(3000);
   const mountedRef = useRef(true);
+  // Refresh SSE token before it expires (every 4 min for a 5-min token).
+  const sseTokenRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const connect = useCallback(() => {
+  const connect = useCallback(async () => {
     if (!mountedRef.current) return;
 
     if (esRef.current) {
@@ -58,17 +77,19 @@ export function SSEProvider({ children }: { children: ReactNode }) {
         ? localStorage.getItem("bloxos_token")
         : null;
 
-    // Don't connect if no token — SSEProvider sits inside AuthProvider,
-    // so we wait until the user is authenticated.
+    // Don't connect if no token.
     if (!token) return;
 
-    const sseUrl = `${HUB_URL}/api/events?token=${encodeURIComponent(token)}`;
+    // Get SSE-scoped token (Finding #8).
+    const sseToken = await fetchSSEToken();
+    const connectToken = sseToken || token; // Fall back to full token if SSE token fetch fails.
+
+    const sseUrl = `${HUB_URL}/api/events?token=${encodeURIComponent(connectToken)}`;
 
     let es: EventSource;
     try {
       es = new EventSource(sseUrl);
     } catch {
-      // EventSource constructor can throw in rare cases
       reconnectTimer.current = setTimeout(() => {
         backoffRef.current = Math.min(backoffRef.current * 2, 30000);
         connect();
@@ -80,7 +101,17 @@ export function SSEProvider({ children }: { children: ReactNode }) {
     es.onopen = () => {
       if (!mountedRef.current) return;
       setConnected(true);
-      backoffRef.current = 3000; // reset backoff on success
+      backoffRef.current = 3000;
+
+      // Schedule SSE token refresh (reconnect with new token every 4 min).
+      if (sseToken) {
+        if (sseTokenRefreshTimer.current) clearTimeout(sseTokenRefreshTimer.current);
+        sseTokenRefreshTimer.current = setTimeout(() => {
+          if (mountedRef.current) {
+            connect();
+          }
+        }, 4 * 60 * 1000);
+      }
     };
 
     es.addEventListener("snapshot", (event) => {
@@ -128,7 +159,6 @@ export function SSEProvider({ children }: { children: ReactNode }) {
             const next = new Map(prev);
             next.set(msg.machine_id, {
               ...existing,
-              // Store services on the metrics object for detail page access
               ...({ _services: msg.services } as Record<string, unknown>),
             } as MachineMetrics);
             return next;
@@ -192,14 +222,12 @@ export function SSEProvider({ children }: { children: ReactNode }) {
       es.close();
       esRef.current = null;
 
-      // Exponential backoff: 3s -> 6s -> 12s -> 24s -> 30s (max)
       const delay = backoffRef.current;
       backoffRef.current = Math.min(backoffRef.current * 2, 30000);
       reconnectTimer.current = setTimeout(connect, delay);
     };
   }, []);
 
-  // Re-connect when token changes (login/logout)
   useEffect(() => {
     mountedRef.current = true;
     connect();
@@ -223,11 +251,10 @@ export function SSEProvider({ children }: { children: ReactNode }) {
         .catch(() => {});
     }
 
-    // Listen for storage changes (token refresh from another tab)
     const onStorage = (e: StorageEvent) => {
       if (e.key === "bloxos_token") {
-        // Token changed — reconnect SSE
         if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
+        if (sseTokenRefreshTimer.current) clearTimeout(sseTokenRefreshTimer.current);
         backoffRef.current = 3000;
         connect();
       }
@@ -240,6 +267,7 @@ export function SSEProvider({ children }: { children: ReactNode }) {
       esRef.current?.close();
       esRef.current = null;
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
+      if (sseTokenRefreshTimer.current) clearTimeout(sseTokenRefreshTimer.current);
     };
   }, [connect]);
 
