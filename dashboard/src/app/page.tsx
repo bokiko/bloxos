@@ -10,7 +10,7 @@ import { AlertPanel } from "@/components/AlertPanel";
 import { AddMachineModal } from "@/components/AddMachineModal";
 import {
   Bell, Plus, Wifi, WifiOff, Search, LayoutGrid, List,
-  ChevronDown, LogOut, Square, CheckSquare, RotateCcw,
+  ChevronDown, LogOut, Square, CheckSquare, RotateCcw, Trash2,
 } from "lucide-react";
 import Link from "next/link";
 
@@ -67,6 +67,8 @@ export default function Home() {
   const [addMachineOpen, setAddMachineOpen] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkLoading, setBulkLoading] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<{id: string; hostname: string} | null>(null);
+  const [deleteLoading, setDeleteLoading] = useState(false);
 
   const machines = hasReceivedData && liveMachines.length > 0
     ? liveMachines
@@ -206,6 +208,16 @@ export default function Home() {
     setBulkLoading(false);
     setSelected(new Set());
   }, [selected, authFetch]);
+
+  const handleDeleteFromGrid = useCallback(async () => {
+    if (!deleteTarget) return;
+    setDeleteLoading(true);
+    try {
+      await authFetch(`${HUB_URL}/api/machines/${deleteTarget.id}`, { method: "DELETE" });
+    } catch { /* ignore */ }
+    setDeleteLoading(false);
+    setDeleteTarget(null);
+  }, [deleteTarget, authFetch]);
 
   return (
     <div className="min-h-screen bg-blox-bg">
@@ -428,7 +440,7 @@ export default function Home() {
             gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))"
           }}>
             {filteredMachines.map((m) => (
-              <MachineCard key={m.machine_id} machine={m} onClick={() => {}} />
+              <MachineCard key={m.machine_id} machine={m} onClick={() => {}} onDelete={(id, hostname) => setDeleteTarget({id, hostname})} />
             ))}
           </div>
         ) : (
@@ -549,6 +561,38 @@ export default function Home() {
           </div>
         )}
       </main>
+
+      {deleteTarget && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-blox-card border border-blox-border rounded-lg p-6 max-w-md w-full mx-4 shadow-2xl">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="p-2 rounded-full bg-blox-red/10">
+                <Trash2 className="w-5 h-5 text-blox-red" />
+              </div>
+              <h3 className="text-base font-semibold text-blox-text">Delete Machine</h3>
+            </div>
+            <p className="text-sm text-blox-muted mb-6">
+              Are you sure you want to remove <span className="text-blox-text font-medium">{deleteTarget.hostname}</span> from BloxOS? This will delete all historical data for this machine.
+            </p>
+            <div className="flex items-center justify-end gap-3">
+              <button
+                onClick={() => setDeleteTarget(null)}
+                disabled={deleteLoading}
+                className="px-4 py-2 text-xs rounded-md border border-blox-border text-blox-muted hover:text-blox-text transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDeleteFromGrid}
+                disabled={deleteLoading}
+                className="px-4 py-2 text-xs rounded-md bg-blox-red/10 text-blox-red border border-blox-red/30 hover:bg-blox-red/20 transition-colors disabled:opacity-50"
+              >
+                {deleteLoading ? "Deleting..." : "Delete Machine"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <AlertPanel
         open={alertPanelOpen}
