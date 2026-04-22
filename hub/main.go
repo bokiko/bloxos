@@ -1449,7 +1449,7 @@ SVCEOF
 # Enable and start.
 sudo systemctl daemon-reload
 sudo systemctl enable bloxos-agent
-sudo systemctl start bloxos-agent
+sudo systemctl restart bloxos-agent
 
 echo "=== BloxOS Agent installed and running ==="
 echo "Check status: systemctl status bloxos-agent"
