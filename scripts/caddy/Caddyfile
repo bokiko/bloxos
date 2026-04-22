@@ -1,0 +1,41 @@
+{
+	# Use Caddy's internal CA for self-signed TLS on LAN
+}
+
+https://192.168.16.113 {
+	tls internal
+
+	# Hub API routes
+	handle /api/* {
+		reverse_proxy 127.0.0.1:4000
+	}
+
+	# WebSocket routes (agent + terminal)
+	handle /ws/* {
+		reverse_proxy 127.0.0.1:4000
+	}
+
+	# Health check
+	handle /health {
+		reverse_proxy 127.0.0.1:4000
+	}
+
+	# Install script
+	handle /install.sh {
+		reverse_proxy 127.0.0.1:4000
+	}
+
+	# Agent binary download
+	handle /download/* {
+		reverse_proxy 127.0.0.1:4000
+	}
+
+	# Dashboard (everything else)
+	handle {
+		reverse_proxy 127.0.0.1:3000
+	}
+}
+
+http://192.168.16.113 {
+	redir https://192.168.16.113{uri} permanent
+}
