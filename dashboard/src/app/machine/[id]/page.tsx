@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback, useRef, use } from "react";
 import Link from "next/link";
 import dynamic from "next/dynamic";
+import { useSSE } from "@/contexts/SSEContext";
 import { ProgressBar } from "@/components/ProgressBar";
 import { StatusBadge, MachineStatus } from "@/components/StatusBadge";
 import { ServicePanel, Service } from "@/components/ServicePanel";
@@ -101,6 +102,7 @@ function getStatus(data: MachineData): MachineStatus {
 
 export default function MachineDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
+  const { getMachine, connected } = useSSE();
   const [data, setData] = useState<MachineData | null>(null);
   const [services, setServices] = useState<Service[]>([]);
   const [containers, setContainers] = useState<Container[]>([]);
@@ -109,7 +111,6 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
   const [tick, setTick] = useState(0);
   const [showReboot, setShowReboot] = useState(false);
   const [showCharts, setShowCharts] = useState(true);
-  const esRef = useRef<EventSource | null>(null);
 
   const [termState, setTermState] = useState<TerminalState>("locked");
   const [termSessionId, setTermSessionId] = useState<string | null>(null);
@@ -144,82 +145,42 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
     }
   }, [id]);
 
+  // Initial REST fetch for full machine data (gpus, services, containers)
   useEffect(() => {
     fetchData();
+  }, [fetchData]);
 
-    const token = typeof window !== "undefined" ? localStorage.getItem("bloxos_token") : null;
-    const sseUrl = token
-      ? `${HUB_URL}/api/events?token=${encodeURIComponent(token)}`
-      : `${HUB_URL}/api/events`;
+  // Update metrics from the global SSE stream
+  useEffect(() => {
+    const sseData = getMachine(id);
+    if (!sseData) return;
 
-    const es = new EventSource(sseUrl);
-    esRef.current = es;
-
-    es.addEventListener("snapshot", (event) => {
-      try {
-        const list = JSON.parse(event.data);
-        const machine = list.find((m: { machine_id: string }) => m.machine_id === id);
-        if (machine) {
-          if (machine.services) setServices(machine.services);
-          if (machine.containers) setContainers(machine.containers);
-        }
-      } catch { /* ignore */ }
+    setData((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        metrics: {
+          cpu_percent: sseData.cpu_percent ?? prev.metrics.cpu_percent,
+          ram_used_bytes: sseData.ram_used_bytes ?? prev.metrics.ram_used_bytes,
+          ram_total_bytes: sseData.ram_total_bytes ?? prev.metrics.ram_total_bytes,
+          disk_used_bytes: sseData.disk_used_bytes ?? prev.metrics.disk_used_bytes,
+          disk_total_bytes: sseData.disk_total_bytes ?? prev.metrics.disk_total_bytes,
+          gpu_temp: sseData.gpu_temp ?? prev.metrics.gpu_temp,
+          gpu_util_percent: sseData.gpu_util_percent ?? prev.metrics.gpu_util_percent,
+          gpu_vram_used_bytes: sseData.gpu_vram_used_bytes ?? prev.metrics.gpu_vram_used_bytes,
+          gpu_vram_total_bytes: sseData.gpu_vram_total_bytes ?? prev.metrics.gpu_vram_total_bytes,
+        },
+        machine: { ...prev.machine, status: "online" },
+        latency_ms: sseData.latency_ms ?? prev.latency_ms,
+      };
     });
+    setLastUpdated(new Date().toISOString());
 
-    es.addEventListener("metrics", (event) => {
-      try {
-        const m = JSON.parse(event.data);
-        if (m.machine_id === id) {
-          setData((prev) => {
-            if (!prev) return prev;
-            return {
-              ...prev,
-              metrics: {
-                cpu_percent: m.cpu_percent ?? prev.metrics.cpu_percent,
-                ram_used_bytes: m.ram_used_bytes ?? prev.metrics.ram_used_bytes,
-                ram_total_bytes: m.ram_total_bytes ?? prev.metrics.ram_total_bytes,
-                disk_used_bytes: m.disk_used_bytes ?? prev.metrics.disk_used_bytes,
-                disk_total_bytes: m.disk_total_bytes ?? prev.metrics.disk_total_bytes,
-                gpu_temp: m.gpu_temp ?? prev.metrics.gpu_temp,
-                gpu_util_percent: m.gpu_util_percent ?? prev.metrics.gpu_util_percent,
-                gpu_vram_used_bytes: m.gpu_vram_used_bytes ?? prev.metrics.gpu_vram_used_bytes,
-                gpu_vram_total_bytes: m.gpu_vram_total_bytes ?? prev.metrics.gpu_vram_total_bytes,
-              },
-              machine: { ...prev.machine, status: "online" },
-              latency_ms: m.latency_ms ?? prev.latency_ms,
-            };
-          });
-          setLastUpdated(new Date().toISOString());
-        }
-      } catch { /* ignore */ }
-    });
-
-    es.addEventListener("services", (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg.machine_id === id && msg.services) setServices(msg.services);
-      } catch { /* ignore */ }
-    });
-
-    es.addEventListener("containers", (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg.machine_id === id && msg.containers) setContainers(msg.containers);
-      } catch { /* ignore */ }
-    });
-
-    es.onerror = () => {
-      es.close();
-      setTimeout(() => {
-        if (esRef.current === es) fetchData();
-      }, 3000);
-    };
-
-    return () => {
-      es.close();
-      esRef.current = null;
-    };
-  }, [id, fetchData]);
+    // Update services/containers if SSE carried them
+    const raw = sseData as unknown as Record<string, unknown>;
+    if (raw._services) setServices(raw._services as Service[]);
+    if (raw._containers) setContainers(raw._containers as Container[]);
+  }, [getMachine, id]);
 
   useEffect(() => {
     const interval = setInterval(() => setTick((t) => t + 1), 1000);
@@ -329,6 +290,12 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {connected && (
+              <span className="flex items-center gap-1 text-[10px] text-blox-green mr-1">
+                <Wifi className="w-3 h-3" />
+                Live
+              </span>
+            )}
             {data.latency_ms > 0 && (
               <span className="flex items-center gap-1 text-[10px] text-blox-muted mr-2">
                 <Wifi className="w-3 h-3" />

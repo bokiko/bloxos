@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useMemo, useCallback } from "react";
-import { useFleetSSE } from "@/hooks/useFleetSSE";
+import { useSSE } from "@/contexts/SSEContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { demoMachines, MachineMetrics, AlertData } from "@/lib/demo-data";
 import { MachineCard } from "@/components/MachineCard";
@@ -56,7 +56,7 @@ function timeSince(ms: number): string {
 }
 
 export default function Home() {
-  const { machines: liveMachines, connected, hasReceivedData, alertCount, alerts, setAlerts, setAlertCount } = useFleetSSE();
+  const { machines: liveMachines, connected, hasReceivedData, alertCount, alerts, setAlerts, setAlertCount } = useSSE();
   const { logout, authFetch } = useAuth();
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
