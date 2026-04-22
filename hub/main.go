@@ -1773,20 +1773,39 @@ func handleSSE(c echo.Context) error {
 	fmt.Fprintf(c.Response(), "event: alert_count\ndata: %s\n\n", alertCountJSON)
 	flusher.Flush()
 
+	ping := time.NewTicker(15 * time.Second)
+	defer ping.Stop()
+
 	for {
 		select {
 		case data := <-ch:
-			// Check if it is a pre-formatted SSE event (starts with "event:").
 			if bytes.HasPrefix(data, []byte("event:")) {
 				fmt.Fprintf(c.Response(), "%s", data)
 			} else {
 				fmt.Fprintf(c.Response(), "event: metrics\ndata: %s\n\n", data)
 			}
 			flusher.Flush()
+		case <-ping.C:
+			fmt.Fprintf(c.Response(), ": keepalive\n\n")
+			flusher.Flush()
 		case <-c.Request().Context().Done():
 			return nil
 		}
 	}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 }
 
 func handleListMachines(c echo.Context) error {
