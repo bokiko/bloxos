@@ -85,9 +85,10 @@ type CommandRequest struct {
 
 // CommandToAgent is forwarded to the agent via WebSocket.
 type CommandToAgent struct {
-	Type   string `json:"type"`
-	Target string `json:"target"`
-	ID     string `json:"id"`
+	Type      string `json:"type"`
+	Target    string `json:"target"`
+	ID        string `json:"id"`
+	SessionID string `json:"session_id,omitempty"`
 }
 
 // CommandResponse from agent.
@@ -104,6 +105,16 @@ type ConnectedAgent struct {
 	MachineID string
 	Conn      *websocket.Conn
 	WriteMu   sync.Mutex
+}
+
+// TerminalSession tracks an active terminal relay session.
+type TerminalSession struct {
+	ID        string
+	MachineID string
+	AgentWS   *websocket.Conn
+	BrowserWS *websocket.Conn
+	CreatedAt time.Time
+	mu        sync.Mutex
 }
 
 var (
@@ -123,6 +134,10 @@ var (
 	// Pending command responses: command ID -> response channel.
 	pendingCmds   = make(map[string]chan CommandResponse)
 	pendingCmdsMu sync.Mutex
+
+	// Terminal sessions keyed by session ID.
+	termSessions   = make(map[string]*TerminalSession)
+	termSessionsMu sync.RWMutex
 )
 
 func main() {
@@ -147,7 +162,7 @@ func main() {
 			"http://192.168.16.113:3000",
 			"http://localhost:3000",
 		},
-		AllowMethods: []string{http.MethodGet, http.MethodPost, http.MethodOptions},
+		AllowMethods: []string{http.MethodGet, http.MethodPost, http.MethodDelete, http.MethodOptions},
 		AllowHeaders: []string{"Accept", "Content-Type", "Cache-Control"},
 	}))
 
@@ -159,6 +174,11 @@ func main() {
 	e.GET("/api/machines/:id/services", handleGetServices)
 	e.GET("/api/machines/:id/containers", handleGetContainers)
 	e.POST("/api/machines/:id/command", handleCommand)
+
+	// Terminal endpoints.
+	e.POST("/api/machines/:id/terminal", handleStartTerminal)
+	e.DELETE("/api/machines/:id/terminal/:session_id", handleCloseTerminal)
+	e.GET("/ws/terminal/:session_id", handleTerminalWS)
 
 	log.Println("hub listening on :4000")
 	if err := e.Start(":4000"); err != nil && err != http.ErrServerClosed {
@@ -238,6 +258,15 @@ func initDB() error {
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_gpu_metrics_machine_time ON gpu_metrics(machine_id, timestamp);
+
+	CREATE TABLE IF NOT EXISTS terminal_sessions (
+		id TEXT PRIMARY KEY,
+		machine_id TEXT NOT NULL,
+		started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		ended_at DATETIME,
+		status TEXT DEFAULT 'active',
+		FOREIGN KEY (machine_id) REFERENCES machines(id)
+	);
 	`
 	_, err := db.Exec(schema)
 	return err
@@ -279,7 +308,6 @@ func handleAgentWS(c echo.Context) error {
 			return nil
 		}
 
-		// Peek at the type field to route the message.
 		var envelope struct {
 			Type      string `json:"type"`
 			MachineID string `json:"machine_id"`
@@ -291,7 +319,6 @@ func handleAgentWS(c echo.Context) error {
 
 		switch envelope.Type {
 		case "metrics", "":
-			// Original metrics (type may be empty for backward compat).
 			var m AgentMetrics
 			if err := json.Unmarshal(msg, &m); err != nil {
 				log.Printf("invalid metrics JSON: %v", err)
@@ -357,13 +384,261 @@ func handleAgentWS(c echo.Context) error {
 	}
 }
 
+// handleStartTerminal creates a terminal session and tells the agent to spawn a PTY.
+func handleStartTerminal(c echo.Context) error {
+	machineID := c.Param("id")
+
+	// Check agent is connected.
+	agentsMu.RLock()
+	agent, ok := agents[machineID]
+	agentsMu.RUnlock()
+	if !ok {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "agent not connected"})
+	}
+
+	sessionID := uuid.New().String()
+
+	// Create session in memory.
+	session := &TerminalSession{
+		ID:        sessionID,
+		MachineID: machineID,
+		CreatedAt: time.Now(),
+	}
+	termSessionsMu.Lock()
+	termSessions[sessionID] = session
+	termSessionsMu.Unlock()
+
+	// Record in DB.
+	_, err := db.Exec(`INSERT INTO terminal_sessions (id, machine_id) VALUES (?, ?)`, sessionID, machineID)
+	if err != nil {
+		log.Printf("terminal session DB insert error: %v", err)
+	}
+
+	// Tell the agent to start a terminal with this session ID.
+	cmd := CommandToAgent{
+		Type:      "start_terminal",
+		ID:        "term-" + sessionID[:8],
+		SessionID: sessionID,
+	}
+	cmdData, _ := json.Marshal(cmd)
+	agent.WriteMu.Lock()
+	err = agent.Conn.WriteMessage(websocket.TextMessage, cmdData)
+	agent.WriteMu.Unlock()
+	if err != nil {
+		// Clean up.
+		termSessionsMu.Lock()
+		delete(termSessions, sessionID)
+		termSessionsMu.Unlock()
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to send start_terminal to agent"})
+	}
+
+	log.Printf("terminal session %s created for machine %s", sessionID, machineID)
+	return c.JSON(http.StatusOK, map[string]string{"session_id": sessionID})
+}
+
+// handleCloseTerminal closes a terminal session.
+func handleCloseTerminal(c echo.Context) error {
+	sessionID := c.Param("session_id")
+
+	termSessionsMu.Lock()
+	session, ok := termSessions[sessionID]
+	if ok {
+		delete(termSessions, sessionID)
+	}
+	termSessionsMu.Unlock()
+
+	if !ok {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "session not found"})
+	}
+
+	// Close both WebSocket connections.
+	session.mu.Lock()
+	if session.AgentWS != nil {
+		session.AgentWS.Close()
+	}
+	if session.BrowserWS != nil {
+		session.BrowserWS.Close()
+	}
+	session.mu.Unlock()
+
+	// Update DB.
+	_, _ = db.Exec(`UPDATE terminal_sessions SET ended_at = CURRENT_TIMESTAMP, status = 'closed' WHERE id = ?`, sessionID)
+
+	log.Printf("terminal session %s closed", sessionID)
+	return c.JSON(http.StatusOK, map[string]string{"status": "closed"})
+}
+
+// handleTerminalWS handles WebSocket connections for terminal relay (both agent and browser).
+func handleTerminalWS(c echo.Context) error {
+	sessionID := c.Param("session_id")
+	role := c.QueryParam("role")
+
+	if role != "agent" && role != "browser" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "role must be 'agent' or 'browser'"})
+	}
+
+	termSessionsMu.RLock()
+	session, ok := termSessions[sessionID]
+	termSessionsMu.RUnlock()
+	if !ok {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "session not found"})
+	}
+
+	ws, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
+	if err != nil {
+		return err
+	}
+
+	session.mu.Lock()
+	if role == "agent" {
+		session.AgentWS = ws
+		log.Printf("terminal %s: agent connected", sessionID)
+	} else {
+		session.BrowserWS = ws
+		log.Printf("terminal %s: browser connected", sessionID)
+	}
+
+	// Check if both sides are connected — start relay.
+	agentWS := session.AgentWS
+	browserWS := session.BrowserWS
+	session.mu.Unlock()
+
+	if agentWS != nil && browserWS != nil {
+		go terminalRelay(sessionID, session)
+	} else {
+		// Wait for the other side. If it doesn't connect within 30s, clean up.
+		go func() {
+			time.Sleep(30 * time.Second)
+			session.mu.Lock()
+			a := session.AgentWS
+			b := session.BrowserWS
+			session.mu.Unlock()
+			if a == nil || b == nil {
+				log.Printf("terminal %s: timeout waiting for both sides, cleaning up", sessionID)
+				cleanupTerminalSession(sessionID)
+			}
+		}()
+	}
+
+	// Block until session is done (the relay goroutine will handle the piping).
+	// We need to block here for the WebSocket connection to stay alive.
+	// Wait for the session to be cleaned up.
+	<-waitForSessionEnd(sessionID)
+	return nil
+}
+
+// waitForSessionEnd returns a channel that closes when the session is removed.
+func waitForSessionEnd(sessionID string) <-chan struct{} {
+	ch := make(chan struct{})
+	go func() {
+		for {
+			time.Sleep(500 * time.Millisecond)
+			termSessionsMu.RLock()
+			_, exists := termSessions[sessionID]
+			termSessionsMu.RUnlock()
+			if !exists {
+				close(ch)
+				return
+			}
+		}
+	}()
+	return ch
+}
+
+// terminalRelay pipes data between the agent and browser WebSockets.
+func terminalRelay(sessionID string, session *TerminalSession) {
+	log.Printf("terminal %s: relay started", sessionID)
+
+	session.mu.Lock()
+	agentWS := session.AgentWS
+	browserWS := session.BrowserWS
+	session.mu.Unlock()
+
+	done := make(chan struct{})
+
+	// Browser -> Agent.
+	go func() {
+		defer func() {
+			select {
+			case <-done:
+			default:
+				close(done)
+			}
+		}()
+		for {
+			msgType, msg, err := browserWS.ReadMessage()
+			if err != nil {
+				log.Printf("terminal %s: browser read error: %v", sessionID, err)
+				return
+			}
+			if err := agentWS.WriteMessage(msgType, msg); err != nil {
+				log.Printf("terminal %s: agent write error: %v", sessionID, err)
+				return
+			}
+		}
+	}()
+
+	// Agent -> Browser.
+	go func() {
+		defer func() {
+			select {
+			case <-done:
+			default:
+				close(done)
+			}
+		}()
+		for {
+			msgType, msg, err := agentWS.ReadMessage()
+			if err != nil {
+				log.Printf("terminal %s: agent read error: %v", sessionID, err)
+				return
+			}
+			if err := browserWS.WriteMessage(msgType, msg); err != nil {
+				log.Printf("terminal %s: browser write error: %v", sessionID, err)
+				return
+			}
+		}
+	}()
+
+	// Wait for either direction to end.
+	<-done
+
+	log.Printf("terminal %s: relay ended, cleaning up", sessionID)
+	cleanupTerminalSession(sessionID)
+}
+
+// cleanupTerminalSession closes both WebSockets and removes the session.
+func cleanupTerminalSession(sessionID string) {
+	termSessionsMu.Lock()
+	session, ok := termSessions[sessionID]
+	if ok {
+		delete(termSessions, sessionID)
+	}
+	termSessionsMu.Unlock()
+
+	if !ok {
+		return
+	}
+
+	session.mu.Lock()
+	if session.AgentWS != nil {
+		session.AgentWS.Close()
+	}
+	if session.BrowserWS != nil {
+		session.BrowserWS.Close()
+	}
+	session.mu.Unlock()
+
+	// Update DB.
+	_, _ = db.Exec(`UPDATE terminal_sessions SET ended_at = CURRENT_TIMESTAMP, status = 'closed' WHERE id = ?`, sessionID)
+}
+
 func upsertServices(machineID string, services []ServiceInfo) {
 	tx, err := db.Begin()
 	if err != nil {
 		log.Printf("begin tx error: %v", err)
 		return
 	}
-	// Delete old services for this machine and re-insert.
 	if _, err := tx.Exec(`DELETE FROM services WHERE machine_id = ?`, machineID); err != nil {
 		tx.Rollback()
 		log.Printf("delete services error: %v", err)
@@ -435,7 +710,6 @@ func upsertMachine(m AgentMetrics) {
 }
 
 func storeMetrics(m AgentMetrics) {
-	// Store core metrics (gpu_temp etc columns kept for backward compat, populated from first GPU).
 	var gpuTemp, gpuUtil float64
 	var gpuVRAMUsed, gpuVRAMTotal int64
 	if len(m.GPUs) > 0 {
@@ -456,7 +730,6 @@ func storeMetrics(m AgentMetrics) {
 		log.Printf("store metrics error: %v", err)
 	}
 
-	// Store per-GPU metrics.
 	for _, g := range m.GPUs {
 		_, err := db.Exec(`
 			INSERT INTO gpu_metrics (machine_id, gpu_index, gpu_name, temp_c, util_percent,
@@ -511,7 +784,6 @@ func handleSSE(c echo.Context) error {
 		return fmt.Errorf("streaming not supported")
 	}
 
-	// Send enriched snapshot.
 	snapshot, _ := getEnrichedMachinesJSON()
 	fmt.Fprintf(c.Response(), "event: snapshot\ndata: %s\n\n", snapshot)
 	flusher.Flush()
@@ -577,7 +849,6 @@ func handleGetMachine(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
-	// Load latest GPU metrics.
 	gpus := getLatestGPUMetrics(id)
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
@@ -667,7 +938,6 @@ func handleGetContainers(c echo.Context) error {
 func handleCommand(c echo.Context) error {
 	machineID := c.Param("id")
 
-	// Check agent is connected.
 	agentsMu.RLock()
 	agent, ok := agents[machineID]
 	agentsMu.RUnlock()
@@ -682,20 +952,17 @@ func handleCommand(c echo.Context) error {
 
 	cmdID := "cmd-" + uuid.New().String()[:8]
 
-	// Create response channel.
 	respCh := make(chan CommandResponse, 1)
 	pendingCmdsMu.Lock()
 	pendingCmds[cmdID] = respCh
 	pendingCmdsMu.Unlock()
 
-	// Clean up on exit.
 	defer func() {
 		pendingCmdsMu.Lock()
 		delete(pendingCmds, cmdID)
 		pendingCmdsMu.Unlock()
 	}()
 
-	// Forward command to agent.
 	cmd := CommandToAgent{
 		Type:   req.Type,
 		Target: req.Target,
@@ -709,7 +976,6 @@ func handleCommand(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to send command to agent"})
 	}
 
-	// Wait for response with 10s timeout.
 	select {
 	case resp := <-respCh:
 		return c.JSON(http.StatusOK, resp)
@@ -721,7 +987,6 @@ func handleCommand(c echo.Context) error {
 	}
 }
 
-// getEnrichedMachinesJSON returns machines merged with their latest metrics and services/containers.
 func getEnrichedMachinesJSON() ([]byte, error) {
 	rows, err := db.Query(`
 		SELECT m.id, m.hostname, m.ip, m.os, m.status, m.last_seen,
@@ -779,7 +1044,6 @@ func getEnrichedMachinesJSON() ([]byte, error) {
 			return nil, err
 		}
 
-		// Load services, containers, and GPU metrics for this machine.
 		m.Services = getServicesForMachine(m.MachineID)
 		m.Containers = getContainersForMachine(m.MachineID)
 		m.GPUs = getLatestGPUMetrics(m.MachineID)

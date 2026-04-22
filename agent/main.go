@@ -3,9 +3,9 @@ package main
 import (
 	"encoding/json"
 	"encoding/xml"
-	"strconv"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"math/rand"
 	"net"
@@ -15,11 +15,13 @@ import (
 	"os/signal"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/creack/pty"
 	"github.com/gorilla/websocket"
 	"github.com/shirou/gopsutil/v4/cpu"
 	"github.com/shirou/gopsutil/v4/disk"
@@ -29,14 +31,14 @@ import (
 
 // GPUInfo holds per-GPU metrics parsed from nvidia-smi XML.
 type GPUInfo struct {
-	Index        int     `json:"index"`
-	Name         string  `json:"name"`
-	TempC        float64 `json:"temp_c"`
-	UtilPercent  float64 `json:"util_percent"`
-	MemUsedBytes int64   `json:"mem_used_bytes"`
-	MemTotalBytes int64  `json:"mem_total_bytes"`
-	PowerWatts   float64 `json:"power_watts"`
-	FanPercent   float64 `json:"fan_percent"`
+	Index         int     `json:"index"`
+	Name          string  `json:"name"`
+	TempC         float64 `json:"temp_c"`
+	UtilPercent   float64 `json:"util_percent"`
+	MemUsedBytes  int64   `json:"mem_used_bytes"`
+	MemTotalBytes int64   `json:"mem_total_bytes"`
+	PowerWatts    float64 `json:"power_watts"`
+	FanPercent    float64 `json:"fan_percent"`
 }
 
 type Metrics struct {
@@ -56,18 +58,19 @@ type Metrics struct {
 
 // Command is received from the hub.
 type Command struct {
-	Type   string `json:"type"`   // "restart_service", "stop_service", "start_service", "restart_container", "reboot", "shutdown"
-	Target string `json:"target"` // service name or container name
-	ID     string `json:"id"`     // command ID for tracking response
+	Type      string `json:"type"`
+	Target    string `json:"target"`
+	ID        string `json:"id"`
+	SessionID string `json:"session_id,omitempty"`
 }
 
 // CommandResponse is sent back to the hub.
 type CommandResponse struct {
-	Type    string `json:"type"`    // "command_response"
-	ID      string `json:"id"`     // echo back the command ID
+	Type    string `json:"type"`
+	ID      string `json:"id"`
 	Success bool   `json:"success"`
-	Output  string `json:"output"` // stdout/stderr from the command
-	Error   string `json:"error"`  // error message if failed
+	Output  string `json:"output"`
+	Error   string `json:"error"`
 }
 
 // ServiceInfo represents a discovered systemd service.
@@ -79,10 +82,10 @@ type ServiceInfo struct {
 
 // ServicesMessage is sent to the hub.
 type ServicesMessage struct {
-	Type     string        `json:"type"`
-	Hostname string        `json:"hostname"`
-	MachineID string       `json:"machine_id"`
-	Services []ServiceInfo `json:"services"`
+	Type      string        `json:"type"`
+	Hostname  string        `json:"hostname"`
+	MachineID string        `json:"machine_id"`
+	Services  []ServiceInfo `json:"services"`
 }
 
 // ContainerInfo represents a discovered Docker container.
@@ -101,6 +104,13 @@ type ContainersMessage struct {
 	Containers []ContainerInfo `json:"containers"`
 }
 
+// TerminalResize is sent from browser -> hub -> agent to resize the PTY.
+type TerminalResize struct {
+	Type string `json:"type"`
+	Cols uint16 `json:"cols"`
+	Rows uint16 `json:"rows"`
+}
+
 var (
 	hubURL string
 	token  string
@@ -116,6 +126,7 @@ var (
 		"restart_container": true,
 		"reboot":            true,
 		"shutdown":          true,
+		"start_terminal":    true,
 	}
 
 	// interestingServicePatterns are services we report to the hub.
@@ -317,6 +328,12 @@ func handleCommand(conn *websocket.Conn, mu *sync.Mutex, msg []byte) {
 		return
 	}
 
+	// Handle start_terminal separately — it has its own flow.
+	if cmd.Type == "start_terminal" {
+		handleStartTerminal(cmd)
+		return
+	}
+
 	if cmd.ID == "" {
 		log.Printf("ignoring command with no ID")
 		return
@@ -385,6 +402,134 @@ func handleCommand(conn *websocket.Conn, mu *sync.Mutex, msg []byte) {
 	writeJSON(conn, mu, resp)
 }
 
+// handleStartTerminal spawns a PTY and connects it to the hub via a dedicated WebSocket.
+func handleStartTerminal(cmd Command) {
+	sessionID := cmd.SessionID
+	if sessionID == "" {
+		log.Printf("start_terminal: missing session_id")
+		return
+	}
+	log.Printf("starting terminal session: %s", sessionID)
+
+	// Derive the hub HTTP host from the agent's hub WebSocket URL.
+	u, err := url.Parse(hubURL)
+	if err != nil {
+		log.Printf("terminal: invalid hub URL: %v", err)
+		return
+	}
+	// Build terminal relay URL: ws://host:port/ws/terminal/{session_id}?role=agent
+	termURL := fmt.Sprintf("ws://%s/ws/terminal/%s?role=agent", u.Host, sessionID)
+
+	// Spawn bash PTY.
+	bashCmd := exec.Command("bash")
+	bashCmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	ptmx, err := pty.Start(bashCmd)
+	if err != nil {
+		log.Printf("terminal: pty.Start failed: %v", err)
+		return
+	}
+	defer func() {
+		ptmx.Close()
+		_ = bashCmd.Process.Kill()
+		_, _ = bashCmd.Process.Wait()
+		log.Printf("terminal session %s: PTY cleaned up", sessionID)
+	}()
+
+	// Set initial size.
+	_ = pty.Setsize(ptmx, &pty.Winsize{Rows: 24, Cols: 80})
+
+	// Connect to hub terminal relay.
+	log.Printf("terminal: connecting to %s", termURL)
+	ws, _, err := websocket.DefaultDialer.Dial(termURL, nil)
+	if err != nil {
+		log.Printf("terminal: dial hub failed: %v", err)
+		return
+	}
+	defer ws.Close()
+	log.Printf("terminal session %s: connected to hub relay", sessionID)
+
+	done := make(chan struct{})
+
+	// PTY stdout -> WebSocket (binary).
+	go func() {
+		defer func() {
+			select {
+			case <-done:
+			default:
+				close(done)
+			}
+		}()
+		buf := make([]byte, 4096)
+		for {
+			n, err := ptmx.Read(buf)
+			if n > 0 {
+				if werr := ws.WriteMessage(websocket.BinaryMessage, buf[:n]); werr != nil {
+					log.Printf("terminal %s: ws write error: %v", sessionID, werr)
+					return
+				}
+			}
+			if err != nil {
+				if err != io.EOF {
+					log.Printf("terminal %s: pty read error: %v", sessionID, err)
+				}
+				return
+			}
+		}
+	}()
+
+	// WebSocket -> PTY stdin. Also handle resize messages.
+	go func() {
+		defer func() {
+			select {
+			case <-done:
+			default:
+				close(done)
+			}
+		}()
+		for {
+			msgType, msg, err := ws.ReadMessage()
+			if err != nil {
+				log.Printf("terminal %s: ws read error: %v", sessionID, err)
+				return
+			}
+
+			// Check if it's a text message that might be a resize command.
+			if msgType == websocket.TextMessage {
+				var resize TerminalResize
+				if json.Unmarshal(msg, &resize) == nil && resize.Type == "resize" {
+					if resize.Cols > 0 && resize.Rows > 0 {
+						_ = pty.Setsize(ptmx, &pty.Winsize{
+							Rows: resize.Rows,
+							Cols: resize.Cols,
+						})
+						log.Printf("terminal %s: resized to %dx%d", sessionID, resize.Cols, resize.Rows)
+					}
+					continue
+				}
+			}
+
+			// Otherwise write to PTY stdin.
+			if _, err := ptmx.Write(msg); err != nil {
+				log.Printf("terminal %s: pty write error: %v", sessionID, err)
+				return
+			}
+		}
+	}()
+
+	// Wait for either direction to finish, or for the bash process to exit.
+	waitCh := make(chan error, 1)
+	go func() {
+		waitCh <- bashCmd.Wait()
+	}()
+
+	select {
+	case <-done:
+		log.Printf("terminal session %s: WebSocket/PTY loop ended", sessionID)
+	case err := <-waitCh:
+		log.Printf("terminal session %s: bash exited: %v", sessionID, err)
+	}
+}
+
 // sendServices discovers systemd services and sends them to the hub.
 func sendServices(conn *websocket.Conn, mu *sync.Mutex, machineID string) {
 	hostname, _ := os.Hostname()
@@ -403,19 +548,16 @@ func sendServices(conn *websocket.Conn, mu *sync.Mutex, machineID string) {
 			continue
 		}
 
-		// Format: UNIT LOAD ACTIVE SUB DESCRIPTION...
 		fields := strings.Fields(line)
 		if len(fields) < 5 {
 			continue
 		}
 
 		unitName := fields[0]
-		// Remove .service suffix for cleaner name.
 		name := strings.TrimSuffix(unitName, ".service")
-		activeState := fields[2] // active, inactive, failed
+		activeState := fields[2]
 		description := strings.Join(fields[4:], " ")
 
-		// Include failed services regardless.
 		if activeState == "failed" {
 			services = append(services, ServiceInfo{
 				Name:        name,
@@ -425,7 +567,6 @@ func sendServices(conn *websocket.Conn, mu *sync.Mutex, machineID string) {
 			continue
 		}
 
-		// Check if it matches any interesting pattern.
 		if isInterestingService(name) {
 			services = append(services, ServiceInfo{
 				Name:        name,
@@ -467,9 +608,7 @@ func isInterestingService(name string) bool {
 func sendContainers(conn *websocket.Conn, mu *sync.Mutex, machineID string) {
 	hostname, _ := os.Hostname()
 
-	// Check if Docker is available.
 	if err := exec.Command("docker", "info").Run(); err != nil {
-		// Docker not available, skip silently.
 		return
 	}
 
@@ -491,7 +630,6 @@ func sendContainers(conn *websocket.Conn, mu *sync.Mutex, machineID string) {
 			continue
 		}
 
-		// Normalize status: "Up 2 hours" -> "running", "Exited (0) ..." -> "exited"
 		status := normalizeContainerStatus(parts[2])
 
 		containers = append(containers, ContainerInfo{
@@ -549,7 +687,6 @@ func getMachineID() string {
 	return info.HostID
 }
 
-
 // nvidia-smi XML structures for parsing.
 type nvidiaSmiLog struct {
 	GPUs []nvGPU `xml:"gpu"`
@@ -562,7 +699,6 @@ type nvGPU struct {
 	Temperature nvTemperature `xml:"temperature"`
 	Utilization nvUtilization `xml:"utilization"`
 	FBMemory    nvFBMemory    `xml:"fb_memory_usage"`
-	// Driver versions may use either tag name.
 	GPUPowerReadings nvPower `xml:"gpu_power_readings"`
 	PowerReadings    nvPower `xml:"power_readings"`
 }
@@ -583,17 +719,14 @@ type nvFBMemory struct {
 }
 
 type nvPower struct {
-	PowerDraw string `xml:"power_draw"`
-	AvgPowerDraw string `xml:"average_power_draw"`
+	PowerDraw     string `xml:"power_draw"`
+	AvgPowerDraw  string `xml:"average_power_draw"`
 	InstPowerDraw string `xml:"instant_power_draw"`
 }
 
-// collectGPUMetrics runs nvidia-smi and parses XML output.
-// Returns nil if nvidia-smi is not available or fails (no GPU).
 func collectGPUMetrics() []GPUInfo {
 	out, err := exec.Command("nvidia-smi", "-x", "-q").Output()
 	if err != nil {
-		// nvidia-smi not found or failed — no GPU, that is fine.
 		return nil
 	}
 
@@ -619,7 +752,6 @@ func collectGPUMetrics() []GPUInfo {
 			MemTotalBytes: mibToBytes(g.FBMemory.Total),
 		}
 
-		// Power may be in either tag depending on driver version.
 		pw := parseNvValue(g.GPUPowerReadings.PowerDraw)
 		if pw == 0 {
 			pw = parseNvValue(g.GPUPowerReadings.AvgPowerDraw)
@@ -637,13 +769,11 @@ func collectGPUMetrics() []GPUInfo {
 	return gpus
 }
 
-// parseNvValue extracts the numeric part from strings like "72 C", "89 %", "285.50 W".
 func parseNvValue(s string) float64 {
 	s = strings.TrimSpace(s)
 	if s == "" || s == "N/A" || s == "[N/A]" {
 		return 0
 	}
-	// Take only the first token (the number).
 	parts := strings.Fields(s)
 	if len(parts) == 0 {
 		return 0
@@ -655,7 +785,6 @@ func parseNvValue(s string) float64 {
 	return v
 }
 
-// mibToBytes converts "24576 MiB" to bytes.
 func mibToBytes(s string) int64 {
 	v := parseNvValue(s)
 	return int64(v * 1024 * 1024)

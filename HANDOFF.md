@@ -6,30 +6,43 @@
   - [x] Phase 1b: Live Pipeline — agent IP detection, CORS, SSE wiring, machine detail page
   - [x] Phase 1c: Services & Commands — ServicePanel, ContainerPanel, Toast, RebootModal, command relay
   - [x] Phase 1d: Polish + systemd services (so BloxOS survives reboot)
-- Now: [→] Phase 2: GPU + Network — nvidia-smi GPU done, network/load metrics remaining
+  - [x] Phase 2: GPU + Network — nvidia-smi GPU done, network/load metrics remaining
+  - [x] Phase 3: Terminal — xterm.js + creack/pty + PIN gate + audit logging
+- Now: [→] Phase 4: Alerts + UX — Telegram push, search/filter, tags/groups, list view
 - Remaining:
-  - [ ] Phase 3: Terminal — xterm.js + creack/pty + re-auth gate
-  - [ ] Phase 4: Alerts + UX — Telegram push, search/filter, tags/groups, list view
   - [ ] Phase 5: Hardening — metric charts, retention, dashboard auth, agent auto-update, Windows
 
 ## Current Branch
 `rewrite/bloxos-v2`
 
 ## Immediate Next Steps
-1. Phase 2 remaining: Network + load metrics
-2. Test GPU metrics on a real GPU machine (ai-09 or ai-03 with RTX 3090/3080)
-3. Phase 3: Terminal (xterm.js + creack/pty)
+1. Phase 4: Alerts + UX (Telegram push, search/filter)
+2. Test terminal on remote GPU machines (ai-03 with RTX 3080)
+3. Make terminal PIN configurable (env var or settings)
 
-## What Works (Verified 2026-04-21)
+## What Works (Verified 2026-04-22)
 - Agent → Hub → SQLite → SSE → Dashboard: full pipeline working
 - Fleet grid: live machine card with colored status border, "seen: Xs ago"
-- Detail view: CPU/RAM/disk progress bars, services panel (7 services), containers panel (8 containers)
+- Detail view: CPU/RAM/disk progress bars, services panel, containers panel
 - Command execution: restart/stop/start services, restart containers, reboot — all via hub relay
 - Toast notifications for command feedback
+- GPU metrics: nvidia-smi XML parsing, per-GPU display (temp, util, VRAM, power, fan)
+- **Terminal: xterm.js + PTY via creack/pty, PIN gate (hardcoded 1234), WebSocket relay, audit logging**
+  - Browser ↔ Hub (relay) ↔ Agent (PTY) — full bidirectional I/O
+  - Terminal resize handling (FitAddon + resize messages to PTY)
+  - Expand/collapse toggle (360px / 600px)
+  - Connection state management: locked → PIN entry → connecting → active → disconnected
+  - Reconnect button on disconnect
+  - Session tracking in terminal_sessions table (start/end times, status)
+  - PTY runs as bokiko user (not root)
+  - Session IDs are UUIDs (not guessable)
 - Shell injection blocked (target validation regex)
 - Demo mode fallback when hub offline
 - REST: /health, /api/machines, /api/machines/:id, /api/machines/:id/services, /api/machines/:id/containers
 - POST /api/machines/:id/command — synchronous relay with 10s timeout
+- POST /api/machines/:id/terminal — create terminal session
+- DELETE /api/machines/:id/terminal/:session_id — close terminal session
+- GET /ws/terminal/:session_id — WebSocket relay for terminal I/O
 
 ## How to Start (systemd -- auto-starts on boot)
 ```bash
@@ -57,17 +70,19 @@ curl http://localhost:4000/api/machines  # -> machine list
 ```
 
 ## Working Set
-- `hub/main.go` — Go Echo server, WebSocket agent handler, SSE broadcast, SQLite, command relay
-- `agent/main.go` — Go agent, gopsutil metrics, WebSocket client, service/Docker discovery, command executor
+- `hub/main.go` — Go Echo server, WebSocket agent handler, SSE broadcast, SQLite, command relay, terminal relay
+- `agent/main.go` — Go agent, gopsutil metrics, WebSocket client, service/Docker discovery, command executor, PTY terminal
 - `dashboard/` — Next.js 15, Tailwind v4, dark mode
   - `src/app/page.tsx` — Fleet grid
-  - `src/app/machine/[id]/page.tsx` — Machine detail
-  - `src/components/` — MachineCard, ServicePanel, ContainerPanel, Toast, RebootModal, ProgressBar, StatusBadge
+  - `src/app/machine/[id]/page.tsx` — Machine detail + terminal UI
+  - `src/components/` — MachineCard, ServicePanel, ContainerPanel, Toast, RebootModal, ProgressBar, StatusBadge, Terminal
   - `src/hooks/useFleetSSE.ts` — SSE with auto-reconnect
 - `docs/PLAN.md` — Full architecture plan
 
 ## Open Questions
-- UNCONFIRMED: nvidia-smi XML parsing on real GPU machines — needs testing on ai-09/ai-03
+- UNCONFIRMED: Terminal on remote machines (tested only on bloxOs local agent)
+- TODO: Make terminal PIN configurable (env var or hub config)
+- TODO: Full I/O audit logging for terminal sessions (Phase 5)
 - Architecture: Using nvidia-smi exec (not go-nvml/CGO) so agent compiles on GPU-less build machines
 - TODO: Decide metric retention policy (7d granular + downsample, or flat 90d?)
 
@@ -79,7 +94,7 @@ curl http://localhost:4000/api/machines  # -> machine list
 - Plan: /Users/bokiko/.claude/plans/calm-baking-eclipse.md (Mac) or docs/PLAN.md (repo)
 
 ## Tech Stack
-- Hub + Agent: Go 1.24.3 (Echo, gorilla/websocket, gopsutil, modernc.org/sqlite)
-- Dashboard: Next.js 15 + React + Tailwind v4 + TypeScript
+- Hub + Agent: Go 1.25.0 (Echo, gorilla/websocket, gopsutil, modernc.org/sqlite, creack/pty)
+- Dashboard: Next.js 16 + React 19 + Tailwind v4 + TypeScript + xterm.js 6
 - DB: SQLite WAL mode
 - VM: Ubuntu 22.04, 32GB RAM, 322GB disk, VLAN 16
