@@ -22,7 +22,12 @@ export function useFleetSSE() {
       esRef.current.close();
     }
 
-    const es = new EventSource(`${HUB_URL}/api/events`);
+    const token = localStorage.getItem("bloxos_token");
+    const sseUrl = token
+      ? `${HUB_URL}/api/events?token=${encodeURIComponent(token)}`
+      : `${HUB_URL}/api/events`;
+
+    const es = new EventSource(sseUrl);
     esRef.current = es;
 
     es.onopen = () => {
@@ -97,7 +102,11 @@ export function useFleetSSE() {
     connect();
 
     // Fetch active alerts on mount.
-    fetch(`${HUB_URL}/api/alerts`)
+    const token = localStorage.getItem("bloxos_token");
+    const headers: Record<string, string> = {};
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+
+    fetch(`${HUB_URL}/api/alerts`, { headers })
       .then((r) => r.json())
       .then((data: AlertData[]) => {
         setAlerts(data);

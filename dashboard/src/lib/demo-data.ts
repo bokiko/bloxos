@@ -27,6 +27,7 @@ export interface MachineMetrics {
   tags?: string;
   timestamp: string;
   last_seen?: number; // epoch ms, set by dashboard
+  latency_ms?: number;
 }
 
 export interface AlertData {

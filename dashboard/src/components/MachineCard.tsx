@@ -5,7 +5,8 @@ import Link from "next/link";
 import { MachineMetrics, GPUInfo } from "@/lib/demo-data";
 import { ProgressBar } from "./ProgressBar";
 import { StatusBadge, MachineStatus } from "./StatusBadge";
-import { Cpu, HardDrive, MemoryStick, Thermometer, Clock, Monitor } from "lucide-react";
+import { Sparkline } from "./Sparkline";
+import { Cpu, HardDrive, MemoryStick, Thermometer, Clock, Monitor, Wifi } from "lucide-react";
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "0";
@@ -72,8 +73,6 @@ export function MachineCard({ machine, onClick }: MachineCardProps) {
   const gpu0 = machine.gpus && machine.gpus.length > 0 ? machine.gpus[0] : null;
   const hasGpu = gpu0 !== null || (machine.gpu_temp && machine.gpu_temp > 0) ||
     (machine.gpu_vram_total_bytes && machine.gpu_vram_total_bytes > 0);
-  const gpuTemp = gpu0 ? gpu0.temp_c : (machine.gpu_temp || 0);
-  const gpuUtil = gpu0 ? gpu0.util_percent : (machine.gpu_util_percent || 0);
   const gpuVramUsed = gpu0 ? gpu0.mem_used_bytes : (machine.gpu_vram_used_bytes || 0);
   const gpuVramTotal = gpu0 ? gpu0.mem_total_bytes : (machine.gpu_vram_total_bytes || 0);
 
@@ -101,6 +100,14 @@ export function MachineCard({ machine, onClick }: MachineCardProps) {
           </div>
           <StatusBadge status={status} reason={reason} />
         </div>
+
+        {/* Sparkline */}
+        {status !== "offline" && (
+          <div className="mb-2.5 flex items-center gap-2">
+            <span className="text-[9px] text-blox-muted uppercase tracking-wider">CPU 30m</span>
+            <Sparkline machineId={machine.machine_id} width={100} height={24} />
+          </div>
+        )}
 
         {/* Metrics */}
         <div className="space-y-2.5">
@@ -182,11 +189,19 @@ export function MachineCard({ machine, onClick }: MachineCardProps) {
               seen: {machine.last_seen ? timeSince(machine.last_seen) : "never"}
             </span>
           </div>
-          {machine.os && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-blox-border text-blox-muted">
-              {machine.os}
-            </span>
-          )}
+          <div className="flex items-center gap-2">
+            {machine.latency_ms !== undefined && machine.latency_ms > 0 && (
+              <span className="flex items-center gap-0.5 text-[10px] text-blox-muted">
+                <Wifi className="w-2.5 h-2.5" />
+                {machine.latency_ms}ms
+              </span>
+            )}
+            {machine.os && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-blox-border text-blox-muted">
+                {machine.os}
+              </span>
+            )}
+          </div>
         </div>
 
         {/* Tags */}
