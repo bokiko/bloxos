@@ -40,6 +40,16 @@ func seedTestAdmin(t *testing.T) {
 func setupTestServer(t *testing.T) *echo.Echo {
 	t.Helper()
 
+	// Drain stale goroutines from prior tests that may still reference
+	// the old db via the global agents map or markOffline calls.
+	agentsMu.Lock()
+	agents = make(map[string]*ConnectedAgent)
+	agentsMu.Unlock()
+	termSessionsMu.Lock()
+	termSessions = make(map[string]*TerminalSession)
+	termSessionsMu.Unlock()
+	time.Sleep(100 * time.Millisecond)
+
 	var err error
 	db, err = sql.Open("sqlite", ":memory:")
 	if err != nil {
@@ -99,6 +109,14 @@ func setupTestServer(t *testing.T) *echo.Echo {
 // setupEmptyTestServer creates a server with NO users (for testing setup flow).
 func setupEmptyTestServer(t *testing.T) *echo.Echo {
 	t.Helper()
+
+	agentsMu.Lock()
+	agents = make(map[string]*ConnectedAgent)
+	agentsMu.Unlock()
+	termSessionsMu.Lock()
+	termSessions = make(map[string]*TerminalSession)
+	termSessionsMu.Unlock()
+	time.Sleep(100 * time.Millisecond)
 
 	var err error
 	db, err = sql.Open("sqlite", ":memory:")
@@ -814,6 +832,26 @@ func wsDialAgent(t *testing.T, server *httptest.Server, queryParams string) (*we
 }
 
 // seedValidToken inserts a valid token into the DB and returns the raw token string.
+
+// waitAgentDrain waits until the handleAgentWS goroutine has fully exited for
+// the given machine_id. This prevents race conditions where the background
+// goroutine calls markOffline on a stale or closed db.
+func waitAgentDrain(t *testing.T, machineID string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		agentsMu.RLock()
+		_, exists := agents[machineID]
+		agentsMu.RUnlock()
+		if !exists {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Not fatal — the goroutine may not have registered the machine yet
+	t.Logf("waitAgentDrain: %s still in agents map after %v (may not have registered)", machineID, timeout)
+}
+
 func seedValidToken(t *testing.T) string {
 	t.Helper()
 	rawToken := "test-enrollment-token-abc123"
@@ -889,11 +927,10 @@ func TestAgentEnrollmentWithToken(t *testing.T) {
 		t.Fatalf("expected 64-char hex secret, got %d chars", len(enrolled.AgentSecret))
 	}
 
-	// Close connection and server before DB assertions to prevent background
-	// goroutines from racing with the next test's DB reassignment.
+	// Close connection and wait for handler goroutine to finish.
 	conn.Close()
+	waitAgentDrain(t, "test-machine-enroll-001", 2*time.Second)
 	server.Close()
-	time.Sleep(50 * time.Millisecond)
 
 	// Verify token was consumed.
 	h := sha256.Sum256([]byte(token))
@@ -966,10 +1003,9 @@ func TestAgentReconnectWithSecret(t *testing.T) {
 
 	t.Log("reconnection with secret successful")
 
-	// Close explicitly to prevent background goroutine races.
 	conn2.Close()
+	waitAgentDrain(t, "test-machine-reconnect-001", 2*time.Second)
 	server.Close()
-	time.Sleep(50 * time.Millisecond)
 }
 
 func TestAgentReconnectWithInvalidSecret(t *testing.T) {
@@ -986,7 +1022,6 @@ func TestAgentReconnectWithInvalidSecret(t *testing.T) {
 	t.Logf("correctly rejected invalid secret: %v", err)
 
 	server.Close()
-	time.Sleep(50 * time.Millisecond)
 }
 
 func TestAgentSecretRevocation(t *testing.T) {
@@ -1015,6 +1050,7 @@ func TestAgentSecretRevocation(t *testing.T) {
 	}
 	json.Unmarshal(msg, &enrolled)
 	conn1.Close()
+	waitAgentDrain(t, "test-machine-revoke-001", 2*time.Second)
 
 	// Step 2: Revoke the credential.
 	if err := revokeAgentCredential("test-machine-revoke-001"); err != nil {
@@ -1036,7 +1072,6 @@ func TestAgentSecretRevocation(t *testing.T) {
 	t.Logf("correctly rejected revoked secret: %v", err)
 
 	server.Close()
-	time.Sleep(50 * time.Millisecond)
 }
 
 // TestTerminalMaxConcurrentSessions verifies that the 4th terminal session is rejected.
