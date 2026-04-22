@@ -18,10 +18,11 @@
 `rewrite/bloxos-v2`
 
 ## Default Credentials
-- Dashboard login: **admin / bloxos**
-- Terminal PIN: **1234** (hardcoded)
+- Dashboard login: **admin / bloxos** (change via POST /api/auth/change-password)
+- Terminal PIN: **1234** (enforced server-side, change via POST /api/auth/change-pin)
 - JWT expiry: 24 hours
-- JWT secret: set via `BLOXOS_JWT_SECRET` env var (defaults to static key)
+- JWT secret: auto-generated at ~/.bloxos/jwt-secret (override via BLOXOS_JWT_SECRET env var)
+- Agent tokens: single-use with 15-min TTL, validated server-side
 
 ## What Works (Verified 2026-04-22)
 - Agent -> Hub -> SQLite -> SSE -> Dashboard: full pipeline working
@@ -92,6 +93,19 @@ curl -X POST http://localhost:4000/api/auth/login -H "Content-Type: application/
   - `src/hooks/useFleetSSE.ts` — SSE with auto-reconnect + alert events + auth token
   - `src/lib/demo-data.ts` — Type definitions + demo data
 - `docs/PLAN.md` — Full architecture plan
+
+## Security (2026-04-22)
+All 8 Codex audit findings fixed:
+- **Agent tokens validated** against DB (SHA256 hash lookup, expiry check, single-use). Bootstrap mode: "test-token" allowed only when no tokens exist in DB.
+- **JWT secret auto-generated** on first startup and persisted to `~/.bloxos/jwt-secret`. No more hardcoded default.
+- **Default admin password warning** logged prominently on startup if still using "bloxos".
+- **Password change API**: `POST /api/auth/change-password` (requires valid JWT).
+- **Terminal PIN enforced server-side** (bcrypt hash in DB, default "1234"). Change via `POST /api/auth/change-pin`.
+- **Terminal WebSocket auth**: browser connections require JWT token in query param.
+- **Auth headers added** to ServicePanel, ContainerPanel, RebootModal fetch calls.
+- **start_container** command implemented in agent.
+- **Install paths dynamic**: use request Host header, `BLOXOS_AGENT_BINARY` env var.
+- **Token redaction** in hub access logs (Finding #8).
 
 ## Open Questions
 - TODO: Make terminal PIN configurable (env var or hub config)
