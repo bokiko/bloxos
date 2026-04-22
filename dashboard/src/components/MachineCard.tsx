@@ -8,8 +8,8 @@ import { StatusBadge, MachineStatus } from "./StatusBadge";
 import { Sparkline } from "./Sparkline";
 import { Cpu, HardDrive, MemoryStick, Thermometer, Clock, Monitor, Wifi } from "lucide-react";
 
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return "0";
+function formatBytes(bytes: number | undefined | null): string {
+  if (!bytes || bytes === 0) return "0";
   const gb = bytes / (1024 ** 3);
   if (gb >= 1) return `${gb.toFixed(0)} GB`;
   const mb = bytes / (1024 ** 2);
@@ -21,9 +21,9 @@ function getStatus(m: MachineMetrics): { status: MachineStatus; reason?: string 
   if (age > 120_000) return { status: "offline" };
 
   if (m.gpu_temp && m.gpu_temp > 80) return { status: "warning", reason: `GPU ${m.gpu_temp}\u00b0C` };
-  const diskPct = m.disk_total_bytes > 0 ? (m.disk_used_bytes / m.disk_total_bytes) * 100 : 0;
+  const diskPct = (m.disk_total_bytes ?? 0) > 0 ? ((m.disk_used_bytes ?? 0) / m.disk_total_bytes) * 100 : 0;
   if (diskPct > 90) return { status: "warning", reason: `Disk ${diskPct.toFixed(0)}%` };
-  const ramPct = m.ram_total_bytes > 0 ? (m.ram_used_bytes / m.ram_total_bytes) * 100 : 0;
+  const ramPct = (m.ram_total_bytes ?? 0) > 0 ? ((m.ram_used_bytes ?? 0) / m.ram_total_bytes) * 100 : 0;
   if (ramPct > 95) return { status: "warning", reason: `RAM ${ramPct.toFixed(0)}%` };
 
   return { status: "online" };
@@ -63,11 +63,11 @@ export function MachineCard({ machine, onClick }: MachineCardProps) {
 
   void now;
 
-  const ramPct = machine.ram_total_bytes > 0
-    ? (machine.ram_used_bytes / machine.ram_total_bytes) * 100
+  const ramPct = (machine.ram_total_bytes ?? 0) > 0
+    ? ((machine.ram_used_bytes ?? 0) / machine.ram_total_bytes) * 100
     : 0;
-  const diskPct = machine.disk_total_bytes > 0
-    ? (machine.disk_used_bytes / machine.disk_total_bytes) * 100
+  const diskPct = (machine.disk_total_bytes ?? 0) > 0
+    ? ((machine.disk_used_bytes ?? 0) / machine.disk_total_bytes) * 100
     : 0;
 
   const gpu0 = machine.gpus && machine.gpus.length > 0 ? machine.gpus[0] : null;
@@ -116,7 +116,7 @@ export function MachineCard({ machine, onClick }: MachineCardProps) {
             <Cpu className="w-3.5 h-3.5 text-blox-muted shrink-0" />
             <span className="text-xs text-blox-muted w-8">CPU</span>
             <div className="flex-1">
-              <ProgressBar value={machine.cpu_percent} label={`${machine.cpu_percent.toFixed(0)}%`} />
+              <ProgressBar value={machine.cpu_percent ?? 0} label={`${(machine.cpu_percent ?? 0).toFixed(0)}%`} />
             </div>
           </div>
 
@@ -157,7 +157,7 @@ export function MachineCard({ machine, onClick }: MachineCardProps) {
               </span>
               {machine.gpu_util_percent !== undefined && (
                 <span className="text-[10px] text-blox-muted ml-1">
-                  ({machine.gpu_util_percent.toFixed(0)}% util)
+                  ({(machine.gpu_util_percent ?? 0).toFixed(0)}% util)
                 </span>
               )}
             </div>
@@ -170,8 +170,8 @@ export function MachineCard({ machine, onClick }: MachineCardProps) {
               <span className="text-xs text-blox-muted w-8">VRAM</span>
               <div className="flex-1">
                 <ProgressBar
-                  value={gpuVramUsed / gpuVramTotal * 100}
-                  label={`${(gpuVramUsed / gpuVramTotal * 100).toFixed(0)}%`}
+                  value={gpuVramTotal > 0 ? (gpuVramUsed / gpuVramTotal * 100) : 0}
+                  label={`${(gpuVramTotal > 0 ? (gpuVramUsed / gpuVramTotal * 100) : 0).toFixed(0)}%`}
                 />
               </div>
               <span className="text-[10px] text-blox-muted tabular-nums">
