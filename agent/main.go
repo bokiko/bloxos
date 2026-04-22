@@ -14,6 +14,8 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"os/user"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -114,8 +116,9 @@ type TerminalResize struct {
 }
 
 var (
-	hubURL string
-	token  string
+	hubURL      string
+	token       string
+	agentSecret string
 
 	// validTarget allows alphanumeric, hyphens, underscores, dots only.
 	validTarget = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
@@ -140,14 +143,58 @@ var (
 	}
 )
 
+// credentialFilePath returns the path where the agent stores its durable secret.
+func credentialFilePath() string {
+	// Prefer /etc/bloxos/agent-secret if running as root.
+	if u, err := user.Current(); err == nil && u.Uid == "0" {
+		return "/etc/bloxos/agent-secret"
+	}
+	// Otherwise use ~/.bloxos/agent-secret.
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = "."
+	}
+	return filepath.Join(home, ".bloxos", "agent-secret")
+}
+
+// loadCredentialFile reads the agent secret from the credential file.
+func loadCredentialFile() string {
+	path := credentialFilePath()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// saveCredentialFile writes the agent secret to the credential file with 0600 perms.
+func saveCredentialFile(secret string) error {
+	path := credentialFilePath()
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return fmt.Errorf("create credential dir: %w", err)
+	}
+	if err := os.WriteFile(path, []byte(secret+"\n"), 0600); err != nil {
+		return fmt.Errorf("write credential file: %w", err)
+	}
+	log.Printf("agent secret saved to %s", path)
+	return nil
+}
+
 func main() {
 	flag.StringVar(&hubURL, "hub", "ws://localhost:4000/ws/agent", "Hub WebSocket URL")
 	flag.StringVar(&token, "token", "", "Registration token")
+	flag.StringVar(&agentSecret, "secret", "", "Agent secret for reconnection")
 	flag.Parse()
 	// Env var fallback.
 	if hubURL == "ws://localhost:4000/ws/agent" {
 		if env := os.Getenv("BLOXOS_HUB"); env != "" {
 			hubURL = env + "/ws/agent"
+		}
+	}
+	if agentSecret == "" {
+		if env := os.Getenv("BLOXOS_SECRET"); env != "" {
+			agentSecret = env
 		}
 	}
 	if token == "" {
@@ -156,8 +203,18 @@ func main() {
 		}
 	}
 
-	if token == "" {
-		log.Fatal("--token is required")
+	// Priority: 1) --secret / BLOXOS_SECRET / credential file, 2) --token / BLOXOS_TOKEN
+	if agentSecret == "" {
+		agentSecret = loadCredentialFile()
+	}
+	if agentSecret == "" && token == "" {
+		log.Fatal("--token or --secret is required (or set BLOXOS_TOKEN / BLOXOS_SECRET)")
+	}
+
+	if agentSecret != "" {
+		log.Printf("using agent secret for authentication")
+	} else {
+		log.Printf("using install token for initial enrollment")
 	}
 
 	machineID := getMachineID()
@@ -180,6 +237,11 @@ func connectLoop(machineID string) {
 	maxBackoff := 60 * time.Second
 
 	for {
+		// On reconnect, prefer credential file if it exists.
+		if stored := loadCredentialFile(); stored != "" {
+			agentSecret = stored
+		}
+
 		err := runAgent(machineID)
 		if err != nil {
 			log.Printf("connection error: %v", err)
@@ -204,7 +266,12 @@ func runAgent(machineID string) error {
 	}
 
 	q := u.Query()
-	q.Set("token", token)
+	// Prefer secret for reconnection, fall back to token for initial enrollment.
+	if agentSecret != "" {
+		q.Set("secret", agentSecret)
+	} else if token != "" {
+		q.Set("token", token)
+	}
 	u.RawQuery = q.Encode()
 
 	log.Printf("connecting to %s", hubURL)
@@ -230,6 +297,24 @@ func runAgent(machineID string) error {
 				errCh <- fmt.Errorf("read error: %w", err)
 				return
 			}
+
+			// Check for enrollment message from hub.
+			var envelope struct {
+				Type        string `json:"type"`
+				AgentSecret string `json:"agent_secret"`
+			}
+			if json.Unmarshal(msg, &envelope) == nil && envelope.Type == "enrolled" && envelope.AgentSecret != "" {
+				log.Printf("received enrollment secret from hub")
+				agentSecret = envelope.AgentSecret
+				token = "" // Clear token from memory.
+				if err := saveCredentialFile(agentSecret); err != nil {
+					log.Printf("WARNING: failed to save credential file: %v", err)
+				} else {
+					log.Printf("enrollment complete - will use secret for future connections")
+				}
+				continue
+			}
+
 			go handleCommand(conn, &writeMu, msg)
 		}
 	}()
