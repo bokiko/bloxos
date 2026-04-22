@@ -186,6 +186,9 @@ var (
 
 	// JWT signing key.
 	jwtSecret []byte
+
+	// Global rate limiter.
+	rateLimiter *RateLimiter
 )
 
 func main() {
@@ -221,6 +224,10 @@ func main() {
 	// Load or generate JWT secret (Finding #2).
 	jwtSecret = loadOrGenerateJWTSecret()
 
+	// Initialize rate limiter.
+	rateLimiter = NewRateLimiter()
+	log.Println("rate limiter initialized")
+
 	// Load Telegram config.
 	telegramToken = os.Getenv("BLOXOS_TELEGRAM_TOKEN")
 	telegramChatID = os.Getenv("BLOXOS_TELEGRAM_CHAT_ID")
@@ -243,6 +250,11 @@ func main() {
 		Output: &tokenRedactingWriter{w: os.Stderr},
 	}))
 	e.Use(middleware.Recover())
+
+	// Trust local proxy (Caddy) for X-Forwarded-For header.
+	e.IPExtractor = echo.ExtractIPFromXFFHeader(
+		echo.TrustLoopback(true),
+	)
 	// CORS: use ALLOWED_ORIGINS env var (comma-separated), fall back to PUBLIC_URL, then wildcard.
 	corsOrigins := []string{"*"}
 	if ao := os.Getenv("ALLOWED_ORIGINS"); ao != "" {
@@ -482,6 +494,12 @@ func ensureDefaultAdmin() {
 }
 
 func handleLogin(c echo.Context) error {
+	ip := getRealIP(c)
+	if !rateLimiter.Allow("login", ip, 5) {
+		log.Printf("rate limit exceeded: login from %s", ip)
+		return c.JSON(http.StatusTooManyRequests, map[string]string{"error": "rate limit exceeded"})
+	}
+
 	var body struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -1218,6 +1236,12 @@ func handleSetTags(c echo.Context) error {
 // --- Install Script + Token ---
 
 func handleCreateToken(c echo.Context) error {
+	ip := getRealIP(c)
+	if !rateLimiter.Allow("token_create", ip, 3) {
+		log.Printf("rate limit exceeded: token_create from %s", ip)
+		return c.JSON(http.StatusTooManyRequests, map[string]string{"error": "rate limit exceeded"})
+	}
+
 	token := uuid.New().String()
 	h := sha256.Sum256([]byte(token))
 	tokenHash := hex.EncodeToString(h[:])
@@ -1557,6 +1581,12 @@ func handleAgentWS(c echo.Context) error {
 
 // handleStartTerminal creates a terminal session and tells the agent to spawn a PTY.
 func handleStartTerminal(c echo.Context) error {
+	ip := getRealIP(c)
+	if !rateLimiter.Allow("terminal", ip, 5) {
+		log.Printf("rate limit exceeded: terminal from %s", ip)
+		return c.JSON(http.StatusTooManyRequests, map[string]string{"error": "rate limit exceeded"})
+	}
+
 	machineID := c.Param("id")
 
 	// Server-side PIN verification (Finding #3).
@@ -2741,6 +2771,85 @@ func (t *tokenRedactingWriter) Write(p []byte) (n int, err error) {
 		}
 	}
 	return t.w.Write([]byte(s))
+}
+
+
+// RateLimiter provides simple in-memory per-IP rate limiting.
+type RateLimiter struct {
+	mu       sync.Mutex
+	requests map[string][]time.Time // key: "category:ip" -> timestamps
+}
+
+// NewRateLimiter creates a new rate limiter and starts periodic cleanup.
+func NewRateLimiter() *RateLimiter {
+	rl := &RateLimiter{
+		requests: make(map[string][]time.Time),
+	}
+	go rl.cleanupLoop()
+	return rl
+}
+
+// Allow checks if a request is within the rate limit. Returns true if allowed.
+func (rl *RateLimiter) Allow(category string, ip string, maxPerMinute int) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	key := category + ":" + ip
+	now := time.Now()
+	cutoff := now.Add(-1 * time.Minute)
+	// Filter to only recent timestamps.
+	recent := []time.Time{}
+	for _, t := range rl.requests[key] {
+		if t.After(cutoff) {
+			recent = append(recent, t)
+		}
+	}
+	if len(recent) >= maxPerMinute {
+		return false
+	}
+	rl.requests[key] = append(recent, now)
+	return true
+}
+
+// cleanupLoop removes stale entries every 5 minutes.
+func (rl *RateLimiter) cleanupLoop() {
+	for {
+		time.Sleep(5 * time.Minute)
+		rl.mu.Lock()
+		cutoff := time.Now().Add(-1 * time.Minute)
+		for key, timestamps := range rl.requests {
+			recent := []time.Time{}
+			for _, t := range timestamps {
+				if t.After(cutoff) {
+					recent = append(recent, t)
+				}
+			}
+			if len(recent) == 0 {
+				delete(rl.requests, key)
+			} else {
+				rl.requests[key] = recent
+			}
+		}
+		rl.mu.Unlock()
+	}
+}
+
+// getRealIP extracts the client IP, trusting X-Forwarded-For only from the local proxy.
+func getRealIP(c echo.Context) string {
+	ip := c.RealIP()
+	// If request comes from local proxy (Caddy), use X-Forwarded-For.
+	if ip == "127.0.0.1" || ip == "::1" {
+		if xff := c.Request().Header.Get("X-Forwarded-For"); xff != "" {
+			// Take the first (leftmost) IP from X-Forwarded-For.
+			parts := strings.Split(xff, ",")
+			if len(parts) > 0 {
+				clientIP := strings.TrimSpace(parts[0])
+				if clientIP != "" {
+					return clientIP
+				}
+			}
+		}
+	}
+	return ip
 }
 
 // Suppress unused import warnings.
