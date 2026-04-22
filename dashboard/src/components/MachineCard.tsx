@@ -171,41 +171,49 @@ export function MachineCard({ machine, onClick, onDelete }: MachineCardProps) {
             </span>
           </div>
 
-          {/* GPU Temp */}
-          {hasGpu && machine.gpu_temp !== undefined && machine.gpu_temp > 0 && (
-            <div className="flex items-center gap-2">
-              <Thermometer className="w-3.5 h-3.5 text-blox-muted shrink-0" />
-              <span className="text-xs text-blox-muted w-8">GPU</span>
-              <span className={`text-xs tabular-nums font-mono font-medium ${
-                machine.gpu_temp > 80 ? "text-red-400" :
-                machine.gpu_temp > 60 ? "text-amber-400" : "text-emerald-400"
-              }`}>
-                {machine.gpu_temp}&deg;C
-              </span>
-              {machine.gpu_util_percent !== undefined && (
-                <span className="text-[10px] text-blox-muted font-mono ml-1">
-                  ({(machine.gpu_util_percent ?? 0).toFixed(0)}% util)
+          {/* GPU Temp - always rendered for consistent card height */}
+          <div className="flex items-center gap-2">
+            <Thermometer className="w-3.5 h-3.5 text-blox-muted shrink-0" />
+            <span className="text-xs text-blox-muted w-8">GPU</span>
+            {hasGpu && machine.gpu_temp !== undefined && machine.gpu_temp > 0 ? (
+              <>
+                <span className={`text-xs tabular-nums font-mono font-medium ${
+                  machine.gpu_temp > 80 ? "text-red-400" :
+                  machine.gpu_temp > 60 ? "text-amber-400" : "text-emerald-400"
+                }`}>
+                  {machine.gpu_temp}&deg;C
                 </span>
-              )}
-            </div>
-          )}
+                {machine.gpu_util_percent !== undefined && (
+                  <span className="text-[10px] text-blox-muted font-mono ml-1">
+                    ({(machine.gpu_util_percent ?? 0).toFixed(0)}% util)
+                  </span>
+                )}
+              </>
+            ) : (
+              <span className="text-xs text-blox-muted/40 font-mono">&mdash;</span>
+            )}
+          </div>
 
-          {/* VRAM */}
-          {hasGpu && gpuVramTotal > 0 && (
-            <div className="flex items-center gap-2">
-              <MemoryStick className="w-3.5 h-3.5 text-blox-muted shrink-0" />
-              <span className="text-xs text-blox-muted w-8">VRAM</span>
-              <div className="flex-1">
-                <ProgressBar
-                  value={gpuVramTotal > 0 ? (gpuVramUsed / gpuVramTotal * 100) : 0}
-                  label={`${(gpuVramTotal > 0 ? (gpuVramUsed / gpuVramTotal * 100) : 0).toFixed(0)}%`}
-                />
-              </div>
-              <span className="text-[10px] text-blox-muted tabular-nums font-mono">
-                {formatBytes(gpuVramUsed)}/{formatBytes(gpuVramTotal)}
-              </span>
-            </div>
-          )}
+          {/* VRAM - always rendered for consistent card height */}
+          <div className="flex items-center gap-2">
+            <MemoryStick className="w-3.5 h-3.5 text-blox-muted shrink-0" />
+            <span className="text-xs text-blox-muted w-8">VRAM</span>
+            {hasGpu && gpuVramTotal > 0 ? (
+              <>
+                <div className="flex-1">
+                  <ProgressBar
+                    value={gpuVramTotal > 0 ? (gpuVramUsed / gpuVramTotal * 100) : 0}
+                    label={`${(gpuVramTotal > 0 ? (gpuVramUsed / gpuVramTotal * 100) : 0).toFixed(0)}%`}
+                  />
+                </div>
+                <span className="text-[10px] text-blox-muted tabular-nums font-mono">
+                  {formatBytes(gpuVramUsed)}/{formatBytes(gpuVramTotal)}
+                </span>
+              </>
+            ) : (
+              <span className="text-xs text-blox-muted/40 font-mono">&mdash;</span>
+            )}
+          </div>
         </div>
 
         {/* Footer */}
