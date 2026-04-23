@@ -1,11 +1,18 @@
 package main
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/sha256"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -38,6 +45,31 @@ func seedTestAdmin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed test admin: %v", err)
 	}
+}
+
+func generateTestCertPEM(t *testing.T) string {
+	t.Helper()
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate test key: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject: pkix.Name{
+			CommonName: "bloxos-test-ca",
+		},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create test cert: %v", err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
 }
 
 // setupTestServer creates a fresh in-memory DB, seeds a test admin user,
@@ -1401,10 +1433,57 @@ func TestCreateAPIMachine(t *testing.T) {
 	if pollInterval != 120 {
 		t.Errorf("expected poll_interval_secs 120, got %v", pollInterval)
 	}
+	if tlsCfg, ok := resp["tls_config"].(map[string]interface{}); !ok {
+		t.Fatalf("expected tls_config object, got %T", resp["tls_config"])
+	} else {
+		if tlsCfg["mode"] != "system" {
+			t.Errorf("expected tls_config.mode 'system', got %v", tlsCfg["mode"])
+		}
+		if tlsCfg["has_custom_ca"] != false {
+			t.Errorf("expected has_custom_ca false, got %v", tlsCfg["has_custom_ca"])
+		}
+	}
 
 	// Stop any pollers started during the test.
 	stopAllAPIPollers()
 	t.Log("create api machine: OK")
+}
+
+func TestCreateAPIMachineWithCustomCATrust(t *testing.T) {
+	e := setupTestServer(t)
+	markCredentialsRotated(t)
+	token := loginAndGetToken(t, e)
+
+	api := e.Group("", jwtMiddleware, credentialRotationMiddleware)
+	api.POST("/api/api-machines", handleCreateAPIMachine)
+
+	body := fmt.Sprintf(`{"name":"Secure Synology","adapter_type":"synology","base_url":"https://192.168.16.10:5001","auth_config":{"username":"u","password":"p"},"tls_config":{"mode":"custom_ca","ca_cert_pem":%q},"poll_interval_secs":60}`, generateTestCertPEM(t))
+	req := httptest.NewRequest(http.MethodPost, "/api/api-machines", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	tlsCfg, ok := resp["tls_config"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected tls_config object, got %T", resp["tls_config"])
+	}
+	if tlsCfg["mode"] != "custom_ca" {
+		t.Errorf("expected tls_config.mode 'custom_ca', got %v", tlsCfg["mode"])
+	}
+	if tlsCfg["has_custom_ca"] != true {
+		t.Errorf("expected has_custom_ca true, got %v", tlsCfg["has_custom_ca"])
+	}
+
+	stopAllAPIPollers()
 }
 
 func TestCreateAPIMachineInvalidAdapter(t *testing.T) {
@@ -1426,6 +1505,29 @@ func TestCreateAPIMachineInvalidAdapter(t *testing.T) {
 		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
 	}
 	t.Log("invalid adapter rejected: OK")
+}
+
+func TestCreateAPIMachineInvalidTLSConfig(t *testing.T) {
+	e := setupTestServer(t)
+	markCredentialsRotated(t)
+	token := loginAndGetToken(t, e)
+
+	api := e.Group("", jwtMiddleware, credentialRotationMiddleware)
+	api.POST("/api/api-machines", handleCreateAPIMachine)
+
+	body := `{"name":"Bad TLS","adapter_type":"synology","base_url":"https://192.168.1.1:5001","auth_config":{"username":"u","password":"p"},"tls_config":{"mode":"custom_ca","ca_cert_pem":"not a cert"}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/api-machines", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "tls_config.ca_cert_pem") {
+		t.Fatalf("expected tls_config validation error, got %s", rec.Body.String())
+	}
 }
 
 func TestListAPIMachines(t *testing.T) {
@@ -1466,6 +1568,15 @@ func TestListAPIMachines(t *testing.T) {
 	}
 	if len(machines) != 2 {
 		t.Fatalf("expected 2 machines, got %d", len(machines))
+	}
+	for _, machine := range machines {
+		var tlsCfg map[string]interface{}
+		if err := json.Unmarshal(machine.TLSConfig, &tlsCfg); err != nil {
+			t.Fatalf("unmarshal tls_config: %v", err)
+		}
+		if tlsCfg["mode"] != "system" {
+			t.Fatalf("expected redacted tls_config.mode system, got %v", tlsCfg["mode"])
+		}
 	}
 
 	stopAllAPIPollers()

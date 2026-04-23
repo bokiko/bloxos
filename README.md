@@ -100,6 +100,16 @@ BLOXOS_CA_CERT=/etc/bloxos/ca.crt ./bloxos-agent --hub wss://<hub>/ws/agent --to
 3. `POST /api/setup` with your setup token, admin username, password, and terminal PIN.
 4. Log in with the credentials you just created.
 
+### API-Polled Machines
+
+API-polled integrations like Proxmox and Synology now choose TLS trust per machine:
+
+- `System`: use the hub host's normal system trust store
+- `Custom CA`: paste the target API's CA PEM into the add-machine form
+- `Insecure`: temporary fallback that skips verification only for that machine and logs a warning on every poll
+
+Use `Custom CA` for self-signed appliances instead of a hub-wide insecure override.
+
 ---
 
 ## Features
