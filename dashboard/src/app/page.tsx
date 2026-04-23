@@ -4,6 +4,7 @@ import { useState, useMemo, useCallback } from "react";
 import { useSSE } from "@/contexts/SSEContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { demoMachines, MachineMetrics, AlertData } from "@/lib/demo-data";
+import { DEMO_MODE, HUB_URL } from "@/lib/session";
 import { MachineCard } from "@/components/MachineCard";
 import { MachineStatus } from "@/components/StatusBadge";
 import { AlertPanel } from "@/components/AlertPanel";
@@ -35,8 +36,6 @@ import Link from "next/link";
 type SortOption = "name" | "status" | "cpu" | "gpu_temp";
 type StatusFilter = "all" | "online" | "warning" | "offline";
 type ViewMode = "grid" | "list";
-
-const HUB_URL = process.env.NEXT_PUBLIC_HUB_URL || "http://localhost:4000";
 
 function getStatus(m: MachineMetrics): MachineStatus {
   const age = Date.now() - (m.last_seen || 0);
@@ -96,11 +95,8 @@ export default function Home() {
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [addAPIMachineOpen, setAddAPIMachineOpen] = useState(false);
 
-  const machines = hasReceivedData && liveMachines.length > 0
-    ? liveMachines
-    : demoMachines;
-
-  const isDemo = !hasReceivedData || liveMachines.length === 0;
+  const isDemo = DEMO_MODE && !hasReceivedData && liveMachines.length === 0;
+  const machines = isDemo ? demoMachines : liveMachines;
 
   const allTags = useMemo(() => {
     const tagSet = new Set<string>();
@@ -167,7 +163,8 @@ export default function Home() {
 
   const handleAcknowledge = useCallback(async (id: string) => {
     try {
-      await authFetch(`${HUB_URL}/api/alerts/${id}/acknowledge`, { method: "POST" });
+      const res = await authFetch(`${HUB_URL}/api/alerts/${id}/acknowledge`, { method: "POST" });
+      if (!res.ok) return;
       setAlerts((prev: AlertData[]) => prev.filter((a: AlertData) => a.id !== id));
       setAlertCount((prev: number) => Math.max(0, prev - 1));
     } catch { /* ignore */ }
@@ -176,7 +173,8 @@ export default function Home() {
   const handleAcknowledgeAll = useCallback(async () => {
     for (const a of alerts) {
       try {
-        await authFetch(`${HUB_URL}/api/alerts/${a.id}/acknowledge`, { method: "POST" });
+        const res = await authFetch(`${HUB_URL}/api/alerts/${a.id}/acknowledge`, { method: "POST" });
+        if (!res.ok) return;
       } catch { /* ignore */ }
     }
     setAlerts([]);
@@ -204,7 +202,7 @@ export default function Home() {
     if (!confirm(`Reboot ${selected.size} machine(s)? This cannot be undone.`)) return;
     setBulkLoading(true);
     try {
-      await authFetch(`${HUB_URL}/api/bulk/command`, {
+      const res = await authFetch(`${HUB_URL}/api/bulk/command`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -213,6 +211,7 @@ export default function Home() {
           target: "",
         }),
       });
+      if (!res.ok) return;
     } catch { /* ignore */ }
     setBulkLoading(false);
     setSelected(new Set());
@@ -221,7 +220,7 @@ export default function Home() {
   const handleBulkRestart = useCallback(async (service: string) => {
     setBulkLoading(true);
     try {
-      await authFetch(`${HUB_URL}/api/bulk/command`, {
+      const res = await authFetch(`${HUB_URL}/api/bulk/command`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -230,6 +229,7 @@ export default function Home() {
           target: service,
         }),
       });
+      if (!res.ok) return;
     } catch { /* ignore */ }
     setBulkLoading(false);
     setSelected(new Set());
@@ -239,7 +239,8 @@ export default function Home() {
     if (!deleteTarget) return;
     setDeleteLoading(true);
     try {
-      await authFetch(`${HUB_URL}/api/machines/${deleteTarget.id}`, { method: "DELETE" });
+      const res = await authFetch(`${HUB_URL}/api/machines/${deleteTarget.id}`, { method: "DELETE" });
+      if (!res.ok) return;
     } catch { /* ignore */ }
     setDeleteLoading(false);
     setDeleteTarget(null);

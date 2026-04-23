@@ -5,8 +5,7 @@ import {
   AreaChart, Area, XAxis, YAxis, ResponsiveContainer, Tooltip,
 } from "recharts";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-
-const HUB_URL = process.env.NEXT_PUBLIC_HUB_URL || "http://localhost:4000";
+import { HUB_URL, getStoredToken } from "@/lib/session";
 
 type Period = "30m" | "1h" | "6h" | "24h" | "7d";
 
@@ -26,9 +25,16 @@ interface MetricChartsProps {
   hasGpu: boolean;
 }
 
-function formatTime(ts: any): string {
+function formatTime(ts: string | number | Date): string {
   const d = new Date(ts);
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function formatTooltipLabel(label: unknown): string {
+  if (typeof label === "string" || typeof label === "number" || label instanceof Date) {
+    return formatTime(label);
+  }
+  return "";
 }
 
 function formatGB(bytes: number | undefined | null): string {
@@ -50,7 +56,7 @@ export function MetricCharts({ machineId, hasGpu }: MetricChartsProps) {
   const [data, setData] = useState<MetricPoint[]>([]);
 
   const fetchData = useCallback(async () => {
-    const token = localStorage.getItem("bloxos_token");
+    const token = getStoredToken();
     const headers: Record<string, string> = {};
     if (token) headers["Authorization"] = `Bearer ${token}`;
 
@@ -66,8 +72,11 @@ export function MetricCharts({ machineId, hasGpu }: MetricChartsProps) {
   }, [machineId, period]);
 
   useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 30000);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void fetchData();
+    const interval = setInterval(() => {
+      void fetchData();
+    }, 30000);
     return () => clearInterval(interval);
   }, [fetchData]);
 
@@ -129,8 +138,8 @@ export function MetricCharts({ machineId, hasGpu }: MetricChartsProps) {
                 />
                 <Tooltip
                   contentStyle={tooltipStyle}
-                  labelFormatter={formatTime}
-                  formatter={(v: any) => [`${(v ?? 0).toFixed(1)}%`, "CPU"]}
+                  labelFormatter={formatTooltipLabel}
+                  formatter={(v) => [`${Number(v ?? 0).toFixed(1)}%`, "CPU"]}
                 />
                 <Area type="monotone" dataKey="cpu_percent" stroke="#3b82f6" fill="url(#cpuGrad)" strokeWidth={1.5} />
               </AreaChart>
@@ -164,8 +173,8 @@ export function MetricCharts({ machineId, hasGpu }: MetricChartsProps) {
                 />
                 <Tooltip
                   contentStyle={tooltipStyle}
-                  labelFormatter={formatTime}
-                  formatter={(v: any) => [`${(v ?? 0).toFixed(1)} GB`, "RAM"]}
+                  labelFormatter={formatTooltipLabel}
+                  formatter={(v) => [`${Number(v ?? 0).toFixed(1)} GB`, "RAM"]}
                 />
                 <Area type="monotone" dataKey="ram_gb" stroke="#8b5cf6" fill="url(#ramGrad)" strokeWidth={1.5} />
               </AreaChart>
@@ -199,8 +208,8 @@ export function MetricCharts({ machineId, hasGpu }: MetricChartsProps) {
                   />
                   <Tooltip
                     contentStyle={tooltipStyle}
-                    labelFormatter={formatTime}
-                    formatter={(v: any) => [`${(v ?? 0).toFixed(0)} C`, "GPU Temp"]}
+                    labelFormatter={formatTooltipLabel}
+                    formatter={(v) => [`${Number(v ?? 0).toFixed(0)} C`, "GPU Temp"]}
                   />
                   <Area type="monotone" dataKey="gpu_temp" stroke="#f59e0b" fill="url(#gpuTempGrad)" strokeWidth={1.5} />
                 </AreaChart>
@@ -235,8 +244,8 @@ export function MetricCharts({ machineId, hasGpu }: MetricChartsProps) {
                   />
                   <Tooltip
                     contentStyle={tooltipStyle}
-                    labelFormatter={formatTime}
-                    formatter={(v: any) => [`${(v ?? 0).toFixed(1)} GB`, "VRAM"]}
+                    labelFormatter={formatTooltipLabel}
+                    formatter={(v) => [`${Number(v ?? 0).toFixed(1)} GB`, "VRAM"]}
                   />
                   <Area type="monotone" dataKey="vram_gb" stroke="#10b981" fill="url(#vramGrad)" strokeWidth={1.5} />
                 </AreaChart>

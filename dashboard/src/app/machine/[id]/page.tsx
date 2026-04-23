@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef, use } from "react";
+import { useEffect, useState, useCallback, useRef, use, useMemo } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
@@ -24,18 +24,15 @@ import {
   Activity, Zap, Monitor, Terminal as TerminalIcon, RotateCcw,
   Lock, Unlock, X, Maximize2, Minimize2, Wifi, BarChart3, Trash2,
 } from "lucide-react";
+import { HUB_URL, getAuthHeaders } from "@/lib/session";
 
 const TerminalComponent = dynamic(
   () => import("@/components/Terminal").then((m) => ({ default: m.Terminal })),
   { ssr: false }
 );
 
-const HUB_URL = process.env.NEXT_PUBLIC_HUB_URL || "http://localhost:4000";
-const HUB_WS_URL = HUB_URL.replace(/^http/, "ws");
-
 function authHeaders(): Record<string, string> {
-  const token = typeof window !== "undefined" ? localStorage.getItem("bloxos_token") : null;
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  return getAuthHeaders();
 }
 
 interface GPUData {
@@ -111,7 +108,7 @@ function getStatus(data: MachineData): MachineStatus {
 export default function MachineDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const { getMachine, connected } = useSSE();
-  const [data, setData] = useState<MachineData | null>(null);
+  const [baseData, setBaseData] = useState<MachineData | null>(null);
   const [services, setServices] = useState<Service[]>([]);
   const [containers, setContainers] = useState<Container[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -125,70 +122,87 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
 
   const [termState, setTermState] = useState<TerminalState>("locked");
   const [termSessionId, setTermSessionId] = useState<string | null>(null);
+  const [termBrowserToken, setTermBrowserToken] = useState<string | null>(null);
   const [pinInput, setPinInput] = useState("");
   const [pinError, setPinError] = useState(false);
   const [termExpanded, setTermExpanded] = useState(false);
   const pinInputRef = useRef<HTMLInputElement>(null);
 
-  const fetchData = useCallback(async () => {
-    try {
-      const hdrs = authHeaders();
-      const [machineRes, servicesRes, containersRes] = await Promise.all([
-        fetch(`${HUB_URL}/api/machines/${id}`, { headers: hdrs }),
-        fetch(`${HUB_URL}/api/machines/${id}/services`, { headers: hdrs }),
-        fetch(`${HUB_URL}/api/machines/${id}/containers`, { headers: hdrs }),
-      ]);
+  useEffect(() => {
+    let cancelled = false;
 
-      if (!machineRes.ok) {
-        setError(machineRes.status === 404 ? "Machine not found" : "Failed to load");
-        return;
+    async function load() {
+      try {
+        const hdrs = authHeaders();
+        const [machineRes, servicesRes, containersRes] = await Promise.all([
+          fetch(`${HUB_URL}/api/machines/${id}`, { headers: hdrs }),
+          fetch(`${HUB_URL}/api/machines/${id}/services`, { headers: hdrs }),
+          fetch(`${HUB_URL}/api/machines/${id}/containers`, { headers: hdrs }),
+        ]);
+
+        if (!machineRes.ok) {
+          if (!cancelled) {
+            setError(machineRes.status === 404 ? "Machine not found" : "Failed to load");
+          }
+          return;
+        }
+
+        const machineJson = await machineRes.json();
+        if (cancelled) return;
+
+        setBaseData(machineJson);
+        setLastUpdated(new Date().toISOString());
+        setError(null);
+
+        if (servicesRes.ok) setServices(await servicesRes.json());
+        if (containersRes.ok) setContainers(await containersRes.json());
+      } catch {
+        if (!cancelled) {
+          setError("Cannot reach hub");
+        }
       }
-
-      const machineJson = await machineRes.json();
-      setData(machineJson);
-      setLastUpdated(new Date().toISOString());
-      setError(null);
-
-      if (servicesRes.ok) setServices(await servicesRes.json());
-      if (containersRes.ok) setContainers(await containersRes.json());
-    } catch {
-      setError("Cannot reach hub");
     }
+
+    void load();
+    return () => {
+      cancelled = true;
+    };
   }, [id]);
 
-  useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+  const sseData = getMachine(id);
+  const data = useMemo<MachineData | null>(() => {
+    if (!baseData || !sseData) return baseData;
 
-  useEffect(() => {
-    const sseData = getMachine(id);
-    if (!sseData) return;
+    return {
+      ...baseData,
+      metrics: {
+        cpu_percent: sseData.cpu_percent ?? baseData.metrics.cpu_percent,
+        ram_used_bytes: sseData.ram_used_bytes ?? baseData.metrics.ram_used_bytes,
+        ram_total_bytes: sseData.ram_total_bytes ?? baseData.metrics.ram_total_bytes,
+        disk_used_bytes: sseData.disk_used_bytes ?? baseData.metrics.disk_used_bytes,
+        disk_total_bytes: sseData.disk_total_bytes ?? baseData.metrics.disk_total_bytes,
+        gpu_temp: sseData.gpu_temp ?? baseData.metrics.gpu_temp,
+        gpu_util_percent: sseData.gpu_util_percent ?? baseData.metrics.gpu_util_percent,
+        gpu_vram_used_bytes: sseData.gpu_vram_used_bytes ?? baseData.metrics.gpu_vram_used_bytes,
+        gpu_vram_total_bytes: sseData.gpu_vram_total_bytes ?? baseData.metrics.gpu_vram_total_bytes,
+      },
+      machine: { ...baseData.machine, status: "online" },
+      latency_ms: sseData.latency_ms ?? baseData.latency_ms,
+    };
+  }, [baseData, sseData]);
 
-    setData((prev) => {
-      if (!prev) return prev;
-      return {
-        ...prev,
-        metrics: {
-          cpu_percent: sseData.cpu_percent ?? prev.metrics.cpu_percent,
-          ram_used_bytes: sseData.ram_used_bytes ?? prev.metrics.ram_used_bytes,
-          ram_total_bytes: sseData.ram_total_bytes ?? prev.metrics.ram_total_bytes,
-          disk_used_bytes: sseData.disk_used_bytes ?? prev.metrics.disk_used_bytes,
-          disk_total_bytes: sseData.disk_total_bytes ?? prev.metrics.disk_total_bytes,
-          gpu_temp: sseData.gpu_temp ?? prev.metrics.gpu_temp,
-          gpu_util_percent: sseData.gpu_util_percent ?? prev.metrics.gpu_util_percent,
-          gpu_vram_used_bytes: sseData.gpu_vram_used_bytes ?? prev.metrics.gpu_vram_used_bytes,
-          gpu_vram_total_bytes: sseData.gpu_vram_total_bytes ?? prev.metrics.gpu_vram_total_bytes,
-        },
-        machine: { ...prev.machine, status: "online" },
-        latency_ms: sseData.latency_ms ?? prev.latency_ms,
-      };
-    });
-    setLastUpdated(new Date().toISOString());
-
-    const raw = sseData as unknown as Record<string, unknown>;
-    if (raw._services) setServices(raw._services as Service[]);
-    if (raw._containers) setContainers(raw._containers as Container[]);
-  }, [getMachine, id]);
+  const effectiveLastUpdated = useMemo(
+    () => (sseData ? new Date().toISOString() : lastUpdated),
+    [sseData, lastUpdated]
+  );
+  const liveServices = useMemo(() => {
+    const raw = sseData as Record<string, unknown> | undefined;
+    return Array.isArray(raw?._services) ? (raw._services as Service[]) : services;
+  }, [sseData, services]);
+  const liveContainers = useMemo(() => {
+    const raw = sseData as Record<string, unknown> | undefined;
+    return Array.isArray(raw?._containers) ? (raw._containers as Container[]) : containers;
+  }, [sseData, containers]);
 
   useEffect(() => {
     const interval = setInterval(() => setTick((t) => t + 1), 1000);
@@ -221,6 +235,7 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
         if (!d) return;
         setPinInput("");
         setTermSessionId(d.session_id);
+        setTermBrowserToken(d.browser_token);
         setTermState("active");
       })
       .catch(() => {
@@ -236,11 +251,13 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
       }).catch(() => {});
     }
     setTermSessionId(null);
+    setTermBrowserToken(null);
     setTermState("locked");
     setTermExpanded(false);
   }, [termSessionId, id]);
 
   const handleTerminalDisconnect = useCallback(() => {
+    setTermBrowserToken(null);
     setTermState("disconnected");
   }, []);
 
@@ -373,9 +390,9 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
                 {data.latency_ms}ms
               </span>
             )}
-            {lastUpdated && (
+            {effectiveLastUpdated && (
               <span className="text-[10px] text-blox-muted font-mono tabular-nums mr-2">
-                {timeSince(lastUpdated)}
+                {timeSince(effectiveLastUpdated)}
               </span>
             )}
             <Button
@@ -615,10 +632,10 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
         {/* Services + Containers */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.25 }}>
-            <ServicePanel services={services} machineId={id} hubUrl={HUB_URL} />
+            <ServicePanel services={liveServices} machineId={id} hubUrl={HUB_URL} />
           </motion.div>
           <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}>
-            <ContainerPanel containers={containers} machineId={id} hubUrl={HUB_URL} />
+            <ContainerPanel containers={liveContainers} machineId={id} hubUrl={HUB_URL} />
           </motion.div>
         </div>
 
@@ -736,7 +753,7 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
 
           {termState === "active" && termSessionId && (
             <div className="bg-[#0a0a0f] transition-all duration-200" style={{ height: termExpanded ? "600px" : "360px" }}>
-              <TerminalComponent sessionId={termSessionId} hubWsUrl={HUB_WS_URL} onDisconnect={handleTerminalDisconnect} />
+              <TerminalComponent sessionId={termSessionId} browserToken={termBrowserToken ?? ""} onDisconnect={handleTerminalDisconnect} />
             </div>
           )}
 
