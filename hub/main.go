@@ -289,7 +289,7 @@ func main() {
 	e.POST("/api/setup", handleSetup)
 
 	// Protected endpoints.
-	api := e.Group("", jwtMiddleware, credentialRotationMiddleware)
+	api := e.Group("", jwtMiddleware, credentialRotationMiddleware, permissionMiddleware)
 	api.GET("/api/events", handleSSE)
 	api.GET("/api/machines", handleListMachines)
 	api.GET("/api/machines/:id", handleGetMachine)
@@ -522,8 +522,8 @@ func handleSetup(c echo.Context) error {
 
 	// Create admin user with credentials already rotated.
 	id := uuid.New().String()
-	_, err = db.Exec(`INSERT INTO users (id, username, password_hash, terminal_pin_hash, password_changed, pin_changed) VALUES (?, ?, ?, ?, TRUE, TRUE)`,
-		id, body.Username, string(passwordHash), string(pinHash))
+	_, err = db.Exec(`INSERT INTO users (id, username, password_hash, terminal_pin_hash, password_changed, pin_changed, role) VALUES (?, ?, ?, ?, TRUE, TRUE, ?)`,
+		id, body.Username, string(passwordHash), string(pinHash), RoleAdmin)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to create user"})
 	}
@@ -558,14 +558,18 @@ func handleLogin(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid body"})
 	}
 
-	var userID, passwordHash string
-	err := db.QueryRow(`SELECT id, password_hash FROM users WHERE username = ?`, body.Username).
-		Scan(&userID, &passwordHash)
+	var userID, storedUsername, passwordHash, rawRole string
+	err := db.QueryRow(`SELECT id, username, password_hash, COALESCE(role, 'admin') FROM users WHERE username = ?`, body.Username).
+		Scan(&userID, &storedUsername, &passwordHash, &rawRole)
 	if err == sql.ErrNoRows {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
 	}
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database error"})
+	}
+	role, ok := normalizeUserRole(rawRole)
+	if !ok {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "invalid user role"})
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(body.Password)); err != nil {
@@ -575,7 +579,7 @@ func handleLogin(c echo.Context) error {
 	// Generate JWT.
 	claims := jwt.MapClaims{
 		"user_id":  userID,
-		"username": body.Username,
+		"username": storedUsername,
 		"exp":      time.Now().Add(24 * time.Hour).Unix(),
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
@@ -586,17 +590,19 @@ func handleLogin(c echo.Context) error {
 
 	// Check if password change is required (Finding #2).
 	var passwordChanged sql.NullBool
-	db.QueryRow(`SELECT password_changed FROM users WHERE username = ?`, body.Username).Scan(&passwordChanged)
+	db.QueryRow(`SELECT password_changed FROM users WHERE username = ?`, storedUsername).Scan(&passwordChanged)
 	pwChangeRequired := !passwordChanged.Valid || !passwordChanged.Bool
 
 	// Check if PIN change is required (Finding #2).
 	var pinChanged sql.NullBool
-	db.QueryRow(`SELECT pin_changed FROM users WHERE username = ?`, body.Username).Scan(&pinChanged)
+	db.QueryRow(`SELECT pin_changed FROM users WHERE username = ?`, storedUsername).Scan(&pinChanged)
 	pinChangeRequired := !pinChanged.Valid || !pinChanged.Bool
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"token":                    tokenStr,
 		"expires_in":               86400,
+		"role":                     role,
+		"scopes":                   scopesForRole(role),
 		"password_change_required": pwChangeRequired,
 		"pin_change_required":      pinChangeRequired,
 	})
@@ -636,6 +642,9 @@ func jwtMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 					return c.JSON(http.StatusForbidden, map[string]string{"error": "SSE token cannot access this endpoint"})
 				}
 			}
+			userID, _ := claims["user_id"].(string)
+			username, _ := claims["username"].(string)
+			setAuthClaimsOnContext(c, userID, username)
 		}
 
 		return next(c)
@@ -661,30 +670,11 @@ func credentialRotationMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 			return next(c)
 		}
 
-		// Extract user_id from JWT claims (token already validated by jwtMiddleware).
-		auth := c.Request().Header.Get("Authorization")
-		tokenStr := ""
-		if strings.HasPrefix(auth, "Bearer ") {
-			tokenStr = auth[7:]
-		}
-		if tokenStr == "" {
-			tokenStr = c.QueryParam("token")
-		}
-		if tokenStr == "" {
-			return next(c) // no token means jwtMiddleware will reject anyway
-		}
-
-		tkn, _ := jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
-			return jwtSecret, nil
-		})
-		if tkn == nil {
-			return next(c)
-		}
-		claims, ok := tkn.Claims.(jwt.MapClaims)
+		claims, ok := authClaimsFromContext(c)
 		if !ok {
 			return next(c)
 		}
-		userID, _ := claims["user_id"].(string)
+		userID := claims.UserID
 		if userID == "" {
 			return next(c)
 		}
@@ -1890,6 +1880,9 @@ const maxTerminalSessions = 3
 
 // extractUserIDFromRequest extracts user_id from the JWT in the Authorization header.
 func extractUserIDFromRequest(c echo.Context) string {
+	if claims, ok := authClaimsFromContext(c); ok && claims.UserID != "" {
+		return claims.UserID
+	}
 	auth := c.Request().Header.Get("Authorization")
 	tokenStr := ""
 	if len(auth) > 7 && auth[:7] == "Bearer " {
@@ -3225,31 +3218,15 @@ func handleChangePIN(c echo.Context) error {
 
 // handleSSEToken generates a short-lived SSE-scoped JWT (Finding #8).
 func handleSSEToken(c echo.Context) error {
-	// Get user info from the current (full) JWT.
-	auth := c.Request().Header.Get("Authorization")
-	tokenStr := ""
-	if strings.HasPrefix(auth, "Bearer ") {
-		tokenStr = auth[7:]
-	}
-	if tokenStr == "" {
-		tokenStr = c.QueryParam("token")
-	}
-
-	tkn, _ := jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
-		return jwtSecret, nil
-	})
-	claims, ok := tkn.Claims.(jwt.MapClaims)
-	if !ok {
+	claims, ok := authClaimsFromContext(c)
+	if !ok || claims.UserID == "" {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid token"})
 	}
 
-	userID, _ := claims["user_id"].(string)
-	username, _ := claims["username"].(string)
-
 	// Generate SSE-scoped token with 5-minute expiry.
 	sseClaims := jwt.MapClaims{
-		"user_id":  userID,
-		"username": username,
+		"user_id":  claims.UserID,
+		"username": claims.Username,
 		"type":     "sse",
 		"exp":      time.Now().Add(5 * time.Minute).Unix(),
 	}
