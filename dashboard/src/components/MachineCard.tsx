@@ -54,6 +54,8 @@ const statusGlow: Record<MachineStatus, string> = {
   offline: "hover:shadow-red-500/5",
 };
 
+const API_ADAPTER_TYPES = ["synology", "proxmox"];
+
 interface MachineCardProps {
   machine: MachineMetrics;
   onClick?: () => void;
@@ -85,6 +87,8 @@ export function MachineCard({ machine, onClick, onDelete }: MachineCardProps) {
   const gpuVramTotal = gpu0 ? gpu0.mem_total_bytes : (machine.gpu_vram_total_bytes || 0);
 
   const tags = machine.tags ? machine.tags.split(",").filter((t) => t.trim()) : [];
+  const adapterTag = tags.find((t) => API_ADAPTER_TYPES.includes(t.trim().toLowerCase()));
+  const isAPIMachine = !!adapterTag;
 
   return (
     <Link href={`/machine/${machine.machine_id}`} className="block">
@@ -109,6 +113,11 @@ export function MachineCard({ machine, onClick, onDelete }: MachineCardProps) {
             <span className="font-semibold text-sm text-blox-text tracking-tight">
               {machine.hostname}
             </span>
+            {isAPIMachine && adapterTag && (
+              <span className="text-[9px] px-1.5 py-0.5 rounded-md bg-violet-500/10 text-violet-400 border border-violet-500/20 font-semibold uppercase tracking-wider">
+                {adapterTag.trim()}
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-2">
             <StatusBadge status={status} reason={reason} />
