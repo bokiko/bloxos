@@ -113,10 +113,11 @@ export default function SetupPage() {
         throw new Error(setupData?.error || `Setup failed (${setupRes.status})`);
       }
 
-      setCreatedUsername(setupData?.username || trimmedUsername);
+      const loginUsername = setupData?.username || trimmedUsername;
+      setCreatedUsername(loginUsername);
       setSetupState("complete");
 
-      const loggedIn = await login(trimmedUsername, password);
+      const loggedIn = await login(loginUsername, password);
       if (loggedIn) {
         startNavigation(() => {
           router.replace("/");
