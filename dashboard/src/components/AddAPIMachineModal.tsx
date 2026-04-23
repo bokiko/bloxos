@@ -8,10 +8,10 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-
-const HUB_URL = process.env.NEXT_PUBLIC_HUB_URL || "http://localhost:4000";
+import { getAuthHeaders, HUB_URL } from "@/lib/session";
 
 type AdapterType = "proxmox" | "synology";
+type TlsMode = "system" | "custom_ca" | "insecure";
 
 interface AddAPIMachineModalProps {
   open: boolean;
@@ -29,6 +29,8 @@ export function AddAPIMachineModal({ open, onClose }: AddAPIMachineModalProps) {
   // Proxmox creds
   const [tokenId, setTokenId] = useState("");
   const [tokenSecret, setTokenSecret] = useState("");
+  const [tlsMode, setTlsMode] = useState<TlsMode>("system");
+  const [caCertPem, setCaCertPem] = useState("");
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -43,6 +45,8 @@ export function AddAPIMachineModal({ open, onClose }: AddAPIMachineModalProps) {
     setPassword("");
     setTokenId("");
     setTokenSecret("");
+    setTlsMode("system");
+    setCaCertPem("");
     setError(null);
     setSuccess(false);
   }, []);
@@ -71,16 +75,18 @@ export function AddAPIMachineModal({ open, onClose }: AddAPIMachineModalProps) {
       setError("Token ID and Token Secret are required for Proxmox.");
       return;
     }
+    if (tlsMode === "custom_ca" && !caCertPem.trim()) {
+      setError("Paste the CA certificate PEM or switch TLS mode.");
+      return;
+    }
 
     setLoading(true);
     setError(null);
 
     try {
-      const authToken = localStorage.getItem("bloxos_token");
-      const headers: Record<string, string> = {
+      const headers: Record<string, string> = getAuthHeaders({
         "Content-Type": "application/json",
-      };
-      if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
+      });
 
       const res = await fetch(`${HUB_URL}/api/api-machines`, {
         method: "POST",
@@ -90,6 +96,10 @@ export function AddAPIMachineModal({ open, onClose }: AddAPIMachineModalProps) {
           adapter_type: adapterType,
           base_url: baseUrl.trim(),
           auth_config: authConfig,
+          tls_config: {
+            mode: tlsMode,
+            ca_cert_pem: tlsMode === "custom_ca" ? caCertPem.trim() : "",
+          },
           poll_interval_secs: pollInterval,
         }),
       });
@@ -104,7 +114,7 @@ export function AddAPIMachineModal({ open, onClose }: AddAPIMachineModalProps) {
       setError(err instanceof Error ? err.message : "Failed to add machine.");
     }
     setLoading(false);
-  }, [name, adapterType, baseUrl, pollInterval, username, password, tokenId, tokenSecret]);
+  }, [name, adapterType, baseUrl, pollInterval, username, password, tokenId, tokenSecret, tlsMode, caCertPem]);
 
   const clampInterval = (v: number) => Math.max(30, Math.min(3600, v || 60));
 
@@ -256,6 +266,52 @@ export function AddAPIMachineModal({ open, onClose }: AddAPIMachineModalProps) {
                   </div>
                 )}
               </div>
+
+              <div>
+                <label className="text-[10px] text-blox-muted uppercase tracking-wider mb-1.5 block font-medium">
+                  TLS Trust
+                </label>
+                <div className="flex gap-2">
+                  {([
+                    { value: "system", label: "System" },
+                    { value: "custom_ca", label: "Custom CA" },
+                    { value: "insecure", label: "Insecure" },
+                  ] as const).map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => setTlsMode(option.value)}
+                      className={`flex-1 text-xs py-2 px-3 rounded-lg border transition-colors font-medium ${
+                        tlsMode === option.value
+                          ? "bg-blox-blue/10 text-blox-blue border-blox-blue/30"
+                          : "bg-blox-bg text-blox-muted border-blox-border hover:border-blox-muted/30"
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-1.5 text-[11px] text-blox-muted leading-relaxed">
+                  {tlsMode === "system" && "Use the hub's normal system trust store. Best for publicly trusted certs."}
+                  {tlsMode === "custom_ca" && "Paste the API endpoint's root or self-signed CA certificate PEM."}
+                  {tlsMode === "insecure" && "Temporary only. Skips TLS verification for this machine and logs a warning on every poll."}
+                </p>
+              </div>
+
+              {tlsMode === "custom_ca" && (
+                <div>
+                  <label className="text-[10px] text-blox-muted uppercase tracking-wider mb-1.5 block font-medium">
+                    CA Certificate PEM
+                  </label>
+                  <textarea
+                    rows={7}
+                    placeholder="-----BEGIN CERTIFICATE-----"
+                    value={caCertPem}
+                    onChange={(e) => setCaCertPem(e.target.value)}
+                    className="w-full rounded-lg border border-blox-border bg-blox-bg px-3 py-2 text-xs font-mono text-blox-text placeholder:text-blox-muted/50 outline-none focus:border-blox-blue/40"
+                  />
+                </div>
+              )}
 
               {/* Error */}
               {error && (
