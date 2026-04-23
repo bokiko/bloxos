@@ -3397,11 +3397,17 @@ type APIMachine struct {
 	AdapterType      string          `json:"adapter_type"`
 	BaseURL          string          `json:"base_url"`
 	AuthConfig       json.RawMessage `json:"auth_config"`
+	TLSConfig        json.RawMessage `json:"tls_config,omitempty"`
 	PollIntervalSecs int             `json:"poll_interval_secs"`
 	Enabled          bool            `json:"enabled"`
 	LastPollAt       *string         `json:"last_poll_at"`
 	LastError        *string         `json:"last_error"`
 	CreatedAt        string          `json:"created_at"`
+}
+
+type APITLSConfig struct {
+	Mode      string `json:"mode"`
+	CACertPEM string `json:"ca_cert_pem,omitempty"`
 }
 
 // apiPollerEntry tracks a running poller goroutine for an API machine.
@@ -3414,24 +3420,94 @@ var (
 	apiPollersMu sync.Mutex
 )
 
-func apiHTTPClient() (*http.Client, error) {
+func parseAPITLSConfig(raw json.RawMessage) (APITLSConfig, error) {
+	if len(bytes.TrimSpace(raw)) == 0 || string(bytes.TrimSpace(raw)) == "{}" || string(bytes.TrimSpace(raw)) == "null" {
+		return APITLSConfig{Mode: "system"}, nil
+	}
+
+	var cfg APITLSConfig
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return APITLSConfig{}, fmt.Errorf("invalid tls_config: %w", err)
+	}
+	if cfg.Mode == "" {
+		cfg.Mode = "system"
+	}
+	switch cfg.Mode {
+	case "system":
+		cfg.CACertPEM = ""
+	case "insecure":
+		cfg.CACertPEM = ""
+	case "custom_ca":
+		if strings.TrimSpace(cfg.CACertPEM) == "" {
+			return APITLSConfig{}, fmt.Errorf("tls_config.ca_cert_pem is required when mode is custom_ca")
+		}
+		pool := x509.NewCertPool()
+		if ok := pool.AppendCertsFromPEM([]byte(cfg.CACertPEM)); !ok {
+			return APITLSConfig{}, fmt.Errorf("tls_config.ca_cert_pem must contain a valid PEM certificate")
+		}
+	default:
+		return APITLSConfig{}, fmt.Errorf("tls_config.mode must be system, insecure, or custom_ca")
+	}
+	return cfg, nil
+}
+
+func validateAPITLSConfig(baseURL string, cfg APITLSConfig) error {
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return fmt.Errorf("base_url is not a valid URL")
+	}
+	if parsed.Scheme != "https" && cfg.Mode != "system" {
+		return fmt.Errorf("tls_config is only supported for https base_url values")
+	}
+	return nil
+}
+
+func marshalStoredAPITLSConfig(cfg APITLSConfig) (string, error) {
+	if cfg.Mode == "" {
+		cfg.Mode = "system"
+	}
+	b, err := json.Marshal(cfg)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func redactAPITLSConfig(raw string) json.RawMessage {
+	cfg, err := parseAPITLSConfig(json.RawMessage(raw))
+	if err != nil {
+		return json.RawMessage(`"[REDACTED]"`)
+	}
+	redacted := map[string]interface{}{
+		"mode":          cfg.Mode,
+		"has_custom_ca": cfg.Mode == "custom_ca",
+	}
+	b, err := json.Marshal(redacted)
+	if err != nil {
+		return json.RawMessage(`"[REDACTED]"`)
+	}
+	return json.RawMessage(b)
+}
+
+func apiHTTPClient(baseURL string, tlsConfigRaw json.RawMessage) (*http.Client, error) {
 	transport := &http.Transport{}
 	tlsConfig := &tls.Config{}
+	cfg, err := parseAPITLSConfig(tlsConfigRaw)
+	if err != nil {
+		return nil, err
+	}
 
-	if os.Getenv("BLOXOS_API_TLS_INSECURE") == "1" {
+	switch cfg.Mode {
+	case "insecure":
 		tlsConfig.InsecureSkipVerify = true
-		log.Printf("WARNING: BLOXOS_API_TLS_INSECURE=1 disables TLS verification for API-polled machines")
-	} else if caPath := os.Getenv("BLOXOS_API_CA_CERT"); caPath != "" {
+		log.Printf("WARNING: api machine %s is using insecure TLS polling", baseURL)
+	case "custom_ca":
 		pool, err := x509.SystemCertPool()
 		if err != nil || pool == nil {
 			pool = x509.NewCertPool()
 		}
-		caPEM, err := os.ReadFile(caPath)
-		if err != nil {
-			return nil, fmt.Errorf("read BLOXOS_API_CA_CERT %s: %w", caPath, err)
-		}
-		if ok := pool.AppendCertsFromPEM(caPEM); !ok {
-			return nil, fmt.Errorf("parse BLOXOS_API_CA_CERT %s: no certificates found", caPath)
+		if ok := pool.AppendCertsFromPEM([]byte(cfg.CACertPEM)); !ok {
+			return nil, fmt.Errorf("parse tls_config.ca_cert_pem: no certificates found")
 		}
 		tlsConfig.RootCAs = pool
 	}
@@ -3445,9 +3521,9 @@ func apiHTTPClient() (*http.Client, error) {
 
 // --- Proxmox Adapter ---
 
-func pollProxmox(baseURL string, authConfig json.RawMessage) (*APIPollResult, error) {
+func pollProxmox(baseURL string, authConfig json.RawMessage, tlsConfig json.RawMessage) (*APIPollResult, error) {
 	baseURL = strings.TrimRight(baseURL, "/")
-	client, err := apiHTTPClient()
+	client, err := apiHTTPClient(baseURL, tlsConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -3558,9 +3634,9 @@ func pollProxmox(baseURL string, authConfig json.RawMessage) (*APIPollResult, er
 
 // --- Synology Adapter ---
 
-func pollSynology(baseURL string, authConfig json.RawMessage) (*APIPollResult, error) {
+func pollSynology(baseURL string, authConfig json.RawMessage, tlsConfig json.RawMessage) (*APIPollResult, error) {
 	baseURL = strings.TrimRight(baseURL, "/")
-	client, err := apiHTTPClient()
+	client, err := apiHTTPClient(baseURL, tlsConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -3726,7 +3802,7 @@ func validateBaseURL(rawURL string) error {
 // --- API Machine Handlers ---
 
 func handleListAPIMachines(c echo.Context) error {
-	rows, err := db.Query(`SELECT id, name, adapter_type, base_url, auth_config, poll_interval_secs, enabled, last_poll_at, last_error, created_at FROM api_machines ORDER BY name`)
+	rows, err := db.Query(`SELECT id, name, adapter_type, base_url, auth_config, tls_config, poll_interval_secs, enabled, last_poll_at, last_error, created_at FROM api_machines ORDER BY name`)
 	if err != nil {
 		log.Printf("api machines: list query error: %v", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal error"})
@@ -3736,13 +3812,14 @@ func handleListAPIMachines(c echo.Context) error {
 	var machines []APIMachine
 	for rows.Next() {
 		var m APIMachine
-		var authCfg string
-		if err := rows.Scan(&m.ID, &m.Name, &m.AdapterType, &m.BaseURL, &authCfg, &m.PollIntervalSecs, &m.Enabled, &m.LastPollAt, &m.LastError, &m.CreatedAt); err != nil {
+		var authCfg, tlsCfg string
+		if err := rows.Scan(&m.ID, &m.Name, &m.AdapterType, &m.BaseURL, &authCfg, &tlsCfg, &m.PollIntervalSecs, &m.Enabled, &m.LastPollAt, &m.LastError, &m.CreatedAt); err != nil {
 			log.Printf("api machines: list scan error: %v", err)
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		}
 		// Redact auth_config — never expose credentials to the dashboard
 		m.AuthConfig = json.RawMessage(`"[REDACTED]"`)
+		m.TLSConfig = redactAPITLSConfig(tlsCfg)
 		machines = append(machines, m)
 	}
 	if machines == nil {
@@ -3762,6 +3839,7 @@ func handleCreateAPIMachine(c echo.Context) error {
 		AdapterType      string          `json:"adapter_type"`
 		BaseURL          string          `json:"base_url"`
 		AuthConfig       json.RawMessage `json:"auth_config"`
+		TLSConfig        json.RawMessage `json:"tls_config"`
 		PollIntervalSecs int             `json:"poll_interval_secs"`
 	}
 	if err := c.Bind(&body); err != nil {
@@ -3779,6 +3857,13 @@ func handleCreateAPIMachine(c echo.Context) error {
 	}
 	if len(body.AuthConfig) == 0 {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "auth_config is required"})
+	}
+	tlsCfg, err := parseAPITLSConfig(body.TLSConfig)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+	if err := validateAPITLSConfig(body.BaseURL, tlsCfg); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
 	if body.PollIntervalSecs < 30 {
 		body.PollIntervalSecs = 30
@@ -3798,8 +3883,13 @@ func handleCreateAPIMachine(c echo.Context) error {
 	}
 
 	id := uuid.New().String()
-	_, err := db.Exec(`INSERT INTO api_machines (id, name, adapter_type, base_url, auth_config, poll_interval_secs) VALUES (?, ?, ?, ?, ?, ?)`,
-		id, body.Name, body.AdapterType, body.BaseURL, string(body.AuthConfig), body.PollIntervalSecs)
+	storedTLSCfg, err := marshalStoredAPITLSConfig(tlsCfg)
+	if err != nil {
+		log.Printf("api machines: tls config marshal error: %v", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal error"})
+	}
+	_, err = db.Exec(`INSERT INTO api_machines (id, name, adapter_type, base_url, auth_config, tls_config, poll_interval_secs) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		id, body.Name, body.AdapterType, body.BaseURL, string(body.AuthConfig), storedTLSCfg, body.PollIntervalSecs)
 	if err != nil {
 		log.Printf("api machines: create insert error: %v", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal error"})
@@ -3808,13 +3898,14 @@ func handleCreateAPIMachine(c echo.Context) error {
 	log.Printf("api machine created: %s (%s, %s)", body.Name, body.AdapterType, id)
 
 	// Start poller for the new machine.
-	startAPIPoller(id, body.Name, body.AdapterType, body.BaseURL, body.AuthConfig, body.PollIntervalSecs)
+	startAPIPoller(id, body.Name, body.AdapterType, body.BaseURL, body.AuthConfig, json.RawMessage(storedTLSCfg), body.PollIntervalSecs)
 
 	return c.JSON(http.StatusCreated, map[string]interface{}{
 		"id":                 id,
 		"name":               body.Name,
 		"adapter_type":       body.AdapterType,
 		"base_url":           body.BaseURL,
+		"tls_config":         redactAPITLSConfig(storedTLSCfg),
 		"poll_interval_secs": body.PollIntervalSecs,
 	})
 }
@@ -3861,14 +3952,15 @@ func handleForceAPIPoll(c echo.Context) error {
 		AdapterType string `json:"adapter_type"`
 		BaseURL     string `json:"base_url"`
 		AuthConfig  string `json:"auth_config"`
+		TLSConfig   string `json:"tls_config"`
 	}
-	err := db.QueryRow("SELECT name, adapter_type, base_url, auth_config FROM api_machines WHERE id = ?", id).
-		Scan(&m.Name, &m.AdapterType, &m.BaseURL, &m.AuthConfig)
+	err := db.QueryRow("SELECT name, adapter_type, base_url, auth_config, tls_config FROM api_machines WHERE id = ?", id).
+		Scan(&m.Name, &m.AdapterType, &m.BaseURL, &m.AuthConfig, &m.TLSConfig)
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "api machine not found"})
 	}
 
-	result, pollErr := doPoll(m.AdapterType, m.BaseURL, json.RawMessage(m.AuthConfig))
+	result, pollErr := doPoll(m.AdapterType, m.BaseURL, json.RawMessage(m.AuthConfig), json.RawMessage(m.TLSConfig))
 	if pollErr != nil {
 		db.Exec("UPDATE api_machines SET last_error = ?, last_poll_at = CURRENT_TIMESTAMP WHERE id = ?", pollErr.Error(), id)
 		return c.JSON(http.StatusBadGateway, map[string]string{"error": pollErr.Error()})
@@ -3889,12 +3981,12 @@ func handleForceAPIPoll(c echo.Context) error {
 }
 
 // doPoll dispatches to the correct adapter.
-func doPoll(adapterType, baseURL string, authConfig json.RawMessage) (*APIPollResult, error) {
+func doPoll(adapterType, baseURL string, authConfig json.RawMessage, tlsConfig json.RawMessage) (*APIPollResult, error) {
 	switch adapterType {
 	case "proxmox":
-		return pollProxmox(baseURL, authConfig)
+		return pollProxmox(baseURL, authConfig, tlsConfig)
 	case "synology":
-		return pollSynology(baseURL, authConfig)
+		return pollSynology(baseURL, authConfig, tlsConfig)
 	default:
 		return nil, fmt.Errorf("unknown adapter type: %s", adapterType)
 	}
@@ -3976,7 +4068,7 @@ func storeAPIPollResult(apiMachineID, name, adapterType string, result *APIPollR
 // --- Background Poller ---
 
 func startAPIPollers() {
-	rows, err := db.Query("SELECT id, name, adapter_type, base_url, auth_config, poll_interval_secs FROM api_machines WHERE enabled = TRUE")
+	rows, err := db.Query("SELECT id, name, adapter_type, base_url, auth_config, tls_config, poll_interval_secs FROM api_machines WHERE enabled = TRUE")
 	if err != nil {
 		log.Printf("failed to load api_machines: %v", err)
 		return
@@ -3985,13 +4077,13 @@ func startAPIPollers() {
 
 	count := 0
 	for rows.Next() {
-		var id, name, adapterType, baseURL, authConfig string
+		var id, name, adapterType, baseURL, authConfig, tlsConfig string
 		var pollInterval int
-		if err := rows.Scan(&id, &name, &adapterType, &baseURL, &authConfig, &pollInterval); err != nil {
+		if err := rows.Scan(&id, &name, &adapterType, &baseURL, &authConfig, &tlsConfig, &pollInterval); err != nil {
 			log.Printf("failed to scan api_machine: %v", err)
 			continue
 		}
-		startAPIPoller(id, name, adapterType, baseURL, json.RawMessage(authConfig), pollInterval)
+		startAPIPoller(id, name, adapterType, baseURL, json.RawMessage(authConfig), json.RawMessage(tlsConfig), pollInterval)
 		count++
 	}
 	if count > 0 {
@@ -3999,7 +4091,7 @@ func startAPIPollers() {
 	}
 }
 
-func startAPIPoller(id, name, adapterType, baseURL string, authConfig json.RawMessage, intervalSecs int) {
+func startAPIPoller(id, name, adapterType, baseURL string, authConfig json.RawMessage, tlsConfig json.RawMessage, intervalSecs int) {
 	apiPollersMu.Lock()
 	defer apiPollersMu.Unlock()
 
@@ -4022,7 +4114,7 @@ func startAPIPoller(id, name, adapterType, baseURL string, authConfig json.RawMe
 			default:
 			}
 
-			result, err := doPoll(adapterType, baseURL, authConfig)
+			result, err := doPoll(adapterType, baseURL, authConfig, tlsConfig)
 			if err != nil {
 				log.Printf("api poll error: %s (%s): %v", name, adapterType, err)
 				db.Exec("UPDATE api_machines SET last_error = ?, last_poll_at = CURRENT_TIMESTAMP WHERE id = ?", err.Error(), id)
