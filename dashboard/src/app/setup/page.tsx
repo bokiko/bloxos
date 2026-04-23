@@ -32,12 +32,11 @@ export default function SetupPage() {
     if (isAuthenticated) {
       router.replace("/");
     }
-  }, [isAuthenticated, router, setupCheckNonce]);
+  }, [isAuthenticated, router]);
 
   useEffect(() => {
     let active = true;
     const checkSetup = async () => {
-      if (!active) return;
       setSetupState("checking");
       setError("");
       try {
@@ -65,7 +64,7 @@ export default function SetupPage() {
     return () => {
       active = false;
     };
-  }, [isAuthenticated, router]);
+  }, [isAuthenticated, router, setupCheckNonce]);
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
