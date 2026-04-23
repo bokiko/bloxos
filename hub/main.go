@@ -3409,15 +3409,17 @@ func pollSynology(baseURL string, authConfig json.RawMessage) (*APIPollResult, e
 		Success bool `json:"success"`
 		Data    struct {
 			Volumes []struct {
-				TotalSize json.RawMessage `json:"total_size"`
-				UsedSize  json.RawMessage `json:"used_size"`
+				Size struct {
+					Total json.RawMessage `json:"total"`
+					Used  json.RawMessage `json:"used"`
+				} `json:"size"`
 			} `json:"volumes"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(storageResp.Body).Decode(&storageData); err == nil && storageData.Success {
 		for _, vol := range storageData.Data.Volumes {
-			total := parseJSONInt(vol.TotalSize)
-			used := parseJSONInt(vol.UsedSize)
+			total := parseJSONInt(vol.Size.Total)
+			used := parseJSONInt(vol.Size.Used)
 			result.DiskTotal += total
 			result.DiskUsed += used
 		}
