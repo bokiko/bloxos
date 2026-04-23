@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -76,6 +78,8 @@ func setupTestServer(t *testing.T) *echo.Echo {
 	e.GET("/health", handleHealth)
 	e.GET("/ws/agent", handleAgentWS)
 	e.POST("/api/auth/login", handleLogin)
+	e.GET("/install.sh", handleInstallScript)
+	e.GET("/download/ca.crt", handleDownloadCACert)
 	e.GET("/api/setup/status", handleSetupStatus)
 	e.POST("/api/setup", handleSetup)
 
@@ -353,6 +357,76 @@ func TestCreateTokenWithValidJWT(t *testing.T) {
 	}
 	if _, ok := resp["command"].(string); !ok {
 		t.Error("response missing 'command' field")
+	}
+}
+
+func TestCreateTokenIncludesCABootstrapForHTTPS(t *testing.T) {
+	e := setupTestServer(t)
+	token := loginAndGetToken(t, e)
+	markCredentialsRotated(t)
+
+	caDir := t.TempDir()
+	caPath := filepath.Join(caDir, "root.crt")
+	caPEM := []byte("-----BEGIN CERTIFICATE-----\nZmFrZS1ibG94b3MtY2E=\n-----END CERTIFICATE-----\n")
+	if err := os.WriteFile(caPath, caPEM, 0600); err != nil {
+		t.Fatalf("write CA cert: %v", err)
+	}
+
+	t.Setenv("PUBLIC_URL", "https://bloxos.example")
+	t.Setenv("BLOXOS_CA_CERT", caPath)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/tokens", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	command, _ := resp["command"].(string)
+	if !strings.Contains(command, "BLOXOS_CA_URL=https://bloxos.example/download/ca.crt") {
+		t.Fatalf("expected command to include CA URL, got %q", command)
+	}
+	if !strings.Contains(command, "BLOXOS_CA_SHA256=") {
+		t.Fatalf("expected command to include CA SHA256, got %q", command)
+	}
+	if !strings.Contains(command, "curl -fsSLk https://bloxos.example/install.sh | bash") {
+		t.Fatalf("expected HTTPS bootstrap command with curl -k, got %q", command)
+	}
+	if resp["ca_url"] != "https://bloxos.example/download/ca.crt" {
+		t.Fatalf("unexpected ca_url: %v", resp["ca_url"])
+	}
+	if _, ok := resp["ca_sha256"].(string); !ok {
+		t.Fatalf("response missing ca_sha256")
+	}
+}
+
+func TestDownloadCACert(t *testing.T) {
+	e := setupTestServer(t)
+
+	caDir := t.TempDir()
+	caPath := filepath.Join(caDir, "root.crt")
+	caPEM := []byte("-----BEGIN CERTIFICATE-----\nZmFrZS1ibG94b3MtY2E=\n-----END CERTIFICATE-----\n")
+	if err := os.WriteFile(caPath, caPEM, 0600); err != nil {
+		t.Fatalf("write CA cert: %v", err)
+	}
+	t.Setenv("BLOXOS_CA_CERT", caPath)
+
+	req := httptest.NewRequest(http.MethodGet, "/download/ca.crt", nil)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if rec.Body.String() != string(caPEM) {
+		t.Fatalf("unexpected CA body: %q", rec.Body.String())
 	}
 }
 
@@ -823,7 +897,6 @@ func TestSetupValidation_EmptyUsername(t *testing.T) {
 	}
 }
 
-
 // --- Enrollment Tests ---
 
 // wsDialAgent is a helper that upgrades to a WebSocket using the test server's agent endpoint.
@@ -1171,16 +1244,16 @@ func TestTerminalMaxConcurrentSessions(t *testing.T) {
 
 	// Pre-populate 3 terminal sessions in the in-memory map.
 	termSessionsMu.Lock()
-		for i := 0; i < 3; i++ {
-			sid := fmt.Sprintf("fake-session-%d", i)
-			termSessions[sid] = &TerminalSession{
-				ID:           sid,
-				MachineID:    "some-machine",
-				UserID:       "test-admin-id",
-				CreatedAt:    time.Now(),
-				LastActivity: time.Now(),
-			}
+	for i := 0; i < 3; i++ {
+		sid := fmt.Sprintf("fake-session-%d", i)
+		termSessions[sid] = &TerminalSession{
+			ID:           sid,
+			MachineID:    "some-machine",
+			UserID:       "test-admin-id",
+			CreatedAt:    time.Now(),
+			LastActivity: time.Now(),
 		}
+	}
 	termSessionsMu.Unlock()
 	defer func() {
 		termSessionsMu.Lock()
@@ -1208,7 +1281,6 @@ func TestTerminalMaxConcurrentSessions(t *testing.T) {
 		t.Errorf("unexpected error message: %s", resp["error"])
 	}
 }
-
 
 // TestTerminalAuditFields verifies source_ip and user_id are stored in the terminal_sessions table.
 func TestTerminalAuditFields(t *testing.T) {
@@ -1286,7 +1358,6 @@ func TestTerminalAuditFields(t *testing.T) {
 	}
 	termSessionsMu.Unlock()
 }
-
 
 // --- API Machine Tests ---
 

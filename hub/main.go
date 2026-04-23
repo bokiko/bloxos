@@ -3,9 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	cryptoRand "crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -16,6 +17,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -282,6 +284,7 @@ func main() {
 	e.POST("/api/auth/login", handleLogin)
 	e.GET("/install.sh", handleInstallScript)
 	e.GET("/download/agent", handleDownloadAgent)
+	e.GET("/download/ca.crt", handleDownloadCACert)
 	e.GET("/api/setup/status", handleSetupStatus)
 	e.POST("/api/setup", handleSetup)
 
@@ -638,7 +641,6 @@ func jwtMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 	}
 }
 
-
 // rotationAllowlist contains paths that work even when credential rotation is incomplete.
 var rotationAllowlist = map[string]bool{
 	"/api/auth/login":           true,
@@ -708,6 +710,7 @@ func credentialRotationMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 		return next(c)
 	}
 }
+
 // --- Cleanup ---
 
 func cleanupLoop() {
@@ -1368,30 +1371,19 @@ func handleCreateToken(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
-	// Use PUBLIC_URL if set, otherwise derive from request headers.
-	publicURL := os.Getenv("PUBLIC_URL")
-	var httpBase, wsBase string
-	if publicURL != "" {
-		httpBase = publicURL
-		wsBase = strings.Replace(publicURL, "https://", "wss://", 1)
-		wsBase = strings.Replace(wsBase, "http://", "ws://", 1)
-	} else {
-		host := c.Request().Host
-		proto := "ws"
-		httpProto := "http"
-		if c.Request().TLS != nil {
-			proto = "wss"
-			httpProto = "https"
-		}
-		httpBase = fmt.Sprintf("%s://%s", httpProto, host)
-		wsBase = fmt.Sprintf("%s://%s", proto, host)
-	}
+	httpBase, wsBase := publicAndWebsocketBase(c)
+	command, caURL, caSHA256 := buildInstallCommand(httpBase, wsBase, token)
 
-	return c.JSON(http.StatusOK, map[string]interface{}{
+	resp := map[string]interface{}{
 		"token":      token,
 		"expires_at": expiresAt.Format(time.RFC3339),
-		"command":    fmt.Sprintf("export BLOXOS_HUB=%s BLOXOS_TOKEN=%s; curl -sk %s/install.sh | bash", wsBase, token, httpBase),
-	})
+		"command":    command,
+	}
+	if caURL != "" {
+		resp["ca_url"] = caURL
+		resp["ca_sha256"] = caSHA256
+	}
+	return c.JSON(http.StatusOK, resp)
 }
 
 func handleInstallScript(c echo.Context) error {
@@ -1411,13 +1403,62 @@ esac
 HUB="${BLOXOS_HUB:?BLOXOS_HUB must be set}"
 TOKEN="${BLOXOS_TOKEN:?BLOXOS_TOKEN must be set}"
 HUB_HTTP=$(echo "$HUB" | sed 's|^ws://|http://|; s|^wss://|https://|')
+CA_URL="${BLOXOS_CA_URL:-}"
+CA_SHA256="${BLOXOS_CA_SHA256:-}"
+
+curl_fetch() {
+  local url="$1"
+  shift
+  if [[ "$url" == https://* ]]; then
+    curl --proto '=https' --tlsv1.2 -fsSL "$@" "$url"
+  else
+    curl -fsSL "$@" "$url"
+  fi
+}
+
+curl_fetch_bootstrap() {
+  local url="$1"
+  shift
+  if [[ "$url" == https://* ]]; then
+    curl --proto '=https' --tlsv1.2 -fsSLk "$@" "$url"
+  else
+    curl -fsSL "$@" "$url"
+  fi
+}
 
 echo "Hub: $HUB_HTTP"
 echo "Arch: $ARCH"
 
+CA_CURL_ARGS=()
+AGENT_CA_ENV=""
+
+if [[ -n "$CA_URL" ]]; then
+  if [[ -z "$CA_SHA256" ]]; then
+    echo "BLOXOS_CA_SHA256 must be set when BLOXOS_CA_URL is provided"
+    exit 1
+  fi
+
+  echo "Bootstrapping trusted CA..."
+  TMP_CA=$(mktemp)
+  trap 'rm -f "$TMP_CA"' EXIT
+  curl_fetch_bootstrap "$CA_URL" -o "$TMP_CA"
+  ACTUAL_CA_SHA=$(sha256sum "$TMP_CA" | awk '{print $1}')
+  if [[ "$ACTUAL_CA_SHA" != "$CA_SHA256" ]]; then
+    echo "CA fingerprint mismatch"
+    echo "Expected: $CA_SHA256"
+    echo "Actual:   $ACTUAL_CA_SHA"
+    exit 1
+  fi
+
+  sudo mkdir -p /etc/bloxos
+  sudo install -m 0644 "$TMP_CA" /etc/bloxos/ca.crt
+  CA_CURL_ARGS+=(--cacert /etc/bloxos/ca.crt)
+  AGENT_CA_ENV='Environment="BLOXOS_CA_CERT=/etc/bloxos/ca.crt"'
+fi
+
 # Download agent binary.
 echo "Downloading agent binary..."
-curl -fsSLk -o /tmp/bloxos-agent "${HUB_HTTP}/download/agent?arch=${ARCH}"
+curl_fetch "${HUB_HTTP}/download/agent?arch=${ARCH}" "${CA_CURL_ARGS[@]}" -o /tmp/bloxos-agent
 chmod +x /tmp/bloxos-agent
 
 # Create system user (if not exists).
@@ -1446,6 +1487,7 @@ Type=simple
 User=root
 Environment="BLOXOS_HUB=${HUB}"
 Environment="BLOXOS_TOKEN=${TOKEN}"
+${AGENT_CA_ENV}
 ExecStart=/usr/local/bin/bloxos-agent
 Restart=always
 RestartSec=5
@@ -1463,6 +1505,80 @@ echo "=== BloxOS Agent installed and running ==="
 echo "Check status: systemctl status bloxos-agent"
 `
 	return c.String(http.StatusOK, script)
+}
+
+func publicAndWebsocketBase(c echo.Context) (string, string) {
+	publicURL := os.Getenv("PUBLIC_URL")
+	if publicURL != "" {
+		httpBase := publicURL
+		wsBase := strings.Replace(publicURL, "https://", "wss://", 1)
+		wsBase = strings.Replace(wsBase, "http://", "ws://", 1)
+		return httpBase, wsBase
+	}
+
+	host := c.Request().Host
+	proto := "ws"
+	httpProto := "http"
+	if c.Request().TLS != nil {
+		proto = "wss"
+		httpProto = "https"
+	}
+	return fmt.Sprintf("%s://%s", httpProto, host), fmt.Sprintf("%s://%s", proto, host)
+}
+
+func bootstrapCACertCandidates() []string {
+	candidates := []string{}
+	if env := os.Getenv("BLOXOS_CA_CERT"); env != "" {
+		candidates = append(candidates, env)
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		candidates = append(candidates, filepath.Join(home, ".local", "share", "caddy", "pki", "authorities", "local", "root.crt"))
+	}
+	candidates = append(candidates,
+		"/var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt",
+		"/var/lib/caddy/pki/authorities/local/root.crt",
+		"/root/.local/share/caddy/pki/authorities/local/root.crt",
+	)
+	return candidates
+}
+
+func loadBootstrapCACert() ([]byte, string, error) {
+	for _, path := range bootstrapCACertCandidates() {
+		if path == "" {
+			continue
+		}
+		data, err := os.ReadFile(path)
+		if err == nil {
+			return data, path, nil
+		}
+		if os.IsNotExist(err) {
+			continue
+		}
+		return nil, "", fmt.Errorf("read CA cert %s: %w", path, err)
+	}
+	return nil, "", os.ErrNotExist
+}
+
+func buildInstallCommand(httpBase, wsBase, token string) (command string, caURL string, caSHA256 string) {
+	curlFlags := "-fsSL"
+	if strings.HasPrefix(httpBase, "https://") {
+		if caPEM, caPath, err := loadBootstrapCACert(); err == nil {
+			caURL = httpBase + "/download/ca.crt"
+			sum := sha256.Sum256(caPEM)
+			caSHA256 = hex.EncodeToString(sum[:])
+			curlFlags = "-fsSLk"
+			log.Printf("install bootstrap: using CA cert %s", caPath)
+		} else if !os.IsNotExist(err) {
+			log.Printf("WARNING: install bootstrap CA unavailable: %v", err)
+		}
+	}
+
+	command = fmt.Sprintf("export BLOXOS_HUB=%s BLOXOS_TOKEN=%s", wsBase, token)
+	if caURL != "" {
+		command += fmt.Sprintf(" BLOXOS_CA_URL=%s BLOXOS_CA_SHA256=%s", caURL, caSHA256)
+	}
+	command += fmt.Sprintf("; curl %s %s/install.sh | bash", curlFlags, httpBase)
+	return command, caURL, caSHA256
 }
 
 func handleDownloadAgent(c echo.Context) error {
@@ -1492,6 +1608,17 @@ func handleDownloadAgent(c echo.Context) error {
 		log.Printf("agent download: arch=%s (serving default binary)", arch)
 	}
 	return c.File(binaryPath)
+}
+
+func handleDownloadCACert(c echo.Context) error {
+	caPEM, _, err := loadBootstrapCACert()
+	if err != nil {
+		if os.IsNotExist(err) {
+			return c.JSON(http.StatusNotFound, map[string]string{"error": "CA certificate not configured; set BLOXOS_CA_CERT"})
+		}
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	return c.Blob(http.StatusOK, "application/x-pem-file", caPEM)
 }
 
 // --- Existing Handlers ---
@@ -1621,56 +1748,56 @@ func handleAgentWS(c echo.Context) error {
 			continue
 		}
 
-			switch envelope.Type {
-			case "metrics", "":
-				var m AgentMetrics
-				if err := json.Unmarshal(msg, &m); err != nil {
-					log.Printf("invalid metrics JSON: %v", err)
-					continue
+		switch envelope.Type {
+		case "metrics", "":
+			var m AgentMetrics
+			if err := json.Unmarshal(msg, &m); err != nil {
+				log.Printf("invalid metrics JSON: %v", err)
+				continue
+			}
+			if machineID == "" {
+				machineID = m.MachineID
+				if secretMachineID != "" && machineID != secretMachineID {
+					log.Printf("rejecting agent: claimed machine_id %s does not match credential for %s", machineID, secretMachineID)
+					ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","message":"machine_id does not match credential"}`))
+					return nil
 				}
-				if machineID == "" {
-					machineID = m.MachineID
-					if secretMachineID != "" && machineID != secretMachineID {
-						log.Printf("rejecting agent: claimed machine_id %s does not match credential for %s", machineID, secretMachineID)
-						ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","message":"machine_id does not match credential"}`))
+
+				// Check if this machine_id already exists (reconnecting agent).
+				var existingID string
+				knownMachine := db.QueryRow(`SELECT id FROM machines WHERE id = ?`, machineID).Scan(&existingID) == nil
+				hasCredential := machineHasCredential(machineID)
+
+				if knownMachine && secretMachineID == machineID {
+					log.Printf("known agent reconnecting with durable credential: %s (%s)", m.Hostname, machineID)
+				} else if tokenValidated {
+					// New enrollment with valid token - consume it and issue durable secret.
+					rawSecret, secretHash, err := generateAgentSecret()
+					if err != nil {
+						log.Printf("failed to generate agent secret: %v", err)
+						ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","message":"enrollment failed"}`))
 						return nil
 					}
-
-					// Check if this machine_id already exists (reconnecting agent).
-					var existingID string
-					knownMachine := db.QueryRow(`SELECT id FROM machines WHERE id = ?`, machineID).Scan(&existingID) == nil
-					hasCredential := machineHasCredential(machineID)
-
-					if knownMachine && secretMachineID == machineID {
-						log.Printf("known agent reconnecting with durable credential: %s (%s)", m.Hostname, machineID)
-					} else if tokenValidated {
-						// New enrollment with valid token - consume it and issue durable secret.
-						rawSecret, secretHash, err := generateAgentSecret()
-						if err != nil {
-							log.Printf("failed to generate agent secret: %v", err)
-							ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","message":"enrollment failed"}`))
-							return nil
-						}
-						if err := consumeTokenAndStoreCredential(tokenHash, machineID, secretHash); err != nil {
-							log.Printf("failed to store agent credential: %v", err)
-							ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","message":"enrollment failed"}`))
-							return nil
-						}
-						enrolledMsg, _ := json.Marshal(map[string]string{
+					if err := consumeTokenAndStoreCredential(tokenHash, machineID, secretHash); err != nil {
+						log.Printf("failed to store agent credential: %v", err)
+						ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","message":"enrollment failed"}`))
+						return nil
+					}
+					enrolledMsg, _ := json.Marshal(map[string]string{
 						"type":         "enrolled",
 						"agent_secret": rawSecret,
-						})
-						ws.WriteMessage(websocket.TextMessage, enrolledMsg)
-						log.Printf("new agent enrolled with durable secret: %s (%s)", m.Hostname, machineID)
-					} else if knownMachine || hasCredential {
-						log.Printf("rejecting known agent %s (%s): durable credential required", m.Hostname, machineID)
-						ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","message":"durable credential required"}`))
-						return nil
-					} else {
-						log.Printf("rejecting unknown agent %s (%s): no valid token", m.Hostname, machineID)
-						ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","message":"invalid or used token"}`))
-						return nil
-					}
+					})
+					ws.WriteMessage(websocket.TextMessage, enrolledMsg)
+					log.Printf("new agent enrolled with durable secret: %s (%s)", m.Hostname, machineID)
+				} else if knownMachine || hasCredential {
+					log.Printf("rejecting known agent %s (%s): durable credential required", m.Hostname, machineID)
+					ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","message":"durable credential required"}`))
+					return nil
+				} else {
+					log.Printf("rejecting unknown agent %s (%s): no valid token", m.Hostname, machineID)
+					ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","message":"invalid or used token"}`))
+					return nil
+				}
 
 				agent.MachineID = machineID
 				agentsMu.Lock()
@@ -1932,7 +2059,7 @@ func handleStartTerminal(c echo.Context) error {
 
 	log.Printf("terminal session %s created for machine %s", sessionID, machineID)
 	return c.JSON(http.StatusOK, map[string]string{
-		"session_id":   sessionID,
+		"session_id":    sessionID,
 		"browser_token": browserToken,
 	})
 }
@@ -2031,23 +2158,23 @@ func handleTerminalWS(c echo.Context) error {
 	}
 
 	// Use origin-checking upgrader for terminal WebSocket (Finding #4).
-		termUpgrader := websocket.Upgrader{
-			CheckOrigin: func(r *http.Request) bool {
-				origin := r.Header.Get("Origin")
-				if origin == "" {
-					return true // agent connections have no origin
-				}
-				for _, allowed := range configuredAllowedOrigins() {
-					if origin == allowed {
-						return true
-					}
-				}
-				if parsedOrigin, err := url.Parse(origin); err == nil && parsedOrigin.Host == r.Host {
+	termUpgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool {
+			origin := r.Header.Get("Origin")
+			if origin == "" {
+				return true // agent connections have no origin
+			}
+			for _, allowed := range configuredAllowedOrigins() {
+				if origin == allowed {
 					return true
 				}
-				log.Printf("terminal WS: rejected origin %s", origin)
-				return false
-			},
+			}
+			if parsedOrigin, err := url.Parse(origin); err == nil && parsedOrigin.Host == r.Host {
+				return true
+			}
+			log.Printf("terminal WS: rejected origin %s", origin)
+			return false
+		},
 	}
 	ws, err := termUpgrader.Upgrade(c.Response(), c.Request(), nil)
 	if err != nil {
@@ -2404,19 +2531,6 @@ func handleSSE(c echo.Context) error {
 			return nil
 		}
 	}
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 }
 
@@ -3180,7 +3294,6 @@ func (t *tokenRedactingWriter) Write(p []byte) (n int, err error) {
 	return t.w.Write([]byte(s))
 }
 
-
 // RateLimiter provides simple in-memory per-IP rate limiting.
 type RateLimiter struct {
 	mu       sync.Mutex
@@ -3301,18 +3414,43 @@ var (
 	apiPollersMu sync.Mutex
 )
 
-// insecureHTTPClient is used for polling self-signed internal APIs.
-var insecureHTTPClient = &http.Client{
-	Timeout: 30 * time.Second,
-	Transport: &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	},
+func apiHTTPClient() (*http.Client, error) {
+	transport := &http.Transport{}
+	tlsConfig := &tls.Config{}
+
+	if os.Getenv("BLOXOS_API_TLS_INSECURE") == "1" {
+		tlsConfig.InsecureSkipVerify = true
+		log.Printf("WARNING: BLOXOS_API_TLS_INSECURE=1 disables TLS verification for API-polled machines")
+	} else if caPath := os.Getenv("BLOXOS_API_CA_CERT"); caPath != "" {
+		pool, err := x509.SystemCertPool()
+		if err != nil || pool == nil {
+			pool = x509.NewCertPool()
+		}
+		caPEM, err := os.ReadFile(caPath)
+		if err != nil {
+			return nil, fmt.Errorf("read BLOXOS_API_CA_CERT %s: %w", caPath, err)
+		}
+		if ok := pool.AppendCertsFromPEM(caPEM); !ok {
+			return nil, fmt.Errorf("parse BLOXOS_API_CA_CERT %s: no certificates found", caPath)
+		}
+		tlsConfig.RootCAs = pool
+	}
+
+	transport.TLSClientConfig = tlsConfig
+	return &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: transport,
+	}, nil
 }
 
 // --- Proxmox Adapter ---
 
 func pollProxmox(baseURL string, authConfig json.RawMessage) (*APIPollResult, error) {
 	baseURL = strings.TrimRight(baseURL, "/")
+	client, err := apiHTTPClient()
+	if err != nil {
+		return nil, err
+	}
 	var auth struct {
 		TokenID     string `json:"token_id"`
 		TokenSecret string `json:"token_secret"`
@@ -3332,7 +3470,7 @@ func pollProxmox(baseURL string, authConfig json.RawMessage) (*APIPollResult, er
 		return nil, fmt.Errorf("create nodes request: %w", err)
 	}
 	nodesReq.Header.Set("Authorization", authHeader)
-	nodesResp, err := insecureHTTPClient.Do(nodesReq)
+	nodesResp, err := client.Do(nodesReq)
 	if err != nil {
 		return nil, fmt.Errorf("proxmox nodes request: %w", err)
 	}
@@ -3344,14 +3482,14 @@ func pollProxmox(baseURL string, authConfig json.RawMessage) (*APIPollResult, er
 
 	var nodesData struct {
 		Data []struct {
-			Node   string  `json:"node"`
-			Status string  `json:"status"`
-			CPU    float64 `json:"cpu"`
-			Mem    int64   `json:"mem"`
-			MaxMem int64   `json:"maxmem"`
-			Disk   int64   `json:"disk"`
-			MaxDisk int64  `json:"maxdisk"`
-			Uptime int64   `json:"uptime"`
+			Node    string  `json:"node"`
+			Status  string  `json:"status"`
+			CPU     float64 `json:"cpu"`
+			Mem     int64   `json:"mem"`
+			MaxMem  int64   `json:"maxmem"`
+			Disk    int64   `json:"disk"`
+			MaxDisk int64   `json:"maxdisk"`
+			Uptime  int64   `json:"uptime"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(nodesResp.Body).Decode(&nodesData); err != nil {
@@ -3383,7 +3521,7 @@ func pollProxmox(baseURL string, authConfig json.RawMessage) (*APIPollResult, er
 		return nil, fmt.Errorf("create resources request: %w", err)
 	}
 	resReq.Header.Set("Authorization", authHeader)
-	resResp, err := insecureHTTPClient.Do(resReq)
+	resResp, err := client.Do(resReq)
 	if err != nil {
 		// Non-fatal: we have node data at least.
 		log.Printf("proxmox resources request failed (non-fatal): %v", err)
@@ -3422,6 +3560,10 @@ func pollProxmox(baseURL string, authConfig json.RawMessage) (*APIPollResult, er
 
 func pollSynology(baseURL string, authConfig json.RawMessage) (*APIPollResult, error) {
 	baseURL = strings.TrimRight(baseURL, "/")
+	client, err := apiHTTPClient()
+	if err != nil {
+		return nil, err
+	}
 	var auth struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -3435,7 +3577,7 @@ func pollSynology(baseURL string, authConfig json.RawMessage) (*APIPollResult, e
 
 	// Login — use POST to avoid credentials in URL/logs
 	loginURL := baseURL + "/webapi/auth.cgi"
-	loginResp, err := insecureHTTPClient.PostForm(loginURL, url.Values{
+	loginResp, err := client.PostForm(loginURL, url.Values{
 		"api":     {"SYNO.API.Auth"},
 		"version": {"6"},
 		"method":  {"login"},
@@ -3465,7 +3607,7 @@ func pollSynology(baseURL string, authConfig json.RawMessage) (*APIPollResult, e
 	// Ensure logout
 	defer func() {
 		logoutURL := fmt.Sprintf("%s/webapi/entry.cgi?api=SYNO.API.Auth&version=6&method=logout&_sid=%s", baseURL, sid)
-		resp, err := insecureHTTPClient.Get(logoutURL)
+		resp, err := client.Get(logoutURL)
 		if err == nil {
 			resp.Body.Close()
 		}
@@ -3475,7 +3617,7 @@ func pollSynology(baseURL string, authConfig json.RawMessage) (*APIPollResult, e
 
 	// System utilization
 	utilURL := fmt.Sprintf("%s/webapi/entry.cgi?api=SYNO.Core.System.Utilization&version=1&method=get&_sid=%s", baseURL, sid)
-	utilResp, err := insecureHTTPClient.Get(utilURL)
+	utilResp, err := client.Get(utilURL)
 	if err != nil {
 		return nil, fmt.Errorf("synology utilization request: %w", err)
 	}
@@ -3489,8 +3631,8 @@ func pollSynology(baseURL string, authConfig json.RawMessage) (*APIPollResult, e
 				SystemLoad int `json:"system_load"`
 			} `json:"cpu"`
 			Memory struct {
-				RealUsage  int `json:"real_usage"` // percentage
-				TotalReal  int `json:"total_real"`  // KB
+				RealUsage int `json:"real_usage"` // percentage
+				TotalReal int `json:"total_real"` // KB
 			} `json:"memory"`
 		} `json:"data"`
 	}
@@ -3506,7 +3648,7 @@ func pollSynology(baseURL string, authConfig json.RawMessage) (*APIPollResult, e
 
 	// Storage
 	storageURL := fmt.Sprintf("%s/webapi/entry.cgi?api=SYNO.Storage.CGI.Storage&version=1&method=load_info&_sid=%s", baseURL, sid)
-	storageResp, err := insecureHTTPClient.Get(storageURL)
+	storageResp, err := client.Get(storageURL)
 	if err != nil {
 		log.Printf("synology storage request failed (non-fatal): %v", err)
 		return result, nil
@@ -3549,7 +3691,6 @@ func parseJSONInt(raw json.RawMessage) int64 {
 	}
 	return 0
 }
-
 
 // validateBaseURL checks that a base URL is safe to poll (prevents SSRF).
 func validateBaseURL(rawURL string) error {
@@ -3670,10 +3811,10 @@ func handleCreateAPIMachine(c echo.Context) error {
 	startAPIPoller(id, body.Name, body.AdapterType, body.BaseURL, body.AuthConfig, body.PollIntervalSecs)
 
 	return c.JSON(http.StatusCreated, map[string]interface{}{
-		"id":                id,
-		"name":              body.Name,
-		"adapter_type":      body.AdapterType,
-		"base_url":          body.BaseURL,
+		"id":                 id,
+		"name":               body.Name,
+		"adapter_type":       body.AdapterType,
+		"base_url":           body.BaseURL,
 		"poll_interval_secs": body.PollIntervalSecs,
 	})
 }

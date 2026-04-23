@@ -73,12 +73,25 @@ cd dashboard && npx next start -H 0.0.0.0 &   # Dashboard on :3000
 
 ```bash
 # One-line install (generate token from dashboard)
-curl -sL https://<hub>/install.sh | BLOXOS_HUB=wss://<hub> BLOXOS_TOKEN=<token> bash
+curl -fsSLk https://<hub>/install.sh | \
+  BLOXOS_HUB=wss://<hub> \
+  BLOXOS_TOKEN=<token> \
+  BLOXOS_CA_URL=https://<hub>/download/ca.crt \
+  BLOXOS_CA_SHA256=<sha256-from-token-response> \
+  bash
+
+# If your hub uses a publicly trusted certificate, you can drop BLOXOS_CA_* and -k:
+curl -fsSL https://<hub>/install.sh | \
+  BLOXOS_HUB=wss://<hub> \
+  BLOXOS_TOKEN=<token> \
+  bash
 
 # Or manual
 cd agent && go build -o bloxos-agent .
-./bloxos-agent --hub wss://<hub>/ws/agent --token <token>
+BLOXOS_CA_CERT=/etc/bloxos/ca.crt ./bloxos-agent --hub wss://<hub>/ws/agent --token <token>
 ```
+
+`POST /api/tokens` now returns `ca_url` and `ca_sha256` when the hub has a local CA available via `BLOXOS_CA_CERT`. Use those values for self-signed Caddy deployments.
 
 ### First Boot Setup
 
