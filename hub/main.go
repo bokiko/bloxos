@@ -274,7 +274,7 @@ func main() {
 	}
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
 		AllowOrigins: corsOrigins,
-		AllowMethods: []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodOptions},
+		AllowMethods: []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodOptions},
 		AllowHeaders: []string{"Accept", "Content-Type", "Cache-Control", "Authorization"},
 	}))
 
@@ -324,6 +324,7 @@ func main() {
 	api.POST("/api/bulk/command", handleBulkCommand)
 	api.GET("/api/api-machines", handleListAPIMachines)
 	api.POST("/api/api-machines", handleCreateAPIMachine)
+	api.PATCH("/api/api-machines/:id", handleUpdateAPIMachine)
 	api.DELETE("/api/api-machines/:id", handleDeleteAPIMachine)
 	api.POST("/api/api-machines/:id/poll", handleForceAPIPoll)
 
@@ -3799,6 +3800,40 @@ func validateBaseURL(rawURL string) error {
 	return nil
 }
 
+func validateAPIAuthConfig(adapterType string, authConfig json.RawMessage) error {
+	if len(bytes.TrimSpace(authConfig)) == 0 {
+		return fmt.Errorf("auth_config is required")
+	}
+
+	switch adapterType {
+	case "proxmox":
+		var auth struct {
+			TokenID     string `json:"token_id"`
+			TokenSecret string `json:"token_secret"`
+		}
+		if err := json.Unmarshal(authConfig, &auth); err != nil {
+			return fmt.Errorf("invalid proxmox auth_config: %w", err)
+		}
+		if strings.TrimSpace(auth.TokenID) == "" || strings.TrimSpace(auth.TokenSecret) == "" {
+			return fmt.Errorf("proxmox auth_config requires token_id and token_secret")
+		}
+	case "synology":
+		var auth struct {
+			Username string `json:"username"`
+			Password string `json:"password"`
+		}
+		if err := json.Unmarshal(authConfig, &auth); err != nil {
+			return fmt.Errorf("invalid synology auth_config: %w", err)
+		}
+		if strings.TrimSpace(auth.Username) == "" || strings.TrimSpace(auth.Password) == "" {
+			return fmt.Errorf("synology auth_config requires username and password")
+		}
+	default:
+		return fmt.Errorf("adapter_type must be proxmox or synology")
+	}
+	return nil
+}
+
 // --- API Machine Handlers ---
 
 func handleListAPIMachines(c echo.Context) error {
@@ -3855,8 +3890,8 @@ func handleCreateAPIMachine(c echo.Context) error {
 	if err := validateBaseURL(body.BaseURL); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
-	if len(body.AuthConfig) == 0 {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "auth_config is required"})
+	if err := validateAPIAuthConfig(body.AdapterType, body.AuthConfig); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
 	tlsCfg, err := parseAPITLSConfig(body.TLSConfig)
 	if err != nil {
@@ -3907,6 +3942,122 @@ func handleCreateAPIMachine(c echo.Context) error {
 		"base_url":           body.BaseURL,
 		"tls_config":         redactAPITLSConfig(storedTLSCfg),
 		"poll_interval_secs": body.PollIntervalSecs,
+	})
+}
+
+func handleUpdateAPIMachine(c echo.Context) error {
+	id := c.Param("id")
+
+	var current struct {
+		Name             string
+		AdapterType      string
+		BaseURL          string
+		AuthConfig       string
+		TLSConfig        string
+		PollIntervalSecs int
+	}
+	err := db.QueryRow(`SELECT name, adapter_type, base_url, auth_config, tls_config, poll_interval_secs
+		FROM api_machines WHERE id = ?`, id).
+		Scan(&current.Name, &current.AdapterType, &current.BaseURL, &current.AuthConfig, &current.TLSConfig, &current.PollIntervalSecs)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "api machine not found"})
+	}
+
+	var body struct {
+		Name             *string          `json:"name"`
+		AdapterType      *string          `json:"adapter_type"`
+		BaseURL          *string          `json:"base_url"`
+		AuthConfig       *json.RawMessage `json:"auth_config"`
+		TLSConfig        *json.RawMessage `json:"tls_config"`
+		PollIntervalSecs *int             `json:"poll_interval_secs"`
+	}
+	if err := c.Bind(&body); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+	}
+
+	name := current.Name
+	if body.Name != nil {
+		name = strings.TrimSpace(*body.Name)
+	}
+	if name == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "name is required"})
+	}
+
+	adapterType := current.AdapterType
+	if body.AdapterType != nil {
+		adapterType = strings.TrimSpace(*body.AdapterType)
+	}
+	if adapterType != "proxmox" && adapterType != "synology" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "adapter_type must be proxmox or synology"})
+	}
+
+	baseURL := current.BaseURL
+	if body.BaseURL != nil {
+		baseURL = strings.TrimSpace(*body.BaseURL)
+	}
+	if err := validateBaseURL(baseURL); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+
+	authConfig := json.RawMessage(current.AuthConfig)
+	if body.AuthConfig != nil {
+		authConfig = *body.AuthConfig
+	}
+	if body.AdapterType != nil && *body.AdapterType != current.AdapterType && body.AuthConfig == nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "auth_config is required when adapter_type changes"})
+	}
+	if err := validateAPIAuthConfig(adapterType, authConfig); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+
+	tlsConfig := json.RawMessage(current.TLSConfig)
+	if body.TLSConfig != nil {
+		tlsConfig = *body.TLSConfig
+	}
+	parsedTLSConfig, err := parseAPITLSConfig(tlsConfig)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+	if err := validateAPITLSConfig(baseURL, parsedTLSConfig); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+
+	pollIntervalSecs := current.PollIntervalSecs
+	if body.PollIntervalSecs != nil {
+		pollIntervalSecs = *body.PollIntervalSecs
+	}
+	if pollIntervalSecs < 30 {
+		pollIntervalSecs = 30
+	}
+	if pollIntervalSecs > 3600 {
+		pollIntervalSecs = 3600
+	}
+
+	storedTLSCfg, err := marshalStoredAPITLSConfig(parsedTLSConfig)
+	if err != nil {
+		log.Printf("api machines: tls config marshal error: %v", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal error"})
+	}
+
+	_, err = db.Exec(`UPDATE api_machines
+		SET name = ?, adapter_type = ?, base_url = ?, auth_config = ?, tls_config = ?, poll_interval_secs = ?
+		WHERE id = ?`,
+		name, adapterType, baseURL, string(authConfig), storedTLSCfg, pollIntervalSecs, id)
+	if err != nil {
+		log.Printf("api machines: update error: %v", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal error"})
+	}
+
+	startAPIPoller(id, name, adapterType, baseURL, authConfig, json.RawMessage(storedTLSCfg), pollIntervalSecs)
+
+	log.Printf("api machine updated: %s (%s, %s)", name, adapterType, id)
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"id":                 id,
+		"name":               name,
+		"adapter_type":       adapterType,
+		"base_url":           baseURL,
+		"tls_config":         redactAPITLSConfig(storedTLSCfg),
+		"poll_interval_secs": pollIntervalSecs,
 	})
 }
 

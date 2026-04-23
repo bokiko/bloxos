@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 import { useSSE } from "@/contexts/SSEContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { demoMachines, MachineMetrics, AlertData } from "@/lib/demo-data";
@@ -9,7 +9,7 @@ import { MachineCard } from "@/components/MachineCard";
 import { MachineStatus } from "@/components/StatusBadge";
 import { AlertPanel } from "@/components/AlertPanel";
 import { AddMachineModal } from "@/components/AddMachineModal";
-import { AddAPIMachineModal } from "@/components/AddAPIMachineModal";
+import { AddAPIMachineModal, type EditableAPIMachine } from "@/components/AddAPIMachineModal";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -28,7 +28,7 @@ import {
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Bell, Plus, Wifi, WifiOff, Search, LayoutGrid, List,
-  ChevronDown, LogOut, Square, CheckSquare, RotateCcw, Trash2,
+  ChevronDown, LogOut, Square, CheckSquare, RotateCcw, Trash2, Pencil,
   ArrowUpDown, Filter, Monitor, Server,
 } from "lucide-react";
 import Link from "next/link";
@@ -94,9 +94,47 @@ export default function Home() {
   const [deleteTarget, setDeleteTarget] = useState<{id: string; hostname: string} | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [addAPIMachineOpen, setAddAPIMachineOpen] = useState(false);
+  const [editAPIMachine, setEditAPIMachine] = useState<EditableAPIMachine | null>(null);
+  const [apiMachines, setApiMachines] = useState<EditableAPIMachine[]>([]);
 
   const isDemo = DEMO_MODE && !hasReceivedData && liveMachines.length === 0;
   const machines = isDemo ? demoMachines : liveMachines;
+
+  const loadAPIMachines = useCallback(async () => {
+    try {
+      const res = await authFetch(`${HUB_URL}/api/api-machines`);
+      if (!res.ok) return;
+      const data = await res.json();
+      setApiMachines(Array.isArray(data) ? data : []);
+    } catch {
+      // ignore
+    }
+  }, [authFetch]);
+
+  useEffect(() => {
+    let active = true;
+    const run = async () => {
+      try {
+        const res = await authFetch(`${HUB_URL}/api/api-machines`);
+        if (!res.ok || !active) return;
+        const data = await res.json();
+        if (active) {
+          setApiMachines(Array.isArray(data) ? data : []);
+        }
+      } catch {
+        // ignore
+      }
+    };
+    void run();
+    return () => {
+      active = false;
+    };
+  }, [authFetch]);
+
+  const apiMachineByMachineID = useMemo(
+    () => new Map(apiMachines.map((machine) => [`api-${machine.id}`, machine])),
+    [apiMachines]
+  );
 
   const allTags = useMemo(() => {
     const tagSet = new Set<string>();
@@ -241,10 +279,25 @@ export default function Home() {
     try {
       const res = await authFetch(`${HUB_URL}/api/machines/${deleteTarget.id}`, { method: "DELETE" });
       if (!res.ok) return;
+      if (deleteTarget.id.startsWith("api-")) {
+        const apiID = deleteTarget.id.replace(/^api-/, "");
+        setApiMachines((prev) => prev.filter((machine) => machine.id !== apiID));
+      }
     } catch { /* ignore */ }
     setDeleteLoading(false);
     setDeleteTarget(null);
   }, [deleteTarget, authFetch]);
+
+  const handleAPIMachineSaved = useCallback(() => {
+    void loadAPIMachines();
+  }, [loadAPIMachines]);
+
+  const openEditAPIMachine = useCallback((machineID: string) => {
+    const machine = apiMachineByMachineID.get(machineID);
+    if (machine) {
+      setEditAPIMachine(machine);
+    }
+  }, [apiMachineByMachineID]);
 
   return (
     <motion.div
@@ -527,7 +580,12 @@ export default function Home() {
                   exit={{ opacity: 0, scale: 0.95 }}
                   transition={{ duration: 0.3, delay: i * 0.03 }}
                 >
-                  <MachineCard machine={m} onClick={() => {}} onDelete={(id, hostname) => setDeleteTarget({id, hostname})} />
+                  <MachineCard
+                    machine={m}
+                    onClick={() => {}}
+                    onDelete={(id, hostname) => setDeleteTarget({id, hostname})}
+                    onEdit={openEditAPIMachine}
+                  />
                 </motion.div>
               ))}
             </AnimatePresence>
@@ -565,6 +623,8 @@ export default function Home() {
                   const tags = m.tags ? m.tags.split(",").filter((t) => t.trim()) : [];
                   const dotColor = status === "online" ? "bg-emerald-500" : status === "warning" ? "bg-amber-500" : "bg-red-500/50";
                   const isSelected = selected.has(m.machine_id);
+                  const adapterTag = tags.find((tag) => ["synology", "proxmox"].includes(tag.trim().toLowerCase()));
+                  const isAPIMachine = !!adapterTag;
 
                   return (
                     <TableRow
@@ -586,7 +646,22 @@ export default function Home() {
                         </Link>
                       </TableCell>
                       <TableCell className="text-xs font-medium text-blox-text">
-                        <Link href={`/machine/${m.machine_id}`} className="hover:text-blox-blue transition-colors">{m.hostname}</Link>
+                        <div className="flex items-center gap-2">
+                          <Link href={`/machine/${m.machine_id}`} className="hover:text-blox-blue transition-colors">{m.hostname}</Link>
+                          {isAPIMachine && (
+                            <button
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                openEditAPIMachine(m.machine_id);
+                              }}
+                              className="text-blox-muted hover:text-blox-blue transition-colors"
+                              title="Edit API machine"
+                            >
+                              <Pencil className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
                       </TableCell>
                       <TableCell className="text-xs text-blox-muted font-mono tabular-nums hidden md:table-cell">{m.ip || "-"}</TableCell>
                       <TableCell className="text-xs">
@@ -704,10 +779,22 @@ export default function Home() {
         onClose={() => setAddMachineOpen(false)}
       />
 
-      <AddAPIMachineModal
-        open={addAPIMachineOpen}
-        onClose={() => setAddAPIMachineOpen(false)}
-      />
+      {addAPIMachineOpen && (
+        <AddAPIMachineModal
+          open={addAPIMachineOpen}
+          onClose={() => setAddAPIMachineOpen(false)}
+          onSaved={handleAPIMachineSaved}
+        />
+      )}
+
+      {editAPIMachine && (
+        <AddAPIMachineModal
+          open={!!editAPIMachine}
+          machine={editAPIMachine}
+          onClose={() => setEditAPIMachine(null)}
+          onSaved={handleAPIMachineSaved}
+        />
+      )}
     </motion.div>
   );
 }

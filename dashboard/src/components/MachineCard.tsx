@@ -6,7 +6,7 @@ import { MachineMetrics } from "@/lib/demo-data";
 import { ProgressBar } from "./ProgressBar";
 import { StatusBadge, MachineStatus } from "./StatusBadge";
 import { Sparkline } from "./Sparkline";
-import { Cpu, HardDrive, MemoryStick, Thermometer, Clock, Monitor, Wifi, Trash2 } from "lucide-react";
+import { Cpu, HardDrive, MemoryStick, Thermometer, Clock, Monitor, Wifi, Trash2, Pencil } from "lucide-react";
 import { motion } from "framer-motion";
 
 function formatBytes(bytes: number | undefined | null): string {
@@ -60,9 +60,10 @@ interface MachineCardProps {
   machine: MachineMetrics;
   onClick?: () => void;
   onDelete?: (machineId: string, hostname: string) => void;
+  onEdit?: (machineId: string) => void;
 }
 
-export function MachineCard({ machine, onClick, onDelete }: MachineCardProps) {
+export function MachineCard({ machine, onClick, onDelete, onEdit }: MachineCardProps) {
   const [now, setNow] = useState(() => Date.now());
   const { status, reason } = getStatus(machine);
 
@@ -121,6 +122,19 @@ export function MachineCard({ machine, onClick, onDelete }: MachineCardProps) {
           </div>
           <div className="flex items-center gap-2">
             <StatusBadge status={status} reason={reason} />
+            {isAPIMachine && onEdit && (
+              <button
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onEdit(machine.machine_id);
+                }}
+                className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg hover:bg-blox-blue/10 text-blox-muted hover:text-blox-blue transition-all duration-200"
+                title="Edit API machine"
+              >
+                <Pencil className="w-3.5 h-3.5" />
+              </button>
+            )}
             {onDelete && (
               <button
                 onClick={(e) => {

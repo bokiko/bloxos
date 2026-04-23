@@ -109,6 +109,7 @@ API-polled integrations like Proxmox and Synology now choose TLS trust per machi
 - `Insecure`: temporary fallback that skips verification only for that machine and logs a warning on every poll
 
 Use `Custom CA` for self-signed appliances instead of a hub-wide insecure override.
+You can edit an existing API machine from the dashboard to change credentials, TLS mode, or poll interval; the hub reloads that machine's poller without a service restart.
 
 ---
 
