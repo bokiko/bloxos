@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useRef } from "react";
+import { HUB_URL, getStoredToken } from "@/lib/session";
 
 interface SparklineProps {
   machineId: string;
@@ -8,14 +9,12 @@ interface SparklineProps {
   height?: number;
 }
 
-const HUB_URL = process.env.NEXT_PUBLIC_HUB_URL || "http://localhost:4000";
-
 export function Sparkline({ machineId, width = 120, height = 28 }: SparklineProps) {
   const [points, setPoints] = useState<number[]>([]);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
-    const token = localStorage.getItem("bloxos_token");
+    const token = getStoredToken();
     const headers: Record<string, string> = {};
     if (token) headers["Authorization"] = `Bearer ${token}`;
 

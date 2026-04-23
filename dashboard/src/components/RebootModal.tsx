@@ -8,6 +8,7 @@ import {
   DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { getStoredToken } from "@/lib/session";
 
 interface RebootModalProps {
   hostname: string;
@@ -23,7 +24,7 @@ export function RebootModal({ hostname, machineId, hubUrl, onClose }: RebootModa
   async function handleReboot() {
     setLoading(true);
     try {
-      const token = localStorage.getItem("bloxos_token");
+      const token = getStoredToken();
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       if (token) headers["Authorization"] = `Bearer ${token}`;
       const res = await fetch(`${hubUrl}/api/machines/${machineId}/command`, {

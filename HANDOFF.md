@@ -7,8 +7,8 @@
   - [x] Codex Security Audit: 3 rounds, 6/8 fixed, 2 accepted
   - [x] Hardening Do Now: creds rotated, DB 0600, token logging stopped, single-use tokens, Caddy TLS, config model, rate limiting
   - [x] Hardening Do Next Sprint (all 6 items, 2026-04-22):
-    - [x] #8 Migration versioning (hub/migrations.go, schema_version table, 4 migrations)
-    - [x] #9 Smoke tests (33 tests in hub/main_test.go)
+    - [x] #8 Migration versioning (hub/migrations.go, schema_version table, 5 migrations)
+    - [x] #9 Smoke tests (41 tests in hub/main_test.go)
     - [x] #10 Backend-enforce password/PIN rotation (credentialRotationMiddleware)
     - [x] #11 First-boot setup flow (POST /api/setup, bootstrap token, no default creds)
     - [x] #12 Enrollment redesign (durable agent secrets, SHA-256 hashed, revocable)
@@ -31,12 +31,10 @@ To activate on the hub VM:
 1. SSH to hub (creds in memory/credentials.md)
 2. Stop services: `sudo systemctl stop bloxos-hub bloxos-agent`
 3. Rebuild hub: `cd ~/bloxos/hub && /usr/local/go/bin/go build -o bloxos-hub .`
-4. Copy hub binary: `sudo cp ~/bloxos/hub/bloxos-hub /usr/local/bin/bloxos-hub`
-5. Rebuild agent: `cd ~/bloxos/agent && /usr/local/go/bin/go build -o bloxos-agent .`
-6. Copy agent binary: `sudo cp ~/bloxos/agent/bloxos-agent /usr/local/bin/bloxos-agent`
-7. Restart: `sudo systemctl start bloxos-hub bloxos-agent`
-8. On first start: schema migrations run automatically (version 0 to 4)
-9. Existing admin user will hit rotation enforcement -- change password and PIN via API
+4. Rebuild agent: `cd ~/bloxos/agent && /usr/local/go/bin/go build -o bloxos-agent .`
+5. Restart: `sudo systemctl start bloxos-hub bloxos-agent`
+6. On first start: schema migrations run automatically (version 0 to 5)
+7. Existing admin user will hit rotation enforcement -- change password and PIN via API
 
 ### First-boot setup (new deployments only)
 - Hub writes setup token to `~/.bloxos/setup-token` (0600) if no users exist
@@ -46,12 +44,11 @@ To activate on the hub VM:
 - Dashboard needs a setup page (not built yet -- API-only for now)
 
 ### Agent enrollment (existing agents)
-- Existing agents continue working via machine_id recognition (backward compatible)
+- Existing agents must reconnect with a durable secret, or enroll once with a valid install token to mint one
 - New agents receive a durable secret on enrollment (stored at /etc/bloxos/agent-secret)
 - To re-enroll: delete machine from DB, generate new install token, re-run install script
 
 ## Known Issues
-- After rebuilding agent, MUST copy binary to /usr/local/bin/bloxos-agent on hub
 - Self-signed TLS: agents need InsecureSkipVerify for Caddy's cert
 - Dashboard setup page not built yet -- first-boot setup is API-only
 - Credentials were previously committed to HANDOFF.md and must be rotated

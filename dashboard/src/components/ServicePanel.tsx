@@ -1,13 +1,14 @@
 "use client";
 
-import { useState, useRef, useEffect, useMemo } from "react";
-import { Layers, RotateCcw, Play, Square, Loader2, ChevronDown } from "lucide-react";
+import { useState, useMemo } from "react";
+import { Layers, RotateCcw, Play, Square, Loader2 } from "lucide-react";
 import { useToast } from "./Toast";
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent,
   DropdownMenuItem, DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
+import { getStoredToken } from "@/lib/session";
 
 export interface Service {
   name: string;
@@ -50,7 +51,7 @@ function ServiceActions({
   async function runCommand(type: string) {
     setLoading(true);
     try {
-      const token = localStorage.getItem("bloxos_token");
+      const token = getStoredToken();
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       if (token) headers["Authorization"] = `Bearer ${token}`;
       const res = await fetch(`${hubUrl}/api/machines/${machineId}/command`, {
