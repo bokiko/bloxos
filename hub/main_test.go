@@ -135,43 +135,7 @@ func setupTestServer(t *testing.T) *echo.Echo {
 
 	e := echo.New()
 	e.HideBanner = true
-
-	// Public endpoints.
-	e.GET("/health", handleHealth)
-	e.GET("/ws/agent", handleAgentWS)
-	e.POST("/api/auth/login", handleLogin)
-	e.GET("/install.sh", handleInstallScript)
-	e.GET("/download/ca.crt", handleDownloadCACert)
-	e.GET("/api/setup/status", handleSetupStatus)
-	e.POST("/api/setup", handleSetup)
-
-	// Protected endpoints.
-	api := e.Group("", jwtMiddleware, credentialRotationMiddleware, permissionMiddleware)
-	api.GET("/api/machines", handleListMachines)
-	api.GET("/api/machines/:id", handleGetMachine)
-	api.GET("/api/machines/:id/services", handleGetServices)
-	api.GET("/api/machines/:id/containers", handleGetContainers)
-	api.POST("/api/machines/:id/command", handleCommand)
-	api.PUT("/api/machines/:id/tags", handleSetTags)
-	api.GET("/api/machines/:id/metrics/history", handleMetricsHistory)
-	api.DELETE("/api/machines/:id", handleDeleteMachine)
-
-	api.POST("/api/machines/:id/terminal", handleStartTerminal)
-	api.DELETE("/api/machines/:id/terminal/:session_id", handleCloseTerminal)
-	e.GET("/ws/terminal/:session_id", handleTerminalWS)
-
-	api.GET("/api/alerts", handleListAlerts)
-	api.GET("/api/alerts/active/count", handleAlertCount)
-	api.POST("/api/alerts/:id/acknowledge", handleAcknowledgeAlert)
-	api.GET("/api/alert-rules", handleListAlertRules)
-	api.PUT("/api/alert-rules/:id", handleUpdateAlertRule)
-
-	api.POST("/api/auth/change-password", handleChangePassword)
-	api.POST("/api/auth/change-pin", handleChangePIN)
-	api.POST("/api/auth/sse-token", handleSSEToken)
-
-	api.POST("/api/tokens", handleCreateToken)
-	api.POST("/api/bulk/command", handleBulkCommand)
+	registerRoutes(e)
 
 	return e
 }
@@ -205,15 +169,7 @@ func setupEmptyTestServer(t *testing.T) *echo.Echo {
 
 	e := echo.New()
 	e.HideBanner = true
-
-	e.GET("/health", handleHealth)
-	e.POST("/api/auth/login", handleLogin)
-	e.GET("/api/setup/status", handleSetupStatus)
-	e.POST("/api/setup", handleSetup)
-
-	api := e.Group("", jwtMiddleware, credentialRotationMiddleware, permissionMiddleware)
-	api.GET("/api/machines", handleListMachines)
-	api.POST("/api/machines/:id/terminal", handleStartTerminal)
+	registerRoutes(e)
 
 	return e
 }
@@ -257,6 +213,54 @@ func markCredentialsRotated(t *testing.T) {
 	_, err := db.Exec(`UPDATE users SET password_changed = TRUE, pin_changed = TRUE WHERE username = 'admin'`)
 	if err != nil {
 		t.Fatalf("mark credentials rotated: %v", err)
+	}
+}
+
+func TestRBACRouteAuditPassesForProductionRoutes(t *testing.T) {
+	e := echo.New()
+	e.HideBanner = true
+	registerRoutes(e)
+
+	if err := auditRBACRouteCoverage(e, routeScopeRequirements); err != nil {
+		t.Fatalf("production route set failed RBAC audit: %v", err)
+	}
+}
+
+func TestRBACRouteAuditDetectsMissingMapping(t *testing.T) {
+	e := echo.New()
+	e.HideBanner = true
+	registerRoutes(e)
+	// Add an extra protected route that has no scope mapping.
+	api := e.Group("", jwtMiddleware, credentialRotationMiddleware, permissionMiddleware)
+	api.GET("/api/ghost", func(c echo.Context) error { return nil })
+
+	err := auditRBACRouteCoverage(e, routeScopeRequirements)
+	if err == nil {
+		t.Fatal("expected audit to fail for unmapped protected route, got nil")
+	}
+	if !strings.Contains(err.Error(), "missing scope mapping") || !strings.Contains(err.Error(), "/api/ghost") {
+		t.Fatalf("expected error to name the unmapped route, got: %v", err)
+	}
+}
+
+func TestRBACRouteAuditDetectsOrphanMapping(t *testing.T) {
+	e := echo.New()
+	e.HideBanner = true
+	registerRoutes(e)
+
+	// Clone production requirements and add an entry for a route that isn't registered.
+	requirements := make(map[string]string, len(routeScopeRequirements)+1)
+	for k, v := range routeScopeRequirements {
+		requirements[k] = v
+	}
+	requirements[routeScopeKey(http.MethodGet, "/api/nonexistent")] = scopeFleetRead
+
+	err := auditRBACRouteCoverage(e, requirements)
+	if err == nil {
+		t.Fatal("expected audit to fail for orphan scope mapping, got nil")
+	}
+	if !strings.Contains(err.Error(), "orphan scope mapping") || !strings.Contains(err.Error(), "/api/nonexistent") {
+		t.Fatalf("expected error to name the orphan route, got: %v", err)
 	}
 }
 
