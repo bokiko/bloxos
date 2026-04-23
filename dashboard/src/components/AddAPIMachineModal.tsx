@@ -11,50 +11,53 @@ import { Input } from "@/components/ui/input";
 import { getAuthHeaders, HUB_URL } from "@/lib/session";
 
 type AdapterType = "proxmox" | "synology";
-type TlsMode = "system" | "custom_ca" | "insecure";
+export type TlsMode = "system" | "custom_ca" | "insecure";
+
+export interface APIMachineTLSMeta {
+  mode: TlsMode;
+  has_custom_ca?: boolean;
+}
+
+export interface EditableAPIMachine {
+  id: string;
+  name: string;
+  adapter_type: AdapterType;
+  base_url: string;
+  poll_interval_secs: number;
+  tls_config?: APIMachineTLSMeta;
+}
 
 interface AddAPIMachineModalProps {
   open: boolean;
   onClose: () => void;
+  onSaved?: () => void;
+  machine?: EditableAPIMachine | null;
 }
 
-export function AddAPIMachineModal({ open, onClose }: AddAPIMachineModalProps) {
-  const [name, setName] = useState("");
-  const [adapterType, setAdapterType] = useState<AdapterType>("synology");
-  const [baseUrl, setBaseUrl] = useState("");
-  const [pollInterval, setPollInterval] = useState(60);
-  // Synology creds
+function clampInterval(v: number) {
+  return Math.max(30, Math.min(3600, v || 60));
+}
+
+export function AddAPIMachineModal({ open, onClose, onSaved, machine }: AddAPIMachineModalProps) {
+  const editing = !!machine;
+
+  const [name, setName] = useState(machine?.name || "");
+  const [adapterType, setAdapterType] = useState<AdapterType>(machine?.adapter_type || "synology");
+  const [baseUrl, setBaseUrl] = useState(machine?.base_url || "");
+  const [pollInterval, setPollInterval] = useState(machine?.poll_interval_secs || 60);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  // Proxmox creds
   const [tokenId, setTokenId] = useState("");
   const [tokenSecret, setTokenSecret] = useState("");
-  const [tlsMode, setTlsMode] = useState<TlsMode>("system");
+  const [tlsMode, setTlsMode] = useState<TlsMode>(machine?.tls_config?.mode || "system");
   const [caCertPem, setCaCertPem] = useState("");
-
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
 
-  const resetForm = useCallback(() => {
-    setName("");
-    setAdapterType("synology");
-    setBaseUrl("");
-    setPollInterval(60);
-    setUsername("");
-    setPassword("");
-    setTokenId("");
-    setTokenSecret("");
-    setTlsMode("system");
-    setCaCertPem("");
-    setError(null);
-    setSuccess(false);
-  }, []);
-
   const handleClose = useCallback(() => {
-    resetForm();
     onClose();
-  }, [onClose, resetForm]);
+  }, [onClose]);
 
   const handleSubmit = useCallback(async () => {
     if (!name.trim() || !baseUrl.trim()) {
@@ -62,21 +65,73 @@ export function AddAPIMachineModal({ open, onClose }: AddAPIMachineModalProps) {
       return;
     }
 
-    const authConfig =
-      adapterType === "synology"
-        ? { username, password }
-        : { token_id: tokenId, token_secret: tokenSecret };
+    const payload: Record<string, unknown> = {};
+    const trimmedName = name.trim();
+    const trimmedBaseUrl = baseUrl.trim();
+    const clampedPollInterval = clampInterval(pollInterval);
+    const initialTlsMode = machine?.tls_config?.mode || "system";
 
-    if (adapterType === "synology" && (!username.trim() || !password.trim())) {
-      setError("Username and password are required for Synology.");
-      return;
+    if (!editing || trimmedName !== machine?.name) payload.name = trimmedName;
+    if (!editing || adapterType !== machine?.adapter_type) payload.adapter_type = adapterType;
+    if (!editing || trimmedBaseUrl !== machine?.base_url) payload.base_url = trimmedBaseUrl;
+    if (!editing || clampedPollInterval !== machine?.poll_interval_secs) payload.poll_interval_secs = clampedPollInterval;
+
+    let authConfig: Record<string, string> | null = null;
+    if (adapterType === "synology") {
+      const trimmedUsername = username.trim();
+      const trimmedPassword = password.trim();
+      if (!editing) {
+        if (!trimmedUsername || !trimmedPassword) {
+          setError("Username and password are required for Synology.");
+          return;
+        }
+        authConfig = { username: trimmedUsername, password: trimmedPassword };
+      } else if (trimmedUsername || trimmedPassword) {
+        if (!trimmedUsername || !trimmedPassword) {
+          setError("Enter both username and password, or leave both blank to keep existing credentials.");
+          return;
+        }
+        authConfig = { username: trimmedUsername, password: trimmedPassword };
+      }
+    } else {
+      const trimmedTokenID = tokenId.trim();
+      const trimmedTokenSecret = tokenSecret.trim();
+      if (!editing) {
+        if (!trimmedTokenID || !trimmedTokenSecret) {
+          setError("Token ID and Token Secret are required for Proxmox.");
+          return;
+        }
+        authConfig = { token_id: trimmedTokenID, token_secret: trimmedTokenSecret };
+      } else if (trimmedTokenID || trimmedTokenSecret) {
+        if (!trimmedTokenID || !trimmedTokenSecret) {
+          setError("Enter both token fields, or leave both blank to keep existing credentials.");
+          return;
+        }
+        authConfig = { token_id: trimmedTokenID, token_secret: trimmedTokenSecret };
+      }
     }
-    if (adapterType === "proxmox" && (!tokenId.trim() || !tokenSecret.trim())) {
-      setError("Token ID and Token Secret are required for Proxmox.");
-      return;
-    }
-    if (tlsMode === "custom_ca" && !caCertPem.trim()) {
+    if (authConfig) payload.auth_config = authConfig;
+
+    const trimmedCaPem = caCertPem.trim();
+    const shouldReplaceCustomCA = tlsMode === "custom_ca" && !!trimmedCaPem;
+    const tlsModeChanged = !editing || tlsMode !== initialTlsMode;
+    if (tlsMode === "custom_ca" && !editing && !trimmedCaPem) {
       setError("Paste the CA certificate PEM or switch TLS mode.");
+      return;
+    }
+    if (tlsModeChanged || shouldReplaceCustomCA) {
+      if (tlsMode === "custom_ca" && !trimmedCaPem) {
+        setError("Paste a new CA certificate PEM when switching to Custom CA.");
+        return;
+      }
+      payload.tls_config = {
+        mode: tlsMode,
+        ca_cert_pem: tlsMode === "custom_ca" ? trimmedCaPem : "",
+      };
+    }
+
+    if (editing && Object.keys(payload).length === 0) {
+      setError("No changes to save.");
       return;
     }
 
@@ -87,22 +142,14 @@ export function AddAPIMachineModal({ open, onClose }: AddAPIMachineModalProps) {
       const headers: Record<string, string> = getAuthHeaders({
         "Content-Type": "application/json",
       });
-
-      const res = await fetch(`${HUB_URL}/api/api-machines`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          name: name.trim(),
-          adapter_type: adapterType,
-          base_url: baseUrl.trim(),
-          auth_config: authConfig,
-          tls_config: {
-            mode: tlsMode,
-            ca_cert_pem: tlsMode === "custom_ca" ? caCertPem.trim() : "",
-          },
-          poll_interval_secs: pollInterval,
-        }),
-      });
+      const res = await fetch(
+        editing ? `${HUB_URL}/api/api-machines/${machine.id}` : `${HUB_URL}/api/api-machines`,
+        {
+          method: editing ? "PATCH" : "POST",
+          headers,
+          body: JSON.stringify(payload),
+        }
+      );
 
       if (!res.ok) {
         const data = await res.json().catch(() => null);
@@ -110,13 +157,29 @@ export function AddAPIMachineModal({ open, onClose }: AddAPIMachineModalProps) {
       }
 
       setSuccess(true);
+      onSaved?.();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to add machine.");
+      setError(err instanceof Error ? err.message : editing ? "Failed to update machine." : "Failed to add machine.");
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
-  }, [name, adapterType, baseUrl, pollInterval, username, password, tokenId, tokenSecret, tlsMode, caCertPem]);
+  }, [
+    name,
+    adapterType,
+    baseUrl,
+    pollInterval,
+    username,
+    password,
+    tokenId,
+    tokenSecret,
+    tlsMode,
+    caCertPem,
+    editing,
+    machine,
+    onSaved,
+  ]);
 
-  const clampInterval = (v: number) => Math.max(30, Math.min(3600, v || 60));
+  const existingCustomCA = editing && machine?.tls_config?.mode === "custom_ca" && machine.tls_config?.has_custom_ca;
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) handleClose(); }}>
@@ -126,7 +189,7 @@ export function AddAPIMachineModal({ open, onClose }: AddAPIMachineModalProps) {
             <div className="p-1.5 rounded-lg bg-blox-blue/10">
               <Server className="w-4 h-4 text-blox-blue" />
             </div>
-            <DialogTitle className="text-blox-text">Add API Machine</DialogTitle>
+            <DialogTitle className="text-blox-text">{editing ? "Edit API Machine" : "Add API Machine"}</DialogTitle>
           </div>
         </DialogHeader>
 
@@ -138,10 +201,10 @@ export function AddAPIMachineModal({ open, onClose }: AddAPIMachineModalProps) {
                   <CheckCircle className="w-6 h-6 text-emerald-400" />
                 </div>
                 <p className="text-sm text-blox-text text-center font-medium">
-                  Machine added!
+                  {editing ? "Machine updated!" : "Machine added!"}
                 </p>
                 <p className="text-xs text-blox-muted text-center">
-                  It will appear on the dashboard shortly.
+                  {editing ? "The poller was reloaded with the new settings." : "It will appear on the dashboard shortly."}
                 </p>
               </div>
               <Button
@@ -155,10 +218,11 @@ export function AddAPIMachineModal({ open, onClose }: AddAPIMachineModalProps) {
           ) : (
             <>
               <DialogDescription className="text-blox-muted text-xs leading-relaxed">
-                Add a machine that BloxOS polls via API (no agent required). Supports Proxmox and Synology.
+                {editing
+                  ? "Update this API-polled machine. Leave credentials blank to keep the existing secret values."
+                  : "Add a machine that BloxOS polls via API (no agent required). Supports Proxmox and Synology."}
               </DialogDescription>
 
-              {/* Name */}
               <div>
                 <label className="text-[10px] text-blox-muted uppercase tracking-wider mb-1.5 block font-medium">
                   Name
@@ -172,30 +236,28 @@ export function AddAPIMachineModal({ open, onClose }: AddAPIMachineModalProps) {
                 />
               </div>
 
-              {/* Type toggle */}
               <div>
                 <label className="text-[10px] text-blox-muted uppercase tracking-wider mb-1.5 block font-medium">
                   Type
                 </label>
                 <div className="flex gap-2">
-                  {(["synology", "proxmox"] as const).map((t) => (
+                  {(["synology", "proxmox"] as const).map((value) => (
                     <button
-                      key={t}
+                      key={value}
                       type="button"
-                      onClick={() => setAdapterType(t)}
+                      onClick={() => setAdapterType(value)}
                       className={`flex-1 text-xs py-2 px-3 rounded-lg border transition-colors font-medium ${
-                        adapterType === t
+                        adapterType === value
                           ? "bg-blox-blue/10 text-blox-blue border-blox-blue/30"
                           : "bg-blox-bg text-blox-muted border-blox-border hover:border-blox-muted/30"
                       }`}
                     >
-                      {t.charAt(0).toUpperCase() + t.slice(1)}
+                      {value.charAt(0).toUpperCase() + value.slice(1)}
                     </button>
                   ))}
                 </div>
               </div>
 
-              {/* URL */}
               <div>
                 <label className="text-[10px] text-blox-muted uppercase tracking-wider mb-1.5 block font-medium">
                   URL
@@ -209,7 +271,6 @@ export function AddAPIMachineModal({ open, onClose }: AddAPIMachineModalProps) {
                 />
               </div>
 
-              {/* Poll Interval */}
               <div>
                 <label className="text-[10px] text-blox-muted uppercase tracking-wider mb-1.5 block font-medium">
                   Poll Interval (seconds)
@@ -225,7 +286,6 @@ export function AddAPIMachineModal({ open, onClose }: AddAPIMachineModalProps) {
                 />
               </div>
 
-              {/* Credentials */}
               <div>
                 <label className="text-[10px] text-blox-muted uppercase tracking-wider mb-1.5 block font-medium">
                   Credentials
@@ -234,14 +294,14 @@ export function AddAPIMachineModal({ open, onClose }: AddAPIMachineModalProps) {
                   <div className="space-y-2">
                     <Input
                       type="text"
-                      placeholder="Username"
+                      placeholder={editing ? "Username (leave blank to keep current)" : "Username"}
                       value={username}
                       onChange={(e) => setUsername(e.target.value)}
                       className="h-8 text-xs bg-blox-bg border-blox-border text-blox-text placeholder:text-blox-muted/50"
                     />
                     <Input
                       type="password"
-                      placeholder="Password"
+                      placeholder={editing ? "Password (leave blank to keep current)" : "Password"}
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
                       className="h-8 text-xs bg-blox-bg border-blox-border text-blox-text placeholder:text-blox-muted/50"
@@ -251,14 +311,14 @@ export function AddAPIMachineModal({ open, onClose }: AddAPIMachineModalProps) {
                   <div className="space-y-2">
                     <Input
                       type="text"
-                      placeholder="Token ID (e.g. root@pam!monitor)"
+                      placeholder={editing ? "Token ID (leave blank to keep current)" : "Token ID (e.g. root@pam!monitor)"}
                       value={tokenId}
                       onChange={(e) => setTokenId(e.target.value)}
                       className="h-8 text-xs bg-blox-bg border-blox-border text-blox-text placeholder:text-blox-muted/50 font-mono"
                     />
                     <Input
                       type="password"
-                      placeholder="Token Secret"
+                      placeholder={editing ? "Token Secret (leave blank to keep current)" : "Token Secret"}
                       value={tokenSecret}
                       onChange={(e) => setTokenSecret(e.target.value)}
                       className="h-8 text-xs bg-blox-bg border-blox-border text-blox-text placeholder:text-blox-muted/50 font-mono"
@@ -303,6 +363,11 @@ export function AddAPIMachineModal({ open, onClose }: AddAPIMachineModalProps) {
                   <label className="text-[10px] text-blox-muted uppercase tracking-wider mb-1.5 block font-medium">
                     CA Certificate PEM
                   </label>
+                  {existingCustomCA && !caCertPem && (
+                    <p className="mb-2 text-[11px] text-blox-muted">
+                      A custom CA is already stored. Paste a new PEM only if you want to replace it.
+                    </p>
+                  )}
                   <textarea
                     rows={7}
                     placeholder="-----BEGIN CERTIFICATE-----"
@@ -313,21 +378,19 @@ export function AddAPIMachineModal({ open, onClose }: AddAPIMachineModalProps) {
                 </div>
               )}
 
-              {/* Error */}
               {error && (
                 <p className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
                   {error}
                 </p>
               )}
 
-              {/* Submit */}
               <Button
                 onClick={handleSubmit}
                 disabled={loading}
                 variant="outline"
                 className="w-full text-blox-blue border-blox-blue/20 bg-blox-blue/5 hover:bg-blox-blue/10 text-xs"
               >
-                {loading ? "Adding..." : "Add Machine"}
+                {loading ? (editing ? "Saving..." : "Adding...") : (editing ? "Save Changes" : "Add Machine")}
               </Button>
             </>
           )}
