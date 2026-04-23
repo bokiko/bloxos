@@ -8,6 +8,7 @@ import { MachineCard } from "@/components/MachineCard";
 import { MachineStatus } from "@/components/StatusBadge";
 import { AlertPanel } from "@/components/AlertPanel";
 import { AddMachineModal } from "@/components/AddMachineModal";
+import { AddAPIMachineModal } from "@/components/AddAPIMachineModal";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -27,7 +28,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Bell, Plus, Wifi, WifiOff, Search, LayoutGrid, List,
   ChevronDown, LogOut, Square, CheckSquare, RotateCcw, Trash2,
-  ArrowUpDown, Filter, Monitor,
+  ArrowUpDown, Filter, Monitor, Server,
 } from "lucide-react";
 import Link from "next/link";
 
@@ -93,6 +94,7 @@ export default function Home() {
   const [bulkLoading, setBulkLoading] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<{id: string; hostname: string} | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
+  const [addAPIMachineOpen, setAddAPIMachineOpen] = useState(false);
 
   const machines = hasReceivedData && liveMachines.length > 0
     ? liveMachines
@@ -318,6 +320,16 @@ export default function Home() {
             >
               <Plus className="w-3.5 h-3.5" />
               <span className="hidden sm:inline">Add Machine</span>
+            </Button>
+
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setAddAPIMachineOpen(true)}
+              className="text-blox-blue border-blox-blue/20 bg-blox-blue/5 hover:bg-blox-blue/10 text-xs gap-1.5"
+            >
+              <Server className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Add API</span>
             </Button>
 
             <Button
@@ -689,6 +701,11 @@ export default function Home() {
       <AddMachineModal
         open={addMachineOpen}
         onClose={() => setAddMachineOpen(false)}
+      />
+
+      <AddAPIMachineModal
+        open={addAPIMachineOpen}
+        onClose={() => setAddAPIMachineOpen(false)}
       />
     </motion.div>
   );

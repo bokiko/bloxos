@@ -298,6 +298,9 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
   const gpus = data.gpus || [];
   const hasGpu = gpus.length > 0;
   const isOnline = machine.status !== "offline";
+  const sseM = getMachine(id);
+  const machineTags = sseM?.tags ? sseM.tags.split(",").map((t: string) => t.trim().toLowerCase()) : [];
+  const isAPIMachine = machineTags.includes("synology") || machineTags.includes("proxmox");
 
   return (
     <motion.div
@@ -384,6 +387,7 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
               <Trash2 className="w-3.5 h-3.5" />
               Delete
             </Button>
+            {!isAPIMachine && (<>
             <Button
               variant="outline"
               size="sm"
@@ -411,6 +415,7 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
               <TerminalIcon className="w-3.5 h-3.5" />
               {termState === "active" ? "Terminal Active" : "Terminal"}
             </Button>
+            </>)}
           </div>
         </div>
       </header>
@@ -618,6 +623,7 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
         </div>
 
         {/* Terminal */}
+        {!isAPIMachine && (
         <motion.div
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
@@ -749,6 +755,7 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
             </div>
           )}
         </motion.div>
+        )}
       </main>
     </motion.div>
   );
