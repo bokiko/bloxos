@@ -10,10 +10,11 @@ import { Button } from "@/components/ui/button";
 import { useAuth } from "@/contexts/AuthContext";
 import { HUB_URL } from "@/lib/session";
 
-type SetupState = "checking" | "ready" | "complete" | "redirecting";
+type SetupState = "checking" | "ready" | "error" | "complete";
 
 export default function SetupPage() {
   const [setupState, setSetupState] = useState<SetupState>("checking");
+  const [setupCheckNonce, setSetupCheckNonce] = useState(0);
   const [setupToken, setSetupToken] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -31,11 +32,14 @@ export default function SetupPage() {
     if (isAuthenticated) {
       router.replace("/");
     }
-  }, [isAuthenticated, router]);
+  }, [isAuthenticated, router, setupCheckNonce]);
 
   useEffect(() => {
     let active = true;
     const checkSetup = async () => {
+      if (!active) return;
+      setSetupState("checking");
+      setError("");
       try {
         const res = await fetch(`${HUB_URL}/api/setup/status`);
         if (!res.ok) {
@@ -46,7 +50,6 @@ export default function SetupPage() {
         if (data?.needs_setup) {
           setSetupState("ready");
         } else {
-          setSetupState("redirecting");
           startNavigation(() => {
             router.replace(isAuthenticated ? "/" : "/login");
           });
@@ -54,7 +57,7 @@ export default function SetupPage() {
       } catch {
         if (active) {
           setError("Unable to reach the setup service. Check the hub and try again.");
-          setSetupState("ready");
+          setSetupState("error");
         }
       }
     };
@@ -119,6 +122,8 @@ export default function SetupPage() {
         startNavigation(() => {
           router.replace("/");
         });
+      } else {
+        setError("Setup succeeded, but automatic sign-in failed. Use the button below to go to login.");
       }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Setup failed.");
@@ -128,7 +133,7 @@ export default function SetupPage() {
     }
   };
 
-  const disabled = loading || setupState === "checking" || setupState === "redirecting" || navigating;
+  const disabled = loading || setupState === "checking" || navigating;
 
   return (
     <div className="min-h-screen bg-blox-bg relative overflow-hidden">
@@ -219,6 +224,15 @@ export default function SetupPage() {
                         Admin <span className="text-blox-text font-medium">{createdUsername}</span> is ready. {navigating ? "Opening the dashboard..." : "You can sign in now."}
                       </p>
                     </div>
+                    {error && (
+                      <motion.p
+                        initial={{ opacity: 0, y: -4 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="rounded-xl border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs leading-5 text-blox-red"
+                      >
+                        {error}
+                      </motion.p>
+                    )}
                     {!navigating && (
                       <Button
                         onClick={() => router.replace("/login")}
@@ -227,6 +241,28 @@ export default function SetupPage() {
                         Go to Login
                       </Button>
                     )}
+                  </div>
+                ) : setupState === "error" ? (
+                  <div className="space-y-5 text-center">
+                    <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-red-500/20 bg-red-500/10 text-blox-red">
+                      <LockKeyhole className="w-7 h-7" />
+                    </div>
+                    <div>
+                      <h3 className="text-xl font-semibold text-blox-text">Setup service unavailable</h3>
+                      <p className="mt-2 text-sm leading-6 text-blox-muted">
+                        {error || "The dashboard could not verify whether first-boot setup is still required."}
+                      </p>
+                    </div>
+                    <Button
+                      onClick={() => {
+                        setSetupState("checking");
+                        setError("");
+                        setSetupCheckNonce((value) => value + 1);
+                      }}
+                      className="w-full bg-blox-blue hover:bg-blox-blue/90 text-white"
+                    >
+                      Retry Setup Check
+                    </Button>
                   </div>
                 ) : (
                   <form onSubmit={handleSubmit} className="space-y-5">
@@ -330,9 +366,7 @@ export default function SetupPage() {
                     >
                       {setupState === "checking"
                         ? "Checking setup status..."
-                        : setupState === "redirecting"
-                          ? "Redirecting..."
-                          : loading
+                        : loading
                             ? "Creating admin..."
                             : "Complete First-Boot Setup"}
                     </Button>

@@ -25,6 +25,9 @@ export default function LoginPage() {
   }, [isAuthenticated, router]);
 
   useEffect(() => {
+    if (isAuthenticated) {
+      return;
+    }
     let active = true;
     startSetupCheck(async () => {
       try {
@@ -41,7 +44,7 @@ export default function LoginPage() {
     return () => {
       active = false;
     };
-  }, [router]);
+  }, [isAuthenticated, router]);
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
