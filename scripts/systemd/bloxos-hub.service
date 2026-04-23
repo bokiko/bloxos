@@ -10,6 +10,7 @@ ExecStart=/home/bokiko/bloxos/hub/bloxos-hub
 Restart=always
 RestartSec=5
 Environment=PATH=/usr/local/go/bin:/usr/bin:/bin
+Environment="BLOXOS_CA_CERT=/var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt"
 
 [Install]
 WantedBy=multi-user.target
