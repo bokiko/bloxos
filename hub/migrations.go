@@ -2,9 +2,9 @@ package main
 
 import (
 	"database/sql"
-	"strings"
 	"fmt"
 	"log"
+	"strings"
 )
 
 // migration is a numbered schema change. Version is implicit from slice index.
@@ -209,6 +209,16 @@ var migrations = []migration{
 				created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 			);
 			`)
+			return err
+		},
+	},
+	{
+		description: "add tls_config to api_machines for per-machine TLS trust",
+		apply: func(tx *sql.Tx) error {
+			_, err := tx.Exec(`ALTER TABLE api_machines ADD COLUMN tls_config TEXT NOT NULL DEFAULT '{}'`)
+			if err != nil && isDuplicateColumnErr(err) {
+				return nil
+			}
 			return err
 		},
 	},
