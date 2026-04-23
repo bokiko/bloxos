@@ -3,6 +3,7 @@
 import { createContext, useContext, useEffect, useState, useCallback, ReactNode } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { ChangePasswordModal } from "@/components/ChangePasswordModal";
+import { HUB_URL, dispatchAuthChanged } from "@/lib/session";
 
 interface AuthContextType {
   token: string | null;
@@ -20,8 +21,6 @@ export function useAuth() {
   return ctx;
 }
 
-const HUB_URL = process.env.NEXT_PUBLIC_HUB_URL || "http://localhost:4000";
-
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(null);
   const [checked, setChecked] = useState(false);
@@ -37,6 +36,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       try {
         const payload = JSON.parse(atob(stored.split(".")[1]));
         if (payload.exp * 1000 > Date.now()) {
+          // eslint-disable-next-line react-hooks/set-state-in-effect
           setToken(stored);
           // Check stored change requirements.
           const pwReq = localStorage.getItem("bloxos_pw_change_required");
@@ -72,6 +72,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const data = await res.json();
       localStorage.setItem("bloxos_token", data.token);
       setToken(data.token);
+      dispatchAuthChanged();
 
       // Check if password/PIN change is required (Finding #2).
       if (data.password_change_required) {
@@ -96,6 +97,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setToken(null);
     setPasswordChangeRequired(false);
     setPinChangeRequired(false);
+    dispatchAuthChanged();
     router.push("/login");
   }, [router]);
 
@@ -112,11 +114,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (payload.exp * 1000 < Date.now()) {
           localStorage.removeItem("bloxos_token");
           setToken(null);
+          dispatchAuthChanged();
           router.push("/login");
         }
       } catch {
         localStorage.removeItem("bloxos_token");
         setToken(null);
+        dispatchAuthChanged();
         router.push("/login");
       }
     }

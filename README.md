@@ -73,20 +73,19 @@ cd dashboard && npx next start -H 0.0.0.0 &   # Dashboard on :3000
 
 ```bash
 # One-line install (generate token from dashboard)
-curl -sL http://<hub>:4000/install.sh | BLOXOS_HUB=ws://<hub>:4000 BLOXOS_TOKEN=<token> bash
+curl -sL https://<hub>/install.sh | BLOXOS_HUB=wss://<hub> BLOXOS_TOKEN=<token> bash
 
 # Or manual
 cd agent && go build -o bloxos-agent .
-./bloxos-agent --hub ws://<hub>:4000/ws/agent --token <token>
+./bloxos-agent --hub wss://<hub>/ws/agent --token <token>
 ```
 
-### Default Login
+### First Boot Setup
 
-| | |
-|---|---|
-| **Username** | `admin` |
-| **Password** | `bloxos` |
-| **Terminal PIN** | `1234` |
+1. Start the hub.
+2. Read the one-time setup token from `~/.bloxos/setup-token`, or set `BLOXOS_SETUP_TOKEN`.
+3. `POST /api/setup` with your setup token, admin username, password, and terminal PIN.
+4. Log in with the credentials you just created.
 
 ---
 
@@ -106,7 +105,7 @@ nvidia-smi integration reporting temperature, utilization, VRAM, power draw, and
 Discover and display systemd services and Docker containers. Restart, stop, or start any service or container with one click from the detail view.
 
 ### Built-in Web Terminal
-xterm.js terminal embedded in the dashboard. PTY relay via WebSocket through the hub. PIN-gated access. Full I/O audit logging. No SSH client needed.
+xterm.js terminal embedded in the dashboard. PTY relay via WebSocket through the hub. PIN-gated access with session audit metadata. No SSH client needed.
 
 </td>
 <td width="50%">
@@ -122,6 +121,9 @@ Multi-select machines in list view. Restart a service or reboot across the entir
 
 ### One-Line Agent Install
 Generate a time-limited token from the dashboard. Run one curl command on the target machine. Agent downloads, installs as systemd service, and starts reporting.
+
+### Supported Deploy Path
+The supported checked-in deployment path is `Caddy + systemd` on a single host. The Docker Compose files are not currently maintained as a supported runtime path.
 
 </td>
 </tr>

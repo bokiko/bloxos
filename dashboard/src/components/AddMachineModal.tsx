@@ -7,8 +7,7 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-
-const HUB_URL = process.env.NEXT_PUBLIC_HUB_URL || "http://localhost:4000";
+import { HUB_URL, getStoredToken } from "@/lib/session";
 
 interface AddMachineModalProps {
   open: boolean;
@@ -24,7 +23,7 @@ export function AddMachineModal({ open, onClose }: AddMachineModalProps) {
   const generateToken = useCallback(async () => {
     setLoading(true);
     try {
-      const authToken = localStorage.getItem("bloxos_token");
+      const authToken = getStoredToken();
       const headers: Record<string, string> = {};
       if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
       const res = await fetch(`${HUB_URL}/api/tokens`, { method: "POST", headers });

@@ -8,11 +8,11 @@ import "@xterm/xterm/css/xterm.css";
 
 interface TerminalProps {
   sessionId: string;
-  hubWsUrl: string;
+  browserToken: string;
   onDisconnect?: () => void;
 }
 
-export function Terminal({ sessionId, hubWsUrl, onDisconnect }: TerminalProps) {
+export function Terminal({ sessionId, browserToken, onDisconnect }: TerminalProps) {
   const termRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<XTerm | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -82,8 +82,8 @@ export function Terminal({ sessionId, hubWsUrl, onDisconnect }: TerminalProps) {
     term.writeln("\x1b[36mConnecting to terminal session...\x1b[0m");
 
     // Connect WebSocket.
-    const jwtToken = localStorage.getItem("bloxos_token") || "";
-    const wsUrl = `${hubWsUrl}/ws/terminal/${sessionId}?role=browser&token=${encodeURIComponent(jwtToken)}`;
+    const baseUrl = window.location.origin.replace(/^http/, "ws");
+    const wsUrl = `${baseUrl}/ws/terminal/${sessionId}?role=browser&browser_token=${encodeURIComponent(browserToken)}`;
     const ws = new WebSocket(wsUrl);
     ws.binaryType = "arraybuffer";
     wsRef.current = ws;
@@ -155,7 +155,7 @@ export function Terminal({ sessionId, hubWsUrl, onDisconnect }: TerminalProps) {
       onResize.dispose();
       cleanup();
     };
-  }, [sessionId, hubWsUrl, onDisconnect, cleanup]);
+  }, [sessionId, browserToken, onDisconnect, cleanup]);
 
   return (
     <div className="relative w-full h-full">

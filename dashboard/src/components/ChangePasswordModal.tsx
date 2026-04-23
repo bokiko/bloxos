@@ -2,8 +2,7 @@
 
 import { useState, FormEvent } from "react";
 import { useAuth } from "@/contexts/AuthContext";
-
-const HUB_URL = process.env.NEXT_PUBLIC_HUB_URL || "http://localhost:4000";
+import { HUB_URL } from "@/lib/session";
 
 interface ChangePasswordModalProps {
   type: "password" | "pin";
