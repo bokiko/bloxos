@@ -1402,6 +1402,7 @@ func TestCreateAPIMachine(t *testing.T) {
 	api := e.Group("", jwtMiddleware, credentialRotationMiddleware)
 	api.GET("/api/api-machines", handleListAPIMachines)
 	api.POST("/api/api-machines", handleCreateAPIMachine)
+	api.PATCH("/api/api-machines/:id", handleUpdateAPIMachine)
 	api.DELETE("/api/api-machines/:id", handleDeleteAPIMachine)
 	api.POST("/api/api-machines/:id/poll", handleForceAPIPoll)
 
@@ -1632,6 +1633,117 @@ func TestDeleteAPIMachine(t *testing.T) {
 
 	stopAllAPIPollers()
 	t.Log("delete api machine: OK")
+}
+
+func TestUpdateAPIMachine(t *testing.T) {
+	e := setupTestServer(t)
+	markCredentialsRotated(t)
+	token := loginAndGetToken(t, e)
+
+	api := e.Group("", jwtMiddleware, credentialRotationMiddleware)
+	api.POST("/api/api-machines", handleCreateAPIMachine)
+	api.PATCH("/api/api-machines/:id", handleUpdateAPIMachine)
+
+	createBody := `{"name":"Main","adapter_type":"proxmox","base_url":"https://192.168.3.2:8006","auth_config":{"token_id":"root@pam!monitor","token_secret":"xxx"},"tls_config":{"mode":"insecure"},"poll_interval_secs":120}`
+	req := httptest.NewRequest(http.MethodPost, "/api/api-machines", strings.NewReader(createBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create: expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var createResp map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &createResp); err != nil {
+		t.Fatalf("unmarshal create: %v", err)
+	}
+	id := createResp["id"].(string)
+
+	updateBody := fmt.Sprintf(`{"name":"Main Updated","poll_interval_secs":300,"tls_config":{"mode":"custom_ca","ca_cert_pem":%q}}`, generateTestCertPEM(t))
+	req = httptest.NewRequest(http.MethodPatch, "/api/api-machines/"+id, strings.NewReader(updateBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec = httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update: expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal update: %v", err)
+	}
+	if resp["name"] != "Main Updated" {
+		t.Fatalf("expected updated name, got %v", resp["name"])
+	}
+	tlsCfg, ok := resp["tls_config"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected tls_config object, got %T", resp["tls_config"])
+	}
+	if tlsCfg["mode"] != "custom_ca" || tlsCfg["has_custom_ca"] != true {
+		t.Fatalf("unexpected tls_config response: %v", tlsCfg)
+	}
+
+	var storedName, storedTLS string
+	var storedInterval int
+	if err := db.QueryRow("SELECT name, tls_config, poll_interval_secs FROM api_machines WHERE id = ?", id).Scan(&storedName, &storedTLS, &storedInterval); err != nil {
+		t.Fatalf("query updated machine: %v", err)
+	}
+	if storedName != "Main Updated" {
+		t.Fatalf("expected stored updated name, got %s", storedName)
+	}
+	if storedInterval != 300 {
+		t.Fatalf("expected stored poll interval 300, got %d", storedInterval)
+	}
+	if !strings.Contains(storedTLS, `"mode":"custom_ca"`) {
+		t.Fatalf("expected stored tls_config to be custom_ca, got %s", storedTLS)
+	}
+
+	stopAllAPIPollers()
+}
+
+func TestUpdateAPIMachineRequiresAuthConfigOnAdapterChange(t *testing.T) {
+	e := setupTestServer(t)
+	markCredentialsRotated(t)
+	token := loginAndGetToken(t, e)
+
+	api := e.Group("", jwtMiddleware, credentialRotationMiddleware)
+	api.POST("/api/api-machines", handleCreateAPIMachine)
+	api.PATCH("/api/api-machines/:id", handleUpdateAPIMachine)
+
+	createBody := `{"name":"Dasman","adapter_type":"synology","base_url":"http://192.168.16.234:5000","auth_config":{"username":"u","password":"p"}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/api-machines", strings.NewReader(createBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create: expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var createResp map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &createResp); err != nil {
+		t.Fatalf("unmarshal create: %v", err)
+	}
+	id := createResp["id"].(string)
+
+	updateBody := `{"adapter_type":"proxmox"}`
+	req = httptest.NewRequest(http.MethodPatch, "/api/api-machines/"+id, strings.NewReader(updateBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec = httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "auth_config is required when adapter_type changes") {
+		t.Fatalf("unexpected error: %s", rec.Body.String())
+	}
+
+	stopAllAPIPollers()
 }
 
 func TestDeleteAPIMachineNotFound(t *testing.T) {
