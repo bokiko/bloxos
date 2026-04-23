@@ -63,7 +63,7 @@ interface MachineCardProps {
 }
 
 export function MachineCard({ machine, onClick, onDelete }: MachineCardProps) {
-  const [now, setNow] = useState(Date.now());
+  const [now, setNow] = useState(() => Date.now());
   const { status, reason } = getStatus(machine);
 
   useEffect(() => {

@@ -26,9 +26,13 @@ func seedTestAdmin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hash password: %v", err)
 	}
+	pinHash, err := bcrypt.GenerateFromPassword([]byte("1234"), bcrypt.DefaultCost)
+	if err != nil {
+		t.Fatalf("hash pin: %v", err)
+	}
 	id := "test-admin-id"
-	_, err = db.Exec(`INSERT INTO users (id, username, password_hash) VALUES (?, ?, ?)`,
-		id, "admin", string(hash))
+	_, err = db.Exec(`INSERT INTO users (id, username, password_hash, terminal_pin_hash) VALUES (?, ?, ?, ?)`,
+		id, "admin", string(hash), string(pinHash))
 	if err != nil {
 		t.Fatalf("seed test admin: %v", err)
 	}
@@ -1074,6 +1078,79 @@ func TestAgentSecretRevocation(t *testing.T) {
 	server.Close()
 }
 
+func TestKnownMachineReconnectWithoutCredentialRejected(t *testing.T) {
+	e := setupTestServer(t)
+
+	if _, err := db.Exec(`INSERT INTO machines (id, hostname, status) VALUES (?, ?, ?)`,
+		"known-machine-without-secret", "known-host", "online"); err != nil {
+		t.Fatalf("seed known machine: %v", err)
+	}
+
+	server := httptest.NewServer(e)
+	defer server.Close()
+
+	conn, err := wsDialAgent(t, server, "token=definitely-invalid")
+	if err != nil {
+		t.Fatalf("dial failed: %v", err)
+	}
+	defer conn.Close()
+
+	sendMetricsMsg(t, conn, "known-machine-without-secret")
+
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, msg, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("expected rejection message, got read error: %v", err)
+	}
+	if !strings.Contains(string(msg), "durable credential required") {
+		t.Fatalf("expected durable credential rejection, got %s", string(msg))
+	}
+}
+
+func TestTerminalSessionValidPINForSetupUser(t *testing.T) {
+	e := setupEmptyTestServer(t)
+
+	setupBody := `{"setup_token":"test-setup-token-abc123","username":"myadmin","password":"securepass123","pin":"5678"}`
+	setupReq := httptest.NewRequest(http.MethodPost, "/api/setup", strings.NewReader(setupBody))
+	setupReq.Header.Set("Content-Type", "application/json")
+	setupRec := httptest.NewRecorder()
+	e.ServeHTTP(setupRec, setupReq)
+	if setupRec.Code != http.StatusOK {
+		t.Fatalf("setup failed: %d: %s", setupRec.Code, setupRec.Body.String())
+	}
+
+	loginBody := `{"username":"myadmin","password":"securepass123"}`
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(loginBody))
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginRec := httptest.NewRecorder()
+	e.ServeHTTP(loginRec, loginReq)
+	if loginRec.Code != http.StatusOK {
+		t.Fatalf("login failed: %d: %s", loginRec.Code, loginRec.Body.String())
+	}
+	var loginResp map[string]any
+	if err := json.Unmarshal(loginRec.Body.Bytes(), &loginResp); err != nil {
+		t.Fatalf("decode login response: %v", err)
+	}
+	token, _ := loginResp["token"].(string)
+	if token == "" {
+		t.Fatal("login response missing token")
+	}
+
+	body := `{"pin":"5678"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/machines/nonexistent-machine/terminal", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusForbidden {
+		t.Fatalf("valid setup-user PIN was rejected: %s", rec.Body.String())
+	}
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 after PIN validation succeeds, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 // TestTerminalMaxConcurrentSessions verifies that the 4th terminal session is rejected.
 func TestTerminalMaxConcurrentSessions(t *testing.T) {
 	e := setupTestServer(t)
@@ -1094,15 +1171,16 @@ func TestTerminalMaxConcurrentSessions(t *testing.T) {
 
 	// Pre-populate 3 terminal sessions in the in-memory map.
 	termSessionsMu.Lock()
-	for i := 0; i < 3; i++ {
-		sid := fmt.Sprintf("fake-session-%d", i)
-		termSessions[sid] = &TerminalSession{
-			ID:           sid,
-			MachineID:    "some-machine",
-			CreatedAt:    time.Now(),
-			LastActivity: time.Now(),
+		for i := 0; i < 3; i++ {
+			sid := fmt.Sprintf("fake-session-%d", i)
+			termSessions[sid] = &TerminalSession{
+				ID:           sid,
+				MachineID:    "some-machine",
+				UserID:       "test-admin-id",
+				CreatedAt:    time.Now(),
+				LastActivity: time.Now(),
+			}
 		}
-	}
 	termSessionsMu.Unlock()
 	defer func() {
 		termSessionsMu.Lock()

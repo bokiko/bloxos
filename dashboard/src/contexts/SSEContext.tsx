@@ -10,8 +10,11 @@ import {
   ReactNode,
 } from "react";
 import { MachineMetrics, AlertData } from "@/lib/demo-data";
-
-const HUB_URL = process.env.NEXT_PUBLIC_HUB_URL || "http://localhost:4000";
+import {
+  AUTH_CHANGED_EVENT,
+  HUB_URL,
+  getStoredToken,
+} from "@/lib/session";
 
 interface SSEContextType {
   machines: MachineMetrics[];
@@ -63,28 +66,42 @@ export function SSEProvider({ children }: { children: ReactNode }) {
   const mountedRef = useRef(true);
   // Refresh SSE token before it expires (every 4 min for a 5-min token).
   const sseTokenRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const connectRef = useRef<() => void>(() => {});
+
+  const disconnect = useCallback((clearData = false) => {
+    esRef.current?.close();
+    esRef.current = null;
+    if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
+    if (sseTokenRefreshTimer.current) clearTimeout(sseTokenRefreshTimer.current);
+    setConnected(false);
+    if (clearData) {
+      setHasReceivedData(false);
+      setMachineMap(new Map());
+      setAlerts([]);
+      setAlertCount(0);
+    }
+  }, []);
 
   const connect = useCallback(async () => {
     if (!mountedRef.current) return;
 
-    if (esRef.current) {
-      esRef.current.close();
-      esRef.current = null;
-    }
-
-    const token =
-      typeof window !== "undefined"
-        ? localStorage.getItem("bloxos_token")
-        : null;
+    disconnect();
+    const token = getStoredToken();
 
     // Don't connect if no token.
     if (!token) return;
 
     // Get SSE-scoped token (Finding #8).
     const sseToken = await fetchSSEToken();
-    const connectToken = sseToken || token; // Fall back to full token if SSE token fetch fails.
+    if (!sseToken) {
+      reconnectTimer.current = setTimeout(() => {
+        backoffRef.current = Math.min(backoffRef.current * 2, 30000);
+        connectRef.current();
+      }, backoffRef.current);
+      return;
+    }
 
-    const sseUrl = `${HUB_URL}/api/events?token=${encodeURIComponent(connectToken)}`;
+    const sseUrl = `${HUB_URL}/api/events?token=${encodeURIComponent(sseToken)}`;
 
     let es: EventSource;
     try {
@@ -92,7 +109,7 @@ export function SSEProvider({ children }: { children: ReactNode }) {
     } catch {
       reconnectTimer.current = setTimeout(() => {
         backoffRef.current = Math.min(backoffRef.current * 2, 30000);
-        connect();
+        connectRef.current();
       }, backoffRef.current);
       return;
     }
@@ -103,31 +120,26 @@ export function SSEProvider({ children }: { children: ReactNode }) {
       setConnected(true);
       backoffRef.current = 3000;
 
-      // Schedule SSE token refresh (reconnect with new token every 4 min).
-      if (sseToken) {
-        if (sseTokenRefreshTimer.current) clearTimeout(sseTokenRefreshTimer.current);
-        sseTokenRefreshTimer.current = setTimeout(() => {
-          if (mountedRef.current) {
-            connect();
-          }
-        }, 4 * 60 * 1000);
-      }
+      if (sseTokenRefreshTimer.current) clearTimeout(sseTokenRefreshTimer.current);
+      sseTokenRefreshTimer.current = setTimeout(() => {
+        if (mountedRef.current) {
+          connectRef.current();
+        }
+      }, 4 * 60 * 1000);
     };
 
     es.addEventListener("snapshot", (event) => {
       if (!mountedRef.current) return;
       try {
         const list = JSON.parse(event.data) as MachineMetrics[];
-        if (list.length > 0) {
-          setHasReceivedData(true);
-          setMachineMap(() => {
-            const next = new Map<string, MachineMetrics>();
-            for (const m of list) {
-              next.set(m.machine_id, { ...m, last_seen: Date.now() });
-            }
-            return next;
-          });
-        }
+        setHasReceivedData(true);
+        setMachineMap(() => {
+          const next = new Map<string, MachineMetrics>();
+          for (const m of list) {
+            next.set(m.machine_id, { ...m, last_seen: Date.now() });
+          }
+          return next;
+        });
       } catch {
         // ignore parse errors
       }
@@ -224,19 +236,22 @@ export function SSEProvider({ children }: { children: ReactNode }) {
 
       const delay = backoffRef.current;
       backoffRef.current = Math.min(backoffRef.current * 2, 30000);
-      reconnectTimer.current = setTimeout(connect, delay);
+      reconnectTimer.current = setTimeout(() => connectRef.current(), delay);
     };
-  }, []);
+  }, [disconnect]);
+
+  useEffect(() => {
+    connectRef.current = () => {
+      void connect();
+    };
+  }, [connect]);
 
   useEffect(() => {
     mountedRef.current = true;
-    connect();
+    connectRef.current();
 
     // Fetch active alerts on mount
-    const token =
-      typeof window !== "undefined"
-        ? localStorage.getItem("bloxos_token")
-        : null;
+    const token = getStoredToken();
     if (token) {
       fetch(`${HUB_URL}/api/alerts`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -254,23 +269,28 @@ export function SSEProvider({ children }: { children: ReactNode }) {
 
     const onStorage = (e: StorageEvent) => {
       if (e.key === "bloxos_token") {
-        if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
-        if (sseTokenRefreshTimer.current) clearTimeout(sseTokenRefreshTimer.current);
         backoffRef.current = 3000;
-        connect();
+        connectRef.current();
+      }
+    };
+    const onAuthChanged = () => {
+      backoffRef.current = 3000;
+      if (getStoredToken()) {
+        connectRef.current();
+      } else {
+        disconnect(true);
       }
     };
     window.addEventListener("storage", onStorage);
+    window.addEventListener(AUTH_CHANGED_EVENT, onAuthChanged);
 
     return () => {
       mountedRef.current = false;
       window.removeEventListener("storage", onStorage);
-      esRef.current?.close();
-      esRef.current = null;
-      if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
-      if (sseTokenRefreshTimer.current) clearTimeout(sseTokenRefreshTimer.current);
+      window.removeEventListener(AUTH_CHANGED_EVENT, onAuthChanged);
+      disconnect();
     };
-  }, [connect]);
+  }, [disconnect]);
 
   const getMachine = useCallback(
     (id: string) => machineMap.get(id),

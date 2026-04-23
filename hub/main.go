@@ -1621,47 +1621,56 @@ func handleAgentWS(c echo.Context) error {
 			continue
 		}
 
-		switch envelope.Type {
-		case "metrics", "":
-			var m AgentMetrics
-			if err := json.Unmarshal(msg, &m); err != nil {
-				log.Printf("invalid metrics JSON: %v", err)
-				continue
-			}
-			if machineID == "" {
-				machineID = m.MachineID
-
-				// Check if this machine_id already exists (reconnecting agent).
-				var existingID string
-				knownMachine := db.QueryRow(`SELECT id FROM machines WHERE id = ?`, machineID).Scan(&existingID) == nil
-
-				if knownMachine {
-					log.Printf("known agent reconnecting: %s (%s)", m.Hostname, machineID)
-				} else if tokenValidated {
-					// New enrollment with valid token - consume it and issue durable secret.
-					consumeToken(tokenHash)
-					rawSecret, secretHash, err := generateAgentSecret()
-					if err != nil {
-						log.Printf("failed to generate agent secret: %v", err)
-						ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","message":"enrollment failed"}`))
+			switch envelope.Type {
+			case "metrics", "":
+				var m AgentMetrics
+				if err := json.Unmarshal(msg, &m); err != nil {
+					log.Printf("invalid metrics JSON: %v", err)
+					continue
+				}
+				if machineID == "" {
+					machineID = m.MachineID
+					if secretMachineID != "" && machineID != secretMachineID {
+						log.Printf("rejecting agent: claimed machine_id %s does not match credential for %s", machineID, secretMachineID)
+						ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","message":"machine_id does not match credential"}`))
 						return nil
 					}
-					if err := storeAgentCredential(machineID, secretHash); err != nil {
-						log.Printf("failed to store agent credential: %v", err)
-						ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","message":"enrollment failed"}`))
-						return nil
-					}
-					enrolledMsg, _ := json.Marshal(map[string]string{
+
+					// Check if this machine_id already exists (reconnecting agent).
+					var existingID string
+					knownMachine := db.QueryRow(`SELECT id FROM machines WHERE id = ?`, machineID).Scan(&existingID) == nil
+					hasCredential := machineHasCredential(machineID)
+
+					if knownMachine && secretMachineID == machineID {
+						log.Printf("known agent reconnecting with durable credential: %s (%s)", m.Hostname, machineID)
+					} else if tokenValidated {
+						// New enrollment with valid token - consume it and issue durable secret.
+						rawSecret, secretHash, err := generateAgentSecret()
+						if err != nil {
+							log.Printf("failed to generate agent secret: %v", err)
+							ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","message":"enrollment failed"}`))
+							return nil
+						}
+						if err := consumeTokenAndStoreCredential(tokenHash, machineID, secretHash); err != nil {
+							log.Printf("failed to store agent credential: %v", err)
+							ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","message":"enrollment failed"}`))
+							return nil
+						}
+						enrolledMsg, _ := json.Marshal(map[string]string{
 						"type":         "enrolled",
 						"agent_secret": rawSecret,
-					})
-					ws.WriteMessage(websocket.TextMessage, enrolledMsg)
-					log.Printf("new agent enrolled with durable secret: %s (%s)", m.Hostname, machineID)
-				} else {
-					log.Printf("rejecting unknown agent %s (%s): no valid token", m.Hostname, machineID)
-					ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","message":"invalid or used token"}`))
-					return nil
-				}
+						})
+						ws.WriteMessage(websocket.TextMessage, enrolledMsg)
+						log.Printf("new agent enrolled with durable secret: %s (%s)", m.Hostname, machineID)
+					} else if knownMachine || hasCredential {
+						log.Printf("rejecting known agent %s (%s): durable credential required", m.Hostname, machineID)
+						ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","message":"durable credential required"}`))
+						return nil
+					} else {
+						log.Printf("rejecting unknown agent %s (%s): no valid token", m.Hostname, machineID)
+						ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","message":"invalid or used token"}`))
+						return nil
+					}
 
 				agent.MachineID = machineID
 				agentsMu.Lock()
@@ -1778,6 +1787,37 @@ func extractUserIDFromRequest(c echo.Context) string {
 	return userID
 }
 
+func configuredAllowedOrigins() []string {
+	if ao := os.Getenv("ALLOWED_ORIGINS"); ao != "" {
+		parts := strings.Split(ao, ",")
+		out := make([]string, 0, len(parts))
+		for _, part := range parts {
+			part = strings.TrimSpace(part)
+			if part != "" {
+				out = append(out, part)
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	if pu := strings.TrimSpace(os.Getenv("PUBLIC_URL")); pu != "" {
+		return []string{pu}
+	}
+	return nil
+}
+
+func generateTerminalBrowserToken(sessionID, userID string) (string, error) {
+	claims := jwt.MapClaims{
+		"type":       "terminal_browser",
+		"user_id":    userID,
+		"session_id": sessionID,
+		"exp":        time.Now().Add(1 * time.Minute).Unix(),
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString(jwtSecret)
+}
+
 // handleStartTerminal creates a terminal session and tells the agent to spawn a PTY.
 func handleStartTerminal(c echo.Context) error {
 	ip := getRealIP(c)
@@ -1795,14 +1835,22 @@ func handleStartTerminal(c echo.Context) error {
 	if err := c.Bind(&body); err != nil || body.Pin == "" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "pin is required"})
 	}
-	if err := verifyTerminalPIN(body.Pin); err != nil {
+	userID := extractUserIDFromRequest(c)
+	if userID == "" {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "missing user context"})
+	}
+	if err := verifyTerminalPIN(userID, body.Pin); err != nil {
 		return c.JSON(http.StatusForbidden, map[string]string{"error": "invalid PIN"})
 	}
 
-	// Enforce max concurrent terminal sessions (hardening plan #13).
-	// TODO: count per-user when multi-user support is added.
+	// Enforce max concurrent terminal sessions per user.
 	termSessionsMu.RLock()
-	activeCount := len(termSessions)
+	activeCount := 0
+	for _, session := range termSessions {
+		if session.UserID == userID {
+			activeCount++
+		}
+	}
 	termSessionsMu.RUnlock()
 	if activeCount >= maxTerminalSessions {
 		log.Printf("terminal session rejected: max concurrent sessions reached (%d)", maxTerminalSessions)
@@ -1815,13 +1863,19 @@ func handleStartTerminal(c echo.Context) error {
 	if !ok {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "agent not connected"})
 	}
+	if agent.Conn == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "agent connection unavailable"})
+	}
 
 	// Extract audit metadata.
-	userID := extractUserIDFromRequest(c)
 	sourceIP := getRealIP(c)
 
 	sessionID := uuid.New().String()
 	terminalToken := uuid.New().String()
+	browserToken, err := generateTerminalBrowserToken(sessionID, userID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to create terminal session"})
+	}
 
 	now := time.Now()
 	session := &TerminalSession{
@@ -1854,7 +1908,7 @@ func handleStartTerminal(c echo.Context) error {
 		}
 	}()
 
-	_, err := db.Exec(`INSERT INTO terminal_sessions (id, machine_id, source_ip, user_id) VALUES (?, ?, ?, ?)`, sessionID, machineID, sourceIP, userID)
+	_, err = db.Exec(`INSERT INTO terminal_sessions (id, machine_id, source_ip, user_id) VALUES (?, ?, ?, ?)`, sessionID, machineID, sourceIP, userID)
 	if err != nil {
 		log.Printf("terminal session DB insert error: %v", err)
 	}
@@ -1877,7 +1931,10 @@ func handleStartTerminal(c echo.Context) error {
 	}
 
 	log.Printf("terminal session %s created for machine %s", sessionID, machineID)
-	return c.JSON(http.StatusOK, map[string]string{"session_id": sessionID})
+	return c.JSON(http.StatusOK, map[string]string{
+		"session_id":   sessionID,
+		"browser_token": browserToken,
+	})
 }
 
 func handleCloseTerminal(c echo.Context) error {
@@ -1912,6 +1969,7 @@ func handleCloseTerminal(c echo.Context) error {
 func handleTerminalWS(c echo.Context) error {
 	sessionID := c.Param("session_id")
 	role := c.QueryParam("role")
+	browserUserID := ""
 
 	if role != "agent" && role != "browser" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "role must be 'agent' or 'browser'"})
@@ -1936,9 +1994,9 @@ func handleTerminalWS(c echo.Context) error {
 		}
 	}
 	if role == "browser" {
-		tokenStr := c.QueryParam("token")
+		tokenStr := c.QueryParam("browser_token")
 		if tokenStr == "" {
-			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "token required for browser role"})
+			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "browser_token required for browser role"})
 		}
 		tkn, err := jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
 			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
@@ -1949,6 +2007,17 @@ func handleTerminalWS(c echo.Context) error {
 		if err != nil || !tkn.Valid {
 			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid or expired token"})
 		}
+		claims, ok := tkn.Claims.(jwt.MapClaims)
+		if !ok {
+			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid token claims"})
+		}
+		if tokenType, _ := claims["type"].(string); tokenType != "terminal_browser" {
+			return c.JSON(http.StatusForbidden, map[string]string{"error": "invalid browser token type"})
+		}
+		if tokenSessionID, _ := claims["session_id"].(string); tokenSessionID != sessionID {
+			return c.JSON(http.StatusForbidden, map[string]string{"error": "browser token does not match session"})
+		}
+		browserUserID, _ = claims["user_id"].(string)
 	}
 
 	termSessionsMu.RLock()
@@ -1957,27 +2026,28 @@ func handleTerminalWS(c echo.Context) error {
 	if !ok {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "session not found"})
 	}
+	if role == "browser" && session.UserID != "" && browserUserID != session.UserID {
+		return c.JSON(http.StatusForbidden, map[string]string{"error": "browser token does not match session owner"})
+	}
 
 	// Use origin-checking upgrader for terminal WebSocket (Finding #4).
-	termUpgrader := websocket.Upgrader{
-		CheckOrigin: func(r *http.Request) bool {
-			origin := r.Header.Get("Origin")
-			if origin == "" {
-				return true // agent connections have no origin
-			}
-			// Allow known origins.
-			for _, allowed := range []string{"http://localhost:3000", "http://192.168.16.113:3000", "http://localhost:4000", "http://192.168.16.113:4000"} {
-				if origin == allowed {
+		termUpgrader := websocket.Upgrader{
+			CheckOrigin: func(r *http.Request) bool {
+				origin := r.Header.Get("Origin")
+				if origin == "" {
+					return true // agent connections have no origin
+				}
+				for _, allowed := range configuredAllowedOrigins() {
+					if origin == allowed {
+						return true
+					}
+				}
+				if parsedOrigin, err := url.Parse(origin); err == nil && parsedOrigin.Host == r.Host {
 					return true
 				}
-			}
-			// Also allow if origin matches the request host.
-			if strings.Contains(origin, r.Host) {
-				return true
-			}
-			log.Printf("terminal WS: rejected origin %s", origin)
-			return false
-		},
+				log.Printf("terminal WS: rejected origin %s", origin)
+				return false
+			},
 	}
 	ws, err := termUpgrader.Upgrade(c.Response(), c.Request(), nil)
 	if err != nil {
@@ -2737,6 +2807,32 @@ func consumeToken(tokenHash string) {
 	}
 }
 
+func consumeTokenAndStoreCredential(tokenHash, machineID, secretHash string) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	res, err := tx.Exec(`UPDATE tokens SET used = TRUE WHERE token_hash = ? AND used = FALSE`, tokenHash)
+	if err != nil {
+		return err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return fmt.Errorf("install token already consumed")
+	}
+
+	if _, err := tx.Exec(`INSERT OR REPLACE INTO agent_credentials (machine_id, secret_hash, created_at, last_used_at)
+		VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`, machineID, secretHash); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // generateAgentSecret creates a 32-byte random secret for agent enrollment.
 // Returns the hex-encoded raw secret and its SHA-256 hash.
 func generateAgentSecret() (raw string, hash string, err error) {
@@ -2755,6 +2851,15 @@ func storeAgentCredential(machineID, secretHash string) error {
 	_, err := db.Exec(`INSERT OR REPLACE INTO agent_credentials (machine_id, secret_hash, created_at, last_used_at)
 		VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`, machineID, secretHash)
 	return err
+}
+
+func machineHasCredential(machineID string) bool {
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM agent_credentials WHERE machine_id = ?`, machineID).Scan(&count); err != nil {
+		log.Printf("failed checking agent credential for %s: %v", machineID, err)
+		return false
+	}
+	return count > 0
 }
 
 // validateAgentSecret looks up a credential by the SHA-256 hash of the provided secret.
@@ -2954,17 +3059,13 @@ func handleChangePassword(c echo.Context) error {
 }
 
 // verifyTerminalPIN checks a PIN against the stored hash (Finding #3).
-func verifyTerminalPIN(pin string) error {
+func verifyTerminalPIN(userID, pin string) error {
+	if userID == "" {
+		return fmt.Errorf("missing user context")
+	}
 	var pinHash sql.NullString
-	err := db.QueryRow(`SELECT terminal_pin_hash FROM users WHERE username = 'admin'`).Scan(&pinHash)
+	err := db.QueryRow(`SELECT terminal_pin_hash FROM users WHERE id = ?`, userID).Scan(&pinHash)
 	if err != nil || !pinHash.Valid || pinHash.String == "" {
-		// No PIN set yet — seed default PIN hash.
-		defaultHash, _ := bcrypt.GenerateFromPassword([]byte("1234"), bcrypt.DefaultCost)
-		db.Exec(`UPDATE users SET terminal_pin_hash = ? WHERE username = 'admin'`, string(defaultHash))
-		// Verify against default.
-		if pin == "1234" {
-			return nil
-		}
 		return fmt.Errorf("invalid PIN")
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(pinHash.String), []byte(pin)); err != nil {
@@ -2986,7 +3087,11 @@ func handleChangePIN(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "new PIN must be at least 4 characters"})
 	}
 
-	if err := verifyTerminalPIN(body.CurrentPIN); err != nil {
+	userID := extractUserIDFromRequest(c)
+	if userID == "" {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "missing user context"})
+	}
+	if err := verifyTerminalPIN(userID, body.CurrentPIN); err != nil {
 		return c.JSON(http.StatusForbidden, map[string]string{"error": "current PIN is incorrect"})
 	}
 
@@ -2994,7 +3099,7 @@ func handleChangePIN(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to hash PIN"})
 	}
-	_, err = db.Exec(`UPDATE users SET terminal_pin_hash = ?, pin_changed = TRUE WHERE username = 'admin'`, string(newHash))
+	_, err = db.Exec(`UPDATE users SET terminal_pin_hash = ?, pin_changed = TRUE WHERE id = ?`, string(newHash), userID)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to update PIN"})
 	}
@@ -3053,22 +3158,23 @@ type tokenRedactingWriter struct {
 
 func (t *tokenRedactingWriter) Write(p []byte) (n int, err error) {
 	s := string(p)
-	// Redact token= query parameter values.
-	for {
-		idx := strings.Index(s, "token=")
-		if idx == -1 {
-			break
-		}
-		end := idx + 6
-		// Find the end of the token value (next & or space or quote or newline).
-		tokenEnd := end
-		for tokenEnd < len(s) && s[tokenEnd] != '&' && s[tokenEnd] != ' ' && s[tokenEnd] != '"' && s[tokenEnd] != '\n' {
-			tokenEnd++
-		}
-		if tokenEnd > end {
-			s = s[:end] + "[REDACTED]" + s[tokenEnd:]
-		} else {
-			break
+	for _, key := range []string{"token", "secret", "terminal_token", "browser_token"} {
+		needle := key + "="
+		for {
+			idx := strings.Index(s, needle)
+			if idx == -1 {
+				break
+			}
+			end := idx + len(needle)
+			valueEnd := end
+			for valueEnd < len(s) && s[valueEnd] != '&' && s[valueEnd] != ' ' && s[valueEnd] != '"' && s[valueEnd] != '\n' {
+				valueEnd++
+			}
+			if valueEnd > end {
+				s = s[:end] + "[REDACTED]" + s[valueEnd:]
+			} else {
+				break
+			}
 		}
 	}
 	return t.w.Write([]byte(s))

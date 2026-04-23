@@ -4,6 +4,7 @@ import { useState, useMemo } from "react";
 import { Box, RotateCcw, Play, Loader2 } from "lucide-react";
 import { useToast } from "./Toast";
 import { Button } from "@/components/ui/button";
+import { getStoredToken } from "@/lib/session";
 
 export interface Container {
   id: string;
@@ -51,7 +52,7 @@ function ContainerActions({
   async function runCommand(type: string) {
     setLoading(true);
     try {
-      const token = localStorage.getItem("bloxos_token");
+      const token = getStoredToken();
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       if (token) headers["Authorization"] = `Bearer ${token}`;
       const res = await fetch(`${hubUrl}/api/machines/${machineId}/command`, {

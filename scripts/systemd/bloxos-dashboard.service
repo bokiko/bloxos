@@ -6,11 +6,11 @@ After=network.target bloxos-hub.service
 Type=simple
 User=bokiko
 WorkingDirectory=/home/bokiko/bloxos/dashboard
-ExecStart=/usr/bin/npx next start -H 0.0.0.0 -p 3000
+ExecStart=/usr/bin/npx next start -H 127.0.0.1 -p 3000
 Restart=always
 RestartSec=5
 Environment=NODE_ENV=production
-Environment=NEXT_PUBLIC_HUB_URL=http://192.168.16.113:4000
+Environment=NEXT_PUBLIC_HUB_URL=
 
 [Install]
 WantedBy=multi-user.target
