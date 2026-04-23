@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"encoding/xml"
 	"flag"
@@ -9,7 +11,6 @@ import (
 	"log"
 	"math/rand"
 	"net"
-	"crypto/tls"
 	"net/url"
 	"os"
 	"os/exec"
@@ -132,7 +133,7 @@ var (
 		"reboot":            true,
 		"shutdown":          true,
 		"start_terminal":    true,
-		"start_container":    true,
+		"start_container":   true,
 	}
 
 	// interestingServicePatterns are services we report to the hub.
@@ -179,6 +180,73 @@ func saveCredentialFile(secret string) error {
 	}
 	log.Printf("agent secret saved to %s", path)
 	return nil
+}
+
+// caCertFilePath returns the path where the agent expects an additional trusted CA.
+func caCertFilePath() (string, bool) {
+	if env := os.Getenv("BLOXOS_CA_CERT"); env != "" {
+		return env, true
+	}
+	// Prefer /etc/bloxos/ca.crt if running as root.
+	if u, err := user.Current(); err == nil && u.Uid == "0" {
+		return "/etc/bloxos/ca.crt", false
+	}
+	// Otherwise use ~/.bloxos/ca.crt.
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = "."
+	}
+	return filepath.Join(home, ".bloxos", "ca.crt"), false
+}
+
+func loadRootCAs() (*x509.CertPool, string, error) {
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		pool = x509.NewCertPool()
+	}
+
+	path, explicit := caCertFilePath()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) && !explicit {
+			return pool, "", nil
+		}
+		return nil, "", fmt.Errorf("read CA cert %s: %w", path, err)
+	}
+	if ok := pool.AppendCertsFromPEM(data); !ok {
+		return nil, "", fmt.Errorf("parse CA cert %s: no certificates found", path)
+	}
+	return pool, path, nil
+}
+
+func websocketDialerFor(rawURL string) (*websocket.Dialer, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid websocket URL: %w", err)
+	}
+
+	dialer := *websocket.DefaultDialer
+	if u.Scheme != "wss" {
+		return &dialer, nil
+	}
+
+	tlsConfig := &tls.Config{}
+	if os.Getenv("BLOXOS_TLS_INSECURE") == "1" {
+		tlsConfig.InsecureSkipVerify = true
+		log.Printf("WARNING: BLOXOS_TLS_INSECURE=1 disables TLS verification for %s", u.Host)
+	} else {
+		rootCAs, caPath, err := loadRootCAs()
+		if err != nil {
+			return nil, err
+		}
+		tlsConfig.RootCAs = rootCAs
+		if caPath != "" {
+			log.Printf("agent TLS: trusting additional CA from %s", caPath)
+		}
+	}
+
+	dialer.TLSClientConfig = tlsConfig
+	return &dialer, nil
 }
 
 func main() {
@@ -275,10 +343,11 @@ func runAgent(machineID string) error {
 	u.RawQuery = q.Encode()
 
 	log.Printf("connecting to %s", hubURL)
-	tlsDialer := &websocket.Dialer{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	dialer, err := websocketDialerFor(u.String())
+	if err != nil {
+		return fmt.Errorf("build websocket dialer: %w", err)
 	}
-	conn, _, err := tlsDialer.Dial(u.String(), nil)
+	conn, _, err := dialer.Dial(u.String(), nil)
 	if err != nil {
 		return fmt.Errorf("dial failed: %w", err)
 	}
@@ -592,10 +661,12 @@ func handleStartTerminal(cmd Command, rawMsg []byte) {
 
 	// Connect to hub terminal relay.
 	log.Printf("terminal: connecting to %s", termURL)
-	tlsDialer := &websocket.Dialer{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	dialer, err := websocketDialerFor(termURL)
+	if err != nil {
+		log.Printf("terminal: build websocket dialer failed: %v", err)
+		return
 	}
-	ws, _, err := tlsDialer.Dial(termURL, nil)
+	ws, _, err := dialer.Dial(termURL, nil)
 	if err != nil {
 		log.Printf("terminal: dial hub failed: %v", err)
 		return
@@ -870,14 +941,14 @@ type nvidiaSmiLog struct {
 }
 
 type nvGPU struct {
-	ID          string        `xml:"id,attr"`
-	ProductName string        `xml:"product_name"`
-	FanSpeed    string        `xml:"fan_speed"`
-	Temperature nvTemperature `xml:"temperature"`
-	Utilization nvUtilization `xml:"utilization"`
-	FBMemory    nvFBMemory    `xml:"fb_memory_usage"`
-	GPUPowerReadings nvPower `xml:"gpu_power_readings"`
-	PowerReadings    nvPower `xml:"power_readings"`
+	ID               string        `xml:"id,attr"`
+	ProductName      string        `xml:"product_name"`
+	FanSpeed         string        `xml:"fan_speed"`
+	Temperature      nvTemperature `xml:"temperature"`
+	Utilization      nvUtilization `xml:"utilization"`
+	FBMemory         nvFBMemory    `xml:"fb_memory_usage"`
+	GPUPowerReadings nvPower       `xml:"gpu_power_readings"`
+	PowerReadings    nvPower       `xml:"power_readings"`
 }
 
 type nvTemperature struct {

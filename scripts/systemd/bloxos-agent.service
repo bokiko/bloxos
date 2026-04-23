@@ -9,6 +9,8 @@ User=bokiko
 WorkingDirectory=/home/bokiko/bloxos/agent
 Environment="BLOXOS_HUB=ws://localhost:4000"
 Environment="BLOXOS_TOKEN="
+# If the hub uses a self-signed CA, point the agent at the trusted root cert.
+# Environment="BLOXOS_CA_CERT=/etc/bloxos/ca.crt"
 ExecStart=/home/bokiko/bloxos/agent/bloxos-agent
 Restart=always
 RestartSec=5
