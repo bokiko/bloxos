@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, FormEvent } from "react";
+import { useState, FormEvent, useEffect, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/contexts/AuthContext";
+import { HUB_URL } from "@/lib/session";
 import { motion } from "framer-motion";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -13,8 +14,34 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const { login } = useAuth();
+  const [checkingSetup, startSetupCheck] = useTransition();
+  const { login, isAuthenticated } = useAuth();
   const router = useRouter();
+
+  useEffect(() => {
+    if (isAuthenticated) {
+      router.replace("/");
+    }
+  }, [isAuthenticated, router]);
+
+  useEffect(() => {
+    let active = true;
+    startSetupCheck(async () => {
+      try {
+        const res = await fetch(`${HUB_URL}/api/setup/status`);
+        if (!res.ok || !active) return;
+        const data = await res.json();
+        if (active && data?.needs_setup) {
+          router.replace("/setup");
+        }
+      } catch {
+        // ignore setup status failures and keep login usable
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [router]);
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -62,6 +89,7 @@ export default function LoginPage() {
                   placeholder="admin"
                   autoFocus
                   autoComplete="username"
+                  disabled={checkingSetup}
                 />
               </div>
               <div>
@@ -73,6 +101,7 @@ export default function LoginPage() {
                   className="bg-blox-bg border-blox-border text-blox-text placeholder:text-blox-muted/50 h-9 text-sm"
                   placeholder="password"
                   autoComplete="current-password"
+                  disabled={checkingSetup}
                 />
               </div>
 
@@ -88,10 +117,10 @@ export default function LoginPage() {
 
               <Button
                 type="submit"
-                disabled={loading || !username || !password}
+                disabled={loading || checkingSetup || !username || !password}
                 className="w-full bg-blox-blue hover:bg-blox-blue/90 text-white h-9 text-sm font-medium"
               >
-                {loading ? "Signing in..." : "Sign In"}
+                {checkingSetup ? "Checking setup..." : loading ? "Signing in..." : "Sign In"}
               </Button>
             </form>
           </CardContent>

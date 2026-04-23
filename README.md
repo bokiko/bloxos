@@ -97,8 +97,9 @@ BLOXOS_CA_CERT=/etc/bloxos/ca.crt ./bloxos-agent --hub wss://<hub>/ws/agent --to
 
 1. Start the hub.
 2. Read the one-time setup token from `~/.bloxos/setup-token`, or set `BLOXOS_SETUP_TOKEN`.
-3. `POST /api/setup` with your setup token, admin username, password, and terminal PIN.
-4. Log in with the credentials you just created.
+3. Open `https://<hub>/setup`.
+4. Enter the setup token, admin username, password, and terminal PIN.
+5. The dashboard completes setup and then hands off to the normal login/dashboard flow.
 
 ### API-Polled Machines
 
