@@ -3206,6 +3206,7 @@ var insecureHTTPClient = &http.Client{
 // --- Proxmox Adapter ---
 
 func pollProxmox(baseURL string, authConfig json.RawMessage) (*APIPollResult, error) {
+	baseURL = strings.TrimRight(baseURL, "/")
 	var auth struct {
 		TokenID     string `json:"token_id"`
 		TokenSecret string `json:"token_secret"`
@@ -3314,6 +3315,7 @@ func pollProxmox(baseURL string, authConfig json.RawMessage) (*APIPollResult, er
 // --- Synology Adapter ---
 
 func pollSynology(baseURL string, authConfig json.RawMessage) (*APIPollResult, error) {
+	baseURL = strings.TrimRight(baseURL, "/")
 	var auth struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -3671,12 +3673,12 @@ func storeAPIPollResult(apiMachineID, name, adapterType string, result *APIPollR
 
 	// Upsert machine.
 	_, err := db.Exec(`INSERT INTO machines (id, hostname, ip, os, status, tags, last_seen)
-		VALUES (?, ?, ?, ?, online, ?, CURRENT_TIMESTAMP)
+		VALUES (?, ?, ?, ?, 'online', ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(id) DO UPDATE SET
 			hostname = excluded.hostname,
 			ip = excluded.ip,
 			os = excluded.os,
-			status = online,
+			status = 'online',
 			tags = excluded.tags,
 			last_seen = CURRENT_TIMESTAMP`,
 		machineID, hostname, ip, result.OS, adapterType)
@@ -3781,7 +3783,7 @@ func startAPIPoller(id, name, adapterType, baseURL string, authConfig json.RawMe
 				machineID := "api-" + id
 				db.Exec(`INSERT INTO machines (id, hostname, status, tags, last_seen)
 					VALUES (?, ?, error, ?, CURRENT_TIMESTAMP)
-					ON CONFLICT(id) DO UPDATE SET status = error, last_seen = CURRENT_TIMESTAMP`,
+					ON CONFLICT(id) DO UPDATE SET status = 'error', last_seen = CURRENT_TIMESTAMP`,
 					machineID, name, adapterType)
 			} else {
 				storeAPIPollResult(id, name, adapterType, result)
