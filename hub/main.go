@@ -278,6 +278,26 @@ func main() {
 		AllowHeaders: []string{"Accept", "Content-Type", "Cache-Control", "Authorization"},
 	}))
 
+	registerRoutes(e)
+
+	if err := auditRBACRouteCoverage(e, routeScopeRequirements); err != nil {
+		log.Fatalf("RBAC route audit failed: %v", err)
+	}
+
+	listenAddr := os.Getenv("HUB_LISTEN")
+	if listenAddr == "" {
+		listenAddr = "127.0.0.1:4000"
+	}
+	log.Printf("hub listening on %s", listenAddr)
+	if err := e.Start(listenAddr); err != nil && err != http.ErrServerClosed {
+		log.Fatalf("server error: %v", err)
+	}
+}
+
+// registerRoutes wires every public and RBAC-protected handler onto e.
+// Shared between main() and tests so the production route set and the audit
+// can never drift.
+func registerRoutes(e *echo.Echo) {
 	// Public endpoints (no auth).
 	e.GET("/health", handleHealth)
 	e.GET("/ws/agent", handleAgentWS)
@@ -300,42 +320,28 @@ func main() {
 	api.GET("/api/machines/:id/metrics/history", handleMetricsHistory)
 	api.DELETE("/api/machines/:id", handleDeleteMachine)
 
-	// Terminal endpoints.
 	api.POST("/api/machines/:id/terminal", handleStartTerminal)
 	api.DELETE("/api/machines/:id/terminal/:session_id", handleCloseTerminal)
 	e.GET("/ws/terminal/:session_id", handleTerminalWS)
 
-	// Alert endpoints.
 	api.GET("/api/alerts", handleListAlerts)
 	api.GET("/api/alerts/active/count", handleAlertCount)
 	api.POST("/api/alerts/:id/acknowledge", handleAcknowledgeAlert)
 	api.GET("/api/alert-rules", handleListAlertRules)
 	api.PUT("/api/alert-rules/:id", handleUpdateAlertRule)
 
-	// Auth management endpoints (Finding #2, #3).
 	api.POST("/api/auth/change-password", handleChangePassword)
 	api.POST("/api/auth/change-pin", handleChangePIN)
 	api.POST("/api/auth/sse-token", handleSSEToken)
 
-	// Install endpoints.
 	api.POST("/api/tokens", handleCreateToken)
 
-	// Bulk endpoints.
 	api.POST("/api/bulk/command", handleBulkCommand)
 	api.GET("/api/api-machines", handleListAPIMachines)
 	api.POST("/api/api-machines", handleCreateAPIMachine)
 	api.PATCH("/api/api-machines/:id", handleUpdateAPIMachine)
 	api.DELETE("/api/api-machines/:id", handleDeleteAPIMachine)
 	api.POST("/api/api-machines/:id/poll", handleForceAPIPoll)
-
-	listenAddr := os.Getenv("HUB_LISTEN")
-	if listenAddr == "" {
-		listenAddr = "127.0.0.1:4000"
-	}
-	log.Printf("hub listening on %s", listenAddr)
-	if err := e.Start(listenAddr); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("server error: %v", err)
-	}
 }
 
 func getEnvOrDefault(key, def string) string {

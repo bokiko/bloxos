@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -188,4 +189,55 @@ func scopesForRole(role UserRole) []string {
 
 func roleHasScope(role UserRole, requiredScope string) bool {
 	return slices.Contains(roleScopes[role], requiredScope)
+}
+
+// publicAPIRoutes lists the /api/* endpoints that are served without RBAC enforcement.
+var publicAPIRoutes = map[string]struct{}{
+	routeScopeKey(http.MethodPost, "/api/auth/login"):  {},
+	routeScopeKey(http.MethodGet, "/api/setup/status"): {},
+	routeScopeKey(http.MethodPost, "/api/setup"):       {},
+}
+
+// auditRBACRouteCoverage verifies every protected /api/* route registered on e has a
+// scope mapping in requirements, and that requirements has no entries for routes
+// that aren't registered. Called at startup so a missing or orphaned mapping fails
+// the boot instead of surfacing as a per-request 500.
+func auditRBACRouteCoverage(e *echo.Echo, requirements map[string]string) error {
+	registered := make(map[string]struct{})
+	var missing []string
+	for _, r := range e.Routes() {
+		if !strings.HasPrefix(r.Path, "/api/") {
+			continue
+		}
+		key := routeScopeKey(r.Method, r.Path)
+		if _, isPublic := publicAPIRoutes[key]; isPublic {
+			continue
+		}
+		registered[key] = struct{}{}
+		if _, ok := requirements[key]; !ok {
+			missing = append(missing, key)
+		}
+	}
+
+	var orphans []string
+	for key := range requirements {
+		if _, ok := registered[key]; !ok {
+			orphans = append(orphans, key)
+		}
+	}
+
+	if len(missing) == 0 && len(orphans) == 0 {
+		return nil
+	}
+	slices.Sort(missing)
+	slices.Sort(orphans)
+
+	var parts []string
+	if len(missing) > 0 {
+		parts = append(parts, fmt.Sprintf("missing scope mapping for %d route(s): %v", len(missing), missing))
+	}
+	if len(orphans) > 0 {
+		parts = append(parts, fmt.Sprintf("orphan scope mapping for %d route(s): %v", len(orphans), orphans))
+	}
+	return errors.New(strings.Join(parts, "; "))
 }
