@@ -7,6 +7,7 @@ import { demoMachines, MachineMetrics, AlertData } from "@/lib/demo-data";
 import { DEMO_MODE, HUB_URL } from "@/lib/session";
 import { MachineCard } from "@/components/MachineCard";
 import { MachineStatus } from "@/components/StatusBadge";
+import { Sparkline } from "@/components/Sparkline";
 import { AlertPanel } from "@/components/AlertPanel";
 import { AddMachineModal } from "@/components/AddMachineModal";
 import { AddAPIMachineModal, type EditableAPIMachine } from "@/components/AddAPIMachineModal";
@@ -567,8 +568,8 @@ export default function Home() {
       <main className="max-w-[1600px] mx-auto px-4 sm:px-6 pb-6">
         {viewMode === "grid" ? (
           <motion.div
-            className="grid gap-4"
-            style={{ gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))" }}
+            className="grid gap-4 auto-rows-fr justify-start"
+            style={{ gridTemplateColumns: "repeat(auto-fill, minmax(300px, 360px))" }}
           >
             <AnimatePresence mode="popLayout">
               {filteredMachines.map((m, i) => (
@@ -579,6 +580,7 @@ export default function Home() {
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, scale: 0.95 }}
                   transition={{ duration: 0.3, delay: i * 0.03 }}
+                  className="h-full"
                 >
                   <MachineCard
                     machine={m}
@@ -608,11 +610,14 @@ export default function Home() {
                   <TableHead className="text-blox-muted text-xs">Hostname</TableHead>
                   <TableHead className="text-blox-muted text-xs hidden md:table-cell">IP</TableHead>
                   <TableHead className="text-blox-muted text-xs">CPU</TableHead>
+                  <TableHead className="text-blox-muted text-xs hidden lg:table-cell">30m</TableHead>
                   <TableHead className="text-blox-muted text-xs">RAM</TableHead>
+                  <TableHead className="text-blox-muted text-xs hidden md:table-cell">Disk</TableHead>
                   <TableHead className="text-blox-muted text-xs hidden lg:table-cell">GPU</TableHead>
                   <TableHead className="text-blox-muted text-xs hidden lg:table-cell">VRAM</TableHead>
                   <TableHead className="text-blox-muted text-xs hidden xl:table-cell">Latency</TableHead>
                   <TableHead className="text-blox-muted text-xs hidden xl:table-cell">Last Seen</TableHead>
+                  <TableHead className="text-blox-muted text-xs hidden xl:table-cell">OS</TableHead>
                   <TableHead className="text-blox-muted text-xs hidden xl:table-cell">Tags</TableHead>
                 </TableRow>
               </TableHeader>
@@ -620,6 +625,7 @@ export default function Home() {
                 {filteredMachines.map((m, i) => {
                   const status = getStatus(m);
                   const ramPct = (m.ram_total_bytes ?? 0) > 0 ? ((m.ram_used_bytes ?? 0) / m.ram_total_bytes) * 100 : 0;
+                  const diskPct = (m.disk_total_bytes ?? 0) > 0 ? ((m.disk_used_bytes ?? 0) / m.disk_total_bytes) * 100 : 0;
                   const tags = m.tags ? m.tags.split(",").filter((t) => t.trim()) : [];
                   const dotColor = status === "online" ? "bg-emerald-500" : status === "warning" ? "bg-amber-500" : "bg-red-500/50";
                   const isSelected = selected.has(m.machine_id);
@@ -669,37 +675,53 @@ export default function Home() {
                           (m.cpu_percent ?? 0) > 85 ? "text-red-400" : (m.cpu_percent ?? 0) > 60 ? "text-amber-400" : "text-blox-text"
                         }`}>{(m.cpu_percent ?? 0).toFixed(0)}%</span>
                       </TableCell>
+                      <TableCell className="hidden lg:table-cell">
+                        {status !== "offline" && (
+                          <Sparkline machineId={m.machine_id} width={90} height={20} />
+                        )}
+                      </TableCell>
                       <TableCell className="text-xs">
                         <span className="tabular-nums font-mono text-blox-text">{ramPct.toFixed(0)}%</span>
-                        <span className="text-blox-muted ml-1 font-mono">{formatBytes(m.ram_used_bytes)}</span>
+                        <span className="text-blox-muted ml-1 font-mono tabular-nums">{formatBytes(m.ram_used_bytes)}</span>
+                      </TableCell>
+                      <TableCell className="text-xs hidden md:table-cell">
+                        {(m.disk_total_bytes ?? 0) > 0 && (
+                          <>
+                            <span className={`tabular-nums font-mono ${
+                              diskPct > 90 ? "text-red-400" : diskPct > 75 ? "text-amber-400" : "text-blox-text"
+                            }`}>{diskPct.toFixed(0)}%</span>
+                            <span className="text-blox-muted ml-1 font-mono tabular-nums">{formatBytes(m.disk_used_bytes)}</span>
+                          </>
+                        )}
                       </TableCell>
                       <TableCell className="text-xs hidden lg:table-cell">
                         {m.gpu_temp ? (
                           <span className={`tabular-nums font-mono ${
                             m.gpu_temp > 80 ? "text-red-400" : m.gpu_temp > 70 ? "text-amber-400" : "text-blox-text"
                           }`}>{m.gpu_temp}&deg;C</span>
-                        ) : (
-                          <span className="text-blox-muted">-</span>
-                        )}
+                        ) : null}
                       </TableCell>
                       <TableCell className="text-xs hidden lg:table-cell">
                         {m.gpu_vram_total_bytes && m.gpu_vram_total_bytes > 0 ? (
                           <span className="tabular-nums font-mono text-blox-text">
                             {formatBytes(m.gpu_vram_used_bytes || 0)}/{formatBytes(m.gpu_vram_total_bytes)}
                           </span>
-                        ) : (
-                          <span className="text-blox-muted">-</span>
-                        )}
+                        ) : null}
                       </TableCell>
                       <TableCell className="text-xs hidden xl:table-cell">
                         {m.latency_ms && m.latency_ms > 0 ? (
                           <span className="tabular-nums font-mono text-blox-muted">{m.latency_ms}ms</span>
-                        ) : (
-                          <span className="text-blox-muted">-</span>
-                        )}
+                        ) : null}
                       </TableCell>
                       <TableCell className="text-xs text-blox-muted hidden xl:table-cell font-mono tabular-nums">
                         {m.last_seen ? timeSince(m.last_seen) : "never"}
+                      </TableCell>
+                      <TableCell className="text-xs hidden xl:table-cell">
+                        {m.os && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-blox-border/50 text-blox-muted font-mono">
+                            {m.os}
+                          </span>
+                        )}
                       </TableCell>
                       <TableCell className="text-xs hidden xl:table-cell">
                         <div className="flex gap-1 flex-wrap">
