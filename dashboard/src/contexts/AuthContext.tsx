@@ -56,7 +56,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    if (checked && !token && pathname !== "/login") {
+    if (checked && !token && pathname !== "/login" && pathname !== "/setup") {
       router.push("/login");
     }
   }, [checked, token, pathname, router]);
