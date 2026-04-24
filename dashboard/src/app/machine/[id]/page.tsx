@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef, use, useMemo } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import dynamic from "next/dynamic";
 import { useSSE } from "@/contexts/SSEContext";
 import { ProgressBar } from "@/components/ProgressBar";
@@ -18,13 +18,21 @@ import {
   DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { motion } from "framer-motion";
 import {
   ArrowLeft, Cpu, HardDrive, MemoryStick, Thermometer,
   Activity, Zap, Monitor, Terminal as TerminalIcon, RotateCcw,
   Lock, Unlock, X, Maximize2, Minimize2, Wifi, BarChart3, Trash2,
+  LayoutDashboard, Box, Container as ContainerIcon,
 } from "lucide-react";
 import { HUB_URL, getAuthHeaders } from "@/lib/session";
+
+type DetailTab = "overview" | "services" | "containers" | "metrics" | "terminal";
+const DETAIL_TABS: readonly DetailTab[] = ["overview", "services", "containers", "metrics", "terminal"] as const;
+function parseTab(raw: string | null): DetailTab {
+  return DETAIL_TABS.includes(raw as DetailTab) ? (raw as DetailTab) : "overview";
+}
 
 const TerminalComponent = dynamic(
   () => import("@/components/Terminal").then((m) => ({ default: m.Terminal })),
@@ -115,10 +123,21 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
   const [showReboot, setShowReboot] = useState(false);
-  const [showCharts, setShowCharts] = useState(true);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const activeTab = parseTab(searchParams.get("tab"));
+  const setActiveTab = useCallback((next: DetailTab) => {
+    const params = new URLSearchParams(searchParams.toString());
+    if (next === "overview") {
+      params.delete("tab");
+    } else {
+      params.set("tab", next);
+    }
+    const query = params.toString();
+    router.replace(query ? `?${query}` : "?", { scroll: false });
+  }, [router, searchParams]);
 
   const [termState, setTermState] = useState<TerminalState>("locked");
   const [termSessionId, setTermSessionId] = useState<string | null>(null);
@@ -404,35 +423,18 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
               <Trash2 className="w-3.5 h-3.5" />
               Delete
             </Button>
-            {!isAPIMachine && (<>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setShowReboot(true)}
-              disabled={!isOnline}
-              className="text-xs border-blox-border text-blox-text gap-1.5"
-            >
-              <RotateCcw className="w-3.5 h-3.5" />
-              Reboot
-            </Button>
-            <Button
-              variant={termState === "active" ? "outline" : "outline"}
-              size="sm"
-              onClick={() => {
-                if (termState === "locked") setTermState("pin_entry");
-                else if (termState === "active" || termState === "connecting") handleTerminalClose();
-              }}
-              disabled={!isOnline}
-              className={`text-xs gap-1.5 ${
-                termState === "active"
-                  ? "border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10"
-                  : "border-blox-border text-blox-text"
-              }`}
-            >
-              <TerminalIcon className="w-3.5 h-3.5" />
-              {termState === "active" ? "Terminal Active" : "Terminal"}
-            </Button>
-            </>)}
+            {!isAPIMachine && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowReboot(true)}
+                disabled={!isOnline}
+                className="text-xs border-blox-border text-blox-text gap-1.5"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                Reboot
+              </Button>
+            )}
           </div>
         </div>
       </header>
@@ -448,331 +450,349 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
           )}
         </div>
 
-        {/* System + GPU panels */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* System Panel */}
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.1 }}
-            className="bg-blox-card border border-blox-border rounded-xl p-5"
-          >
-            <div className="flex items-center gap-2.5 mb-5">
-              <div className="p-1.5 rounded-lg bg-blox-blue/10">
-                <Activity className="w-3.5 h-3.5 text-blox-blue" />
-              </div>
-              <h3 className="text-sm font-semibold text-blox-text">System</h3>
-            </div>
-            <div className="space-y-4">
-              <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <div className="flex items-center gap-2">
-                    <Cpu className="w-3.5 h-3.5 text-blox-muted" />
-                    <span className="text-xs text-blox-muted">CPU</span>
-                  </div>
-                  <span className="text-sm font-semibold text-blox-text tabular-nums font-mono">{(metrics?.cpu_percent ?? 0).toFixed(1)}%</span>
-                </div>
-                <ProgressBar value={metrics?.cpu_percent ?? 0} size="md" />
-              </div>
-              <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <div className="flex items-center gap-2">
-                    <MemoryStick className="w-3.5 h-3.5 text-blox-muted" />
-                    <span className="text-xs text-blox-muted">RAM</span>
-                  </div>
-                  <span className="text-xs text-blox-muted tabular-nums font-mono">{formatBytes(metrics?.ram_used_bytes)} / {formatBytes(metrics?.ram_total_bytes)}</span>
-                </div>
-                <ProgressBar value={ramPct} size="md" label={`${ramPct.toFixed(0)}%`} />
-              </div>
-              <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <div className="flex items-center gap-2">
-                    <HardDrive className="w-3.5 h-3.5 text-blox-muted" />
-                    <span className="text-xs text-blox-muted">Disk</span>
-                  </div>
-                  <span className="text-xs text-blox-muted tabular-nums font-mono">{formatBytes(metrics?.disk_used_bytes)} / {formatBytes(metrics?.disk_total_bytes)}</span>
-                </div>
-                <ProgressBar value={diskPct} size="md" label={`${diskPct.toFixed(0)}%`} />
-              </div>
-              <div className="flex items-center justify-between py-2.5 border-t border-blox-border/50">
-                <div className="flex items-center gap-2">
-                  <Wifi className="w-3.5 h-3.5 text-blox-muted" />
-                  <span className="text-xs text-blox-muted">Network Latency</span>
-                </div>
-                <span className="text-xs text-blox-text tabular-nums font-mono">
-                  {(data.latency_ms ?? 0) > 0 ? `${data.latency_ms}ms` : "N/A"}
-                </span>
-              </div>
-            </div>
-          </motion.div>
+        <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as DetailTab)}>
+          <TabsList variant="line" className="gap-1">
+            <TabsTrigger value="overview" className="px-4 py-1.5 gap-1.5 text-sm">
+              <LayoutDashboard className="w-4 h-4" />
+              Overview
+            </TabsTrigger>
+            <TabsTrigger value="services" className="px-4 py-1.5 gap-1.5 text-sm">
+              <Box className="w-4 h-4" />
+              Services
+            </TabsTrigger>
+            <TabsTrigger value="containers" className="px-4 py-1.5 gap-1.5 text-sm">
+              <ContainerIcon className="w-4 h-4" />
+              Containers
+            </TabsTrigger>
+            <TabsTrigger value="metrics" className="px-4 py-1.5 gap-1.5 text-sm">
+              <BarChart3 className="w-4 h-4" />
+              Metrics
+            </TabsTrigger>
+            {!isAPIMachine && (
+              <TabsTrigger value="terminal" className="px-4 py-1.5 gap-1.5 text-sm">
+                <TerminalIcon className="w-4 h-4" />
+                Terminal
+                {termState === "active" && (
+                  <span className="ml-1 inline-block w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                )}
+              </TabsTrigger>
+            )}
+          </TabsList>
 
-          {/* GPU Panel */}
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.15 }}
-            className="bg-blox-card border border-blox-border rounded-xl p-5"
-          >
-            <div className="flex items-center gap-2.5 mb-5">
-              <div className="p-1.5 rounded-lg bg-blox-blue/10">
-                <Zap className="w-3.5 h-3.5 text-blox-blue" />
-              </div>
-              <h3 className="text-sm font-semibold text-blox-text">GPU</h3>
-              {!hasGpu && <span className="text-[10px] text-blox-muted">(no GPU detected)</span>}
-            </div>
-            {hasGpu ? (
-              <div className="space-y-5">
-                {gpus.map((gpu) => {
-                  const vramPct = (gpu.mem_total_bytes ?? 0) > 0 ? ((gpu.mem_used_bytes ?? 0) / gpu.mem_total_bytes) * 100 : 0;
-                  return (
-                    <div key={gpu.index} className="space-y-3">
-                      {gpus.length > 1 && (
-                        <div className="text-[10px] text-blox-muted font-mono border-b border-blox-border/50 pb-1">
-                          GPU {gpu.index}: {gpu.name}
+          {/* Overview — system panel, plus GPU only when a GPU is present */}
+          <TabsContent value="overview" className="mt-6">
+            <div className={`grid grid-cols-1 gap-6 ${hasGpu ? "lg:grid-cols-2" : ""}`}>
+              <motion.div
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.05 }}
+                className="bg-blox-card border border-blox-border rounded-xl p-5"
+              >
+                <div className="flex items-center gap-2.5 mb-5">
+                  <div className="p-1.5 rounded-lg bg-blox-blue/10">
+                    <Activity className="w-3.5 h-3.5 text-blox-blue" />
+                  </div>
+                  <h3 className="text-sm font-semibold text-blox-text">System</h3>
+                </div>
+                <div className="space-y-4">
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <div className="flex items-center gap-2">
+                        <Cpu className="w-3.5 h-3.5 text-blox-muted" />
+                        <span className="text-xs text-blox-muted">CPU</span>
+                      </div>
+                      <span className="text-sm font-semibold text-blox-text tabular-nums font-mono">{(metrics?.cpu_percent ?? 0).toFixed(1)}%</span>
+                    </div>
+                    <ProgressBar value={metrics?.cpu_percent ?? 0} size="md" />
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <div className="flex items-center gap-2">
+                        <MemoryStick className="w-3.5 h-3.5 text-blox-muted" />
+                        <span className="text-xs text-blox-muted">RAM</span>
+                      </div>
+                      <span className="text-xs text-blox-muted tabular-nums font-mono">{formatBytes(metrics?.ram_used_bytes)} / {formatBytes(metrics?.ram_total_bytes)}</span>
+                    </div>
+                    <ProgressBar value={ramPct} size="md" label={`${ramPct.toFixed(0)}%`} />
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <div className="flex items-center gap-2">
+                        <HardDrive className="w-3.5 h-3.5 text-blox-muted" />
+                        <span className="text-xs text-blox-muted">Disk</span>
+                      </div>
+                      <span className="text-xs text-blox-muted tabular-nums font-mono">{formatBytes(metrics?.disk_used_bytes)} / {formatBytes(metrics?.disk_total_bytes)}</span>
+                    </div>
+                    <ProgressBar value={diskPct} size="md" label={`${diskPct.toFixed(0)}%`} />
+                  </div>
+                  {(data.latency_ms ?? 0) > 0 && (
+                    <div className="flex items-center justify-between py-2.5 border-t border-blox-border/50">
+                      <div className="flex items-center gap-2">
+                        <Wifi className="w-3.5 h-3.5 text-blox-muted" />
+                        <span className="text-xs text-blox-muted">Network Latency</span>
+                      </div>
+                      <span className="text-xs text-blox-text tabular-nums font-mono">
+                        {data.latency_ms}ms
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </motion.div>
+
+              {hasGpu && (
+                <motion.div
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.1 }}
+                  className="bg-blox-card border border-blox-border rounded-xl p-5"
+                >
+                  <div className="flex items-center gap-2.5 mb-5">
+                    <div className="p-1.5 rounded-lg bg-blox-blue/10">
+                      <Zap className="w-3.5 h-3.5 text-blox-blue" />
+                    </div>
+                    <h3 className="text-sm font-semibold text-blox-text">GPU</h3>
+                  </div>
+                  <div className="space-y-5">
+                    {gpus.map((gpu) => {
+                      const vramPct = (gpu.mem_total_bytes ?? 0) > 0 ? ((gpu.mem_used_bytes ?? 0) / gpu.mem_total_bytes) * 100 : 0;
+                      return (
+                        <div key={gpu.index} className="space-y-3">
+                          {gpus.length > 1 && (
+                            <div className="text-[10px] text-blox-muted font-mono border-b border-blox-border/50 pb-1">
+                              GPU {gpu.index}: {gpu.name}
+                            </div>
+                          )}
+                          {gpus.length === 1 && gpu.name && (
+                            <Badge variant="outline" className="text-[10px] border-blox-border text-blox-muted font-mono h-auto py-0 px-2 mb-1">
+                              {gpu.name}
+                            </Badge>
+                          )}
+                          <div>
+                            <div className="flex items-center justify-between mb-1.5">
+                              <div className="flex items-center gap-2">
+                                <Thermometer className="w-3.5 h-3.5 text-blox-muted" />
+                                <span className="text-xs text-blox-muted">Temperature</span>
+                              </div>
+                              <span className={`text-sm font-semibold tabular-nums font-mono ${
+                                (gpu.temp_c ?? 0) > 80 ? "text-red-400" :
+                                (gpu.temp_c ?? 0) > 60 ? "text-amber-400" : "text-emerald-400"
+                              }`}>{gpu.temp_c ?? 0}&deg;C</span>
+                            </div>
+                            <ProgressBar value={gpu.temp_c ?? 0} size="md" />
+                          </div>
+                          <div>
+                            <div className="flex items-center justify-between mb-1.5">
+                              <div className="flex items-center gap-2">
+                                <Cpu className="w-3.5 h-3.5 text-blox-muted" />
+                                <span className="text-xs text-blox-muted">Utilization</span>
+                              </div>
+                              <span className="text-sm font-semibold text-blox-text tabular-nums font-mono">{(gpu.util_percent ?? 0).toFixed(0)}%</span>
+                            </div>
+                            <ProgressBar value={gpu.util_percent ?? 0} size="md" />
+                          </div>
+                          {(gpu.mem_total_bytes ?? 0) > 0 && (
+                            <div>
+                              <div className="flex items-center justify-between mb-1.5">
+                                <div className="flex items-center gap-2">
+                                  <MemoryStick className="w-3.5 h-3.5 text-blox-muted" />
+                                  <span className="text-xs text-blox-muted">VRAM</span>
+                                </div>
+                                <span className="text-xs text-blox-muted tabular-nums font-mono">{formatBytes(gpu.mem_used_bytes)} / {formatBytes(gpu.mem_total_bytes)}</span>
+                              </div>
+                              <ProgressBar value={vramPct} size="md" label={`${vramPct.toFixed(0)}%`} />
+                            </div>
+                          )}
+                          {(gpu.power_watts ?? 0) > 0 && (
+                            <div className="flex items-center justify-between py-2 border-t border-blox-border/50">
+                              <div className="flex items-center gap-2">
+                                <Zap className="w-3.5 h-3.5 text-blox-muted" />
+                                <span className="text-xs text-blox-muted">Power</span>
+                              </div>
+                              <span className="text-xs text-blox-text tabular-nums font-mono">
+                                {(gpu.power_watts ?? 0).toFixed(0)} W
+                              </span>
+                            </div>
+                          )}
+                          {(gpu.fan_percent ?? 0) > 0 && (
+                            <div className="flex items-center justify-between py-1">
+                              <div className="flex items-center gap-2">
+                                <Activity className="w-3.5 h-3.5 text-blox-muted" />
+                                <span className="text-xs text-blox-muted">Fan</span>
+                              </div>
+                              <span className="text-xs text-blox-text tabular-nums font-mono">
+                                {(gpu.fan_percent ?? 0).toFixed(0)}%
+                              </span>
+                            </div>
+                          )}
                         </div>
-                      )}
-                      {gpus.length === 1 && gpu.name && (
-                        <Badge variant="outline" className="text-[10px] border-blox-border text-blox-muted font-mono h-auto py-0 px-2 mb-1">
-                          {gpu.name}
+                      );
+                    })}
+                  </div>
+                </motion.div>
+              )}
+            </div>
+          </TabsContent>
+
+          <TabsContent value="services" className="mt-6">
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}>
+              <ServicePanel services={liveServices} machineId={id} hubUrl={HUB_URL} />
+            </motion.div>
+          </TabsContent>
+
+          <TabsContent value="containers" className="mt-6">
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}>
+              <ContainerPanel containers={liveContainers} machineId={id} hubUrl={HUB_URL} />
+            </motion.div>
+          </TabsContent>
+
+          <TabsContent value="metrics" className="mt-6">
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.05 }}
+              className="bg-blox-card border border-blox-border rounded-xl p-5"
+            >
+              <MetricCharts machineId={id} hasGpu={hasGpu} />
+            </motion.div>
+          </TabsContent>
+
+          {/* Terminal tab — keepMounted so the PTY WebSocket survives tab switches. */}
+          {!isAPIMachine && (
+            <TabsContent value="terminal" keepMounted className="mt-6 data-[hidden]:hidden">
+              <motion.div
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.05 }}
+                className="bg-blox-card border border-blox-border rounded-xl overflow-hidden"
+              >
+                {/* Terminal header bar — macOS style */}
+                <div className="flex items-center justify-between px-5 py-3 border-b border-blox-border/50 bg-blox-bg/30">
+                  <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-1.5">
+                      <span className="w-3 h-3 rounded-full bg-red-500/80" />
+                      <span className="w-3 h-3 rounded-full bg-amber-500/80" />
+                      <span className="w-3 h-3 rounded-full bg-emerald-500/80" />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <TerminalIcon className="w-3.5 h-3.5 text-blox-muted" />
+                      <h3 className="text-sm font-semibold text-blox-text">Terminal</h3>
+                      {termState === "active" && (
+                        <Badge variant="outline" className="text-[10px] border-emerald-500/30 bg-emerald-500/10 text-emerald-400 h-auto py-0 px-1.5">
+                          connected
                         </Badge>
                       )}
-                      <div>
-                        <div className="flex items-center justify-between mb-1.5">
-                          <div className="flex items-center gap-2">
-                            <Thermometer className="w-3.5 h-3.5 text-blox-muted" />
-                            <span className="text-xs text-blox-muted">Temperature</span>
-                          </div>
-                          <span className={`text-sm font-semibold tabular-nums font-mono ${
-                            (gpu.temp_c ?? 0) > 80 ? "text-red-400" :
-                            (gpu.temp_c ?? 0) > 60 ? "text-amber-400" : "text-emerald-400"
-                          }`}>{gpu.temp_c ?? 0}&deg;C</span>
-                        </div>
-                        <ProgressBar value={gpu.temp_c ?? 0} size="md" />
-                      </div>
-                      <div>
-                        <div className="flex items-center justify-between mb-1.5">
-                          <div className="flex items-center gap-2">
-                            <Cpu className="w-3.5 h-3.5 text-blox-muted" />
-                            <span className="text-xs text-blox-muted">Utilization</span>
-                          </div>
-                          <span className="text-sm font-semibold text-blox-text tabular-nums font-mono">{(gpu.util_percent ?? 0).toFixed(0)}%</span>
-                        </div>
-                        <ProgressBar value={gpu.util_percent ?? 0} size="md" />
-                      </div>
-                      {(gpu.mem_total_bytes ?? 0) > 0 && (
-                        <div>
-                          <div className="flex items-center justify-between mb-1.5">
-                            <div className="flex items-center gap-2">
-                              <MemoryStick className="w-3.5 h-3.5 text-blox-muted" />
-                              <span className="text-xs text-blox-muted">VRAM</span>
-                            </div>
-                            <span className="text-xs text-blox-muted tabular-nums font-mono">{formatBytes(gpu.mem_used_bytes)} / {formatBytes(gpu.mem_total_bytes)}</span>
-                          </div>
-                          <ProgressBar value={vramPct} size="md" label={`${vramPct.toFixed(0)}%`} />
-                        </div>
+                      {termState === "connecting" && (
+                        <Badge variant="outline" className="text-[10px] border-blox-blue/30 bg-blox-blue/10 text-blox-blue h-auto py-0 px-1.5">
+                          connecting...
+                        </Badge>
                       )}
-                      <div className="flex items-center justify-between py-2 border-t border-blox-border/50">
-                        <div className="flex items-center gap-2">
-                          <Zap className="w-3.5 h-3.5 text-blox-muted" />
-                          <span className="text-xs text-blox-muted">Power</span>
-                        </div>
-                        <span className="text-xs text-blox-text tabular-nums font-mono">
-                          {(gpu.power_watts ?? 0) > 0 ? `${(gpu.power_watts ?? 0).toFixed(0)} W` : "N/A"}
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-between py-1">
-                        <div className="flex items-center gap-2">
-                          <Activity className="w-3.5 h-3.5 text-blox-muted" />
-                          <span className="text-xs text-blox-muted">Fan</span>
-                        </div>
-                        <span className="text-xs text-blox-text tabular-nums font-mono">
-                          {(gpu.fan_percent ?? 0) > 0 ? `${(gpu.fan_percent ?? 0).toFixed(0)}%` : "N/A"}
-                        </span>
-                      </div>
+                      {termState === "disconnected" && (
+                        <Badge variant="outline" className="text-[10px] border-red-500/30 bg-red-500/10 text-red-400 h-auto py-0 px-1.5">
+                          disconnected
+                        </Badge>
+                      )}
                     </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="flex flex-col items-center justify-center py-8 text-blox-muted">
-                <Zap className="w-8 h-8 mb-2 opacity-20" />
-                <p className="text-xs">No GPU metrics available</p>
-                <p className="text-[10px] mt-1 text-blox-muted/60">nvidia-smi not detected on this machine</p>
-              </div>
-            )}
-          </motion.div>
-        </div>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    {termState === "active" && (
+                      <>
+                        <Button variant="ghost" size="icon-xs" onClick={() => setTermExpanded(!termExpanded)} className="text-blox-muted hover:text-blox-text" title={termExpanded ? "Collapse" : "Expand"}>
+                          {termExpanded ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+                        </Button>
+                        <Button variant="ghost" size="icon-xs" onClick={handleTerminalClose} className="text-blox-muted hover:text-red-400" title="Close terminal">
+                          <X className="w-3.5 h-3.5" />
+                        </Button>
+                      </>
+                    )}
+                    {termState === "disconnected" && (
+                      <Button variant="ghost" size="xs" onClick={() => setTermState("pin_entry")} className="text-xs text-blox-blue">
+                        Reconnect
+                      </Button>
+                    )}
+                  </div>
+                </div>
 
-        {/* Charts */}
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.2 }}
-          className="bg-blox-card border border-blox-border rounded-xl p-5"
-        >
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2.5">
-              <div className="p-1.5 rounded-lg bg-blox-blue/10">
-                <BarChart3 className="w-3.5 h-3.5 text-blox-blue" />
-              </div>
-              <h3 className="text-sm font-semibold text-blox-text">Metric History</h3>
-            </div>
-            <Button
-              variant="ghost"
-              size="xs"
-              onClick={() => setShowCharts(!showCharts)}
-              className="text-xs text-blox-muted hover:text-blox-text"
-            >
-              {showCharts ? "Hide" : "Show"}
-            </Button>
-          </div>
-          {showCharts && <MetricCharts machineId={id} hasGpu={hasGpu} />}
-        </motion.div>
-
-        {/* Services + Containers */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.25 }}>
-            <ServicePanel services={liveServices} machineId={id} hubUrl={HUB_URL} />
-          </motion.div>
-          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}>
-            <ContainerPanel containers={liveContainers} machineId={id} hubUrl={HUB_URL} />
-          </motion.div>
-        </div>
-
-        {/* Terminal */}
-        {!isAPIMachine && (
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.35 }}
-          className="bg-blox-card border border-blox-border rounded-xl overflow-hidden"
-        >
-          {/* Terminal header bar - macOS style */}
-          <div className="flex items-center justify-between px-5 py-3 border-b border-blox-border/50 bg-blox-bg/30">
-            <div className="flex items-center gap-3">
-              <div className="flex items-center gap-1.5">
-                <span className="w-3 h-3 rounded-full bg-red-500/80" />
-                <span className="w-3 h-3 rounded-full bg-amber-500/80" />
-                <span className="w-3 h-3 rounded-full bg-emerald-500/80" />
-              </div>
-              <div className="flex items-center gap-2">
-                <TerminalIcon className="w-3.5 h-3.5 text-blox-muted" />
-                <h3 className="text-sm font-semibold text-blox-text">Terminal</h3>
-                {termState === "active" && (
-                  <Badge variant="outline" className="text-[10px] border-emerald-500/30 bg-emerald-500/10 text-emerald-400 h-auto py-0 px-1.5">
-                    connected
-                  </Badge>
+                {termState === "locked" && (
+                  <div className="flex flex-col items-center justify-center py-12 bg-black/20">
+                    <Lock className="w-10 h-10 text-blox-muted mb-3 opacity-20" />
+                    <p className="text-sm text-blox-muted">Remote Terminal</p>
+                    <p className="text-xs text-blox-muted/60 mt-1 mb-4">Enter PIN to unlock terminal access</p>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => isOnline && setTermState("pin_entry")}
+                      disabled={!isOnline}
+                      className="text-xs text-blox-blue border-blox-blue/20 hover:bg-blox-blue/10 gap-2"
+                    >
+                      <Unlock className="w-3.5 h-3.5" />
+                      Unlock Terminal
+                    </Button>
+                  </div>
                 )}
+
+                {termState === "pin_entry" && (
+                  <div className="flex flex-col items-center justify-center py-12 bg-black/20">
+                    <Lock className="w-8 h-8 text-blox-blue mb-3 opacity-50" />
+                    <p className="text-sm text-blox-text mb-4">Enter PIN to open terminal</p>
+                    <form onSubmit={(e) => { e.preventDefault(); handlePinSubmit(); }} className="flex items-center gap-2">
+                      <Input
+                        ref={pinInputRef}
+                        type="password"
+                        maxLength={8}
+                        value={pinInput}
+                        onChange={(e) => { setPinInput(e.target.value); setPinError(false); }}
+                        placeholder="PIN"
+                        className={`w-32 text-center font-mono bg-blox-bg border-blox-border text-blox-text h-9 text-sm ${pinError ? "border-red-500" : ""}`}
+                        autoComplete="off"
+                      />
+                      <Button type="submit" variant="outline" size="sm" className="text-xs text-blox-blue border-blox-blue/20 hover:bg-blox-blue/10">
+                        Open
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => { setTermState("locked"); setPinInput(""); setPinError(false); }}
+                        className="text-xs text-blox-muted"
+                      >
+                        Cancel
+                      </Button>
+                    </form>
+                    {pinError && <p className="text-xs text-red-400 mt-2">Invalid PIN</p>}
+                  </div>
+                )}
+
                 {termState === "connecting" && (
-                  <Badge variant="outline" className="text-[10px] border-blox-blue/30 bg-blox-blue/10 text-blox-blue h-auto py-0 px-1.5">
-                    connecting...
-                  </Badge>
+                  <div className="flex flex-col items-center justify-center py-12 bg-black/20">
+                    <div className="w-6 h-6 border-2 border-blox-blue border-t-transparent rounded-full animate-spin mb-3" />
+                    <p className="text-sm text-blox-muted">Starting terminal session...</p>
+                  </div>
                 )}
+
+                {termState === "active" && termSessionId && (
+                  <div className="bg-[#0a0a0f] transition-all duration-200" style={{ height: termExpanded ? "600px" : "360px" }}>
+                    <TerminalComponent sessionId={termSessionId} browserToken={termBrowserToken ?? ""} onDisconnect={handleTerminalDisconnect} />
+                  </div>
+                )}
+
                 {termState === "disconnected" && (
-                  <Badge variant="outline" className="text-[10px] border-red-500/30 bg-red-500/10 text-red-400 h-auto py-0 px-1.5">
-                    disconnected
-                  </Badge>
+                  <div className="flex flex-col items-center justify-center py-12 bg-black/20">
+                    <TerminalIcon className="w-8 h-8 text-red-400 mb-3 opacity-30" />
+                    <p className="text-sm text-blox-muted">Terminal disconnected</p>
+                    <div className="flex items-center gap-2 mt-4">
+                      <Button variant="outline" size="sm" onClick={() => setTermState("pin_entry")} className="text-xs text-blox-blue border-blox-blue/20 hover:bg-blox-blue/10">
+                        Reconnect
+                      </Button>
+                      <Button variant="ghost" size="sm" onClick={() => { setTermState("locked"); setTermSessionId(null); }} className="text-xs text-blox-muted">
+                        Close
+                      </Button>
+                    </div>
+                  </div>
                 )}
-              </div>
-            </div>
-            <div className="flex items-center gap-1">
-              {termState === "active" && (
-                <>
-                  <Button variant="ghost" size="icon-xs" onClick={() => setTermExpanded(!termExpanded)} className="text-blox-muted hover:text-blox-text" title={termExpanded ? "Collapse" : "Expand"}>
-                    {termExpanded ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
-                  </Button>
-                  <Button variant="ghost" size="icon-xs" onClick={handleTerminalClose} className="text-blox-muted hover:text-red-400" title="Close terminal">
-                    <X className="w-3.5 h-3.5" />
-                  </Button>
-                </>
-              )}
-              {termState === "disconnected" && (
-                <Button variant="ghost" size="xs" onClick={() => setTermState("pin_entry")} className="text-xs text-blox-blue">
-                  Reconnect
-                </Button>
-              )}
-            </div>
-          </div>
-
-          {termState === "locked" && (
-            <div className="flex flex-col items-center justify-center py-12 bg-black/20">
-              <Lock className="w-10 h-10 text-blox-muted mb-3 opacity-20" />
-              <p className="text-sm text-blox-muted">Remote Terminal</p>
-              <p className="text-xs text-blox-muted/60 mt-1 mb-4">Enter PIN to unlock terminal access</p>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => isOnline && setTermState("pin_entry")}
-                disabled={!isOnline}
-                className="text-xs text-blox-blue border-blox-blue/20 hover:bg-blox-blue/10 gap-2"
-              >
-                <Unlock className="w-3.5 h-3.5" />
-                Unlock Terminal
-              </Button>
-            </div>
+              </motion.div>
+            </TabsContent>
           )}
-
-          {termState === "pin_entry" && (
-            <div className="flex flex-col items-center justify-center py-12 bg-black/20">
-              <Lock className="w-8 h-8 text-blox-blue mb-3 opacity-50" />
-              <p className="text-sm text-blox-text mb-4">Enter PIN to open terminal</p>
-              <form onSubmit={(e) => { e.preventDefault(); handlePinSubmit(); }} className="flex items-center gap-2">
-                <Input
-                  ref={pinInputRef}
-                  type="password"
-                  maxLength={8}
-                  value={pinInput}
-                  onChange={(e) => { setPinInput(e.target.value); setPinError(false); }}
-                  placeholder="PIN"
-                  className={`w-32 text-center font-mono bg-blox-bg border-blox-border text-blox-text h-9 text-sm ${pinError ? "border-red-500" : ""}`}
-                  autoComplete="off"
-                />
-                <Button type="submit" variant="outline" size="sm" className="text-xs text-blox-blue border-blox-blue/20 hover:bg-blox-blue/10">
-                  Open
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => { setTermState("locked"); setPinInput(""); setPinError(false); }}
-                  className="text-xs text-blox-muted"
-                >
-                  Cancel
-                </Button>
-              </form>
-              {pinError && <p className="text-xs text-red-400 mt-2">Invalid PIN</p>}
-            </div>
-          )}
-
-          {termState === "connecting" && (
-            <div className="flex flex-col items-center justify-center py-12 bg-black/20">
-              <div className="w-6 h-6 border-2 border-blox-blue border-t-transparent rounded-full animate-spin mb-3" />
-              <p className="text-sm text-blox-muted">Starting terminal session...</p>
-            </div>
-          )}
-
-          {termState === "active" && termSessionId && (
-            <div className="bg-[#0a0a0f] transition-all duration-200" style={{ height: termExpanded ? "600px" : "360px" }}>
-              <TerminalComponent sessionId={termSessionId} browserToken={termBrowserToken ?? ""} onDisconnect={handleTerminalDisconnect} />
-            </div>
-          )}
-
-          {termState === "disconnected" && (
-            <div className="flex flex-col items-center justify-center py-12 bg-black/20">
-              <TerminalIcon className="w-8 h-8 text-red-400 mb-3 opacity-30" />
-              <p className="text-sm text-blox-muted">Terminal disconnected</p>
-              <div className="flex items-center gap-2 mt-4">
-                <Button variant="outline" size="sm" onClick={() => setTermState("pin_entry")} className="text-xs text-blox-blue border-blox-blue/20 hover:bg-blox-blue/10">
-                  Reconnect
-                </Button>
-                <Button variant="ghost" size="sm" onClick={() => { setTermState("locked"); setTermSessionId(null); }} className="text-xs text-blox-muted">
-                  Close
-                </Button>
-              </div>
-            </div>
-          )}
-        </motion.div>
-        )}
+        </Tabs>
       </main>
     </motion.div>
   );
