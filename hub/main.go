@@ -816,8 +816,14 @@ func handleMetricsHistory(c echo.Context) error {
 	}
 
 	rows, err := db.Query(`
-		SELECT timestamp, cpu_percent, ram_used_bytes, ram_total_bytes,
-			gpu_temp, gpu_util_percent, gpu_vram_used_bytes, gpu_vram_total_bytes
+		SELECT timestamp,
+			COALESCE(cpu_percent, 0),
+			COALESCE(ram_used_bytes, 0),
+			COALESCE(ram_total_bytes, 0),
+			COALESCE(gpu_temp, 0),
+			COALESCE(gpu_util_percent, 0),
+			COALESCE(gpu_vram_used_bytes, 0),
+			COALESCE(gpu_vram_total_bytes, 0)
 		FROM metrics
 		WHERE machine_id = ? AND timestamp > datetime('now', ?)
 		ORDER BY timestamp ASC
@@ -2606,9 +2612,20 @@ func handleGetMachine(c echo.Context) error {
 		GPUVRAMUsed    int64   `json:"gpu_vram_used_bytes"`
 		GPUVRAMTotal   int64   `json:"gpu_vram_total_bytes"`
 	}
+	// COALESCE every column because API-polled machines (and agents that
+	// haven't reported GPU yet) store NULLs here, and Scan of NULL into
+	// float64/int64 fails with a 500.
 	err = db.QueryRow(`
-		SELECT cpu_percent, ram_used_bytes, ram_total_bytes, disk_used_bytes, disk_total_bytes,
-			gpu_temp, gpu_util_percent, gpu_vram_used_bytes, gpu_vram_total_bytes
+		SELECT
+			COALESCE(cpu_percent, 0),
+			COALESCE(ram_used_bytes, 0),
+			COALESCE(ram_total_bytes, 0),
+			COALESCE(disk_used_bytes, 0),
+			COALESCE(disk_total_bytes, 0),
+			COALESCE(gpu_temp, 0),
+			COALESCE(gpu_util_percent, 0),
+			COALESCE(gpu_vram_used_bytes, 0),
+			COALESCE(gpu_vram_total_bytes, 0)
 		FROM metrics WHERE machine_id = ? ORDER BY timestamp DESC LIMIT 1
 	`, id).Scan(&met.CPUPercent, &met.RAMUsedBytes, &met.RAMTotalBytes,
 		&met.DiskUsedBytes, &met.DiskTotalBytes, &met.GPUTemp, &met.GPUUtil,
