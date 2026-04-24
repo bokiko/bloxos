@@ -342,6 +342,11 @@ func registerRoutes(e *echo.Echo) {
 	api.PATCH("/api/api-machines/:id", handleUpdateAPIMachine)
 	api.DELETE("/api/api-machines/:id", handleDeleteAPIMachine)
 	api.POST("/api/api-machines/:id/poll", handleForceAPIPoll)
+
+	api.GET("/api/users", handleListUsers)
+	api.POST("/api/users", handleCreateUser)
+	api.PATCH("/api/users/:id", handleUpdateUser)
+	api.DELETE("/api/users/:id", handleDeleteUser)
 }
 
 func getEnvOrDefault(key, def string) string {
