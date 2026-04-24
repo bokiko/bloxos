@@ -232,6 +232,16 @@ var migrations = []migration{
 			return err
 		},
 	},
+	{
+		description: "add hardware_info JSON column to machines for static spec snapshots",
+		apply: func(tx *sql.Tx) error {
+			_, err := tx.Exec(`ALTER TABLE machines ADD COLUMN hardware_info TEXT`)
+			if err != nil && isDuplicateColumnErr(err) {
+				return nil
+			}
+			return err
+		},
+	},
 }
 
 // isDuplicateColumnErr returns true when SQLite rejects an ALTER TABLE ADD

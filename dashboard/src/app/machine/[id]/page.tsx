@@ -54,6 +54,37 @@ interface GPUData {
   fan_percent: number;
 }
 
+interface HardwareDiskInfo {
+  device: string;
+  model?: string;
+  size_bytes?: number;
+  type?: string;
+}
+
+interface HardwareNetworkInfo {
+  name: string;
+  mac?: string;
+  ipv4?: string;
+  speed_mbps?: number;
+}
+
+interface HardwareInfo {
+  cpu_model?: string;
+  cpu_vendor?: string;
+  cpu_cores?: number;
+  cpu_threads?: number;
+  cpu_frequency_mhz?: number;
+  ram_total_bytes?: number;
+  kernel_version?: string;
+  platform_family?: string;
+  virtualization?: string;
+  boot_time?: number;
+  architecture?: string;
+  gpu_models?: string[];
+  disks?: HardwareDiskInfo[];
+  network_interfaces?: HardwareNetworkInfo[];
+}
+
 interface MachineData {
   machine: {
     id: string;
@@ -76,6 +107,7 @@ interface MachineData {
   };
   gpus: GPUData[];
   latency_ms: number;
+  hardware_info?: HardwareInfo | null;
 }
 
 type TerminalState = "locked" | "pin_entry" | "connecting" | "active" | "disconnected";
@@ -631,6 +663,8 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
                 </motion.div>
               )}
             </div>
+
+            {data.hardware_info && <HardwarePanel hw={data.hardware_info} />}
           </TabsContent>
 
           <TabsContent value="services" className="mt-6">
@@ -794,6 +828,126 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
           )}
         </Tabs>
       </main>
+    </motion.div>
+  );
+}
+
+function formatHardwareBytes(bytes: number | undefined | null): string {
+  if (!bytes || bytes <= 0) return "";
+  const tb = bytes / 1024 ** 4;
+  if (tb >= 1) return `${tb.toFixed(tb >= 10 ? 0 : 1)} TB`;
+  const gb = bytes / 1024 ** 3;
+  if (gb >= 1) return `${gb.toFixed(0)} GB`;
+  const mb = bytes / 1024 ** 2;
+  return `${mb.toFixed(0)} MB`;
+}
+
+function formatUptime(bootUnix: number | undefined): string {
+  if (!bootUnix || bootUnix <= 0) return "";
+  const secs = Math.max(0, Math.floor(Date.now() / 1000 - bootUnix));
+  const d = Math.floor(secs / 86400);
+  const h = Math.floor((secs % 86400) / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
+function HardwareRow({ label, value }: { label: string; value: string | number | null | undefined }) {
+  if (value === null || value === undefined || value === "" || value === 0) return null;
+  return (
+    <div className="flex items-baseline justify-between gap-4 py-1.5 border-b border-blox-border/30 last:border-b-0">
+      <span className="text-xs text-blox-muted">{label}</span>
+      <span className="text-xs text-blox-text font-mono tabular-nums text-right truncate">{value}</span>
+    </div>
+  );
+}
+
+function HardwarePanel({ hw }: { hw: HardwareInfo }) {
+  const diskLines = (hw.disks ?? []).filter((d) => (d.size_bytes ?? 0) > 0 || d.model);
+  const nicLines = (hw.network_interfaces ?? []).filter((n) => n.name);
+  const gpuNames = (hw.gpu_models ?? []).filter(Boolean);
+
+  const uptime = formatUptime(hw.boot_time);
+  const cpuDetail = [
+    hw.cpu_cores ? `${hw.cpu_cores} cores` : "",
+    hw.cpu_threads && hw.cpu_threads !== hw.cpu_cores ? `${hw.cpu_threads} threads` : "",
+    hw.cpu_frequency_mhz && hw.cpu_frequency_mhz > 0 ? `${(hw.cpu_frequency_mhz / 1000).toFixed(1)} GHz` : "",
+  ].filter(Boolean).join(" · ");
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: 0.15 }}
+      className="bg-blox-card border border-blox-border rounded-xl p-5 mt-6"
+    >
+      <div className="flex items-center gap-2.5 mb-5">
+        <div className="p-1.5 rounded-lg bg-blox-blue/10">
+          <Cpu className="w-3.5 h-3.5 text-blox-blue" />
+        </div>
+        <h3 className="text-sm font-semibold text-blox-text">Hardware</h3>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-8 gap-y-1">
+        <div>
+          <HardwareRow label="CPU" value={hw.cpu_model} />
+          <HardwareRow label="" value={cpuDetail || undefined} />
+          <HardwareRow label="Vendor" value={hw.cpu_vendor} />
+          <HardwareRow label="Memory" value={formatHardwareBytes(hw.ram_total_bytes)} />
+          <HardwareRow label="Architecture" value={hw.architecture} />
+          <HardwareRow label="Kernel" value={hw.kernel_version} />
+          <HardwareRow label="Platform" value={hw.platform_family} />
+          <HardwareRow label="Virtualization" value={hw.virtualization} />
+          <HardwareRow label="Uptime" value={uptime} />
+        </div>
+
+        <div>
+          {gpuNames.length > 0 && (
+            <>
+              <div className="text-xs text-blox-muted mb-1.5 uppercase tracking-wider">GPU</div>
+              {gpuNames.map((name) => (
+                <div key={name} className="text-xs text-blox-text font-mono mb-1">{name}</div>
+              ))}
+            </>
+          )}
+
+          {diskLines.length > 0 && (
+            <>
+              <div className="text-xs text-blox-muted mt-3 mb-1.5 uppercase tracking-wider">Storage</div>
+              {diskLines.map((d) => (
+                <div key={d.device} className="flex items-baseline justify-between gap-4 py-1 border-b border-blox-border/30 last:border-b-0">
+                  <span className="text-xs text-blox-muted font-mono">
+                    {d.device.replace(/^\/dev\//, "")}
+                    {d.type && <span className="ml-2 text-[10px] uppercase text-blox-muted/70">{d.type}</span>}
+                  </span>
+                  <span className="text-xs text-blox-text font-mono tabular-nums text-right truncate">
+                    {formatHardwareBytes(d.size_bytes)}
+                    {d.model && <span className="ml-2 text-blox-muted">{d.model}</span>}
+                  </span>
+                </div>
+              ))}
+            </>
+          )}
+
+          {nicLines.length > 0 && (
+            <>
+              <div className="text-xs text-blox-muted mt-3 mb-1.5 uppercase tracking-wider">Network</div>
+              {nicLines.map((n) => (
+                <div key={n.name} className="flex items-baseline justify-between gap-4 py-1 border-b border-blox-border/30 last:border-b-0">
+                  <span className="text-xs text-blox-muted font-mono">{n.name}</span>
+                  <span className="text-xs text-blox-text font-mono tabular-nums text-right truncate">
+                    {n.ipv4}
+                    {n.speed_mbps && n.speed_mbps > 0 && (
+                      <span className="ml-2 text-blox-muted">{n.speed_mbps >= 1000 ? `${n.speed_mbps / 1000} Gb/s` : `${n.speed_mbps} Mb/s`}</span>
+                    )}
+                  </span>
+                </div>
+              ))}
+            </>
+          )}
+        </div>
+      </div>
     </motion.div>
   );
 }
