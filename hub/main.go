@@ -1858,6 +1858,24 @@ func handleAgentWS(c echo.Context) error {
 			upsertContainers(mid, cm.Containers)
 			broadcastSSE(msg)
 
+		case "hardware_info":
+			// Static hardware snapshot — store the raw JSON as-is so adding
+			// new fields doesn't require another hub deploy.
+			var hw struct {
+				MachineID string `json:"machine_id"`
+			}
+			if err := json.Unmarshal(msg, &hw); err != nil {
+				log.Printf("invalid hardware_info JSON: %v", err)
+				continue
+			}
+			mid := hw.MachineID
+			if mid == "" {
+				mid = machineID
+			}
+			if _, err := db.Exec(`UPDATE machines SET hardware_info = ? WHERE id = ?`, string(msg), mid); err != nil {
+				log.Printf("store hardware_info: %v", err)
+			}
+
 		case "command_response":
 			var resp CommandResponse
 			if err := json.Unmarshal(msg, &resp); err != nil {
@@ -2546,21 +2564,30 @@ func handleGetMachine(c echo.Context) error {
 	id := c.Param("id")
 
 	var m struct {
-		ID       string  `json:"id"`
-		Hostname string  `json:"hostname"`
-		IP       *string `json:"ip"`
-		OS       *string `json:"os"`
-		Status   string  `json:"status"`
-		Tags     *string `json:"tags"`
-		LastSeen *string `json:"last_seen"`
+		ID           string  `json:"id"`
+		Hostname     string  `json:"hostname"`
+		IP           *string `json:"ip"`
+		OS           *string `json:"os"`
+		Status       string  `json:"status"`
+		Tags         *string `json:"tags"`
+		LastSeen     *string `json:"last_seen"`
+		HardwareInfo *string `json:"-"`
 	}
-	err := db.QueryRow(`SELECT id, hostname, ip, os, status, tags, last_seen FROM machines WHERE id = ?`, id).
-		Scan(&m.ID, &m.Hostname, &m.IP, &m.OS, &m.Status, &m.Tags, &m.LastSeen)
+	err := db.QueryRow(`SELECT id, hostname, ip, os, status, tags, last_seen, hardware_info FROM machines WHERE id = ?`, id).
+		Scan(&m.ID, &m.Hostname, &m.IP, &m.OS, &m.Status, &m.Tags, &m.LastSeen, &m.HardwareInfo)
 	if err == sql.ErrNoRows {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "machine not found"})
 	}
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+
+	var hardware any
+	if m.HardwareInfo != nil && *m.HardwareInfo != "" {
+		if err := json.Unmarshal([]byte(*m.HardwareInfo), &hardware); err != nil {
+			log.Printf("decode stored hardware_info for %s: %v", id, err)
+			hardware = nil
+		}
 	}
 
 	var met struct {
@@ -2593,10 +2620,11 @@ func handleGetMachine(c echo.Context) error {
 	machineLatencyMu.RUnlock()
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
-		"machine":    m,
-		"metrics":    met,
-		"gpus":       gpus,
-		"latency_ms": lat,
+		"machine":       m,
+		"metrics":       met,
+		"gpus":          gpus,
+		"latency_ms":    lat,
+		"hardware_info": hardware,
 	})
 }
 
