@@ -17,6 +17,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -44,6 +45,35 @@ func seedTestAdmin(t *testing.T) {
 		id, "admin", string(hash), string(pinHash))
 	if err != nil {
 		t.Fatalf("seed test admin: %v", err)
+	}
+}
+
+func seedTestUser(t *testing.T, username, password, pin string, role UserRole, passwordChanged, pinChanged bool) string {
+	t.Helper()
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+	pinHash, err := bcrypt.GenerateFromPassword([]byte(pin), bcrypt.DefaultCost)
+	if err != nil {
+		t.Fatalf("hash pin: %v", err)
+	}
+	id := "test-user-" + username
+	_, err = db.Exec(
+		`INSERT INTO users (id, username, password_hash, terminal_pin_hash, password_changed, pin_changed, role) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		id, username, string(hash), string(pinHash), passwordChanged, pinChanged, role,
+	)
+	if err != nil {
+		t.Fatalf("seed test user: %v", err)
+	}
+	return id
+}
+
+func seedTestMachine(t *testing.T, id string) {
+	t.Helper()
+	_, err := db.Exec(`INSERT INTO machines (id, hostname, status) VALUES (?, ?, 'online')`, id, "machine-"+id)
+	if err != nil {
+		t.Fatalf("seed test machine: %v", err)
 	}
 }
 
@@ -105,43 +135,7 @@ func setupTestServer(t *testing.T) *echo.Echo {
 
 	e := echo.New()
 	e.HideBanner = true
-
-	// Public endpoints.
-	e.GET("/health", handleHealth)
-	e.GET("/ws/agent", handleAgentWS)
-	e.POST("/api/auth/login", handleLogin)
-	e.GET("/install.sh", handleInstallScript)
-	e.GET("/download/ca.crt", handleDownloadCACert)
-	e.GET("/api/setup/status", handleSetupStatus)
-	e.POST("/api/setup", handleSetup)
-
-	// Protected endpoints.
-	api := e.Group("", jwtMiddleware, credentialRotationMiddleware)
-	api.GET("/api/machines", handleListMachines)
-	api.GET("/api/machines/:id", handleGetMachine)
-	api.GET("/api/machines/:id/services", handleGetServices)
-	api.GET("/api/machines/:id/containers", handleGetContainers)
-	api.POST("/api/machines/:id/command", handleCommand)
-	api.PUT("/api/machines/:id/tags", handleSetTags)
-	api.GET("/api/machines/:id/metrics/history", handleMetricsHistory)
-	api.DELETE("/api/machines/:id", handleDeleteMachine)
-
-	api.POST("/api/machines/:id/terminal", handleStartTerminal)
-	api.DELETE("/api/machines/:id/terminal/:session_id", handleCloseTerminal)
-	e.GET("/ws/terminal/:session_id", handleTerminalWS)
-
-	api.GET("/api/alerts", handleListAlerts)
-	api.GET("/api/alerts/active/count", handleAlertCount)
-	api.POST("/api/alerts/:id/acknowledge", handleAcknowledgeAlert)
-	api.GET("/api/alert-rules", handleListAlertRules)
-	api.PUT("/api/alert-rules/:id", handleUpdateAlertRule)
-
-	api.POST("/api/auth/change-password", handleChangePassword)
-	api.POST("/api/auth/change-pin", handleChangePIN)
-	api.POST("/api/auth/sse-token", handleSSEToken)
-
-	api.POST("/api/tokens", handleCreateToken)
-	api.POST("/api/bulk/command", handleBulkCommand)
+	registerRoutes(e)
 
 	return e
 }
@@ -175,14 +169,7 @@ func setupEmptyTestServer(t *testing.T) *echo.Echo {
 
 	e := echo.New()
 	e.HideBanner = true
-
-	e.GET("/health", handleHealth)
-	e.POST("/api/auth/login", handleLogin)
-	e.GET("/api/setup/status", handleSetupStatus)
-	e.POST("/api/setup", handleSetup)
-
-	api := e.Group("", jwtMiddleware, credentialRotationMiddleware)
-	api.GET("/api/machines", handleListMachines)
+	registerRoutes(e)
 
 	return e
 }
@@ -192,7 +179,13 @@ func setupEmptyTestServer(t *testing.T) *echo.Echo {
 func loginAndGetToken(t *testing.T, e *echo.Echo) string {
 	t.Helper()
 
-	body := `{"username":"admin","password":"bloxos"}`
+	return loginAndGetTokenForCredentials(t, e, "admin", "bloxos")
+}
+
+func loginAndGetTokenForCredentials(t *testing.T, e *echo.Echo, username, password string) string {
+	t.Helper()
+
+	body := fmt.Sprintf(`{"username":%q,"password":%q}`, username, password)
 	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -220,6 +213,145 @@ func markCredentialsRotated(t *testing.T) {
 	_, err := db.Exec(`UPDATE users SET password_changed = TRUE, pin_changed = TRUE WHERE username = 'admin'`)
 	if err != nil {
 		t.Fatalf("mark credentials rotated: %v", err)
+	}
+}
+
+func TestRBACRouteAuditPassesForProductionRoutes(t *testing.T) {
+	e := echo.New()
+	e.HideBanner = true
+	registerRoutes(e)
+
+	if err := auditRBACRouteCoverage(e, routeScopeRequirements); err != nil {
+		t.Fatalf("production route set failed RBAC audit: %v", err)
+	}
+}
+
+func TestRBACRouteAuditDetectsMissingMapping(t *testing.T) {
+	e := echo.New()
+	e.HideBanner = true
+	registerRoutes(e)
+	// Add an extra protected route that has no scope mapping.
+	api := e.Group("", jwtMiddleware, credentialRotationMiddleware, permissionMiddleware)
+	api.GET("/api/ghost", func(c echo.Context) error { return nil })
+
+	err := auditRBACRouteCoverage(e, routeScopeRequirements)
+	if err == nil {
+		t.Fatal("expected audit to fail for unmapped protected route, got nil")
+	}
+	if !strings.Contains(err.Error(), "missing scope mapping") || !strings.Contains(err.Error(), "/api/ghost") {
+		t.Fatalf("expected error to name the unmapped route, got: %v", err)
+	}
+}
+
+func TestRBACRouteAuditDetectsOrphanMapping(t *testing.T) {
+	e := echo.New()
+	e.HideBanner = true
+	registerRoutes(e)
+
+	// Clone production requirements and add an entry for a route that isn't registered.
+	requirements := make(map[string]string, len(routeScopeRequirements)+1)
+	for k, v := range routeScopeRequirements {
+		requirements[k] = v
+	}
+	requirements[routeScopeKey(http.MethodGet, "/api/nonexistent")] = scopeFleetRead
+
+	err := auditRBACRouteCoverage(e, requirements)
+	if err == nil {
+		t.Fatal("expected audit to fail for orphan scope mapping, got nil")
+	}
+	if !strings.Contains(err.Error(), "orphan scope mapping") || !strings.Contains(err.Error(), "/api/nonexistent") {
+		t.Fatalf("expected error to name the orphan route, got: %v", err)
+	}
+}
+
+func TestLoginIncludesRoleAndScopes(t *testing.T) {
+	e := setupTestServer(t)
+	markCredentialsRotated(t)
+	seedTestUser(t, "viewer1", "viewerpass123", "1234", RoleViewer, true, true)
+
+	body := `{"username":"viewer1","password":"viewerpass123"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Role   string   `json:"role"`
+		Scopes []string `json:"scopes"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal login response: %v", err)
+	}
+	if resp.Role != string(RoleViewer) {
+		t.Fatalf("expected role %q, got %q", RoleViewer, resp.Role)
+	}
+	if !slices.Contains(resp.Scopes, scopeFleetRead) {
+		t.Fatalf("expected scopes to include %q, got %v", scopeFleetRead, resp.Scopes)
+	}
+	if slices.Contains(resp.Scopes, scopeFleetControl) {
+		t.Fatalf("expected viewer scopes to exclude %q, got %v", scopeFleetControl, resp.Scopes)
+	}
+}
+
+func TestViewerCanReadMachinesButCannotCreateInstallToken(t *testing.T) {
+	e := setupTestServer(t)
+	markCredentialsRotated(t)
+	seedTestUser(t, "viewer2", "viewerpass123", "1234", RoleViewer, true, true)
+	viewerToken := loginAndGetTokenForCredentials(t, e, "viewer2", "viewerpass123")
+
+	readReq := httptest.NewRequest(http.MethodGet, "/api/machines", nil)
+	readReq.Header.Set("Authorization", "Bearer "+viewerToken)
+	readRec := httptest.NewRecorder()
+	e.ServeHTTP(readRec, readReq)
+
+	if readRec.Code != http.StatusOK {
+		t.Fatalf("expected viewer machine read to succeed, got %d: %s", readRec.Code, readRec.Body.String())
+	}
+
+	writeReq := httptest.NewRequest(http.MethodPost, "/api/tokens", nil)
+	writeReq.Header.Set("Authorization", "Bearer "+viewerToken)
+	writeRec := httptest.NewRecorder()
+	e.ServeHTTP(writeRec, writeReq)
+
+	if writeRec.Code != http.StatusForbidden {
+		t.Fatalf("expected viewer install token create to be forbidden, got %d: %s", writeRec.Code, writeRec.Body.String())
+	}
+	if !strings.Contains(writeRec.Body.String(), scopeTokensAdmin) {
+		t.Fatalf("expected forbidden response to mention scope %q, got %s", scopeTokensAdmin, writeRec.Body.String())
+	}
+}
+
+func TestOperatorCanUpdateTagsButCannotDeleteMachine(t *testing.T) {
+	e := setupTestServer(t)
+	markCredentialsRotated(t)
+	seedTestUser(t, "operator1", "operatorpass123", "1234", RoleOperator, true, true)
+	seedTestMachine(t, "machine-1")
+	operatorToken := loginAndGetTokenForCredentials(t, e, "operator1", "operatorpass123")
+
+	updateReq := httptest.NewRequest(http.MethodPut, "/api/machines/machine-1/tags", strings.NewReader(`{"tags":["gpu","lab"]}`))
+	updateReq.Header.Set("Authorization", "Bearer "+operatorToken)
+	updateReq.Header.Set("Content-Type", "application/json")
+	updateRec := httptest.NewRecorder()
+	e.ServeHTTP(updateRec, updateReq)
+
+	if updateRec.Code != http.StatusOK {
+		t.Fatalf("expected operator tag update to succeed, got %d: %s", updateRec.Code, updateRec.Body.String())
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/machines/machine-1", nil)
+	deleteReq.Header.Set("Authorization", "Bearer "+operatorToken)
+	deleteRec := httptest.NewRecorder()
+	e.ServeHTTP(deleteRec, deleteReq)
+
+	if deleteRec.Code != http.StatusForbidden {
+		t.Fatalf("expected operator delete to be forbidden, got %d: %s", deleteRec.Code, deleteRec.Body.String())
+	}
+	if !strings.Contains(deleteRec.Body.String(), scopeFleetAdmin) {
+		t.Fatalf("expected forbidden response to mention scope %q, got %s", scopeFleetAdmin, deleteRec.Body.String())
 	}
 }
 

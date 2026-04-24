@@ -222,6 +222,16 @@ var migrations = []migration{
 			return err
 		},
 	},
+	{
+		description: "add role column to users for RBAC",
+		apply: func(tx *sql.Tx) error {
+			_, err := tx.Exec(`ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'admin'`)
+			if err != nil && isDuplicateColumnErr(err) {
+				return nil
+			}
+			return err
+		},
+	},
 }
 
 // isDuplicateColumnErr returns true when SQLite rejects an ALTER TABLE ADD
