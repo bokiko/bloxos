@@ -96,9 +96,9 @@ export function MetricCharts({ machineId, hasGpu }: MetricChartsProps) {
     <div className="space-y-6">
       {/* Period selector */}
       <Tabs value={period} onValueChange={(v) => setPeriod(v as Period)}>
-        <TabsList variant="line" className="gap-0.5">
+        <TabsList variant="line" className="gap-1">
           {periods.map((p) => (
-            <TabsTrigger key={p} value={p} className="text-[11px] px-3 py-1 font-mono tabular-nums">
+            <TabsTrigger key={p} value={p} className="text-sm px-4 py-1.5 font-mono tabular-nums">
               {p}
             </TabsTrigger>
           ))}
@@ -106,8 +106,8 @@ export function MetricCharts({ machineId, hasGpu }: MetricChartsProps) {
       </Tabs>
 
       {data.length < 2 ? (
-        <div className="text-center py-8 text-blox-muted text-xs">
-          Not enough data yet. Metrics are collected every 30 seconds.
+        <div className="flex items-center justify-center text-blox-muted text-xs" style={{ height: 180 }}>
+          Collecting data… metrics are polled every 30 seconds.
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
