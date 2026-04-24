@@ -391,6 +391,13 @@ func runAgent(machineID string) error {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
+	// Send hardware snapshot once per connect. It's static — the hub keeps
+	// whatever we last reported and overwrites on the next connect if anything
+	// genuinely changed (DIMM swap, new disk, etc.).
+	if err := sendHardware(conn, &writeMu, machineID); err != nil {
+		log.Printf("send hardware error: %v", err)
+	}
+
 	// Send immediately on connect, then every 30s.
 	if err := sendAll(conn, &writeMu, machineID); err != nil {
 		return err
@@ -425,6 +432,14 @@ func writeJSON(conn *websocket.Conn, mu *sync.Mutex, v interface{}) error {
 	mu.Lock()
 	defer mu.Unlock()
 	return conn.WriteMessage(websocket.TextMessage, data)
+}
+
+func sendHardware(conn *websocket.Conn, mu *sync.Mutex, machineID string) error {
+	hw := collectHardware(machineID, collectGPUMetrics())
+	if err := writeJSON(conn, mu, hw); err != nil {
+		return fmt.Errorf("write hardware: %w", err)
+	}
+	return nil
 }
 
 func sendMetrics(conn *websocket.Conn, mu *sync.Mutex, machineID string) error {
