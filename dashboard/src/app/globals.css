@@ -206,4 +206,23 @@ body {
   html {
     @apply font-sans;
   }
+
+  /*
+   * Canonical focus ring — applied to every interactive element so keyboard
+   * users get consistent feedback without each component inventing its own.
+   * Uses outline (not ring) to stay layout-neutral.
+   */
+  button:focus-visible,
+  a:focus-visible,
+  [role="button"]:focus-visible,
+  [role="tab"]:focus-visible,
+  [role="menuitem"]:focus-visible,
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible,
+  [tabindex="0"]:focus-visible {
+    outline: 2px solid var(--color-blox-blue);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
 }
