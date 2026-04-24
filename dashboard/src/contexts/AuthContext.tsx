@@ -5,8 +5,13 @@ import { useRouter, usePathname } from "next/navigation";
 import { ChangePasswordModal } from "@/components/ChangePasswordModal";
 import { HUB_URL, dispatchAuthChanged } from "@/lib/session";
 
+export type UserRole = "admin" | "operator" | "viewer";
+
 interface AuthContextType {
   token: string | null;
+  role: UserRole | null;
+  scopes: string[];
+  hasScope: (scope: string) => boolean;
   login: (username: string, password: string) => Promise<boolean>;
   logout: () => void;
   isAuthenticated: boolean;
@@ -21,8 +26,15 @@ export function useAuth() {
   return ctx;
 }
 
+function normalizeRole(raw: string | null): UserRole | null {
+  if (raw === "admin" || raw === "operator" || raw === "viewer") return raw;
+  return null;
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(null);
+  const [role, setRole] = useState<UserRole | null>(null);
+  const [scopes, setScopes] = useState<string[]>([]);
   const [checked, setChecked] = useState(false);
   const [passwordChangeRequired, setPasswordChangeRequired] = useState(false);
   const [pinChangeRequired, setPinChangeRequired] = useState(false);
@@ -38,6 +50,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (payload.exp * 1000 > Date.now()) {
           // eslint-disable-next-line react-hooks/set-state-in-effect
           setToken(stored);
+          setRole(normalizeRole(localStorage.getItem("bloxos_role")));
+          try {
+            const storedScopes = JSON.parse(localStorage.getItem("bloxos_scopes") || "[]");
+            if (Array.isArray(storedScopes)) setScopes(storedScopes.filter((s) => typeof s === "string"));
+          } catch {
+            setScopes([]);
+          }
           // Check stored change requirements.
           const pwReq = localStorage.getItem("bloxos_pw_change_required");
           const pinReq = localStorage.getItem("bloxos_pin_change_required");
@@ -45,11 +64,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           if (pinReq === "true") setPinChangeRequired(true);
         } else {
           localStorage.removeItem("bloxos_token");
+          localStorage.removeItem("bloxos_role");
+          localStorage.removeItem("bloxos_scopes");
           localStorage.removeItem("bloxos_pw_change_required");
           localStorage.removeItem("bloxos_pin_change_required");
         }
       } catch {
         localStorage.removeItem("bloxos_token");
+        localStorage.removeItem("bloxos_role");
+        localStorage.removeItem("bloxos_scopes");
       }
     }
     setChecked(true);
@@ -72,6 +95,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const data = await res.json();
       localStorage.setItem("bloxos_token", data.token);
       setToken(data.token);
+
+      const nextRole = normalizeRole(typeof data.role === "string" ? data.role : null);
+      setRole(nextRole);
+      if (nextRole) {
+        localStorage.setItem("bloxos_role", nextRole);
+      } else {
+        localStorage.removeItem("bloxos_role");
+      }
+
+      const nextScopes = Array.isArray(data.scopes)
+        ? data.scopes.filter((s: unknown): s is string => typeof s === "string")
+        : [];
+      setScopes(nextScopes);
+      localStorage.setItem("bloxos_scopes", JSON.stringify(nextScopes));
+
       dispatchAuthChanged();
 
       // Check if password/PIN change is required (Finding #2).
@@ -92,14 +130,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(() => {
     localStorage.removeItem("bloxos_token");
+    localStorage.removeItem("bloxos_role");
+    localStorage.removeItem("bloxos_scopes");
     localStorage.removeItem("bloxos_pw_change_required");
     localStorage.removeItem("bloxos_pin_change_required");
     setToken(null);
+    setRole(null);
+    setScopes([]);
     setPasswordChangeRequired(false);
     setPinChangeRequired(false);
     dispatchAuthChanged();
     router.push("/login");
   }, [router]);
+
+  const hasScope = useCallback((scope: string) => scopes.includes(scope), [scopes]);
 
   const authFetch = useCallback(async (url: string, init?: RequestInit): Promise<Response> => {
     const currentToken = localStorage.getItem("bloxos_token");
@@ -146,7 +190,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   return (
-    <AuthContext.Provider value={{ token, login, logout, isAuthenticated: !!token, authFetch }}>
+    <AuthContext.Provider value={{ token, role, scopes, hasScope, login, logout, isAuthenticated: !!token, authFetch }}>
       {/* Force password change modal (Finding #2) */}
       {token && passwordChangeRequired && (
         <ChangePasswordModal type="password" onComplete={handlePasswordChanged} />
