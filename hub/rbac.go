@@ -32,6 +32,7 @@ const (
 	scopeAPIMachinesCtrl  = "api_machines.control"
 	scopeAPIMachinesAdmin = "api_machines.admin"
 	scopeTokensAdmin      = "install_tokens.admin"
+	scopeUsersAdmin       = "users.admin"
 )
 
 const authClaimsContextKey = "auth_claims"
@@ -55,6 +56,7 @@ var roleScopes = map[UserRole][]string{
 		scopeAPIMachinesCtrl,
 		scopeAPIMachinesAdmin,
 		scopeTokensAdmin,
+		scopeUsersAdmin,
 	},
 	RoleOperator: {
 		scopeAuthSelf,
@@ -101,6 +103,10 @@ var routeScopeRequirements = map[string]string{
 	routeScopeKey(http.MethodPatch, "/api/api-machines/:id"):                   scopeAPIMachinesAdmin,
 	routeScopeKey(http.MethodDelete, "/api/api-machines/:id"):                  scopeAPIMachinesAdmin,
 	routeScopeKey(http.MethodPost, "/api/api-machines/:id/poll"):               scopeAPIMachinesCtrl,
+	routeScopeKey(http.MethodGet, "/api/users"):                                scopeUsersAdmin,
+	routeScopeKey(http.MethodPost, "/api/users"):                               scopeUsersAdmin,
+	routeScopeKey(http.MethodPatch, "/api/users/:id"):                          scopeUsersAdmin,
+	routeScopeKey(http.MethodDelete, "/api/users/:id"):                         scopeUsersAdmin,
 }
 
 func permissionMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
