@@ -30,7 +30,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Bell, Plus, Wifi, WifiOff, Search, LayoutGrid, List,
   ChevronDown, LogOut, Square, CheckSquare, RotateCcw, Trash2, Pencil,
-  ArrowUpDown, Filter, Monitor, Server,
+  ArrowUpDown, Filter, Monitor, Server, Users as UsersIcon,
 } from "lucide-react";
 import Link from "next/link";
 
@@ -82,7 +82,8 @@ const sortLabels: Record<SortOption, string> = {
 
 export default function Home() {
   const { machines: liveMachines, connected, hasReceivedData, alertCount, alerts, setAlerts, setAlertCount } = useSSE();
-  const { logout, authFetch } = useAuth();
+  const { logout, authFetch, hasScope } = useAuth();
+  const canManageUsers = hasScope("users.admin");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [sortBy, setSortBy] = useState<SortOption>("name");
@@ -388,6 +389,16 @@ export default function Home() {
               <Server className="w-3.5 h-3.5" />
               <span className="hidden sm:inline">Add API</span>
             </Button>
+
+            {canManageUsers && (
+              <Link
+                href="/users"
+                title="Users"
+                className="inline-flex items-center justify-center rounded-md w-8 h-8 text-blox-muted hover:text-blox-text hover:bg-blox-border/50 transition-colors"
+              >
+                <UsersIcon className="w-4 h-4" />
+              </Link>
+            )}
 
             <Button
               variant="ghost"
