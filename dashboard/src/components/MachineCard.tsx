@@ -82,24 +82,24 @@ export function MachineCard({ machine, onClick, onDelete, onEdit }: MachineCardP
     : 0;
 
   const gpu0 = machine.gpus && machine.gpus.length > 0 ? machine.gpus[0] : null;
-  const hasGpu = gpu0 !== null || (machine.gpu_temp && machine.gpu_temp > 0) ||
-    (machine.gpu_vram_total_bytes && machine.gpu_vram_total_bytes > 0);
   const gpuVramUsed = gpu0 ? gpu0.mem_used_bytes : (machine.gpu_vram_used_bytes || 0);
   const gpuVramTotal = gpu0 ? gpu0.mem_total_bytes : (machine.gpu_vram_total_bytes || 0);
+  const hasGpuTemp = (machine.gpu_temp ?? 0) > 0;
+  const hasGpuVram = gpuVramTotal > 0;
 
   const tags = machine.tags ? machine.tags.split(",").filter((t) => t.trim()) : [];
   const adapterTag = tags.find((t) => API_ADAPTER_TYPES.includes(t.trim().toLowerCase()));
   const isAPIMachine = !!adapterTag;
 
   return (
-    <Link href={`/machine/${machine.machine_id}`} className="block">
+    <Link href={`/machine/${machine.machine_id}`} className="block h-full">
       <motion.div
         whileHover={{ scale: 1.02 }}
         transition={{ type: "spring", stiffness: 400, damping: 25 }}
         onClick={onClick}
         className={`
           group bg-blox-card border-l-[3px] ${statusBorderColor[status]}
-          rounded-xl p-5 cursor-pointer
+          rounded-xl p-5 cursor-pointer flex flex-col h-full
           border border-blox-border
           hover:border-blox-muted/20 hover:shadow-xl ${statusGlow[status]}
           transition-all duration-300
@@ -194,53 +194,45 @@ export function MachineCard({ machine, onClick, onDelete, onEdit }: MachineCardP
             </span>
           </div>
 
-          {/* GPU Temp - always rendered for consistent card height */}
-          <div className="flex items-center gap-2">
-            <Thermometer className="w-3.5 h-3.5 text-blox-muted shrink-0" />
-            <span className="text-xs text-blox-muted w-8">GPU</span>
-            {hasGpu && machine.gpu_temp !== undefined && machine.gpu_temp > 0 ? (
-              <>
-                <span className={`text-xs tabular-nums font-mono font-medium ${
-                  machine.gpu_temp > 80 ? "text-red-400" :
-                  machine.gpu_temp > 60 ? "text-amber-400" : "text-emerald-400"
-                }`}>
-                  {machine.gpu_temp}&deg;C
+          {/* GPU Temp — rendered only when the machine actually has a GPU. */}
+          {hasGpuTemp && (
+            <div className="flex items-center gap-2">
+              <Thermometer className="w-3.5 h-3.5 text-blox-muted shrink-0" />
+              <span className="text-xs text-blox-muted w-8">GPU</span>
+              <span className={`text-xs tabular-nums font-mono font-medium ${
+                (machine.gpu_temp ?? 0) > 80 ? "text-red-400" :
+                (machine.gpu_temp ?? 0) > 60 ? "text-amber-400" : "text-emerald-400"
+              }`}>
+                {machine.gpu_temp}&deg;C
+              </span>
+              {machine.gpu_util_percent !== undefined && (
+                <span className="text-[10px] text-blox-muted tabular-nums font-mono ml-1">
+                  ({(machine.gpu_util_percent ?? 0).toFixed(0)}% util)
                 </span>
-                {machine.gpu_util_percent !== undefined && (
-                  <span className="text-[10px] text-blox-muted font-mono ml-1">
-                    ({(machine.gpu_util_percent ?? 0).toFixed(0)}% util)
-                  </span>
-                )}
-              </>
-            ) : (
-              <span className="text-xs text-blox-muted/40 font-mono">&mdash;</span>
-            )}
-          </div>
+              )}
+            </div>
+          )}
 
-          {/* VRAM - always rendered for consistent card height */}
-          <div className="flex items-center gap-2">
-            <MemoryStick className="w-3.5 h-3.5 text-blox-muted shrink-0" />
-            <span className="text-xs text-blox-muted w-8">VRAM</span>
-            {hasGpu && gpuVramTotal > 0 ? (
-              <>
-                <div className="flex-1">
-                  <ProgressBar
-                    value={gpuVramTotal > 0 ? (gpuVramUsed / gpuVramTotal * 100) : 0}
-                    label={`${(gpuVramTotal > 0 ? (gpuVramUsed / gpuVramTotal * 100) : 0).toFixed(0)}%`}
-                  />
-                </div>
-                <span className="text-[10px] text-blox-muted tabular-nums font-mono">
-                  {formatBytes(gpuVramUsed)}/{formatBytes(gpuVramTotal)}
-                </span>
-              </>
-            ) : (
-              <span className="text-xs text-blox-muted/40 font-mono">&mdash;</span>
-            )}
-          </div>
+          {/* VRAM — rendered only when total VRAM is known. */}
+          {hasGpuVram && (
+            <div className="flex items-center gap-2">
+              <MemoryStick className="w-3.5 h-3.5 text-blox-muted shrink-0" />
+              <span className="text-xs text-blox-muted w-8">VRAM</span>
+              <div className="flex-1">
+                <ProgressBar
+                  value={(gpuVramUsed / gpuVramTotal) * 100}
+                  label={`${((gpuVramUsed / gpuVramTotal) * 100).toFixed(0)}%`}
+                />
+              </div>
+              <span className="text-[10px] text-blox-muted tabular-nums font-mono">
+                {formatBytes(gpuVramUsed)}/{formatBytes(gpuVramTotal)}
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-between mt-4 pt-3 border-t border-blox-border/50">
+        <div className="flex items-center justify-between mt-auto pt-3 border-t border-blox-border/50">
           <div className="flex items-center gap-1.5">
             <Clock className="w-3 h-3 text-blox-muted" />
             <span className="text-[10px] text-blox-muted font-mono tabular-nums">

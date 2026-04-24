@@ -73,7 +73,19 @@ export function Sparkline({ machineId, width = 120, height = 28 }: SparklineProp
     ctx.fill();
   }, [points, width, height]);
 
-  if (points.length < 2) return null;
+  if (points.length < 2) {
+    // Keep the slot at full width so adjacent columns / labels don't jump
+    // when sparkline data is still being collected.
+    return (
+      <div
+        style={{ width, height }}
+        className="flex items-center"
+        aria-label="collecting data"
+      >
+        <div className="w-full border-t border-dashed border-blox-muted/30" />
+      </div>
+    );
+  }
 
   return (
     <canvas
