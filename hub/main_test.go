@@ -216,6 +216,222 @@ func markCredentialsRotated(t *testing.T) {
 	}
 }
 
+func TestAdminCanCreateAndListUsers(t *testing.T) {
+	e := setupTestServer(t)
+	markCredentialsRotated(t)
+	adminToken := loginAndGetToken(t, e)
+
+	createBody := `{"username":"alice","password":"alicepass123","pin":"1234","role":"operator"}`
+	createReq := httptest.NewRequest(http.MethodPost, "/api/users", strings.NewReader(createBody))
+	createReq.Header.Set("Authorization", "Bearer "+adminToken)
+	createReq.Header.Set("Content-Type", "application/json")
+	createRec := httptest.NewRecorder()
+	e.ServeHTTP(createRec, createReq)
+
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 on create, got %d: %s", createRec.Code, createRec.Body.String())
+	}
+	var created userRecord
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("unmarshal create response: %v", err)
+	}
+	if created.Role != string(RoleOperator) {
+		t.Fatalf("expected role operator, got %q", created.Role)
+	}
+	if created.PasswordChanged || created.PINChanged {
+		t.Fatal("new admin-created user should require credential rotation")
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/users", nil)
+	listReq.Header.Set("Authorization", "Bearer "+adminToken)
+	listRec := httptest.NewRecorder()
+	e.ServeHTTP(listRec, listReq)
+
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on list, got %d: %s", listRec.Code, listRec.Body.String())
+	}
+	var users []userRecord
+	if err := json.Unmarshal(listRec.Body.Bytes(), &users); err != nil {
+		t.Fatalf("unmarshal list response: %v", err)
+	}
+	if len(users) != 2 {
+		t.Fatalf("expected 2 users (admin + alice), got %d", len(users))
+	}
+}
+
+func TestCreateUserRejectsDuplicateUsername(t *testing.T) {
+	e := setupTestServer(t)
+	markCredentialsRotated(t)
+	adminToken := loginAndGetToken(t, e)
+
+	body := `{"username":"admin","password":"anotherpass123","pin":"1234","role":"viewer"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/users", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for duplicate username, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCreateUserRejectsInvalidRole(t *testing.T) {
+	e := setupTestServer(t)
+	markCredentialsRotated(t)
+	adminToken := loginAndGetToken(t, e)
+
+	body := `{"username":"bob","password":"bobpass123","pin":"1234","role":"superuser"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/users", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid role, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestOperatorCannotManageUsers(t *testing.T) {
+	e := setupTestServer(t)
+	markCredentialsRotated(t)
+	seedTestUser(t, "op1", "operatorpass123", "1234", RoleOperator, true, true)
+	opToken := loginAndGetTokenForCredentials(t, e, "op1", "operatorpass123")
+
+	body := `{"username":"charlie","password":"charliepass123","pin":"1234","role":"viewer"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/users", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+opToken)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for operator creating user, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAdminCanPromoteAndDemoteOthers(t *testing.T) {
+	e := setupTestServer(t)
+	markCredentialsRotated(t)
+	seedTestUser(t, "admin2", "admin2pass123", "1234", RoleAdmin, true, true)
+	targetID := seedTestUser(t, "target", "targetpass123", "1234", RoleViewer, true, true)
+	adminToken := loginAndGetToken(t, e)
+
+	body := `{"role":"operator"}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/users/"+targetID, strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on role patch, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var role string
+	if err := db.QueryRow(`SELECT role FROM users WHERE id = ?`, targetID).Scan(&role); err != nil {
+		t.Fatalf("fetch target role: %v", err)
+	}
+	if role != string(RoleOperator) {
+		t.Fatalf("expected role operator in db, got %q", role)
+	}
+}
+
+func TestAdminCannotChangeOwnRole(t *testing.T) {
+	e := setupTestServer(t)
+	markCredentialsRotated(t)
+	seedTestUser(t, "admin2", "admin2pass123", "1234", RoleAdmin, true, true)
+	adminToken := loginAndGetToken(t, e)
+
+	body := `{"role":"operator"}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/users/test-admin-id", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for self role change, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAdminCanDemoteAnotherAdmin(t *testing.T) {
+	e := setupTestServer(t)
+	markCredentialsRotated(t)
+	otherID := seedTestUser(t, "other", "otherpass123", "1234", RoleAdmin, true, true)
+	adminToken := loginAndGetToken(t, e)
+
+	body := `{"role":"operator"}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/users/"+otherID, strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected demote of other admin to succeed, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var role string
+	if err := db.QueryRow(`SELECT role FROM users WHERE id = ?`, otherID).Scan(&role); err != nil {
+		t.Fatalf("fetch role: %v", err)
+	}
+	if role != string(RoleOperator) {
+		t.Fatalf("expected role operator, got %q", role)
+	}
+}
+
+func TestAdminCanDeleteOtherUser(t *testing.T) {
+	e := setupTestServer(t)
+	markCredentialsRotated(t)
+	targetID := seedTestUser(t, "victim", "victimpass123", "1234", RoleViewer, true, true)
+	adminToken := loginAndGetToken(t, e)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/users/"+targetID, nil)
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on delete, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM users WHERE id = ?`, targetID).Scan(&count); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected target to be deleted, found %d rows", count)
+	}
+}
+
+func TestAdminCannotDeleteSelf(t *testing.T) {
+	e := setupTestServer(t)
+	markCredentialsRotated(t)
+	adminToken := loginAndGetToken(t, e)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/users/test-admin-id", nil)
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 on self delete, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAdminCanDeleteAnotherAdmin(t *testing.T) {
+	e := setupTestServer(t)
+	markCredentialsRotated(t)
+	otherID := seedTestUser(t, "other", "otherpass123", "1234", RoleAdmin, true, true)
+	adminToken := loginAndGetToken(t, e)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/users/"+otherID, nil)
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on delete other admin, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestRBACRouteAuditPassesForProductionRoutes(t *testing.T) {
 	e := echo.New()
 	e.HideBanner = true
