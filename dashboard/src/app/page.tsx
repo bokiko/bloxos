@@ -361,7 +361,7 @@ export default function Home() {
             >
               <Bell className="w-4 h-4" />
               {alertCount > 0 && (
-                <span className="absolute -top-0.5 -right-0.5 w-4 h-4 rounded-full bg-red-500 text-[9px] flex items-center justify-center text-white font-bold">
+                <span className="absolute -top-0.5 -right-0.5 w-4 h-4 rounded-full bg-red-500 text-[10px] flex items-center justify-center text-white font-bold">
                   {alertCount > 9 ? "9+" : alertCount}
                 </span>
               )}
@@ -399,6 +399,24 @@ export default function Home() {
           </div>
         </div>
       </header>
+
+      {/* Degraded connection banner — surfaces SSE disconnect inline so it isn't
+          easy to miss behind the small wifi icon in the header. */}
+      <AnimatePresence>
+        {!connected && !isDemo && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            className="bg-amber-500/5 border-b border-amber-500/20 px-4 sm:px-6 py-2 overflow-hidden"
+          >
+            <div className="max-w-[1600px] mx-auto flex items-center gap-2 text-xs text-amber-400">
+              <WifiOff className="w-3.5 h-3.5" />
+              <span>Live updates paused — reconnecting to hub…</span>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Bulk action bar */}
       <AnimatePresence>
@@ -726,7 +744,7 @@ export default function Home() {
                       <TableCell className="text-xs hidden xl:table-cell">
                         <div className="flex gap-1 flex-wrap">
                           {tags.map((tag) => (
-                            <Badge key={tag} variant="outline" className="text-[9px] px-1.5 h-auto py-0 border-blox-border text-blox-muted">
+                            <Badge key={tag} variant="outline" className="text-[10px] px-1.5 h-auto py-0 border-blox-border text-blox-muted">
                               {tag}
                             </Badge>
                           ))}
