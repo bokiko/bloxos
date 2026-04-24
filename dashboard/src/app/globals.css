@@ -4,6 +4,27 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/*
+ * BloxOS design conventions — components must follow these to stay balanced.
+ *
+ * Spacing:   only 4/8/12/16/24/32 px. Use Tailwind's `p-1 p-2 p-3 p-4 p-6 p-8`
+ *            and corresponding gap-/m-/w-/h- utilities. No `.5` steps
+ *            (`p-1.5`, `gap-2.5`) — they break the vertical rhythm.
+ * Type:      only `text-xs` (12), `text-sm` (14), `text-base` (16), `text-lg`
+ *            (18), `text-xl` (20), `text-2xl` (24). Never `text-[9|10|11]px`
+ *            or any other arbitrary pixel value.
+ * Motion:    only `duration-[var(--motion-fast|base|slow)]` for transitions.
+ *            No ad-hoc `duration-200` / `duration-300` / `duration-400`.
+ * Numbers:   any element whose text can change at runtime must include
+ *            `tabular-nums` so digit widths stay locked (stops the jitter
+ *            that reads as "janky").
+ * Focus:     every interactive element (button, link, input, tab, menuitem)
+ *            gets `focus-visible:outline-2 focus-visible:outline-blox-blue`
+ *            `focus-visible:outline-offset-2`. No component-specific rings.
+ * Absence:   hide sections when the underlying data is absent. No em-dash
+ *            placeholders, no "N/A" badges — absence is the signal.
+ */
+
 @theme inline {
   --color-blox-bg: #0a0a0f;
   --color-blox-card: #12121a;
@@ -14,6 +35,13 @@
   --color-blox-amber: #f59e0b;
   --color-blox-red: #ef4444;
   --color-blox-blue: #3b82f6;
+
+  /* Motion tokens — use via arbitrary values, e.g.
+     `duration-[var(--motion-base)]` or style={{ transitionDuration: ... }} */
+  --motion-fast: 150ms;
+  --motion-base: 250ms;
+  --motion-slow: 400ms;
+
   --font-heading: var(--font-sans);
   --font-sans: var(--font-sans);
   --font-mono: var(--font-mono);
