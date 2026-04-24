@@ -23,17 +23,18 @@
     - [x] GitHub Actions CI for hub tests, agent tests, dashboard lint/build
 - In progress:
   - [ ] PR `#21` / branch `feat/setup-ui`: frontend `/setup` page for first-boot flow
-    - current branch head: `1692c2d`
+    - current branch head: `3fcb836`
     - latest fixes included:
       - blocking error state when setup status cannot be fetched
       - explicit message when setup succeeds but auto-login fails
       - login page skips setup probe when already authenticated
       - setup retry button retriggers the setup-status fetch correctly
+      - RBAC/action-scope foundation (`admin` / `operator` / `viewer`) with server-side route checks
+      - startup route-audit guard so protected `/api/*` routes cannot drift from the RBAC scope map
 - Remaining:
   - [ ] merge PR `#21`
   - [ ] deploy `/setup` UI after merge
   - [ ] move Proxmox API machine from temporary `insecure` mode to `custom_ca`
-  - [ ] RBAC / action scopes
   - [ ] split `hub/main.go` into packages when the repo stabilizes further
 
 ## Credentials
@@ -86,6 +87,7 @@ Never put raw secrets, tokens, passwords, PINs, or SSH credentials in this file 
 - PR `#21` is still open and not merged into `main` yet.
 - `/setup` UI exists on the feature branch only until PR `#21` lands.
 - Proxmox API polling still uses explicit per-machine `insecure` TLS until its CA PEM is configured.
+- RBAC is currently backend-enforced; dashboard role-aware affordances are still minimal.
 
 ## Current Fleet
 - Last verified rollout state:
