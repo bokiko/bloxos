@@ -151,13 +151,15 @@ export default function Home() {
   }, [machines]);
 
   const filteredMachines = useMemo(() => {
-    let result = machines;
+    // Drop records that don't have enough shape to render — avoids the whole
+    // list crashing on a single malformed SSE update.
+    let result = machines.filter((m) => m && typeof m.machine_id === "string");
 
     if (search) {
       const q = search.toLowerCase();
       result = result.filter((m) =>
-        m.hostname.toLowerCase().includes(q) ||
-        (m.ip && m.ip.toLowerCase().includes(q))
+        (m.hostname ?? "").toLowerCase().includes(q) ||
+        (m.ip ?? "").toLowerCase().includes(q)
       );
     }
 
@@ -167,14 +169,14 @@ export default function Home() {
 
     if (tagFilter) {
       result = result.filter((m) =>
-        m.tags && m.tags.split(",").map((t) => t.trim()).includes(tagFilter)
+        m.tags ? m.tags.split(",").map((t) => t.trim()).includes(tagFilter) : false
       );
     }
 
     result = [...result].sort((a, b) => {
       switch (sortBy) {
         case "name":
-          return a.hostname.localeCompare(b.hostname);
+          return (a.hostname ?? "").localeCompare(b.hostname ?? "");
         case "status":
           return statusOrder[getStatus(a)] - statusOrder[getStatus(b)];
         case "cpu":
