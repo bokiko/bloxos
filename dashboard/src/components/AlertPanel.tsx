@@ -86,7 +86,7 @@ export function AlertPanel({ open, onClose, alerts, onAcknowledge, onAcknowledge
                             </span>
                             <Badge
                               variant="outline"
-                              className={`text-[9px] px-1.5 h-auto py-0 ${
+                              className={`text-[10px] px-1.5 h-auto py-0 ${
                                 alert.severity === "critical"
                                   ? "border-red-500/30 bg-red-500/10 text-red-400"
                                   : "border-amber-500/30 bg-amber-500/10 text-amber-400"

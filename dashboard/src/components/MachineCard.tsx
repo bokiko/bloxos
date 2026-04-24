@@ -115,7 +115,7 @@ export function MachineCard({ machine, onClick, onDelete, onEdit }: MachineCardP
               {machine.hostname}
             </span>
             {isAPIMachine && adapterTag && (
-              <span className="text-[9px] px-1.5 py-0.5 rounded-md bg-violet-500/10 text-violet-400 border border-violet-500/20 font-semibold uppercase tracking-wider">
+              <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-violet-500/10 text-violet-400 border border-violet-500/20 font-semibold uppercase tracking-wider">
                 {adapterTag.trim()}
               </span>
             )}
@@ -154,7 +154,7 @@ export function MachineCard({ machine, onClick, onDelete, onEdit }: MachineCardP
         {/* Sparkline */}
         {status !== "offline" && (
           <div className="mb-3 flex items-center gap-2">
-            <span className="text-[9px] text-blox-muted uppercase tracking-wider font-medium">CPU 30m</span>
+            <span className="text-[10px] text-blox-muted uppercase tracking-wider font-medium">CPU 30m</span>
             <Sparkline machineId={machine.machine_id} width={100} height={24} />
           </div>
         )}
@@ -258,7 +258,7 @@ export function MachineCard({ machine, onClick, onDelete, onEdit }: MachineCardP
         {tags.length > 0 && (
           <div className="flex gap-1.5 flex-wrap mt-2.5 pt-2.5 border-t border-blox-border/50">
             {tags.map((tag) => (
-              <span key={tag} className="text-[9px] px-2 py-0.5 rounded-full bg-blox-blue/10 text-blox-blue/80 border border-blox-blue/20 font-medium">
+              <span key={tag} className="text-[10px] px-2 py-0.5 rounded-full bg-blox-blue/10 text-blox-blue/80 border border-blox-blue/20 font-medium">
                 {tag.trim()}
               </span>
             ))}
