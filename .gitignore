@@ -31,3 +31,11 @@ Thumbs.db
 /hub/hub
 *.db-shm
 .bak
+
+# Local Claude Code / dev tool artifacts
+.backups/
+.claude/
+.turbo/
+
+# Local-only audit / analysis drafts (not meant to live in git)
+SECURITY_AUDIT_*.md
