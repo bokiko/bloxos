@@ -84,6 +84,10 @@ export default function Home() {
   const { machines: liveMachines, connected, hasReceivedData, alertCount, alerts, setAlerts, setAlertCount } = useSSE();
   const { logout, authFetch, hasScope } = useAuth();
   const canManageUsers = hasScope("users.admin");
+  const canCreateInstallTokens = hasScope("install_tokens.admin");
+  const canManageAPIMachines = hasScope("api_machines.admin");
+  const canControlFleet = hasScope("fleet.control");
+  const canDeleteMachines = hasScope("fleet.admin");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [sortBy, setSortBy] = useState<SortOption>("name");
@@ -370,25 +374,29 @@ export default function Home() {
               )}
             </Button>
 
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setAddMachineOpen(true)}
-              className="text-blox-blue border-blox-blue/20 bg-blox-blue/5 hover:bg-blox-blue/10 text-xs gap-1.5"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Add Machine</span>
-            </Button>
+            {canCreateInstallTokens && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setAddMachineOpen(true)}
+                className="text-blox-blue border-blox-blue/20 bg-blox-blue/5 hover:bg-blox-blue/10 text-xs gap-1.5"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Add Machine</span>
+              </Button>
+            )}
 
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setAddAPIMachineOpen(true)}
-              className="text-blox-blue border-blox-blue/20 bg-blox-blue/5 hover:bg-blox-blue/10 text-xs gap-1.5"
-            >
-              <Server className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Add API</span>
-            </Button>
+            {canManageAPIMachines && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setAddAPIMachineOpen(true)}
+                className="text-blox-blue border-blox-blue/20 bg-blox-blue/5 hover:bg-blox-blue/10 text-xs gap-1.5"
+              >
+                <Server className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Add API</span>
+              </Button>
+            )}
 
             {canManageUsers && (
               <Link
@@ -433,7 +441,7 @@ export default function Home() {
 
       {/* Bulk action bar */}
       <AnimatePresence>
-        {selected.size > 0 && viewMode === "list" && (
+        {selected.size > 0 && viewMode === "list" && canControlFleet && (
           <motion.div
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: "auto", opacity: 1 }}
@@ -616,8 +624,8 @@ export default function Home() {
                   <MachineCard
                     machine={m}
                     onClick={() => {}}
-                    onDelete={(id, hostname) => setDeleteTarget({id, hostname})}
-                    onEdit={openEditAPIMachine}
+                    onDelete={canDeleteMachines ? (id, hostname) => setDeleteTarget({id, hostname}) : undefined}
+                    onEdit={canManageAPIMachines ? openEditAPIMachine : undefined}
                   />
                 </motion.div>
               ))}
@@ -628,15 +636,17 @@ export default function Home() {
             <Table>
               <TableHeader>
                 <TableRow className="border-b-blox-border hover:bg-transparent">
-                  <TableHead className="w-8 text-blox-muted">
-                    <button onClick={toggleSelectAll} className="text-blox-muted hover:text-blox-text">
-                      {selected.size === filteredMachines.length && filteredMachines.length > 0 ? (
-                        <CheckSquare className="w-3.5 h-3.5 text-blox-blue" />
-                      ) : (
-                        <Square className="w-3.5 h-3.5" />
-                      )}
-                    </button>
-                  </TableHead>
+                  {canControlFleet && (
+                    <TableHead className="w-8 text-blox-muted">
+                      <button onClick={toggleSelectAll} className="text-blox-muted hover:text-blox-text">
+                        {selected.size === filteredMachines.length && filteredMachines.length > 0 ? (
+                          <CheckSquare className="w-3.5 h-3.5 text-blox-blue" />
+                        ) : (
+                          <Square className="w-3.5 h-3.5" />
+                        )}
+                      </button>
+                    </TableHead>
+                  )}
                   <TableHead className="text-blox-muted text-xs">Status</TableHead>
                   <TableHead className="text-blox-muted text-xs">Hostname</TableHead>
                   <TableHead className="text-blox-muted text-xs hidden md:table-cell">IP</TableHead>
@@ -668,15 +678,17 @@ export default function Home() {
                       key={m.machine_id}
                       className={`border-b-blox-border/30 hover:bg-blox-border/10 transition-colors ${isSelected ? "bg-blox-blue/5" : i % 2 === 1 ? "bg-blox-bg/30" : ""}`}
                     >
-                      <TableCell className="text-xs">
-                        <button onClick={(e) => { e.stopPropagation(); toggleSelect(m.machine_id); }} className="text-blox-muted hover:text-blox-text">
-                          {isSelected ? (
-                            <CheckSquare className="w-3.5 h-3.5 text-blox-blue" />
-                          ) : (
-                            <Square className="w-3.5 h-3.5" />
-                          )}
-                        </button>
-                      </TableCell>
+                      {canControlFleet && (
+                        <TableCell className="text-xs">
+                          <button onClick={(e) => { e.stopPropagation(); toggleSelect(m.machine_id); }} className="text-blox-muted hover:text-blox-text">
+                            {isSelected ? (
+                              <CheckSquare className="w-3.5 h-3.5 text-blox-blue" />
+                            ) : (
+                              <Square className="w-3.5 h-3.5" />
+                            )}
+                          </button>
+                        </TableCell>
+                      )}
                       <TableCell className="text-xs">
                         <Link href={`/machine/${m.machine_id}`}>
                           <span className={`inline-block w-2 h-2 rounded-full ${dotColor} ${status === "online" ? "shadow-sm shadow-emerald-500/50" : ""}`} />
@@ -685,7 +697,7 @@ export default function Home() {
                       <TableCell className="text-xs font-medium text-blox-text">
                         <div className="flex items-center gap-2">
                           <Link href={`/machine/${m.machine_id}`} className="hover:text-blox-blue transition-colors">{m.hostname}</Link>
-                          {isAPIMachine && (
+                          {isAPIMachine && canManageAPIMachines && (
                             <button
                               onClick={(e) => {
                                 e.preventDefault();
