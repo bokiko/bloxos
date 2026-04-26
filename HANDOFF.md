@@ -50,8 +50,17 @@
   - [x] Role-aware dashboard UI (PR #32): every admin button gated on `useAuth().hasScope(...)` — Add Machine, Add API, bulk-action bar, list-view selection, card delete/edit, detail-page Delete/Reboot/Terminal tab — backend route map is the source of truth.
   - [x] hub/main.go split (PRs #33–#39): the 4344-line monolith is now `main.go` (2236) + `auth.go` (593) + `alerts.go` (425) + `terminal.go` (470) + `agentws.go` (704). All still `package main` sharing the same globals — pure code moves, zero behavior change.
   - [x] Test flake (PR #40): `TestAgentReconnectWithSecret` / `TestAgentEnrollmentWithToken` fixed by `db.SetMaxOpenConns(1)` in test setup. Root cause was SQLite `:memory:` per-connection isolation (each pool connection got its own empty database, so a concurrent goroutine querying a freshly-opened second connection saw "no such table"), not the goroutine-leak this ledger previously hypothesised. Production unaffected — `bloxos.db` is a real file. 4/4 green CI runs post-fix vs ~50% flake pre-fix.
+  - [x] Frontend Phase 1: dual-theme system + Cmd+K command palette
+    - dual `:root` (light) + `.dark` token sets in `globals.css`; `--color-blox-*` re-aliased onto semantic tokens so every existing component becomes theme-aware with zero edits
+    - `ThemeContext` with system-preference detection + `localStorage` persistence; inline bootstrap script in `layout.tsx` paints the correct class before React hydrates (no FOUC)
+    - `ThemeToggle` in header dropdown (light / dark / system)
+    - `CommandPalette` (cmdk-based) bound to ⌘K / Ctrl+K with navigate / machines / actions (RBAC-gated) / theme / account groups
+    - lazy state initializers + event-handler-based clear avoid React 19 `set-state-in-effect` violations
 - Remaining:
-  - (empty — backlog cleared 2026-04-26)
+  - [ ] Frontend Phase 2: header polish + fleet-pulse strip (queued in operator playbook)
+  - [ ] Frontend Phase 3: MachineCard redesign on semantic tokens (queued)
+  - [ ] Frontend Phase 4: detail-page polish (queued)
+  - [ ] Frontend Phase 5: skeletons + motion + a11y (queued)
 
 ## Credentials
 All live credentials live outside git in `~/.bloxos/`-style paths or operator memory. **Never** put raw secrets, tokens, passwords, PINs, or SSH credentials in this file or any committed file.
