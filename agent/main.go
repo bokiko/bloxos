@@ -391,16 +391,20 @@ func runAgent(machineID string) error {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
-	// Send hardware snapshot once per connect. It's static — the hub keeps
-	// whatever we last reported and overwrites on the next connect if anything
-	// genuinely changed (DIMM swap, new disk, etc.).
-	if err := sendHardware(conn, &writeMu, machineID); err != nil {
-		log.Printf("send hardware error: %v", err)
-	}
-
-	// Send immediately on connect, then every 30s.
+	// Send immediately on connect, then every 30s. Metrics MUST go first
+	// because the hub creates the machines row from the metric payload
+	// (hostname/IP/OS); any other persisted message that arrives before the
+	// row exists is silently dropped by a plain UPDATE.
 	if err := sendAll(conn, &writeMu, machineID); err != nil {
 		return err
+	}
+
+	// Send hardware snapshot once per connect, AFTER the first metric so the
+	// machines row is guaranteed to exist. The hub keeps whatever we last
+	// reported and overwrites on the next connect if anything genuinely
+	// changed (DIMM swap, new disk, etc.).
+	if err := sendHardware(conn, &writeMu, machineID); err != nil {
+		log.Printf("send hardware error: %v", err)
 	}
 
 	for {

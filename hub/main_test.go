@@ -2156,3 +2156,63 @@ func TestValidateBaseURL(t *testing.T) {
 		})
 	}
 }
+
+// TestHardwareInfoUpsertPreCreatesRow locks in the defense added in
+// fix/hardware-info-first-connect-race: the hardware_info handler must
+// be able to persist a snapshot even when the machines row doesn't exist
+// yet, and a subsequent upsertMachine (from the first metric) must NOT
+// clobber the snapshot.
+//
+// Without this, agents lose their hardware snapshot on every fresh
+// enrollment because the agent could send hardware_info before the
+// metric that creates the machines row.
+func TestHardwareInfoUpsertPreCreatesRow(t *testing.T) {
+	setupTestServer(t)
+
+	machineID := "test-hw-race-machine-id"
+	hardwareJSON := `{"type":"hardware_info","machine_id":"` + machineID + `","cpu_model":"Test CPU","cpu_cores":4,"ram_total_bytes":8589934592}`
+
+	// Step 1: simulate hardware_info arriving BEFORE any metric.
+	// This is the exact UPSERT used in hub/agentws.go.
+	if _, err := db.Exec(`
+		INSERT INTO machines (id, hostname, status, hardware_info)
+		VALUES (?, '', 'offline', ?)
+		ON CONFLICT(id) DO UPDATE SET hardware_info = excluded.hardware_info
+	`, machineID, hardwareJSON); err != nil {
+		t.Fatalf("hardware_info upsert (pre-metric) failed: %v", err)
+	}
+
+	// Assert the row exists with hardware_info populated and hostname=''.
+	var hostname string
+	var stored sql.NullString
+	if err := db.QueryRow(`SELECT hostname, hardware_info FROM machines WHERE id = ?`, machineID).Scan(&hostname, &stored); err != nil {
+		t.Fatalf("row not present after pre-metric hardware_info: %v", err)
+	}
+	if !stored.Valid || stored.String != hardwareJSON {
+		t.Fatalf("hardware_info not stored: got %q", stored.String)
+	}
+	if hostname != "" {
+		t.Fatalf("expected placeholder hostname '', got %q", hostname)
+	}
+
+	// Step 2: simulate the first metric arriving (upsertMachine semantics).
+	upsertMachine(AgentMetrics{
+		MachineID: machineID,
+		Hostname:  "test-host",
+		IP:        "10.0.0.42",
+		OS:        "ubuntu 24.04 (x86_64)",
+	})
+
+	// Assert hostname/ip/os are populated AND hardware_info survived.
+	var hostname2, ip, osStr string
+	var hwAfter sql.NullString
+	if err := db.QueryRow(`SELECT hostname, COALESCE(ip,''), COALESCE(os,''), hardware_info FROM machines WHERE id = ?`, machineID).Scan(&hostname2, &ip, &osStr, &hwAfter); err != nil {
+		t.Fatalf("query after metric failed: %v", err)
+	}
+	if hostname2 != "test-host" || ip != "10.0.0.42" || osStr != "ubuntu 24.04 (x86_64)" {
+		t.Fatalf("metric did not populate fields: hostname=%q ip=%q os=%q", hostname2, ip, osStr)
+	}
+	if !hwAfter.Valid || hwAfter.String != hardwareJSON {
+		t.Fatalf("upsertMachine clobbered hardware_info: got %q", hwAfter.String)
+	}
+}

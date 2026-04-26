@@ -489,6 +489,13 @@ func handleAgentWS(c echo.Context) error {
 		case "hardware_info":
 			// Static hardware snapshot — store the raw JSON as-is so adding
 			// new fields doesn't require another hub deploy.
+			//
+			// UPSERT (defense-in-depth): if the row doesn't exist yet (e.g. a
+			// future agent reorder, or a buggy agent that sends hardware_info
+			// before its first metric), a plain UPDATE would silently affect 0
+			// rows and the snapshot would be lost. The placeholder hostname is
+			// overwritten by the next upsertMachine call when the metric
+			// arrives.
 			var hw struct {
 				MachineID string `json:"machine_id"`
 			}
@@ -500,7 +507,11 @@ func handleAgentWS(c echo.Context) error {
 			if mid == "" {
 				mid = machineID
 			}
-			if _, err := db.Exec(`UPDATE machines SET hardware_info = ? WHERE id = ?`, string(msg), mid); err != nil {
+			if _, err := db.Exec(`
+				INSERT INTO machines (id, hostname, status, hardware_info)
+				VALUES (?, '', 'offline', ?)
+				ON CONFLICT(id) DO UPDATE SET hardware_info = excluded.hardware_info
+			`, mid, string(msg)); err != nil {
 				log.Printf("store hardware_info: %v", err)
 			}
 

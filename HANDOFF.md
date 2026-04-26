@@ -62,6 +62,7 @@
     - `Add Machine` promoted to filled-blue primary action; `Add API` demoted to ghost variant, hidden on mobile
     - `UserMenu` dropdown consolidates Users link + Logout; shows current role
     - removed standalone wifi icon, alert bell, and inline summary text (folded into FleetPulse)
+  - [x] Hardware-info first-connect race fixed: agent now sends hardware snapshot AFTER the first metric (so the `machines` row exists when the hub stores it); hub handler upgraded from plain `UPDATE` to `INSERT … ON CONFLICT(id) DO UPDATE` as defense-in-depth. Diagnosed when AiFarm-01 (WSL2 agent) enrolled fresh and got `hardware_info=NULL` because hub-side `upsertMachine` only ran on first metric arrival, after the snapshot UPDATE had already affected 0 rows. New test `TestHardwareInfoUpsertPreCreatesRow` locks in the defense.
 - Remaining:
   - [ ] Frontend Phase 3: MachineCard redesign on semantic tokens (queued)
   - [ ] Frontend Phase 4: detail-page polish (queued)
