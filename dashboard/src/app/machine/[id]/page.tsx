@@ -27,6 +27,7 @@ import {
   LayoutDashboard, Box, Container as ContainerIcon,
 } from "lucide-react";
 import { HUB_URL, getAuthHeaders } from "@/lib/session";
+import { useAuth } from "@/contexts/AuthContext";
 
 type DetailTab = "overview" | "services" | "containers" | "metrics" | "terminal";
 const DETAIL_TABS: readonly DetailTab[] = ["overview", "services", "containers", "metrics", "terminal"] as const;
@@ -157,6 +158,9 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
   const [showReboot, setShowReboot] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const { hasScope } = useAuth();
+  const canDelete = hasScope("fleet.admin");
+  const canControl = hasScope("fleet.control");
   const router = useRouter();
   const searchParams = useSearchParams();
   const activeTab = parseTab(searchParams.get("tab"));
@@ -446,16 +450,18 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
                 {timeSince(effectiveLastUpdated)}
               </span>
             )}
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setShowDeleteConfirm(true)}
-              className="text-xs border-blox-border text-blox-muted hover:text-red-400 hover:border-red-500/30 gap-1.5"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-              Delete
-            </Button>
-            {!isAPIMachine && (
+            {canDelete && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowDeleteConfirm(true)}
+                className="text-xs border-blox-border text-blox-muted hover:text-red-400 hover:border-red-500/30 gap-1.5"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                Delete
+              </Button>
+            )}
+            {!isAPIMachine && canControl && (
               <Button
                 variant="outline"
                 size="sm"
@@ -500,7 +506,7 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
               <BarChart3 className="w-4 h-4" />
               Metrics
             </TabsTrigger>
-            {!isAPIMachine && (
+            {!isAPIMachine && canControl && (
               <TabsTrigger value="terminal" className="px-4 py-1.5 gap-1.5 text-sm">
                 <TerminalIcon className="w-4 h-4" />
                 Terminal
@@ -691,7 +697,7 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
           </TabsContent>
 
           {/* Terminal tab — keepMounted so the PTY WebSocket survives tab switches. */}
-          {!isAPIMachine && (
+          {!isAPIMachine && canControl && (
             <TabsContent value="terminal" keepMounted className="mt-6 data-[hidden]:hidden">
               <motion.div
                 initial={{ opacity: 0, y: 10 }}
