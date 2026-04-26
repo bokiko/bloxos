@@ -2,32 +2,24 @@
 
 import { useState, useEffect } from "react";
 import Link from "next/link";
-import { MachineMetrics } from "@/lib/demo-data";
-import { ProgressBar } from "./ProgressBar";
-import { StatusBadge, MachineStatus } from "./StatusBadge";
-import { Sparkline } from "./Sparkline";
-import { Cpu, HardDrive, MemoryStick, Thermometer, Clock, Monitor, Wifi, Trash2, Pencil } from "lucide-react";
 import { motion } from "framer-motion";
+import { Trash2, Pencil, Zap } from "lucide-react";
+import type { MachineMetrics } from "@/lib/demo-data";
+import { ProgressBar, type ProgressVariant } from "./ProgressBar";
+import { Sparkline } from "./Sparkline";
+
+/* ============================================================================
+ * Helpers
+ * ============================================================================ */
 
 function formatBytes(bytes: number | undefined | null): string {
   if (!bytes || bytes === 0) return "0";
-  const gb = bytes / (1024 ** 3);
-  if (gb >= 1) return `${gb.toFixed(0)} GB`;
-  const mb = bytes / (1024 ** 2);
+  const tb = bytes / 1024 ** 4;
+  if (tb >= 1) return `${tb.toFixed(tb >= 100 ? 0 : 1)} TB`;
+  const gb = bytes / 1024 ** 3;
+  if (gb >= 1) return `${gb.toFixed(gb >= 100 ? 0 : 1)} GB`;
+  const mb = bytes / 1024 ** 2;
   return `${mb.toFixed(0)} MB`;
-}
-
-function getStatus(m: MachineMetrics): { status: MachineStatus; reason?: string } {
-  const age = Date.now() - (m.last_seen || 0);
-  if (age > 120_000) return { status: "offline" };
-
-  if (m.gpu_temp && m.gpu_temp > 80) return { status: "warning", reason: `GPU ${m.gpu_temp}\u00b0C` };
-  const diskPct = (m.disk_total_bytes ?? 0) > 0 ? ((m.disk_used_bytes ?? 0) / m.disk_total_bytes) * 100 : 0;
-  if (diskPct > 90) return { status: "warning", reason: `Disk ${diskPct.toFixed(0)}%` };
-  const ramPct = (m.ram_total_bytes ?? 0) > 0 ? ((m.ram_used_bytes ?? 0) / m.ram_total_bytes) * 100 : 0;
-  if (ramPct > 95) return { status: "warning", reason: `RAM ${ramPct.toFixed(0)}%` };
-
-  return { status: "online" };
 }
 
 function timeSince(ms: number): string {
@@ -39,232 +31,399 @@ function timeSince(ms: number): string {
   const hr = Math.floor(min / 60);
   if (hr < 24) return `${hr}h ago`;
   const d = Math.floor(hr / 24);
-  return `${d}d ${hr % 24}h ago`;
+  return `${d}d ago`;
 }
 
-const statusBorderColor: Record<MachineStatus, string> = {
-  online: "border-l-emerald-500",
-  warning: "border-l-amber-500",
-  offline: "border-l-red-500/50",
-};
+type Status = "online" | "warning" | "offline";
 
-const statusGlow: Record<MachineStatus, string> = {
-  online: "hover:shadow-emerald-500/5",
-  warning: "hover:shadow-amber-500/5",
-  offline: "hover:shadow-red-500/5",
-};
+function classifyMachine(m: MachineMetrics): { status: Status; reason?: string } {
+  const age = Date.now() - (m.last_seen || 0);
+  if (age > 120_000) return { status: "offline" };
 
-const API_ADAPTER_TYPES = ["synology", "proxmox"];
+  if (m.gpu_temp && m.gpu_temp > 80) {
+    return { status: "warning", reason: `GPU ${m.gpu_temp.toFixed(0)}°C` };
+  }
+  const diskPct =
+    (m.disk_total_bytes ?? 0) > 0
+      ? ((m.disk_used_bytes ?? 0) / m.disk_total_bytes) * 100
+      : 0;
+  if (diskPct > 90) return { status: "warning", reason: `Disk ${diskPct.toFixed(0)}%` };
+
+  const ramPct =
+    (m.ram_total_bytes ?? 0) > 0
+      ? ((m.ram_used_bytes ?? 0) / m.ram_total_bytes) * 100
+      : 0;
+  if (ramPct > 95) return { status: "warning", reason: `RAM ${ramPct.toFixed(0)}%` };
+
+  return { status: "online" };
+}
+
+function isAwaitingData(m: MachineMetrics): boolean {
+  return (
+    (m.cpu_percent ?? 0) === 0 &&
+    (m.ram_total_bytes ?? 0) === 0 &&
+    (m.disk_total_bytes ?? 0) === 0
+  );
+}
+
+const API_ADAPTERS = ["synology", "proxmox"];
+
+function deriveMetricVariant(pct: number, warningAt: number, dangerAt: number): ProgressVariant {
+  if (pct <= 0) return "neutral";
+  if (pct >= dangerAt) return "danger";
+  if (pct >= warningAt) return "warning";
+  return "active";
+}
+
+/* ============================================================================
+ * Main component
+ * ============================================================================ */
 
 interface MachineCardProps {
   machine: MachineMetrics;
-  onClick?: () => void;
   onDelete?: (machineId: string, hostname: string) => void;
   onEdit?: (machineId: string) => void;
 }
 
-export function MachineCard({ machine, onClick, onDelete, onEdit }: MachineCardProps) {
-  const [now, setNow] = useState(() => Date.now());
-  const { status, reason } = getStatus(machine);
-
+export function MachineCard({ machine, onDelete, onEdit }: MachineCardProps) {
+  // Tick once per second to keep relative timestamps fresh ("25s ago" → "26s ago")
+  const [, forceTick] = useState(0);
   useEffect(() => {
-    const interval = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(interval);
+    const id = setInterval(() => forceTick((n) => n + 1), 1000);
+    return () => clearInterval(id);
   }, []);
 
-  void now;
+  const { status, reason } = classifyMachine(machine);
+  const awaiting = isAwaitingData(machine);
+  const showPlaceholders = awaiting || status === "offline";
 
-  const ramPct = (machine.ram_total_bytes ?? 0) > 0
-    ? ((machine.ram_used_bytes ?? 0) / machine.ram_total_bytes) * 100
-    : 0;
-  const diskPct = (machine.disk_total_bytes ?? 0) > 0
-    ? ((machine.disk_used_bytes ?? 0) / machine.disk_total_bytes) * 100
-    : 0;
+  const ramPct =
+    (machine.ram_total_bytes ?? 0) > 0
+      ? ((machine.ram_used_bytes ?? 0) / machine.ram_total_bytes) * 100
+      : 0;
+  const diskPct =
+    (machine.disk_total_bytes ?? 0) > 0
+      ? ((machine.disk_used_bytes ?? 0) / machine.disk_total_bytes) * 100
+      : 0;
 
   const gpu0 = machine.gpus && machine.gpus.length > 0 ? machine.gpus[0] : null;
-  const gpuVramUsed = gpu0 ? gpu0.mem_used_bytes : (machine.gpu_vram_used_bytes || 0);
-  const gpuVramTotal = gpu0 ? gpu0.mem_total_bytes : (machine.gpu_vram_total_bytes || 0);
-  const hasGpuTemp = (machine.gpu_temp ?? 0) > 0;
-  const hasGpuVram = gpuVramTotal > 0;
+  const hasGpu = (machine.gpu_temp ?? 0) > 0 || (gpu0 && gpu0.temp_c > 0);
+  const gpuTemp = gpu0 ? gpu0.temp_c : machine.gpu_temp ?? 0;
+  const gpuUtil = gpu0 ? gpu0.util_percent : machine.gpu_util_percent ?? 0;
+  const gpuVramUsed = gpu0 ? gpu0.mem_used_bytes : machine.gpu_vram_used_bytes ?? 0;
+  const gpuVramTotal = gpu0 ? gpu0.mem_total_bytes : machine.gpu_vram_total_bytes ?? 0;
 
-  const tags = machine.tags ? machine.tags.split(",").filter((t) => t.trim()) : [];
-  const adapterTag = tags.find((t) => API_ADAPTER_TYPES.includes(t.trim().toLowerCase()));
+  const tags = machine.tags ? machine.tags.split(",").map((t) => t.trim()).filter(Boolean) : [];
+  const adapterTag = tags.find((t) => API_ADAPTERS.includes(t.toLowerCase()));
+  const otherTags = tags.filter((t) => !API_ADAPTERS.includes(t.toLowerCase()));
   const isAPIMachine = !!adapterTag;
+
+  const accentClass =
+    status === "online"
+      ? "before:bg-emerald-500"
+      : status === "warning"
+      ? "before:bg-amber-500"
+      : "before:bg-red-500/60";
+
+  const dotClass =
+    status === "online"
+      ? "bg-emerald-500"
+      : status === "warning"
+      ? "bg-amber-500"
+      : "bg-red-500/60";
+
+  const cpuTextColorClass =
+    (machine.cpu_percent ?? 0) > 90
+      ? "text-red-400"
+      : (machine.cpu_percent ?? 0) > 70
+      ? "text-amber-400"
+      : "text-blox-text";
+
+  const gpuTempColorClass =
+    gpuTemp > 80
+      ? "text-red-400"
+      : gpuTemp > 60
+      ? "text-amber-400"
+      : "text-emerald-400";
 
   return (
     <Link href={`/machine/${machine.machine_id}`} className="block h-full">
       <motion.div
-        whileHover={{ scale: 1.02 }}
-        transition={{ type: "spring", stiffness: 400, damping: 25 }}
-        onClick={onClick}
-        className={`
-          group bg-blox-card border-l-[3px] ${statusBorderColor[status]}
-          rounded-xl p-5 cursor-pointer flex flex-col h-full
-          border border-blox-border
-          hover:border-blox-muted/20 hover:shadow-xl ${statusGlow[status]}
-          transition-all duration-300
-        `}
+        whileHover={{ y: -2 }}
+        transition={{ type: "spring", stiffness: 420, damping: 28 }}
+        className={[
+          "group relative h-full flex flex-col cursor-pointer",
+          "bg-blox-card border border-blox-border rounded-xl p-4",
+          "before:absolute before:left-0 before:top-3 before:bottom-3 before:w-[3px] before:rounded-full",
+          accentClass,
+          "hover:border-blox-muted/30 hover:shadow-lg",
+          "transition-[border-color,box-shadow] duration-[var(--motion-base)]",
+        ].join(" ")}
       >
-        {/* Header */}
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-2.5">
-            <div className="p-1.5 rounded-lg bg-blox-border/50">
-              <Monitor className="w-3.5 h-3.5 text-blox-muted" />
-            </div>
-            <span className="font-semibold text-sm text-blox-text tracking-tight">
-              {machine.hostname}
+        {/* row 1: hostname + actions */}
+        <div className="flex items-start justify-between gap-2 pl-2.5">
+          <div className="flex items-center gap-2 min-w-0 flex-1">
+            <span
+              className={[
+                "shrink-0 w-2 h-2 rounded-full",
+                dotClass,
+                status === "online" ? "animate-status-pulse" : "",
+              ].join(" ")}
+              aria-label={`Status: ${status}`}
+            />
+            <span className="font-semibold text-sm text-blox-text truncate">
+              {machine.hostname || machine.machine_id}
             </span>
-            {isAPIMachine && adapterTag && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-violet-500/10 text-violet-400 border border-violet-500/20 font-semibold uppercase tracking-wider">
-                {adapterTag.trim()}
+            {reason && (
+              <span className="text-[10px] text-amber-400 font-medium shrink-0 tabular-nums">
+                {reason}
               </span>
             )}
           </div>
-          <div className="flex items-center gap-2">
-            <StatusBadge status={status} reason={reason} />
+
+          <div className="flex items-center gap-0.5 shrink-0 -mr-1">
             {isAPIMachine && onEdit && (
               <button
+                type="button"
                 onClick={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
                   onEdit(machine.machine_id);
                 }}
-                className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg hover:bg-blox-blue/10 text-blox-muted hover:text-blox-blue transition-all duration-200"
+                className="p-1 rounded text-blox-muted/40 hover:text-blox-blue hover:bg-blox-blue/10 transition-colors"
                 title="Edit API machine"
+                aria-label="Edit machine"
               >
-                <Pencil className="w-3.5 h-3.5" />
+                <Pencil className="w-3 h-3" />
               </button>
             )}
             {onDelete && (
               <button
+                type="button"
                 onClick={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
                   onDelete(machine.machine_id, machine.hostname);
                 }}
-                className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg hover:bg-red-500/10 text-blox-muted hover:text-red-400 transition-all duration-200"
+                className="p-1 rounded text-blox-muted/40 hover:text-red-400 hover:bg-red-500/10 transition-colors"
                 title="Delete machine"
+                aria-label="Delete machine"
               >
-                <Trash2 className="w-3.5 h-3.5" />
+                <Trash2 className="w-3 h-3" />
               </button>
             )}
           </div>
         </div>
 
-        {/* Sparkline */}
-        {status !== "offline" && (
-          <div className="mb-3 flex items-center gap-2">
-            <span className="text-[10px] text-blox-muted uppercase tracking-wider font-medium">CPU 30m</span>
-            <Sparkline machineId={machine.machine_id} width={100} height={24} />
-          </div>
-        )}
-
-        {/* Metrics */}
-        <div className="space-y-3">
-          {/* CPU */}
-          <div className="flex items-center gap-2">
-            <Cpu className="w-3.5 h-3.5 text-blox-muted shrink-0" />
-            <span className="text-xs text-blox-muted w-8">CPU</span>
-            <div className="flex-1">
-              <ProgressBar value={machine.cpu_percent ?? 0} label={`${(machine.cpu_percent ?? 0).toFixed(0)}%`} />
-            </div>
-          </div>
-
-          {/* RAM */}
-          <div className="flex items-center gap-2">
-            <MemoryStick className="w-3.5 h-3.5 text-blox-muted shrink-0" />
-            <span className="text-xs text-blox-muted w-8">RAM</span>
-            <div className="flex-1">
-              <ProgressBar value={ramPct} label={`${ramPct.toFixed(0)}%`} />
-            </div>
-            <span className="text-[10px] text-blox-muted tabular-nums font-mono">
-              {formatBytes(machine.ram_used_bytes)}/{formatBytes(machine.ram_total_bytes)}
-            </span>
-          </div>
-
-          {/* Disk */}
-          <div className="flex items-center gap-2">
-            <HardDrive className="w-3.5 h-3.5 text-blox-muted shrink-0" />
-            <span className="text-xs text-blox-muted w-8">Disk</span>
-            <div className="flex-1">
-              <ProgressBar value={diskPct} label={`${diskPct.toFixed(0)}%`} />
-            </div>
-            <span className="text-[10px] text-blox-muted tabular-nums font-mono">
-              {formatBytes(machine.disk_used_bytes)}/{formatBytes(machine.disk_total_bytes)}
-            </span>
-          </div>
-
-          {/* GPU Temp — rendered only when the machine actually has a GPU. */}
-          {hasGpuTemp && (
-            <div className="flex items-center gap-2">
-              <Thermometer className="w-3.5 h-3.5 text-blox-muted shrink-0" />
-              <span className="text-xs text-blox-muted w-8">GPU</span>
-              <span className={`text-xs tabular-nums font-mono font-medium ${
-                (machine.gpu_temp ?? 0) > 80 ? "text-red-400" :
-                (machine.gpu_temp ?? 0) > 60 ? "text-amber-400" : "text-emerald-400"
-              }`}>
-                {machine.gpu_temp}&deg;C
+        {/* row 2: ip + adapter / os */}
+        <div className="flex items-center gap-1.5 text-[11px] text-blox-muted pl-2.5 mt-0.5 truncate">
+          {machine.ip ? (
+            <span className="font-mono tabular-nums truncate">{machine.ip}</span>
+          ) : (
+            <span className="text-blox-muted/50">no ip</span>
+          )}
+          {adapterTag ? (
+            <>
+              <span aria-hidden>·</span>
+              <span className="uppercase text-[9px] tracking-[0.08em] text-violet-400 font-semibold">
+                {adapterTag}
               </span>
-              {machine.gpu_util_percent !== undefined && (
-                <span className="text-[10px] text-blox-muted tabular-nums font-mono ml-1">
-                  ({(machine.gpu_util_percent ?? 0).toFixed(0)}% util)
+            </>
+          ) : machine.os ? (
+            <>
+              <span aria-hidden>·</span>
+              <span className="truncate">{machine.os}</span>
+            </>
+          ) : null}
+        </div>
+
+        {/* primary metric */}
+        <div className="pl-2.5 mt-3 mb-2">
+          {showPlaceholders ? (
+            <div className="flex items-baseline gap-2 py-1">
+              <span className="text-2xl font-semibold text-blox-muted/30 tabular-nums leading-none">
+                —
+              </span>
+              <span className="text-[11px] text-blox-muted">
+                {awaiting
+                  ? "Awaiting first metrics…"
+                  : `Last seen ${
+                      machine.last_seen ? timeSince(machine.last_seen) : "never"
+                    }`}
+              </span>
+            </div>
+          ) : (
+            <div className="flex items-end gap-3">
+              <div className="flex flex-col">
+                <div className="flex items-baseline gap-0.5 leading-none">
+                  <span className={`text-2xl font-semibold tabular-nums ${cpuTextColorClass}`}>
+                    {(machine.cpu_percent ?? 0).toFixed(0)}
+                  </span>
+                  <span className="text-xs text-blox-muted">%</span>
+                </div>
+                <span className="text-[9px] text-blox-muted uppercase tracking-[0.1em] mt-1">
+                  CPU
+                </span>
+              </div>
+              <div className="flex-1 self-end pb-0.5">
+                <Sparkline machineId={machine.machine_id} width={140} height={28} />
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* secondary metrics */}
+        <div className="space-y-1.5 pl-2.5 flex-1">
+          <CompactMetricRow
+            label="RAM"
+            pct={ramPct}
+            usedBytes={machine.ram_used_bytes}
+            totalBytes={machine.ram_total_bytes}
+            placeholder={showPlaceholders}
+            warningAt={80}
+            dangerAt={95}
+          />
+          <CompactMetricRow
+            label="DISK"
+            pct={diskPct}
+            usedBytes={machine.disk_used_bytes}
+            totalBytes={machine.disk_total_bytes}
+            placeholder={showPlaceholders}
+            warningAt={75}
+            dangerAt={90}
+          />
+
+          {hasGpu && !showPlaceholders && (
+            <div className="flex items-center gap-2 text-[11px] pt-1.5 mt-1.5 border-t border-blox-border/30">
+              <Zap className="w-3 h-3 text-blox-muted shrink-0" />
+              <span className={`tabular-nums font-mono font-semibold ${gpuTempColorClass}`}>
+                {gpuTemp.toFixed(0)}°C
+              </span>
+              {gpuUtil > 0 && (
+                <span className="text-blox-muted tabular-nums">
+                  · {gpuUtil.toFixed(0)}% util
+                </span>
+              )}
+              {gpuVramTotal > 0 && (
+                <span className="text-blox-muted tabular-nums ml-auto font-mono">
+                  {formatBytes(gpuVramUsed)} / {formatBytes(gpuVramTotal)}
                 </span>
               )}
             </div>
           )}
+        </div>
 
-          {/* VRAM — rendered only when total VRAM is known. */}
-          {hasGpuVram && (
-            <div className="flex items-center gap-2">
-              <MemoryStick className="w-3.5 h-3.5 text-blox-muted shrink-0" />
-              <span className="text-xs text-blox-muted w-8">VRAM</span>
-              <div className="flex-1">
-                <ProgressBar
-                  value={(gpuVramUsed / gpuVramTotal) * 100}
-                  label={`${((gpuVramUsed / gpuVramTotal) * 100).toFixed(0)}%`}
-                />
-              </div>
-              <span className="text-[10px] text-blox-muted tabular-nums font-mono">
-                {formatBytes(gpuVramUsed)}/{formatBytes(gpuVramTotal)}
-              </span>
-            </div>
+        {/* footer */}
+        <div className="flex items-center gap-1.5 text-[10px] text-blox-muted/70 mt-3 pt-2 border-t border-blox-border/40 pl-2.5 tabular-nums">
+          <span className="font-mono">
+            {machine.last_seen ? timeSince(machine.last_seen) : "never"}
+          </span>
+          {machine.latency_ms !== undefined && machine.latency_ms > 0 && (
+            <>
+              <span aria-hidden>·</span>
+              <span className="font-mono">{machine.latency_ms}ms</span>
+            </>
+          )}
+          {otherTags.length > 0 && (
+            <>
+              <span aria-hidden>·</span>
+              <span className="truncate">{otherTags.join(", ")}</span>
+            </>
           )}
         </div>
-
-        {/* Footer */}
-        <div className="flex items-center justify-between mt-auto pt-3 border-t border-blox-border/50">
-          <div className="flex items-center gap-1.5">
-            <Clock className="w-3 h-3 text-blox-muted" />
-            <span className="text-[10px] text-blox-muted font-mono tabular-nums">
-              {machine.last_seen ? timeSince(machine.last_seen) : "never"}
-            </span>
-          </div>
-          <div className="flex items-center gap-2">
-            {machine.latency_ms !== undefined && machine.latency_ms > 0 && (
-              <span className="flex items-center gap-0.5 text-[10px] text-blox-muted font-mono tabular-nums">
-                <Wifi className="w-2.5 h-2.5" />
-                {machine.latency_ms}ms
-              </span>
-            )}
-            {machine.os && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-blox-border/50 text-blox-muted font-mono">
-                {machine.os}
-              </span>
-            )}
-          </div>
-        </div>
-
-        {/* Tags */}
-        {tags.length > 0 && (
-          <div className="flex gap-1.5 flex-wrap mt-2.5 pt-2.5 border-t border-blox-border/50">
-            {tags.map((tag) => (
-              <span key={tag} className="text-[10px] px-2 py-0.5 rounded-full bg-blox-blue/10 text-blox-blue/80 border border-blox-blue/20 font-medium">
-                {tag.trim()}
-              </span>
-            ))}
-          </div>
-        )}
       </motion.div>
     </Link>
+  );
+}
+
+/* ============================================================================
+ * Compact metric row (RAM / Disk)
+ * ============================================================================ */
+
+interface CompactMetricRowProps {
+  label: string;
+  pct: number;
+  usedBytes?: number | null;
+  totalBytes?: number | null;
+  placeholder: boolean;
+  warningAt: number;
+  dangerAt: number;
+}
+
+function CompactMetricRow({
+  label,
+  pct,
+  usedBytes,
+  totalBytes,
+  placeholder,
+  warningAt,
+  dangerAt,
+}: CompactMetricRowProps) {
+  const variant: ProgressVariant = placeholder
+    ? "neutral"
+    : (totalBytes ?? 0) === 0
+    ? "neutral"
+    : deriveMetricVariant(pct, warningAt, dangerAt);
+
+  const valueColorClass =
+    variant === "danger"
+      ? "text-red-400"
+      : variant === "warning"
+      ? "text-amber-400"
+      : "text-blox-text";
+
+  return (
+    <div className="grid grid-cols-[2.25rem_1fr_auto] items-center gap-2 text-[11px]">
+      <span className="text-blox-muted uppercase tracking-[0.08em] text-[9px] font-medium">
+        {label}
+      </span>
+      <ProgressBar value={placeholder ? 0 : pct} variant={variant} />
+      <div className="flex items-center gap-1.5 tabular-nums shrink-0 min-w-0">
+        {placeholder ? (
+          <span className="text-blox-muted/40 font-mono">—</span>
+        ) : (
+          <>
+            <span className={`font-mono font-medium ${valueColorClass}`}>
+              {pct.toFixed(0)}%
+            </span>
+            {(totalBytes ?? 0) > 0 && (
+              <span className="text-blox-muted/70 font-mono text-[10px]">
+                {formatBytes(usedBytes)}/{formatBytes(totalBytes)}
+              </span>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================================
+ * Skeleton (initial load)
+ * ============================================================================ */
+
+export function MachineCardSkeleton() {
+  return (
+    <div className="bg-blox-card border border-blox-border rounded-xl p-4 h-full flex flex-col relative before:absolute before:left-0 before:top-3 before:bottom-3 before:w-[3px] before:rounded-full before:bg-blox-border">
+      <div className="flex items-center gap-2 pl-2.5">
+        <div className="w-2 h-2 rounded-full bg-blox-border" />
+        <div className="h-3.5 bg-blox-border rounded w-28 animate-shimmer" />
+      </div>
+      <div className="pl-2.5 mt-1.5">
+        <div className="h-2.5 bg-blox-border/60 rounded w-32 animate-shimmer" />
+      </div>
+      <div className="flex items-end gap-3 pl-2.5 mt-3 mb-2">
+        <div className="flex flex-col gap-1.5">
+          <div className="h-7 w-12 bg-blox-border rounded animate-shimmer" />
+          <div className="h-2 w-8 bg-blox-border/60 rounded animate-shimmer" />
+        </div>
+        <div className="flex-1 h-7 bg-blox-border/40 rounded animate-shimmer" />
+      </div>
+      <div className="space-y-1.5 pl-2.5 flex-1">
+        <div className="h-2.5 bg-blox-border/40 rounded animate-shimmer" />
+        <div className="h-2.5 bg-blox-border/40 rounded animate-shimmer" />
+      </div>
+      <div className="h-2 w-20 bg-blox-border/40 rounded mt-3 pl-2.5 animate-shimmer" />
+    </div>
   );
 }
