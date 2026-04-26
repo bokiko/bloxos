@@ -49,8 +49,9 @@
   - [x] Proxmox API machine moved from `insecure` to `custom_ca` (leaf-pinned cert).
   - [x] Role-aware dashboard UI (PR #32): every admin button gated on `useAuth().hasScope(...)` — Add Machine, Add API, bulk-action bar, list-view selection, card delete/edit, detail-page Delete/Reboot/Terminal tab — backend route map is the source of truth.
   - [x] hub/main.go split (PRs #33–#39): the 4344-line monolith is now `main.go` (2236) + `auth.go` (593) + `alerts.go` (425) + `terminal.go` (470) + `agentws.go` (704). All still `package main` sharing the same globals — pure code moves, zero behavior change.
+  - [x] Test flake (PR #40): `TestAgentReconnectWithSecret` / `TestAgentEnrollmentWithToken` fixed by `db.SetMaxOpenConns(1)` in test setup. Root cause was SQLite `:memory:` per-connection isolation (each pool connection got its own empty database, so a concurrent goroutine querying a freshly-opened second connection saw "no such table"), not the goroutine-leak this ledger previously hypothesised. Production unaffected — `bloxos.db` is a real file. 4/4 green CI runs post-fix vs ~50% flake pre-fix.
 - Remaining:
-  - [ ] cross-test contamination flake on `TestAgentReconnectWithSecret` / `TestAgentEnrollmentWithToken`. Hit on PR #33 in CI, passed on rerun. Real fix is a `*Hub` struct refactor that retires the package-level `db`, `agents`, `termSessions`, `sseClients`, `pendingCmds` globals; then each test gets its own instance and there's no shared state to leak between tests. Same surface area as the file split touched, but invasive (every handler signature changes), so left for a dedicated session.
+  - (empty — backlog cleared 2026-04-26)
 
 ## Credentials
 All live credentials live outside git in `~/.bloxos/`-style paths or operator memory. **Never** put raw secrets, tokens, passwords, PINs, or SSH credentials in this file or any committed file.
@@ -98,7 +99,7 @@ All live credentials live outside git in `~/.bloxos/`-style paths or operator me
 - Dashboard detail Overview tab shows it in a Hardware panel; absent fields are hidden.
 
 ## Known Issues
-- Pre-existing flaky test `TestAgentReconnectWithSecret` / `TestAgentEnrollmentWithToken` on full-suite CI runs. Rerun usually clears it. Real fix needs the global-`db` retirement (see Remaining).
+- (none — flake fixed 2026-04-26 in PR #40)
 
 ## hub/ file map (post-split)
 - `main.go` — entrypoint, route registration, DB init, metrics ingest, machine REST handlers, SSE, bulk commands, API-machine pollers, rate limiter, log redactor.
