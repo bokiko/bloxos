@@ -10,6 +10,7 @@ import {
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
+  DropdownMenuGroup,
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
 
@@ -34,9 +35,14 @@ export function UserMenu() {
         }
       />
       <DropdownMenuContent align="end" className="bg-blox-card border-blox-border min-w-[200px]">
-        <DropdownMenuLabel className="text-blox-muted text-[10px] uppercase tracking-wider">
-          {role ? `Role: ${role}` : "Account"}
-        </DropdownMenuLabel>
+        {/* Group wrapper is required by Base UI — DropdownMenuLabel is a
+            MenuPrimitive.GroupLabel and must live inside a Menu.Group, or
+            it throws Base UI error #31 at runtime. */}
+        <DropdownMenuGroup>
+          <DropdownMenuLabel className="text-blox-muted text-[10px] uppercase tracking-wider">
+            {role ? `Role: ${role}` : "Account"}
+          </DropdownMenuLabel>
+        </DropdownMenuGroup>
         <DropdownMenuSeparator className="bg-blox-border" />
 
         {canManageUsers && (
