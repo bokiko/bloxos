@@ -348,21 +348,21 @@ function FleetRatioBar({ online, warning, offline, total }: FleetRatioBarProps) 
     <div className="flex h-1 mt-1.5 rounded-full overflow-hidden bg-blox-border/30">
       {online > 0 && (
         <div
-          className="bg-emerald-500 transition-all duration-500"
+          className="bg-emerald-500 transition-all duration-[var(--motion-slow)]"
           style={{ width: `${onlinePct}%` }}
           title={`${online} online`}
         />
       )}
       {warning > 0 && (
         <div
-          className="bg-amber-500 transition-all duration-500"
+          className="bg-amber-500 transition-all duration-[var(--motion-slow)]"
           style={{ width: `${warningPct}%` }}
           title={`${warning} warning`}
         />
       )}
       {offline > 0 && (
         <div
-          className="bg-red-500/60 transition-all duration-500"
+          className="bg-red-500/60 transition-all duration-[var(--motion-slow)]"
           style={{ width: `${offlinePct}%` }}
           title={`${offline} offline`}
         />
@@ -387,7 +387,7 @@ function SeverityBar({ pct, severity }: SeverityBarProps) {
   return (
     <div className="h-1 mt-1.5 rounded-full bg-blox-border/30 overflow-hidden">
       <div
-        className={`h-full rounded-full transition-all duration-500 ${color}`}
+        className={`h-full rounded-full transition-all duration-[var(--motion-slow)] ${color}`}
         style={{ width: `${Math.min(100, Math.max(0, pct))}%` }}
       />
     </div>

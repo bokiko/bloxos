@@ -306,7 +306,7 @@ export default function Home() {
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
-      transition={{ duration: 0.3 }}
+      transition={{ duration: 0.25 }}
       className="min-h-screen bg-blox-bg"
     >
       {/* Header */}
@@ -591,7 +591,7 @@ export default function Home() {
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, scale: 0.95 }}
-                  transition={{ duration: 0.3, delay: i * 0.03 }}
+                  transition={{ duration: 0.25, delay: i * 0.03 }}
                   className="h-full"
                 >
                   <MachineCard

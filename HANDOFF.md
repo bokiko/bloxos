@@ -74,8 +74,15 @@
     - New `MetricsChartsSkeleton` for the metrics tab pre-data state — pseudo area-chart silhouettes shimmer in place of charts (theme-aware via `--accent`), pulsing "Collecting data" caption. Uses `useId()` for unique linearGradient ids.
     - Terminal pane refactor: dropped the macOS traffic-light dots; header matches HardwareCard rhythm (icon-tile + title + inline pulsing-dot status); stable 360px body height across all 5 states (no jolts during PIN flow).
     - Page transition tightened (`y: 8 → 0`, `0.25s ease-out`).
+  - [x] Frontend Phase 5: final polish pass — **redesign complete**
+    - Motion durations migrated to semantic tokens across non-shadcn components (`Toast`, `ProgressBar`, `FleetPulse`); Framer Motion `transition` props normalized to `0.25/0.3/0.4` per `fast/base/slow` buckets. Shadcn `ui/*` primitives intentionally left at vendor defaults to avoid update conflicts.
+    - `prefers-reduced-motion` support: `@media` block in `globals.css` collapses transitions and freezes ambient pulses/shimmer when set; critical feedback (focus rings, hover colors) preserved.
+    - `/login`, `/setup`, `/users` brought to parity: spinner+text in submit buttons during async, 3 shimmer table rows on `/users` initial fetch, page transitions tightened to `0.25–0.3s ease-out`, `…` ellipsis character throughout.
+    - Focus ring layering documented in `globals.css`: shadcn 3px ring on primitives + canonical 2px outline as fallback, both resolving to `--accent`.
+    - xterm.js light theme (Solarized Light derivative): `Terminal.tsx` reads `useTheme().resolvedTheme` and swaps palette in-place on theme change without disconnecting the WebSocket; detail-page wrapper bg switched to `var(--surface-base)` for seamless surface match.
+    - `--color-blox-*` token aliases documented as **permanent** (no migration to semantic tokens necessary — shims work transparently).
 - Remaining:
-  - [ ] Frontend Phase 5: skeletons + motion + a11y (queued)
+  - (empty — redesign complete 2026-04-26)
 
 ## Credentials
 All live credentials live outside git in `~/.bloxos/`-style paths or operator memory. **Never** put raw secrets, tokens, passwords, PINs, or SSH credentials in this file or any committed file.

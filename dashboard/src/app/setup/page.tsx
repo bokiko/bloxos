@@ -178,7 +178,7 @@ export default function SetupPage() {
                 key={title}
                 initial={{ opacity: 0, y: 18 }}
                 animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.45 }}
+                transition={{ duration: 0.4 }}
                 className="rounded-2xl border border-blox-border/70 bg-blox-card/55 px-5 py-4 shadow-lg shadow-black/15 backdrop-blur-sm"
               >
                 <div className="flex items-start gap-3">
@@ -197,9 +197,9 @@ export default function SetupPage() {
 
         <section className="flex items-center justify-center px-4 py-10 sm:px-6">
           <motion.div
-            initial={{ opacity: 0, y: 24 }}
+            initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.45, ease: "easeOut" }}
+            transition={{ duration: 0.3, ease: "easeOut" }}
             className="w-full max-w-xl"
           >
             <div className="mb-8 text-center lg:text-left">
@@ -221,7 +221,7 @@ export default function SetupPage() {
                     <div>
                       <h3 className="text-xl font-semibold text-blox-text">Setup complete</h3>
                       <p className="mt-2 text-sm leading-6 text-blox-muted">
-                        Admin <span className="text-blox-text font-medium">{createdUsername}</span> is ready. {navigating ? "Opening the dashboard..." : "You can sign in now."}
+                        Admin <span className="text-blox-text font-medium">{createdUsername}</span> is ready. {navigating ? "Opening the dashboard…" : "You can sign in now."}
                       </p>
                     </div>
                     {error && (
@@ -362,13 +362,21 @@ export default function SetupPage() {
                     <Button
                       type="submit"
                       disabled={disabled}
-                      className="h-10 w-full bg-blox-blue hover:bg-blox-blue/90 text-white text-sm font-medium"
+                      className="h-10 w-full bg-blox-blue hover:bg-blox-blue/90 text-white text-sm font-medium gap-2"
                     >
-                      {setupState === "checking"
-                        ? "Checking setup status..."
-                        : loading
-                            ? "Creating admin..."
-                            : "Complete First-Boot Setup"}
+                      {setupState === "checking" ? (
+                        <>
+                          <span className="w-3 h-3 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                          Checking setup status…
+                        </>
+                      ) : loading ? (
+                        <>
+                          <span className="w-3 h-3 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                          Creating admin…
+                        </>
+                      ) : (
+                        "Complete First-Boot Setup"
+                      )}
                     </Button>
 
                     <p className="text-[11px] leading-6 text-blox-muted">

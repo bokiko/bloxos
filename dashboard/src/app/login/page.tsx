@@ -66,9 +66,9 @@ export default function LoginPage() {
       <div className="absolute inset-0 bg-[linear-gradient(rgba(59,130,246,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(59,130,246,0.03)_1px,transparent_1px)] bg-[size:64px_64px]" />
 
       <motion.div
-        initial={{ opacity: 0, y: 20 }}
+        initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.5, ease: "easeOut" }}
+        transition={{ duration: 0.3, ease: "easeOut" }}
         className="w-full max-w-sm relative z-10"
       >
         <div className="text-center mb-8">
@@ -121,9 +121,21 @@ export default function LoginPage() {
               <Button
                 type="submit"
                 disabled={loading || checkingSetup || !username || !password}
-                className="w-full bg-blox-blue hover:bg-blox-blue/90 text-white h-9 text-sm font-medium"
+                className="w-full bg-blox-blue hover:bg-blox-blue/90 text-white h-9 text-sm font-medium gap-2"
               >
-                {checkingSetup ? "Checking setup..." : loading ? "Signing in..." : "Sign In"}
+                {checkingSetup ? (
+                  <>
+                    <span className="w-3 h-3 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                    Checking setup…
+                  </>
+                ) : loading ? (
+                  <>
+                    <span className="w-3 h-3 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                    Signing in…
+                  </>
+                ) : (
+                  "Sign In"
+                )}
               </Button>
             </form>
           </CardContent>

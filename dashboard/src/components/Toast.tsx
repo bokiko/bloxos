@@ -34,7 +34,7 @@ function ToastItem({ toast, onRemove }: { toast: Toast; onRemove: (id: string) =
 
   return (
     <div
-      className={`flex items-center gap-2 px-4 py-2.5 rounded-lg border text-sm shadow-lg transition-all duration-200 ${
+      className={`flex items-center gap-2 px-4 py-2.5 rounded-lg border text-sm shadow-lg transition-all duration-[var(--motion-base)] ${
         visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-2"
       } ${
         toast.type === "success"

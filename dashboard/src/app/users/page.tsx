@@ -146,17 +146,20 @@ export default function UsersPage() {
     // Render a thin scaffold while the redirect runs so we don't flash
     // a fully empty page.
     return (
-      <div className="min-h-screen bg-blox-bg flex items-center justify-center text-blox-muted text-sm">
-        Loading…
+      <div className="min-h-screen bg-blox-bg flex items-center justify-center">
+        <div className="flex items-center gap-2 text-blox-muted text-sm">
+          <span className="w-3.5 h-3.5 border-2 border-blox-blue/40 border-t-blox-blue rounded-full animate-spin" />
+          Loading…
+        </div>
       </div>
     );
   }
 
   return (
     <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      transition={{ duration: 0.3 }}
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.25, ease: "easeOut" }}
       className="min-h-screen bg-blox-bg"
     >
       <header className="sticky top-0 z-50 bg-blox-bg/80 backdrop-blur-xl border-b border-blox-border/50">
@@ -205,9 +208,27 @@ export default function UsersPage() {
             </TableHeader>
             <TableBody>
               {loading ? (
-                <TableRow>
-                  <TableCell colSpan={5} className="text-center py-8 text-blox-muted text-xs">Loading users…</TableCell>
-                </TableRow>
+                <>
+                  {Array.from({ length: 3 }).map((_, i) => (
+                    <TableRow key={`user-skel-${i}`} className="border-b-blox-border/30 hover:bg-transparent">
+                      <TableCell>
+                        <div className="h-3 w-24 bg-blox-border/60 rounded animate-shimmer" />
+                      </TableCell>
+                      <TableCell>
+                        <div className="h-4 w-16 bg-blox-border/60 rounded-md animate-shimmer" />
+                      </TableCell>
+                      <TableCell className="hidden md:table-cell">
+                        <div className="h-3 w-12 bg-blox-border/60 rounded animate-shimmer" />
+                      </TableCell>
+                      <TableCell className="hidden lg:table-cell">
+                        <div className="h-3 w-32 bg-blox-border/60 rounded animate-shimmer" />
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <div className="h-4 w-4 bg-blox-border/60 rounded ml-auto animate-shimmer" />
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </>
               ) : users.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={5} className="text-center py-8 text-blox-muted text-xs">No users yet.</TableCell>
