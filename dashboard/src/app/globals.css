@@ -135,9 +135,13 @@
   --color-danger: var(--danger);
   --color-danger-subtle: var(--danger-subtle);
 
-  /* Legacy blox-* tokens — re-aliased to semantic tokens so every existing
-     component (MachineCard, dialogs, headers) instantly becomes theme-aware
-     without any code changes. Do not remove these in Phase 1. */
+  /* blox-* token aliases — PERMANENT.
+     These were introduced in Phase 1 as transitional shims, but the migration
+     to semantic tokens (--surface-base, --text-primary, etc.) was never
+     necessary — the shims work transparently and have zero overhead.
+     Treating them as permanent simplifies future work: new components
+     can use either shim names (bg-blox-card) or semantic names
+     (bg-surface-raised) with identical results. */
   --color-blox-bg: var(--surface-base);
   --color-blox-card: var(--surface-raised);
   --color-blox-border: var(--border-default);
@@ -271,7 +275,17 @@ body {
     @apply font-sans;
   }
 
-  /* Canonical focus ring — applied to every interactive element */
+  /*
+   * Canonical fallback focus ring.
+   *
+   * shadcn/ui primitives (Button, Input, DropdownMenuItem, TabsTrigger)
+   * include their own focus-visible:ring-3 focus-visible:ring-ring/50
+   * classes — those win in specificity and provide a more polished ring.
+   *
+   * This rule below is the canonical fallback for native elements and any
+   * custom interactive element that doesn't use a shadcn primitive.
+   * Both rings resolve to --accent so they're visually consistent.
+   */
   button:focus-visible,
   a:focus-visible,
   [role="button"]:focus-visible,
@@ -374,4 +388,36 @@ body {
   background: var(--surface-sunken);
   border: 1px solid var(--border-default);
   border-radius: 4px;
+}
+
+/* ============================================================================
+ * Reduced-motion support
+ *
+ * When the user has set a system-level reduced-motion preference, suppress
+ * decorative animations (status pulses, shimmer skeletons, fade-ins) and
+ * collapse transition durations to imperceptible. Critical UI feedback
+ * (focus rings, color changes on hover) is preserved.
+ *
+ * The 0.01ms instead of 0 is intentional: it keeps transition events firing
+ * (so onTransitionEnd callbacks still work) while making them imperceptible.
+ *
+ * Framer Motion respects prefers-reduced-motion via its built-in
+ * useReducedMotion() hook; this CSS block covers our CSS-driven animations.
+ * ============================================================================ */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .animate-status-pulse,
+  .animate-shimmer {
+    animation: none !important;
+    opacity: 1 !important;
+  }
 }

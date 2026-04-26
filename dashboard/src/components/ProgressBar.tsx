@@ -51,7 +51,7 @@ export function ProgressBar({ value, variant, size = "sm", label }: ProgressBarP
     <div className="flex items-center gap-3 w-full">
       <div className={`flex-1 ${height} rounded-full ${getTrackClass(v)} overflow-hidden`}>
         <div
-          className={`${height} rounded-full ${getBarClass(v)} transition-all duration-700 ease-out`}
+          className={`${height} rounded-full ${getBarClass(v)} transition-all duration-[var(--motion-slow)] ease-out`}
           style={{ width: `${clamped}%` }}
         />
       </div>

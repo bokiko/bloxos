@@ -872,8 +872,14 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
 
                   {termState === "active" && termSessionId && (
                     <div
-                      className="bg-[#0a0a0f] h-full"
-                      style={{ height: termExpanded ? 600 : 360 }}
+                      className="h-full"
+                      style={{
+                        height: termExpanded ? 600 : 360,
+                        // Match the xterm background exactly so there's no
+                        // seam between xterm's canvas and the wrapper. Reads
+                        // the same CSS var that resolvedTheme maps to.
+                        background: "var(--surface-base)",
+                      }}
                     >
                       <TerminalComponent
                         sessionId={termSessionId}

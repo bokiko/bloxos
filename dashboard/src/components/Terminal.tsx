@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useRef, useCallback, useState } from "react";
-import { Terminal as XTerm } from "@xterm/xterm";
+import { Terminal as XTerm, ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { useTheme } from "@/contexts/ThemeContext";
 import "@xterm/xterm/css/xterm.css";
 
 interface TerminalProps {
@@ -12,12 +13,68 @@ interface TerminalProps {
   onDisconnect?: () => void;
 }
 
+/* ============================================================================
+ * Theme palettes
+ *
+ * Dark theme matches the rest of the BloxOS dashboard (blox-bg base, accent
+ * blue cursor). Light theme is a Solarized Light derivative — readable in
+ * bright environments without losing the ANSI color semantics that make
+ * terminal output legible (red errors stay red, green diffs stay green).
+ * ============================================================================ */
+
+const darkTheme: ITheme = {
+  background: "#0a0a0f",
+  foreground: "#e4e4ef",
+  cursor: "#3b82f6",
+  selectionBackground: "#3b82f640",
+  black: "#0a0a0f",
+  red: "#ef4444",
+  green: "#22c55e",
+  yellow: "#f59e0b",
+  blue: "#3b82f6",
+  magenta: "#a855f7",
+  cyan: "#06b6d4",
+  white: "#e4e4ef",
+  brightBlack: "#6b6b80",
+  brightRed: "#f87171",
+  brightGreen: "#4ade80",
+  brightYellow: "#fbbf24",
+  brightBlue: "#60a5fa",
+  brightMagenta: "#c084fc",
+  brightCyan: "#22d3ee",
+  brightWhite: "#f8fafc",
+};
+
+const lightTheme: ITheme = {
+  background: "#fdfdfb",
+  foreground: "#3a3a3a",
+  cursor: "#3b82f6",
+  selectionBackground: "#3b82f630",
+  black: "#3a3a3a",
+  red: "#dc322f",
+  green: "#15803d",
+  yellow: "#a16207",
+  blue: "#2563eb",
+  magenta: "#9333ea",
+  cyan: "#0e7490",
+  white: "#fdfdfb",
+  brightBlack: "#52525b",
+  brightRed: "#ef4444",
+  brightGreen: "#16a34a",
+  brightYellow: "#d97706",
+  brightBlue: "#3b82f6",
+  brightMagenta: "#a855f7",
+  brightCyan: "#0891b2",
+  brightWhite: "#ffffff",
+};
+
 export function Terminal({ sessionId, browserToken, onDisconnect }: TerminalProps) {
   const termRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<XTerm | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const [status, setStatus] = useState<"connecting" | "connected" | "disconnected">("connecting");
+  const { resolvedTheme } = useTheme();
 
   const cleanup = useCallback(() => {
     if (wsRef.current) {
@@ -31,36 +88,17 @@ export function Terminal({ sessionId, browserToken, onDisconnect }: TerminalProp
     fitAddonRef.current = null;
   }, []);
 
+  // Initial mount + WebSocket lifecycle. Theme is set on init using the
+  // resolved theme; live theme switches are handled by a separate effect.
   useEffect(() => {
     if (!termRef.current || !sessionId) return;
 
-    // Create xterm instance.
     const term = new XTerm({
       cursorBlink: true,
       fontSize: 14,
-      fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Menlo', monospace",
-      theme: {
-        background: "#0a0a0f",
-        foreground: "#e4e4ef",
-        cursor: "#3b82f6",
-        selectionBackground: "#3b82f640",
-        black: "#0a0a0f",
-        red: "#ef4444",
-        green: "#22c55e",
-        yellow: "#f59e0b",
-        blue: "#3b82f6",
-        magenta: "#a855f7",
-        cyan: "#06b6d4",
-        white: "#e4e4ef",
-        brightBlack: "#6b6b80",
-        brightRed: "#f87171",
-        brightGreen: "#4ade80",
-        brightYellow: "#fbbf24",
-        brightBlue: "#60a5fa",
-        brightMagenta: "#c084fc",
-        brightCyan: "#22d3ee",
-        brightWhite: "#f8fafc",
-      },
+      fontFamily:
+        "'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Menlo', monospace",
+      theme: resolvedTheme === "light" ? lightTheme : darkTheme,
       allowProposedApi: true,
       scrollback: 5000,
     });
@@ -74,16 +112,18 @@ export function Terminal({ sessionId, browserToken, onDisconnect }: TerminalProp
     xtermRef.current = term;
     fitAddonRef.current = fitAddon;
 
-    // Fit after a brief delay to ensure the container is sized.
     setTimeout(() => {
-      try { fitAddon.fit(); } catch {}
+      try {
+        fitAddon.fit();
+      } catch {}
     }, 100);
 
-    term.writeln("\x1b[36mConnecting to terminal session...\x1b[0m");
+    term.writeln("\x1b[36mConnecting to terminal session…\x1b[0m");
 
-    // Connect WebSocket.
     const baseUrl = window.location.origin.replace(/^http/, "ws");
-    const wsUrl = `${baseUrl}/ws/terminal/${sessionId}?role=browser&browser_token=${encodeURIComponent(browserToken)}`;
+    const wsUrl = `${baseUrl}/ws/terminal/${sessionId}?role=browser&browser_token=${encodeURIComponent(
+      browserToken
+    )}`;
     const ws = new WebSocket(wsUrl);
     ws.binaryType = "arraybuffer";
     wsRef.current = ws;
@@ -91,8 +131,6 @@ export function Terminal({ sessionId, browserToken, onDisconnect }: TerminalProp
     ws.onopen = () => {
       setStatus("connected");
       term.writeln("\x1b[32mConnected.\x1b[0m\r\n");
-
-      // Send initial size.
       const resizeMsg = JSON.stringify({
         type: "resize",
         cols: term.cols,
@@ -120,29 +158,29 @@ export function Terminal({ sessionId, browserToken, onDisconnect }: TerminalProp
       term.writeln("\r\n\x1b[31mWebSocket error.\x1b[0m");
     };
 
-    // Terminal input -> WebSocket.
     const onData = term.onData((data) => {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(new TextEncoder().encode(data));
       }
     });
 
-    // Handle resize.
     const onResize = term.onResize(({ cols, rows }) => {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: "resize", cols, rows }));
       }
     });
 
-    // Window resize -> fit addon.
     const handleWindowResize = () => {
-      try { fitAddon.fit(); } catch {}
+      try {
+        fitAddon.fit();
+      } catch {}
     };
     window.addEventListener("resize", handleWindowResize);
 
-    // ResizeObserver for container size changes.
     const resizeObserver = new ResizeObserver(() => {
-      try { fitAddon.fit(); } catch {}
+      try {
+        fitAddon.fit();
+      } catch {}
     });
     if (termRef.current) {
       resizeObserver.observe(termRef.current);
@@ -155,15 +193,26 @@ export function Terminal({ sessionId, browserToken, onDisconnect }: TerminalProp
       onResize.dispose();
       cleanup();
     };
+    // The dependency on resolvedTheme is intentionally omitted here: changing
+    // the theme should NOT re-create the WebSocket. Live theme updates are
+    // handled by the separate effect below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, browserToken, onDisconnect, cleanup]);
+
+  // Live theme updates — swap the palette without re-creating the terminal.
+  useEffect(() => {
+    if (!xtermRef.current) return;
+    xtermRef.current.options.theme =
+      resolvedTheme === "light" ? lightTheme : darkTheme;
+  }, [resolvedTheme]);
 
   return (
     <div className="relative w-full h-full">
       {status === "connecting" && (
-        <div className="absolute inset-0 flex items-center justify-center z-10 bg-blox-bg/80">
+        <div className="absolute inset-0 flex items-center justify-center z-10 bg-blox-bg/80 backdrop-blur-sm">
           <div className="flex items-center gap-2 text-blox-muted text-sm">
             <div className="w-3 h-3 border-2 border-blox-blue border-t-transparent rounded-full animate-spin" />
-            Connecting...
+            Connecting…
           </div>
         </div>
       )}
