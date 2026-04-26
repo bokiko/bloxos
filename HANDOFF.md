@@ -44,12 +44,13 @@
     - [x] agent emits a one-time `hardware_info` snapshot on connect (CPU model + cores, RAM, kernel, virtualization, disks with type/size, NICs with speed, GPU model)
     - [x] hub stores raw JSON in new `machines.hardware_info` column (migration v8)
     - [x] dashboard renders a Hardware panel in the detail Overview tab
-- In progress:
-  - [ ] User management dashboard UI — backend already on branch `feat/user-management` (commit `4e2f09e`, unmerged): `POST/GET/PATCH/DELETE /api/users` behind `users.admin` scope. Frontend `/users` page + admin-only nav still TODO.
+  - [x] User management UI (PR #28 backend, #29 dashboard): `/users` page + admin-only nav, role-aware affordances on the index card.
+  - [x] API-polled machine detail-page NULL fix (PR #30): `COALESCE` GPU metric columns so Proxmox/Synology cards stop 500-ing.
+  - [x] Proxmox API machine moved from `insecure` to `custom_ca` (leaf-pinned cert).
+  - [x] Role-aware dashboard UI (PR #32): every admin button gated on `useAuth().hasScope(...)` — Add Machine, Add API, bulk-action bar, list-view selection, card delete/edit, detail-page Delete/Reboot/Terminal tab — backend route map is the source of truth.
+  - [x] hub/main.go split (PRs #33–#39): the 4344-line monolith is now `main.go` (2236) + `auth.go` (593) + `alerts.go` (425) + `terminal.go` (470) + `agentws.go` (704). All still `package main` sharing the same globals — pure code moves, zero behavior change.
 - Remaining:
-  - [ ] move Proxmox API machine from temporary `insecure` mode to `custom_ca`
-  - [ ] split `hub/main.go` into packages when the repo stabilizes further
-  - [ ] cross-test contamination flake on `TestAgentReconnectWithSecret` (passes 3/3 in isolation, fails ~half the full-suite runs — global `db` var + leaked goroutines)
+  - [ ] cross-test contamination flake on `TestAgentReconnectWithSecret` / `TestAgentEnrollmentWithToken`. Hit on PR #33 in CI, passed on rerun. Real fix is a `*Hub` struct refactor that retires the package-level `db`, `agents`, `termSessions`, `sseClients`, `pendingCmds` globals; then each test gets its own instance and there's no shared state to leak between tests. Same surface area as the file split touched, but invasive (every handler signature changes), so left for a dedicated session.
 
 ## Credentials
 All live credentials live outside git in `~/.bloxos/`-style paths or operator memory. **Never** put raw secrets, tokens, passwords, PINs, or SSH credentials in this file or any committed file.
@@ -89,7 +90,7 @@ All live credentials live outside git in `~/.bloxos/`-style paths or operator me
 - Login response returns `role` + `scopes` for client-side gating.
 - Server enforces every protected route via `permissionMiddleware` against `routeScopeRequirements`.
 - A boot-time `auditRBACRouteCoverage` check fails server startup if any registered `/api/*` route lacks a scope mapping (or vice-versa).
-- Dashboard role-aware affordances still minimal — backend will refuse insufficient-scope writes with 403.
+- Dashboard hides every admin affordance the role lacks (PR #32). Backend still refuses with 403 if a viewer hand-crafts a write request.
 
 ## Hardware Info
 - Agent collects a static spec snapshot on every connect: CPU (model/cores/threads/freq), RAM total, kernel, virtualization, boot time, disks (`/sys/block`: device/model/size/type), NICs (`/sys/class/net`: name/IPv4/MAC/speed), GPU model names.
@@ -97,19 +98,24 @@ All live credentials live outside git in `~/.bloxos/`-style paths or operator me
 - Dashboard detail Overview tab shows it in a Hardware panel; absent fields are hidden.
 
 ## Known Issues
-- Proxmox API polling still uses `insecure` until its CA PEM is configured.
-- Dashboard role-aware affordances are minimal (server enforces, UI doesn't yet hide).
-- Pre-existing flaky test `TestAgentReconnectWithSecret` on full-suite runs.
+- Pre-existing flaky test `TestAgentReconnectWithSecret` / `TestAgentEnrollmentWithToken` on full-suite CI runs. Rerun usually clears it. Real fix needs the global-`db` retirement (see Remaining).
+
+## hub/ file map (post-split)
+- `main.go` — entrypoint, route registration, DB init, metrics ingest, machine REST handlers, SSE, bulk commands, API-machine pollers, rate limiter, log redactor.
+- `auth.go` — first-boot setup, login, JWT middleware, credential rotation gate, password/PIN change, SSE token mint, JWT secret loader.
+- `alerts.go` — `AlertRule`/`Alert` types, evaluation loop, SSE broadcast, Telegram, alert REST endpoints.
+- `terminal.go` — `TerminalSession`, PIN-gated start, agent + browser WS upgrade, relay, cleanup, allowed-origins helper.
+- `agentws.go` — `ConnectedAgent`, `handleAgentWS`, install token + script + agent download + CA download, durable agent secret lifecycle, first-run token bootstrap.
+- `rbac.go`, `users.go`, `migrations.go` — unchanged, already separated.
 
 ## Current Fleet
 - Three enrolled agents online: `BloxOs` (hub self), `ai-04`, `ic-brain` — all on the hardware-aware build.
-- Two API machines polling: `Dasman` (Synology DSM), `Dell` (Proxmox VE — still in `insecure` mode).
+- Two API machines polling: `Dasman` (Synology DSM), `Dell` (Proxmox VE — `custom_ca` since PR #30).
 - Recheck live state from the dashboard or hub API before any ops work.
 
 ## Key URLs
 - Dashboard: `https://192.168.16.113`
 - Repo: `https://github.com/bokiko/bloxos`
-- Open backend branch (unmerged): `feat/user-management` at `4e2f09e`
 
 ## Useful Commands
 - Hub tests: `cd ~/bloxos/hub && /usr/local/go/bin/go test -count=1 ./...`
