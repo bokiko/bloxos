@@ -11,6 +11,7 @@ import { ServicePanel, Service } from "@/components/ServicePanel";
 import { ContainerPanel, Container } from "@/components/ContainerPanel";
 import { RebootModal } from "@/components/RebootModal";
 import { MetricCharts } from "@/components/MetricCharts";
+import { HardwareCard, type HardwareInfo } from "@/components/HardwareCard";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -22,7 +23,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { motion } from "framer-motion";
 import {
   ArrowLeft, Cpu, HardDrive, MemoryStick, Thermometer,
-  Activity, Zap, Monitor, Terminal as TerminalIcon, RotateCcw,
+  Activity, Zap, Terminal as TerminalIcon, RotateCcw,
   Lock, Unlock, X, Maximize2, Minimize2, Wifi, BarChart3, Trash2,
   LayoutDashboard, Box, Container as ContainerIcon,
 } from "lucide-react";
@@ -53,37 +54,6 @@ interface GPUData {
   mem_total_bytes: number;
   power_watts: number;
   fan_percent: number;
-}
-
-interface HardwareDiskInfo {
-  device: string;
-  model?: string;
-  size_bytes?: number;
-  type?: string;
-}
-
-interface HardwareNetworkInfo {
-  name: string;
-  mac?: string;
-  ipv4?: string;
-  speed_mbps?: number;
-}
-
-interface HardwareInfo {
-  cpu_model?: string;
-  cpu_vendor?: string;
-  cpu_cores?: number;
-  cpu_threads?: number;
-  cpu_frequency_mhz?: number;
-  ram_total_bytes?: number;
-  kernel_version?: string;
-  platform_family?: string;
-  virtualization?: string;
-  boot_time?: number;
-  architecture?: string;
-  gpu_models?: string[];
-  disks?: HardwareDiskInfo[];
-  network_interfaces?: HardwareNetworkInfo[];
 }
 
 interface MachineData {
@@ -376,9 +346,9 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
 
   return (
     <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      transition={{ duration: 0.3 }}
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.25, ease: "easeOut" }}
       className="min-h-screen bg-blox-bg"
     >
       {/* Delete dialog */}
@@ -416,37 +386,29 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
       )}
 
       {/* Header */}
+      {/* Top sticky bar — minimal, navigational only */}
       <header className="sticky top-0 z-50 bg-blox-bg/80 backdrop-blur-xl border-b border-blox-border/50">
-        <div className="max-w-[1200px] mx-auto px-4 sm:px-6 h-14 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <Link href="/" className="flex items-center gap-1.5 text-blox-muted hover:text-blox-text transition-colors text-sm">
-              <ArrowLeft className="w-4 h-4" />
-              Fleet
-            </Link>
-            <span className="text-blox-border/50">/</span>
-            <div className="flex items-center gap-2.5">
-              <div className="p-1.5 rounded-lg bg-blox-border/50">
-                <Monitor className="w-3.5 h-3.5 text-blox-muted" />
-              </div>
-              <h1 className="font-semibold text-blox-text tracking-tight">{machine.hostname}</h1>
-              <StatusBadge status={status} />
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
+        <div className="max-w-[1200px] mx-auto px-4 sm:px-6 h-12 flex items-center justify-between">
+          <Link
+            href="/"
+            className="flex items-center gap-1.5 text-blox-muted hover:text-blox-text transition-colors text-xs"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" />
+            <span>Fleet</span>
+          </Link>
+
+          <div className="flex items-center gap-1.5">
             {connected && (
-              <span className="flex items-center gap-1 text-[10px] text-emerald-400 mr-1">
-                <Wifi className="w-3 h-3" />
-                Live
-              </span>
-            )}
-            {(data.latency_ms ?? 0) > 0 && (
-              <span className="flex items-center gap-1 text-[10px] text-blox-muted font-mono tabular-nums mr-2">
-                <Wifi className="w-3 h-3" />
-                {data.latency_ms}ms
+              <span className="hidden sm:flex items-center gap-1 text-[10px] text-emerald-400 mr-1">
+                <span className="relative flex h-1.5 w-1.5">
+                  <span className="animate-status-pulse absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                  <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500" />
+                </span>
+                live
               </span>
             )}
             {effectiveLastUpdated && (
-              <span className="text-[10px] text-blox-muted font-mono tabular-nums mr-2">
+              <span className="hidden sm:inline text-[10px] text-blox-muted font-mono tabular-nums mr-2">
                 {timeSince(effectiveLastUpdated)}
               </span>
             )}
@@ -477,17 +439,66 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
         </div>
       </header>
 
-      <main className="max-w-[1200px] mx-auto px-4 sm:px-6 py-6 space-y-6">
-        {/* Info bar */}
-        <div className="flex flex-wrap gap-4 text-xs text-blox-muted">
-          {machine.ip && <span>IP: <span className="text-blox-text font-mono tabular-nums">{machine.ip}</span></span>}
-          {machine.os && <span>OS: <span className="text-blox-text">{machine.os}</span></span>}
-          <span>ID: <span className="text-blox-text font-mono text-[10px] tabular-nums">{machine.id}</span></span>
-          {(data.latency_ms ?? 0) > 0 && (
-            <span>Latency: <span className="text-blox-text font-mono tabular-nums">{data.latency_ms}ms</span></span>
-          )}
-        </div>
+      {/* Hero — hostname + status + key facts */}
+      <section className="border-b border-blox-border/50 bg-blox-bg/40">
+        <div className="max-w-[1200px] mx-auto px-4 sm:px-6 py-6">
+          <div className="flex items-center gap-3">
+            <span
+              className={[
+                "shrink-0 w-2.5 h-2.5 rounded-full",
+                status === "online"
+                  ? "bg-emerald-500 animate-status-pulse"
+                  : status === "warning"
+                  ? "bg-amber-500 animate-status-pulse"
+                  : "bg-red-500/60",
+              ].join(" ")}
+              aria-label={`Status: ${status}`}
+            />
+            <h1 className="text-xl sm:text-2xl font-semibold text-blox-text tracking-tight">
+              {machine.hostname}
+            </h1>
+            <StatusBadge status={status} />
+          </div>
 
+          <dl className="flex flex-wrap items-baseline gap-x-5 gap-y-1.5 mt-3 text-[11px]">
+            {machine.ip && (
+              <div className="flex items-baseline gap-1.5">
+                <dt className="text-blox-muted uppercase tracking-[0.08em] text-[9px] font-medium">
+                  IP
+                </dt>
+                <dd className="text-blox-text font-mono tabular-nums">{machine.ip}</dd>
+              </div>
+            )}
+            {machine.os && (
+              <div className="flex items-baseline gap-1.5">
+                <dt className="text-blox-muted uppercase tracking-[0.08em] text-[9px] font-medium">
+                  OS
+                </dt>
+                <dd className="text-blox-text">{machine.os}</dd>
+              </div>
+            )}
+            {(data.latency_ms ?? 0) > 0 && (
+              <div className="flex items-baseline gap-1.5">
+                <dt className="text-blox-muted uppercase tracking-[0.08em] text-[9px] font-medium">
+                  Latency
+                </dt>
+                <dd className="text-blox-text font-mono tabular-nums flex items-center gap-1">
+                  <Wifi className="w-2.5 h-2.5 text-blox-muted" />
+                  {data.latency_ms}ms
+                </dd>
+              </div>
+            )}
+            <div className="flex items-baseline gap-1.5">
+              <dt className="text-blox-muted uppercase tracking-[0.08em] text-[9px] font-medium">
+                ID
+              </dt>
+              <dd className="text-blox-muted font-mono text-[10px]">{machine.id}</dd>
+            </div>
+          </dl>
+        </div>
+      </section>
+
+      <main className="max-w-[1200px] mx-auto px-4 sm:px-6 py-6 space-y-6">
         <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as DetailTab)}>
           <TabsList variant="line" className="gap-1">
             <TabsTrigger value="overview" className="px-4 py-1.5 gap-1.5 text-sm">
@@ -670,7 +681,7 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
               )}
             </div>
 
-            {data.hardware_info && <HardwarePanel hw={data.hardware_info} />}
+            {data.hardware_info && <HardwareCard hw={data.hardware_info} />}
           </TabsContent>
 
           <TabsContent value="services" className="mt-6">
@@ -705,130 +716,201 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
                 transition={{ delay: 0.05 }}
                 className="bg-blox-card border border-blox-border rounded-xl overflow-hidden"
               >
-                {/* Terminal header bar — macOS style */}
-                <div className="flex items-center justify-between px-5 py-3 border-b border-blox-border/50 bg-blox-bg/30">
-                  <div className="flex items-center gap-3">
-                    <div className="flex items-center gap-1.5">
-                      <span className="w-3 h-3 rounded-full bg-red-500/80" />
-                      <span className="w-3 h-3 rounded-full bg-amber-500/80" />
-                      <span className="w-3 h-3 rounded-full bg-emerald-500/80" />
+                {/* Terminal header — matches HardwareCard / panel rhythm */}
+                <div className="flex items-center justify-between px-5 py-3 border-b border-blox-border/50">
+                  <div className="flex items-center gap-2.5">
+                    <div className="p-1.5 rounded-lg bg-blox-blue/10">
+                      <TerminalIcon className="w-3.5 h-3.5 text-blox-blue" />
                     </div>
-                    <div className="flex items-center gap-2">
-                      <TerminalIcon className="w-3.5 h-3.5 text-blox-muted" />
-                      <h3 className="text-sm font-semibold text-blox-text">Terminal</h3>
-                      {termState === "active" && (
-                        <Badge variant="outline" className="text-[10px] border-emerald-500/30 bg-emerald-500/10 text-emerald-400 h-auto py-0 px-1.5">
-                          connected
-                        </Badge>
-                      )}
-                      {termState === "connecting" && (
-                        <Badge variant="outline" className="text-[10px] border-blox-blue/30 bg-blox-blue/10 text-blox-blue h-auto py-0 px-1.5">
-                          connecting...
-                        </Badge>
-                      )}
-                      {termState === "disconnected" && (
-                        <Badge variant="outline" className="text-[10px] border-red-500/30 bg-red-500/10 text-red-400 h-auto py-0 px-1.5">
-                          disconnected
-                        </Badge>
-                      )}
-                    </div>
+                    <h3 className="text-sm font-semibold text-blox-text">Terminal</h3>
+                    {termState === "active" && (
+                      <span className="flex items-center gap-1 text-[10px] text-emerald-400 font-medium ml-1">
+                        <span className="relative flex h-1.5 w-1.5">
+                          <span className="animate-status-pulse absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                          <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500" />
+                        </span>
+                        connected
+                      </span>
+                    )}
+                    {termState === "connecting" && (
+                      <span className="text-[10px] text-blox-blue font-medium ml-1">connecting…</span>
+                    )}
+                    {termState === "disconnected" && (
+                      <span className="text-[10px] text-red-400 font-medium ml-1">disconnected</span>
+                    )}
                   </div>
                   <div className="flex items-center gap-1">
                     {termState === "active" && (
                       <>
-                        <Button variant="ghost" size="icon-xs" onClick={() => setTermExpanded(!termExpanded)} className="text-blox-muted hover:text-blox-text" title={termExpanded ? "Collapse" : "Expand"}>
-                          {termExpanded ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+                        <Button
+                          variant="ghost"
+                          size="icon-xs"
+                          onClick={() => setTermExpanded(!termExpanded)}
+                          className="text-blox-muted hover:text-blox-text"
+                          title={termExpanded ? "Collapse terminal" : "Expand terminal"}
+                          aria-label={termExpanded ? "Collapse terminal" : "Expand terminal"}
+                        >
+                          {termExpanded ? (
+                            <Minimize2 className="w-3.5 h-3.5" />
+                          ) : (
+                            <Maximize2 className="w-3.5 h-3.5" />
+                          )}
                         </Button>
-                        <Button variant="ghost" size="icon-xs" onClick={handleTerminalClose} className="text-blox-muted hover:text-red-400" title="Close terminal">
+                        <Button
+                          variant="ghost"
+                          size="icon-xs"
+                          onClick={handleTerminalClose}
+                          className="text-blox-muted hover:text-red-400"
+                          title="Close terminal"
+                          aria-label="Close terminal"
+                        >
                           <X className="w-3.5 h-3.5" />
                         </Button>
                       </>
                     )}
                     {termState === "disconnected" && (
-                      <Button variant="ghost" size="xs" onClick={() => setTermState("pin_entry")} className="text-xs text-blox-blue">
+                      <Button
+                        variant="ghost"
+                        size="xs"
+                        onClick={() => setTermState("pin_entry")}
+                        className="text-xs text-blox-blue"
+                      >
                         Reconnect
                       </Button>
                     )}
                   </div>
                 </div>
 
-                {termState === "locked" && (
-                  <div className="flex flex-col items-center justify-center py-12 bg-black/20">
-                    <Lock className="w-10 h-10 text-blox-muted mb-3 opacity-20" />
-                    <p className="text-sm text-blox-muted">Remote Terminal</p>
-                    <p className="text-xs text-blox-muted/60 mt-1 mb-4">Enter PIN to unlock terminal access</p>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => isOnline && setTermState("pin_entry")}
-                      disabled={!isOnline}
-                      className="text-xs text-blox-blue border-blox-blue/20 hover:bg-blox-blue/10 gap-2"
-                    >
-                      <Unlock className="w-3.5 h-3.5" />
-                      Unlock Terminal
-                    </Button>
-                  </div>
-                )}
-
-                {termState === "pin_entry" && (
-                  <div className="flex flex-col items-center justify-center py-12 bg-black/20">
-                    <Lock className="w-8 h-8 text-blox-blue mb-3 opacity-50" />
-                    <p className="text-sm text-blox-text mb-4">Enter PIN to open terminal</p>
-                    <form onSubmit={(e) => { e.preventDefault(); handlePinSubmit(); }} className="flex items-center gap-2">
-                      <Input
-                        ref={pinInputRef}
-                        type="password"
-                        maxLength={8}
-                        value={pinInput}
-                        onChange={(e) => { setPinInput(e.target.value); setPinError(false); }}
-                        placeholder="PIN"
-                        className={`w-32 text-center font-mono bg-blox-bg border-blox-border text-blox-text h-9 text-sm ${pinError ? "border-red-500" : ""}`}
-                        autoComplete="off"
-                      />
-                      <Button type="submit" variant="outline" size="sm" className="text-xs text-blox-blue border-blox-blue/20 hover:bg-blox-blue/10">
-                        Open
-                      </Button>
+                {/* Stable-height body container — prevents pane height jumping between states */}
+                <div
+                  className="bg-blox-bg/40 transition-all duration-[var(--motion-base)]"
+                  style={{
+                    minHeight: termState === "active" && termExpanded ? 600 : 360,
+                    height: termState === "active" ? (termExpanded ? 600 : 360) : "auto",
+                  }}
+                >
+                  {termState === "locked" && (
+                    <div className="flex flex-col items-center justify-center h-[360px] gap-3">
+                      <Lock className="w-10 h-10 text-blox-muted/30" />
+                      <div className="text-center">
+                        <p className="text-sm text-blox-text">Remote Terminal</p>
+                        <p className="text-[11px] text-blox-muted mt-1">
+                          Enter PIN to unlock terminal access
+                        </p>
+                      </div>
                       <Button
-                        type="button"
-                        variant="ghost"
+                        variant="outline"
                         size="sm"
-                        onClick={() => { setTermState("locked"); setPinInput(""); setPinError(false); }}
-                        className="text-xs text-blox-muted"
+                        onClick={() => isOnline && setTermState("pin_entry")}
+                        disabled={!isOnline}
+                        className="text-xs text-blox-blue border-blox-blue/20 hover:bg-blox-blue/10 gap-2 mt-2"
                       >
-                        Cancel
-                      </Button>
-                    </form>
-                    {pinError && <p className="text-xs text-red-400 mt-2">Invalid PIN</p>}
-                  </div>
-                )}
-
-                {termState === "connecting" && (
-                  <div className="flex flex-col items-center justify-center py-12 bg-black/20">
-                    <div className="w-6 h-6 border-2 border-blox-blue border-t-transparent rounded-full animate-spin mb-3" />
-                    <p className="text-sm text-blox-muted">Starting terminal session...</p>
-                  </div>
-                )}
-
-                {termState === "active" && termSessionId && (
-                  <div className="bg-[#0a0a0f] transition-all duration-200" style={{ height: termExpanded ? "600px" : "360px" }}>
-                    <TerminalComponent sessionId={termSessionId} browserToken={termBrowserToken ?? ""} onDisconnect={handleTerminalDisconnect} />
-                  </div>
-                )}
-
-                {termState === "disconnected" && (
-                  <div className="flex flex-col items-center justify-center py-12 bg-black/20">
-                    <TerminalIcon className="w-8 h-8 text-red-400 mb-3 opacity-30" />
-                    <p className="text-sm text-blox-muted">Terminal disconnected</p>
-                    <div className="flex items-center gap-2 mt-4">
-                      <Button variant="outline" size="sm" onClick={() => setTermState("pin_entry")} className="text-xs text-blox-blue border-blox-blue/20 hover:bg-blox-blue/10">
-                        Reconnect
-                      </Button>
-                      <Button variant="ghost" size="sm" onClick={() => { setTermState("locked"); setTermSessionId(null); }} className="text-xs text-blox-muted">
-                        Close
+                        <Unlock className="w-3.5 h-3.5" />
+                        Unlock Terminal
                       </Button>
                     </div>
-                  </div>
-                )}
+                  )}
+
+                  {termState === "pin_entry" && (
+                    <div className="flex flex-col items-center justify-center h-[360px] gap-3">
+                      <Lock className="w-8 h-8 text-blox-blue/50" />
+                      <p className="text-sm text-blox-text">Enter PIN to open terminal</p>
+                      <form
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          handlePinSubmit();
+                        }}
+                        className="flex items-center gap-2 mt-1"
+                      >
+                        <Input
+                          ref={pinInputRef}
+                          type="password"
+                          maxLength={8}
+                          value={pinInput}
+                          onChange={(e) => {
+                            setPinInput(e.target.value);
+                            setPinError(false);
+                          }}
+                          placeholder="PIN"
+                          className={`w-32 text-center font-mono bg-blox-bg border-blox-border text-blox-text h-9 text-sm ${
+                            pinError ? "border-red-500" : ""
+                          }`}
+                          autoComplete="off"
+                        />
+                        <Button
+                          type="submit"
+                          variant="outline"
+                          size="sm"
+                          className="text-xs text-blox-blue border-blox-blue/20 hover:bg-blox-blue/10"
+                        >
+                          Open
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            setTermState("locked");
+                            setPinInput("");
+                            setPinError(false);
+                          }}
+                          className="text-xs text-blox-muted"
+                        >
+                          Cancel
+                        </Button>
+                      </form>
+                      {pinError && <p className="text-xs text-red-400 mt-1">Invalid PIN</p>}
+                    </div>
+                  )}
+
+                  {termState === "connecting" && (
+                    <div className="flex flex-col items-center justify-center h-[360px] gap-3">
+                      <div className="w-6 h-6 border-2 border-blox-blue border-t-transparent rounded-full animate-spin" />
+                      <p className="text-sm text-blox-muted">Starting terminal session…</p>
+                    </div>
+                  )}
+
+                  {termState === "active" && termSessionId && (
+                    <div
+                      className="bg-[#0a0a0f] h-full"
+                      style={{ height: termExpanded ? 600 : 360 }}
+                    >
+                      <TerminalComponent
+                        sessionId={termSessionId}
+                        browserToken={termBrowserToken ?? ""}
+                        onDisconnect={handleTerminalDisconnect}
+                      />
+                    </div>
+                  )}
+
+                  {termState === "disconnected" && (
+                    <div className="flex flex-col items-center justify-center h-[360px] gap-3">
+                      <TerminalIcon className="w-8 h-8 text-red-400/40" />
+                      <p className="text-sm text-blox-muted">Terminal disconnected</p>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setTermState("pin_entry")}
+                          className="text-xs text-blox-blue border-blox-blue/20 hover:bg-blox-blue/10"
+                        >
+                          Reconnect
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            setTermState("locked");
+                            setTermSessionId(null);
+                          }}
+                          className="text-xs text-blox-muted"
+                        >
+                          Close
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </div>
               </motion.div>
             </TabsContent>
           )}
@@ -838,122 +920,3 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
   );
 }
 
-function formatHardwareBytes(bytes: number | undefined | null): string {
-  if (!bytes || bytes <= 0) return "";
-  const tb = bytes / 1024 ** 4;
-  if (tb >= 1) return `${tb.toFixed(tb >= 10 ? 0 : 1)} TB`;
-  const gb = bytes / 1024 ** 3;
-  if (gb >= 1) return `${gb.toFixed(0)} GB`;
-  const mb = bytes / 1024 ** 2;
-  return `${mb.toFixed(0)} MB`;
-}
-
-function formatUptime(bootUnix: number | undefined): string {
-  if (!bootUnix || bootUnix <= 0) return "";
-  const secs = Math.max(0, Math.floor(Date.now() / 1000 - bootUnix));
-  const d = Math.floor(secs / 86400);
-  const h = Math.floor((secs % 86400) / 3600);
-  const m = Math.floor((secs % 3600) / 60);
-  if (d > 0) return `${d}d ${h}h`;
-  if (h > 0) return `${h}h ${m}m`;
-  return `${m}m`;
-}
-
-function HardwareRow({ label, value }: { label: string; value: string | number | null | undefined }) {
-  if (value === null || value === undefined || value === "" || value === 0) return null;
-  return (
-    <div className="flex items-baseline justify-between gap-4 py-1.5 border-b border-blox-border/30 last:border-b-0">
-      <span className="text-xs text-blox-muted">{label}</span>
-      <span className="text-xs text-blox-text font-mono tabular-nums text-right truncate">{value}</span>
-    </div>
-  );
-}
-
-function HardwarePanel({ hw }: { hw: HardwareInfo }) {
-  const diskLines = (hw.disks ?? []).filter((d) => (d.size_bytes ?? 0) > 0 || d.model);
-  const nicLines = (hw.network_interfaces ?? []).filter((n) => n.name);
-  const gpuNames = (hw.gpu_models ?? []).filter(Boolean);
-
-  const uptime = formatUptime(hw.boot_time);
-  const cpuDetail = [
-    hw.cpu_cores ? `${hw.cpu_cores} cores` : "",
-    hw.cpu_threads && hw.cpu_threads !== hw.cpu_cores ? `${hw.cpu_threads} threads` : "",
-    hw.cpu_frequency_mhz && hw.cpu_frequency_mhz > 0 ? `${(hw.cpu_frequency_mhz / 1000).toFixed(1)} GHz` : "",
-  ].filter(Boolean).join(" · ");
-
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ delay: 0.15 }}
-      className="bg-blox-card border border-blox-border rounded-xl p-5 mt-6"
-    >
-      <div className="flex items-center gap-2.5 mb-5">
-        <div className="p-1.5 rounded-lg bg-blox-blue/10">
-          <Cpu className="w-3.5 h-3.5 text-blox-blue" />
-        </div>
-        <h3 className="text-sm font-semibold text-blox-text">Hardware</h3>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-8 gap-y-1">
-        <div>
-          <HardwareRow label="CPU" value={hw.cpu_model} />
-          <HardwareRow label="" value={cpuDetail || undefined} />
-          <HardwareRow label="Vendor" value={hw.cpu_vendor} />
-          <HardwareRow label="Memory" value={formatHardwareBytes(hw.ram_total_bytes)} />
-          <HardwareRow label="Architecture" value={hw.architecture} />
-          <HardwareRow label="Kernel" value={hw.kernel_version} />
-          <HardwareRow label="Platform" value={hw.platform_family} />
-          <HardwareRow label="Virtualization" value={hw.virtualization} />
-          <HardwareRow label="Uptime" value={uptime} />
-        </div>
-
-        <div>
-          {gpuNames.length > 0 && (
-            <>
-              <div className="text-xs text-blox-muted mb-1.5 uppercase tracking-wider">GPU</div>
-              {gpuNames.map((name) => (
-                <div key={name} className="text-xs text-blox-text font-mono mb-1">{name}</div>
-              ))}
-            </>
-          )}
-
-          {diskLines.length > 0 && (
-            <>
-              <div className="text-xs text-blox-muted mt-3 mb-1.5 uppercase tracking-wider">Storage</div>
-              {diskLines.map((d) => (
-                <div key={d.device} className="flex items-baseline justify-between gap-4 py-1 border-b border-blox-border/30 last:border-b-0">
-                  <span className="text-xs text-blox-muted font-mono">
-                    {d.device.replace(/^\/dev\//, "")}
-                    {d.type && <span className="ml-2 text-[10px] uppercase text-blox-muted/70">{d.type}</span>}
-                  </span>
-                  <span className="text-xs text-blox-text font-mono tabular-nums text-right truncate">
-                    {formatHardwareBytes(d.size_bytes)}
-                    {d.model && <span className="ml-2 text-blox-muted">{d.model}</span>}
-                  </span>
-                </div>
-              ))}
-            </>
-          )}
-
-          {nicLines.length > 0 && (
-            <>
-              <div className="text-xs text-blox-muted mt-3 mb-1.5 uppercase tracking-wider">Network</div>
-              {nicLines.map((n) => (
-                <div key={n.name} className="flex items-baseline justify-between gap-4 py-1 border-b border-blox-border/30 last:border-b-0">
-                  <span className="text-xs text-blox-muted font-mono">{n.name}</span>
-                  <span className="text-xs text-blox-text font-mono tabular-nums text-right truncate">
-                    {n.ipv4}
-                    {n.speed_mbps && n.speed_mbps > 0 && (
-                      <span className="ml-2 text-blox-muted">{n.speed_mbps >= 1000 ? `${n.speed_mbps / 1000} Gb/s` : `${n.speed_mbps} Mb/s`}</span>
-                    )}
-                  </span>
-                </div>
-              ))}
-            </>
-          )}
-        </div>
-      </div>
-    </motion.div>
-  );
-}
