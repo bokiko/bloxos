@@ -81,8 +81,14 @@
     - Focus ring layering documented in `globals.css`: shadcn 3px ring on primitives + canonical 2px outline as fallback, both resolving to `--accent`.
     - xterm.js light theme (Solarized Light derivative): `Terminal.tsx` reads `useTheme().resolvedTheme` and swaps palette in-place on theme change without disconnecting the WebSocket; detail-page wrapper bg switched to `var(--surface-base)` for seamless surface match.
     - `--color-blox-*` token aliases documented as **permanent** (no migration to semantic tokens necessary — shims work transparently).
+  - [x] Phase 6 Unit A: comprehensive hardware inventory collection (backend)
+    - Expanded `HardwareInfo` JSON schema (additive, omitempty everywhere — older agents stay forward-compatible): DMI (system/board/BIOS/chassis), per-DIMM RAM modules via `dmidecode --type 17/16`, structured GPU devices via `lspci -mm`, full PCI device list, expanded disks (serial/firmware/interface), CPU sockets/cache (L1/L2/L3 from `/sys/devices/system/cpu`), CPU flags filtered to capability-relevant set (AVX/AVX-512/VMX/SVM/AES…), CPU family+model parsing for Ryzen/Xeon/Core/EPYC/Atom/Apple Silicon.
+    - New aggregating endpoint `GET /api/inventory` (RBAC scope `fleet.read`): top-line totals (machine count, total RAM, total storage by type, total CPU cores, GPU count, unique CPU/GPU/motherboard counts), per-machine summary rows, CPU/memory/GPU groups, per-disk and per-NIC rows.
+    - Pre-compiled regex package-level vars in agent (one-shot compile, not per-call). `inventoryMaxInt` / `appendUnique` / `dedupedGPUModels` helpers scoped to `inventory.go`.
+    - Backwards-compatible: agents on the old binary continue working; new fields backfill as agents redeploy. Hub VM (virtualized) won't expose DMI — fields stay empty and the dashboard degrades gracefully. Bare-metal agents (`ai-04`, `ic-brain`) will populate them on next agent restart.
 - Remaining:
-  - (empty — redesign complete 2026-04-26)
+  - [ ] Phase 6 Unit B: `/inventory` dashboard page — six tabbed views (Machines / CPU / Memory / Storage / GPU / Network), summary cards, CSV/JSON/Markdown export, Cmd+K palette entry. Independent of Unit A's rollout state — works against current data, surfaces new fields as they appear.
+  - [ ] Roll out new agent binary to `ai-04`, `ic-brain`, `AiFarm-01` (operator step — `curl /download/agent` + `systemctl restart bloxos-agent` on each).
 
 ## Credentials
 All live credentials live outside git in `~/.bloxos/`-style paths or operator memory. **Never** put raw secrets, tokens, passwords, PINs, or SSH credentials in this file or any committed file.

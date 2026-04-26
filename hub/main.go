@@ -285,6 +285,9 @@ func registerRoutes(e *echo.Echo) {
 	api.POST("/api/tokens", handleCreateToken)
 
 	api.POST("/api/bulk/command", handleBulkCommand)
+
+	api.GET("/api/inventory", handleInventory)
+
 	api.GET("/api/api-machines", handleListAPIMachines)
 	api.POST("/api/api-machines", handleCreateAPIMachine)
 	api.PATCH("/api/api-machines/:id", handleUpdateAPIMachine)
