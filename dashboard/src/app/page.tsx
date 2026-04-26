@@ -5,7 +5,7 @@ import { useSSE } from "@/contexts/SSEContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { demoMachines, MachineMetrics, AlertData } from "@/lib/demo-data";
 import { DEMO_MODE, HUB_URL } from "@/lib/session";
-import { MachineCard } from "@/components/MachineCard";
+import { MachineCard, MachineCardSkeleton } from "@/components/MachineCard";
 import { MachineStatus } from "@/components/StatusBadge";
 import { Sparkline } from "@/components/Sparkline";
 import { AlertPanel } from "@/components/AlertPanel";
@@ -575,6 +575,14 @@ export default function Home() {
             className="grid gap-4 auto-rows-fr justify-start"
             style={{ gridTemplateColumns: "repeat(auto-fill, minmax(300px, 360px))" }}
           >
+            {!hasReceivedData && machines.length === 0 && !isDemo && (
+              <>
+                {Array.from({ length: 4 }).map((_, i) => (
+                  <MachineCardSkeleton key={`skeleton-${i}`} />
+                ))}
+              </>
+            )}
+
             <AnimatePresence mode="popLayout">
               {filteredMachines.map((m, i) => (
                 <motion.div
@@ -588,8 +596,7 @@ export default function Home() {
                 >
                   <MachineCard
                     machine={m}
-                    onClick={() => {}}
-                    onDelete={canDeleteMachines ? (id, hostname) => setDeleteTarget({id, hostname}) : undefined}
+                    onDelete={canDeleteMachines ? (id, hostname) => setDeleteTarget({ id, hostname }) : undefined}
                     onEdit={canManageAPIMachines ? openEditAPIMachine : undefined}
                   />
                 </motion.div>
@@ -751,7 +758,7 @@ export default function Home() {
           </div>
         )}
 
-        {viewMode === "grid" && filteredMachines.length === 0 && (
+        {viewMode === "grid" && filteredMachines.length === 0 && hasReceivedData && (
           <div className="flex flex-col items-center justify-center py-20 text-blox-muted">
             <Monitor className="w-12 h-12 mb-4 opacity-20" />
             <p className="text-sm">No machines match filters</p>

@@ -63,8 +63,12 @@
     - `UserMenu` dropdown consolidates Users link + Logout; shows current role
     - removed standalone wifi icon, alert bell, and inline summary text (folded into FleetPulse)
   - [x] Hardware-info first-connect race fixed: agent now sends hardware snapshot AFTER the first metric (so the `machines` row exists when the hub stores it); hub handler upgraded from plain `UPDATE` to `INSERT … ON CONFLICT(id) DO UPDATE` as defense-in-depth. Diagnosed when AiFarm-01 (WSL2 agent) enrolled fresh and got `hardware_info=NULL` because hub-side `upsertMachine` only ran on first metric arrival, after the snapshot UPDATE had already affected 0 rows. New test `TestHardwareInfoUpsertPreCreatesRow` locks in the defense.
+  - [x] Frontend Phase 3: MachineCard redesign
+    - `ProgressBar` got an explicit `variant` API (neutral/active/warning/danger); 0% now renders neutral gray instead of green (fixes the misleading "just enrolled = healthy" appearance). Backwards-compatible with detail-page callers.
+    - `Sparkline` reads `--accent` from the active theme (CSS-var-driven), so the line color follows light/dark; placeholder is a subtle bottom rule instead of a dashed centered line.
+    - `MachineCard` rewritten with proper hierarchy: status accent stripe + pulsing dot + hostname dominant; CPU as big number + inline sparkline; compact RAM/Disk rows; single GPU line only when data exists. Three explicit states (live / awaiting first metrics / offline). Action buttons always visible at 40% opacity, brighten on hover. Adapter mention appears once (lavender uppercase in IP row), duplicate corner pill removed. `whileHover y:-2` spring replaces the old `scale: 1.02`.
+    - New `MachineCardSkeleton` export; grid renders 4 shimmer placeholders during initial SSE fetch instead of an empty page.
 - Remaining:
-  - [ ] Frontend Phase 3: MachineCard redesign on semantic tokens (queued)
   - [ ] Frontend Phase 4: detail-page polish (queued)
   - [ ] Frontend Phase 5: skeletons + motion + a11y (queued)
 
