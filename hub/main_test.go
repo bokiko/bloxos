@@ -123,6 +123,13 @@ func setupTestServer(t *testing.T) *echo.Echo {
 	if err != nil {
 		t.Fatalf("open in-memory db: %v", err)
 	}
+	// SQLite ":memory:" gives each *connection* its own database. database/sql's
+	// pool can spin up extra connections under concurrent load (e.g. a
+	// handleAgentWS goroutine racing the test's own queries), and those new
+	// connections see an empty schema — manifests as "no such table:
+	// agent_credentials" flakes. Pin to one connection so all queries hit the
+	// same in-memory DB.
+	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { db.Close() })
 
 	if err := runMigrations(db); err != nil {
@@ -157,6 +164,13 @@ func setupEmptyTestServer(t *testing.T) *echo.Echo {
 	if err != nil {
 		t.Fatalf("open in-memory db: %v", err)
 	}
+	// SQLite ":memory:" gives each *connection* its own database. database/sql's
+	// pool can spin up extra connections under concurrent load (e.g. a
+	// handleAgentWS goroutine racing the test's own queries), and those new
+	// connections see an empty schema — manifests as "no such table:
+	// agent_credentials" flakes. Pin to one connection so all queries hit the
+	// same in-memory DB.
+	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { db.Close() })
 
 	if err := runMigrations(db); err != nil {
