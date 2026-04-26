@@ -56,8 +56,13 @@
     - `ThemeToggle` in header dropdown (light / dark / system)
     - `CommandPalette` (cmdk-based) bound to ⌘K / Ctrl+K with navigate / machines / actions (RBAC-gated) / theme / account groups
     - lazy state initializers + event-handler-based clear avoid React 19 `set-state-in-effect` violations
+  - [x] Frontend Phase 2: header refactor + fleet pulse strip
+    - `FleetPulse` component below the header — 5-cell glanceable health: Fleet (online/warn/offline ratio bar), Avg CPU (excludes offline), Avg RAM, Max GPU (conditional), Alerts (clickable to open panel) + live SSE indicator
+    - severity hint via 2px left accent only on warning/danger cells; healthy cells stay neutral
+    - `Add Machine` promoted to filled-blue primary action; `Add API` demoted to ghost variant, hidden on mobile
+    - `UserMenu` dropdown consolidates Users link + Logout; shows current role
+    - removed standalone wifi icon, alert bell, and inline summary text (folded into FleetPulse)
 - Remaining:
-  - [ ] Frontend Phase 2: header polish + fleet-pulse strip (queued in operator playbook)
   - [ ] Frontend Phase 3: MachineCard redesign on semantic tokens (queued)
   - [ ] Frontend Phase 4: detail-page polish (queued)
   - [ ] Frontend Phase 5: skeletons + motion + a11y (queued)

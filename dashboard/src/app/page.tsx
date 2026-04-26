@@ -28,13 +28,15 @@ import {
 } from "@/components/ui/dialog";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  Bell, Plus, Wifi, WifiOff, Search, LayoutGrid, List,
-  ChevronDown, LogOut, Square, CheckSquare, RotateCcw, Trash2, Pencil,
-  ArrowUpDown, Filter, Monitor, Server, Users as UsersIcon,
+  Plus, WifiOff, Search, LayoutGrid, List,
+  ChevronDown, Square, CheckSquare, RotateCcw, Trash2, Pencil,
+  ArrowUpDown, Filter, Monitor, Server,
 } from "lucide-react";
 import Link from "next/link";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { CommandPalette, useCommandPaletteHotkey } from "@/components/CommandPalette";
+import { FleetPulse } from "@/components/FleetPulse";
+import { UserMenu } from "@/components/UserMenu";
 
 type SortOption = "name" | "status" | "cpu" | "gpu_temp";
 type StatusFilter = "all" | "online" | "warning" | "offline";
@@ -83,9 +85,8 @@ const sortLabels: Record<SortOption, string> = {
 };
 
 export default function Home() {
-  const { machines: liveMachines, connected, hasReceivedData, alertCount, alerts, setAlerts, setAlertCount } = useSSE();
-  const { logout, authFetch, hasScope } = useAuth();
-  const canManageUsers = hasScope("users.admin");
+  const { machines: liveMachines, connected, hasReceivedData, alerts, setAlerts, setAlertCount } = useSSE();
+  const { authFetch, hasScope } = useAuth();
   const canCreateInstallTokens = hasScope("install_tokens.admin");
   const canManageAPIMachines = hasScope("api_machines.admin");
   const canControlFleet = hasScope("fleet.control");
@@ -200,16 +201,6 @@ export default function Home() {
     return result;
   }, [machines, search, statusFilter, sortBy, tagFilter]);
 
-  const summary = useMemo(() => {
-    let online = 0, warning = 0, offline = 0;
-    for (const m of machines) {
-      const s = getStatus(m);
-      if (s === "online") online++;
-      else if (s === "warning") warning++;
-      else offline++;
-    }
-    return { online, warning, offline, total: machines.length };
-  }, [machines]);
 
   const handleAcknowledge = useCallback(async (id: string) => {
     try {
@@ -320,9 +311,10 @@ export default function Home() {
     >
       {/* Header */}
       <header className="sticky top-0 z-50 bg-blox-bg/80 backdrop-blur-xl border-b border-blox-border/50">
-        <div className="max-w-[1600px] mx-auto px-4 sm:px-6 h-14 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <h1 className="text-lg font-bold tracking-tight">
+        <div className="max-w-[1600px] mx-auto px-4 sm:px-6 h-14 flex items-center justify-between gap-4">
+          {/* Brand */}
+          <div className="flex items-center gap-3 shrink-0">
+            <h1 className="text-base font-bold tracking-tight">
               <span className="text-blox-blue">Blox</span>
               <span className="text-blox-text">OS</span>
             </h1>
@@ -333,99 +325,56 @@ export default function Home() {
             )}
           </div>
 
-          <div className="hidden sm:flex items-center gap-4 text-xs">
-            <span className="flex items-center gap-1.5">
-              <span className="relative flex h-2 w-2">
-                <span className="animate-status-pulse absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
-              </span>
-              <span className="text-blox-muted font-mono tabular-nums">{summary.online} online</span>
-            </span>
-            {summary.warning > 0 && (
-              <span className="flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-amber-500" />
-                <span className="text-blox-muted font-mono tabular-nums">{summary.warning} warning</span>
-              </span>
-            )}
-            {summary.offline > 0 && (
-              <span className="flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-red-500/60" />
-                <span className="text-blox-muted font-mono tabular-nums">{summary.offline} offline</span>
-              </span>
-            )}
-          </div>
+          {/* Spacer — claims the middle so left and right groups stay anchored */}
+          <div className="flex-1" />
 
-          <div className="flex items-center gap-1.5">
-            <div className="flex items-center gap-1 mr-1">
-              {connected ? (
-                <Wifi className="w-3.5 h-3.5 text-emerald-400" />
-              ) : (
-                <WifiOff className="w-3.5 h-3.5 text-red-400" />
-              )}
-            </div>
-
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              onClick={() => setAlertPanelOpen(true)}
-              className="relative text-blox-muted hover:text-blox-text"
-            >
-              <Bell className="w-4 h-4" />
-              {alertCount > 0 && (
-                <span className="absolute -top-0.5 -right-0.5 w-4 h-4 rounded-full bg-red-500 text-[10px] flex items-center justify-center text-white font-bold">
-                  {alertCount > 9 ? "9+" : alertCount}
-                </span>
-              )}
-            </Button>
-
+          {/* Action group */}
+          <div className="flex items-center gap-1">
+            {/* Theme toggle (Phase 1) */}
             <ThemeToggle />
 
+            {/* Vertical divider — separates utility icons from create actions */}
+            <div className="w-px h-5 bg-blox-border/50 mx-1.5" aria-hidden />
+
+            {/* Add API — secondary, ghost variant, only for admins */}
+            {canManageAPIMachines && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setAddAPIMachineOpen(true)}
+                className="text-blox-muted hover:text-blox-text gap-1.5 text-xs hidden sm:inline-flex"
+                title="Add API-polled machine (Proxmox / Synology)"
+              >
+                <Server className="w-3.5 h-3.5" />
+                API
+              </Button>
+            )}
+
+            {/* Add Machine — PRIMARY action, filled accent button */}
             {canCreateInstallTokens && (
               <Button
-                variant="outline"
                 size="sm"
                 onClick={() => setAddMachineOpen(true)}
-                className="text-blox-blue border-blox-blue/20 bg-blox-blue/5 hover:bg-blox-blue/10 text-xs gap-1.5"
+                className="bg-blox-blue text-white hover:bg-blox-blue/90 gap-1.5 text-xs"
+                title="Add a machine via install token"
               >
                 <Plus className="w-3.5 h-3.5" />
                 <span className="hidden sm:inline">Add Machine</span>
+                <span className="sm:hidden">Add</span>
               </Button>
             )}
 
-            {canManageAPIMachines && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setAddAPIMachineOpen(true)}
-                className="text-blox-blue border-blox-blue/20 bg-blox-blue/5 hover:bg-blox-blue/10 text-xs gap-1.5"
-              >
-                <Server className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">Add API</span>
-              </Button>
-            )}
+            {/* Vertical divider — separates create actions from account */}
+            <div className="w-px h-5 bg-blox-border/50 mx-1.5" aria-hidden />
 
-            {canManageUsers && (
-              <Link
-                href="/users"
-                title="Users"
-                className="inline-flex items-center justify-center rounded-md w-8 h-8 text-blox-muted hover:text-blox-text hover:bg-blox-border/50 transition-colors"
-              >
-                <UsersIcon className="w-4 h-4" />
-              </Link>
-            )}
-
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              onClick={logout}
-              className="text-blox-muted hover:text-blox-text"
-              title="Logout"
-            >
-              <LogOut className="w-4 h-4" />
-            </Button>
+            {/* User menu (replaces Users link + Logout) */}
+            <UserMenu />
           </div>
         </div>
       </header>
+
+      {/* Fleet Pulse Strip — sits directly below the header */}
+      <FleetPulse onAlertsClick={() => setAlertPanelOpen(true)} />
 
       {/* Degraded connection banner — surfaces SSE disconnect inline so it isn't
           easy to miss behind the small wifi icon in the header. */}
