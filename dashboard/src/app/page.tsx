@@ -33,6 +33,8 @@ import {
   ArrowUpDown, Filter, Monitor, Server, Users as UsersIcon,
 } from "lucide-react";
 import Link from "next/link";
+import { ThemeToggle } from "@/components/ThemeToggle";
+import { CommandPalette, useCommandPaletteHotkey } from "@/components/CommandPalette";
 
 type SortOption = "name" | "status" | "cpu" | "gpu_temp";
 type StatusFilter = "all" | "online" | "warning" | "offline";
@@ -100,6 +102,8 @@ export default function Home() {
   const [deleteTarget, setDeleteTarget] = useState<{id: string; hostname: string} | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [addAPIMachineOpen, setAddAPIMachineOpen] = useState(false);
+  const [commandOpen, setCommandOpen] = useState(false);
+  useCommandPaletteHotkey(setCommandOpen);
   const [editAPIMachine, setEditAPIMachine] = useState<EditableAPIMachine | null>(null);
   const [apiMachines, setApiMachines] = useState<EditableAPIMachine[]>([]);
 
@@ -374,6 +378,8 @@ export default function Home() {
               )}
             </Button>
 
+            <ThemeToggle />
+
             {canCreateInstallTokens && (
               <Button
                 variant="outline"
@@ -499,8 +505,18 @@ export default function Home() {
               placeholder="Search machines..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="pl-9 h-8 text-xs bg-blox-card border-blox-border text-blox-text placeholder:text-blox-muted/50"
+              className="pl-9 pr-14 h-8 text-xs bg-blox-card border-blox-border text-blox-text placeholder:text-blox-muted/50"
             />
+            <button
+              type="button"
+              onClick={() => setCommandOpen(true)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 hidden sm:flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] font-mono text-blox-muted bg-blox-bg border border-blox-border rounded hover:text-blox-text transition-colors"
+              aria-label="Open command palette"
+              title="Open command palette (⌘K)"
+            >
+              <span>⌘</span>
+              <span>K</span>
+            </button>
           </div>
 
           {/* Status filter dropdown */}
@@ -860,6 +876,14 @@ export default function Home() {
           onSaved={handleAPIMachineSaved}
         />
       )}
+
+      <CommandPalette
+        open={commandOpen}
+        onOpenChange={setCommandOpen}
+        onAddMachine={canCreateInstallTokens ? () => setAddMachineOpen(true) : undefined}
+        onAddAPIMachine={canManageAPIMachines ? () => setAddAPIMachineOpen(true) : undefined}
+        onOpenAlerts={() => setAlertPanelOpen(true)}
+      />
     </motion.div>
   );
 }
