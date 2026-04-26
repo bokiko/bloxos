@@ -78,6 +78,7 @@ var roleScopes = map[UserRole][]string{
 
 var routeScopeRequirements = map[string]string{
 	routeScopeKey(http.MethodGet, "/api/events"):                               scopeFleetRead,
+	routeScopeKey(http.MethodGet, "/api/inventory"):                            scopeFleetRead,
 	routeScopeKey(http.MethodGet, "/api/machines"):                             scopeFleetRead,
 	routeScopeKey(http.MethodGet, "/api/machines/:id"):                         scopeFleetRead,
 	routeScopeKey(http.MethodGet, "/api/machines/:id/services"):                scopeFleetRead,
