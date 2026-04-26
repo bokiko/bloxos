@@ -68,8 +68,13 @@
     - `Sparkline` reads `--accent` from the active theme (CSS-var-driven), so the line color follows light/dark; placeholder is a subtle bottom rule instead of a dashed centered line.
     - `MachineCard` rewritten with proper hierarchy: status accent stripe + pulsing dot + hostname dominant; CPU as big number + inline sparkline; compact RAM/Disk rows; single GPU line only when data exists. Three explicit states (live / awaiting first metrics / offline). Action buttons always visible at 40% opacity, brighten on hover. Adapter mention appears once (lavender uppercase in IP row), duplicate corner pill removed. `whileHover y:-2` spring replaces the old `scale: 1.02`.
     - New `MachineCardSkeleton` export; grid renders 4 shimmer placeholders during initial SSE fetch instead of an empty page.
+  - [x] Frontend Phase 4: detail-page polish
+    - New `HardwareCard` component (extracted from inline `HardwarePanel`): 4 sections (Compute / Memory & Storage / Network / Platform) with consistent uppercase labels, primary fields, sub-headers; disk type tags (NVME/SSD/HDD), NIC speeds, GPU sub-section in Compute. Honest empty states for missing disks/NICs.
+    - Detail page header refactor: top sticky bar shrinks to h-12 (navigation + actions only); hostname becomes the genuine hero (text-xl/2xl semibold, status dot inline) in a new hero section with a `<dl>` of key facts (IP, OS, Latency, ID).
+    - New `MetricsChartsSkeleton` for the metrics tab pre-data state — pseudo area-chart silhouettes shimmer in place of charts (theme-aware via `--accent`), pulsing "Collecting data" caption. Uses `useId()` for unique linearGradient ids.
+    - Terminal pane refactor: dropped the macOS traffic-light dots; header matches HardwareCard rhythm (icon-tile + title + inline pulsing-dot status); stable 360px body height across all 5 states (no jolts during PIN flow).
+    - Page transition tightened (`y: 8 → 0`, `0.25s ease-out`).
 - Remaining:
-  - [ ] Frontend Phase 4: detail-page polish (queued)
   - [ ] Frontend Phase 5: skeletons + motion + a11y (queued)
 
 ## Credentials

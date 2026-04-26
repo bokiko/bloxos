@@ -6,6 +6,7 @@ import {
 } from "recharts";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { HUB_URL, getStoredToken } from "@/lib/session";
+import { MetricsChartsSkeleton } from "./MetricsChartsSkeleton";
 
 type Period = "30m" | "1h" | "6h" | "24h" | "7d";
 
@@ -106,9 +107,7 @@ export function MetricCharts({ machineId, hasGpu }: MetricChartsProps) {
       </Tabs>
 
       {data.length < 2 ? (
-        <div className="flex items-center justify-center text-blox-muted text-xs" style={{ height: 180 }}>
-          Collecting data… metrics are polled every 30 seconds.
-        </div>
+        <MetricsChartsSkeleton hasGpu={hasGpu} />
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {/* CPU Chart */}
