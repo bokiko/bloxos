@@ -30,7 +30,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Plus, WifiOff, Search, LayoutGrid, List,
   ChevronDown, Square, CheckSquare, RotateCcw, Trash2, Pencil,
-  ArrowUpDown, Filter, Monitor, Server,
+  ArrowUpDown, Filter, Monitor, Server, RefreshCw,
 } from "lucide-react";
 import Link from "next/link";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -85,7 +85,7 @@ const sortLabels: Record<SortOption, string> = {
 };
 
 export default function Home() {
-  const { machines: liveMachines, connected, hasReceivedData, alerts, setAlerts, setAlertCount } = useSSE();
+  const { machines: liveMachines, connected, hasReceivedData, alerts, setAlerts, setAlertCount, refreshMachine, refreshFleet } = useSSE();
   const { authFetch, hasScope } = useAuth();
   const canCreateInstallTokens = hasScope("install_tokens.admin");
   const canManageAPIMachines = hasScope("api_machines.admin");
@@ -330,6 +330,9 @@ export default function Home() {
 
           {/* Action group */}
           <div className="flex items-center gap-1">
+            {/* Phase 7: global refresh — sends refresh_metrics to every connected agent */}
+            <GlobalRefreshButton onRefresh={refreshFleet} disabled={!canControlFleet} />
+
             {/* Theme toggle (Phase 1) */}
             <ThemeToggle />
 
@@ -598,6 +601,7 @@ export default function Home() {
                     machine={m}
                     onDelete={canDeleteMachines ? (id, hostname) => setDeleteTarget({ id, hostname }) : undefined}
                     onEdit={canManageAPIMachines ? openEditAPIMachine : undefined}
+                    onRefresh={canControlFleet ? refreshMachine : undefined}
                   />
                 </motion.div>
               ))}
@@ -841,5 +845,48 @@ export default function Home() {
         onOpenAlerts={() => setAlertPanelOpen(true)}
       />
     </motion.div>
+  );
+}
+
+/* ============================================================================
+ * GlobalRefreshButton — Phase 7
+ *
+ * Header-mounted refresh affordance that broadcasts a refresh_metrics
+ * command to every connected agent. Disabled for viewer-role users (the
+ * backend gates POST /api/refresh on fleet.control); the visual state
+ * mirrors that.
+ * ============================================================================ */
+
+function GlobalRefreshButton({
+  onRefresh,
+  disabled,
+}: {
+  onRefresh: () => Promise<void>;
+  disabled: boolean;
+}) {
+  const [refreshing, setRefreshing] = useState(false);
+
+  const handleClick = async () => {
+    if (refreshing || disabled) return;
+    setRefreshing(true);
+    await onRefresh();
+    // 2s is enough for fleets up to ~30 machines to receive their refreshed
+    // metrics via SSE. Longer than the per-card timeout because we're
+    // waiting on every connected agent, not just one.
+    setTimeout(() => setRefreshing(false), 2000);
+  };
+
+  return (
+    <Button
+      variant="ghost"
+      size="icon-sm"
+      onClick={handleClick}
+      disabled={disabled || refreshing}
+      className="text-blox-muted hover:text-blox-text"
+      title={disabled ? "Refresh requires operator role" : "Refresh fleet metrics"}
+      aria-label="Refresh fleet metrics"
+    >
+      <RefreshCw className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`} />
+    </Button>
   );
 }

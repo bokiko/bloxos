@@ -15,6 +15,7 @@ import {
   HUB_URL,
   getStoredToken,
 } from "@/lib/session";
+import { readCache, clearCache, makeDebouncedWriter } from "@/lib/metrics-cache";
 
 interface SSEContextType {
   machines: MachineMetrics[];
@@ -25,6 +26,8 @@ interface SSEContextType {
   alerts: AlertData[];
   setAlerts: React.Dispatch<React.SetStateAction<AlertData[]>>;
   setAlertCount: React.Dispatch<React.SetStateAction<number>>;
+  refreshMachine: (machineID: string) => Promise<void>;
+  refreshFleet: () => Promise<void>;
 }
 
 const SSEContext = createContext<SSEContextType | null>(null);
@@ -67,6 +70,28 @@ export function SSEProvider({ children }: { children: ReactNode }) {
   // Refresh SSE token before it expires (every 4 min for a 5-min token).
   const sseTokenRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const connectRef = useRef<() => void>(() => {});
+
+  // Phase 7: localStorage-backed cache for instant rehydration on reload.
+  const userIDRef = useRef<string | null>(null);
+  const cacheWriterRef = useRef<((machines: MachineMetrics[]) => void) | null>(null);
+  const cacheFlushRef = useRef<(() => void) | null>(null);
+
+  const updateUserID = useCallback(() => {
+    const token = getStoredToken();
+    if (!token) {
+      userIDRef.current = null;
+      return;
+    }
+    try {
+      const payload = JSON.parse(atob(token.split(".")[1]));
+      userIDRef.current = payload.user_id ?? null;
+    } catch {
+      userIDRef.current = null;
+    }
+    const [writer, flush] = makeDebouncedWriter(userIDRef.current);
+    cacheWriterRef.current = writer;
+    cacheFlushRef.current = flush;
+  }, []);
 
   const disconnect = useCallback((clearData = false) => {
     esRef.current?.close();
@@ -138,6 +163,8 @@ export function SSEProvider({ children }: { children: ReactNode }) {
           for (const m of list) {
             next.set(m.machine_id, { ...m, last_seen: Date.now() });
           }
+          // Persist to cache so the next page load hydrates instantly.
+          cacheWriterRef.current?.(Array.from(next.values()));
           return next;
         });
       } catch {
@@ -153,6 +180,7 @@ export function SSEProvider({ children }: { children: ReactNode }) {
         setMachineMap((prev) => {
           const next = new Map(prev);
           next.set(m.machine_id, { ...m, last_seen: Date.now() });
+          cacheWriterRef.current?.(Array.from(next.values()));
           return next;
         });
       } catch {
@@ -248,6 +276,21 @@ export function SSEProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     mountedRef.current = true;
+
+    // Hydrate from localStorage BEFORE making the SSE connection so cards
+    // render instantly with last-known values on page reload — eliminates
+    // the "awaiting first metrics" flash for machines we've seen before.
+    updateUserID();
+    const cached = readCache(userIDRef.current);
+    if (cached && cached.length > 0) {
+      const next = new Map<string, MachineMetrics>();
+      for (const m of cached) {
+        next.set(m.machine_id, m);
+      }
+      setMachineMap(next);
+      setHasReceivedData(true);
+    }
+
     connectRef.current();
 
     // Fetch active alerts on mount
@@ -276,8 +319,15 @@ export function SSEProvider({ children }: { children: ReactNode }) {
     const onAuthChanged = () => {
       backoffRef.current = 3000;
       if (getStoredToken()) {
+        // Re-key the cache for the new user (logout-then-login path).
+        updateUserID();
         connectRef.current();
       } else {
+        // Logout — clear this user's cache so the next user doesn't
+        // see leftover machine data on a shared browser.
+        clearCache(userIDRef.current);
+        userIDRef.current = null;
+        cacheWriterRef.current = null;
         disconnect(true);
       }
     };
@@ -288,14 +338,44 @@ export function SSEProvider({ children }: { children: ReactNode }) {
       mountedRef.current = false;
       window.removeEventListener("storage", onStorage);
       window.removeEventListener(AUTH_CHANGED_EVENT, onAuthChanged);
+      // Flush any pending cache writes so we don't lose the last 2 seconds
+      // of updates on tab close / navigation.
+      cacheFlushRef.current?.();
       disconnect();
     };
-  }, [disconnect]);
+  }, [disconnect, updateUserID]);
 
   const getMachine = useCallback(
     (id: string) => machineMap.get(id),
     [machineMap]
   );
+
+  const refreshMachine = useCallback(async (machineID: string) => {
+    const token = getStoredToken();
+    if (!token) return;
+    try {
+      await fetch(`${HUB_URL}/api/machines/${machineID}/refresh`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      // Fresh metrics arrive via the existing SSE stream within ~1s.
+    } catch (err) {
+      console.warn("refreshMachine failed:", err);
+    }
+  }, []);
+
+  const refreshFleet = useCallback(async () => {
+    const token = getStoredToken();
+    if (!token) return;
+    try {
+      await fetch(`${HUB_URL}/api/refresh`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    } catch (err) {
+      console.warn("refreshFleet failed:", err);
+    }
+  }, []);
 
   const machines = Array.from(machineMap.values());
 
@@ -310,6 +390,8 @@ export function SSEProvider({ children }: { children: ReactNode }) {
         alerts,
         setAlerts,
         setAlertCount,
+        refreshMachine,
+        refreshFleet,
       }}
     >
       {children}

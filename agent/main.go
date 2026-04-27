@@ -134,6 +134,7 @@ var (
 		"shutdown":          true,
 		"start_terminal":    true,
 		"start_container":   true,
+		"refresh_metrics":   true,
 	}
 
 	// interestingServicePatterns are services we report to the hub.
@@ -535,6 +536,27 @@ func handleCommand(conn *websocket.Conn, mu *sync.Mutex, msg []byte) {
 			Type:  "command_response",
 			ID:    cmd.ID,
 			Error: fmt.Sprintf("unknown command type: %s", cmd.Type),
+		}
+		writeJSON(conn, mu, resp)
+		return
+	}
+
+	// refresh_metrics doesn't shell out — it triggers an immediate metrics push.
+	// The captured conn/mu in the closure is the active connection; the same
+	// writeMu serializes the response below and the goroutine's sendAll, so
+	// no package-level state is required.
+	if cmd.Type == "refresh_metrics" {
+		machineID := getMachineID()
+		go func() {
+			if err := sendAll(conn, mu, machineID); err != nil {
+				log.Printf("refresh_metrics: sendAll error: %v", err)
+			}
+		}()
+		resp := CommandResponse{
+			Type:    "command_response",
+			ID:      cmd.ID,
+			Success: true,
+			Output:  "metrics refresh triggered",
 		}
 		writeJSON(conn, mu, resp)
 		return

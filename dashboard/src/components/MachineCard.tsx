@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { motion } from "framer-motion";
-import { Trash2, Pencil, Zap } from "lucide-react";
+import { Trash2, Pencil, Zap, RefreshCw } from "lucide-react";
 import type { MachineMetrics } from "@/lib/demo-data";
 import { ProgressBar, type ProgressVariant } from "./ProgressBar";
 import { Sparkline } from "./Sparkline";
@@ -83,15 +83,12 @@ interface MachineCardProps {
   machine: MachineMetrics;
   onDelete?: (machineId: string, hostname: string) => void;
   onEdit?: (machineId: string) => void;
+  onRefresh?: (machineId: string) => void;
 }
 
-export function MachineCard({ machine, onDelete, onEdit }: MachineCardProps) {
-  // Tick once per second to keep relative timestamps fresh ("25s ago" → "26s ago")
-  const [, forceTick] = useState(0);
-  useEffect(() => {
-    const id = setInterval(() => forceTick((n) => n + 1), 1000);
-    return () => clearInterval(id);
-  }, []);
+export function MachineCard({ machine, onDelete, onEdit, onRefresh }: MachineCardProps) {
+  // The footer's "12s ago" timer is owned by <LiveTimeSince/> below — it
+  // mounts its own 1Hz ticker, so the parent doesn't need to force re-renders.
 
   const { status, reason } = classifyMachine(machine);
   const awaiting = isAwaitingData(machine);
@@ -182,6 +179,15 @@ export function MachineCard({ machine, onDelete, onEdit }: MachineCardProps) {
           </div>
 
           <div className="flex items-center gap-0.5 shrink-0 -mr-1">
+            {onRefresh && status !== "offline" && (
+              <RefreshButton
+                onRefresh={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onRefresh(machine.machine_id);
+                }}
+              />
+            )}
             {isAPIMachine && onEdit && (
               <button
                 type="button"
@@ -316,7 +322,7 @@ export function MachineCard({ machine, onDelete, onEdit }: MachineCardProps) {
         {/* footer */}
         <div className="flex items-center gap-1.5 text-[10px] text-blox-muted/70 mt-3 pt-2 border-t border-blox-border/40 pl-2.5 tabular-nums">
           <span className="font-mono">
-            {machine.last_seen ? timeSince(machine.last_seen) : "never"}
+            <LiveTimeSince since={machine.last_seen ?? null} />
           </span>
           {machine.latency_ms !== undefined && machine.latency_ms > 0 && (
             <>
@@ -395,6 +401,56 @@ function CompactMetricRow({
         )}
       </div>
     </div>
+  );
+}
+
+/* ============================================================================
+ * LiveTimeSince — 1Hz ticking relative timestamp
+ *
+ * Each card mounts its own 1Hz interval so the footer "12s ago" advances
+ * every second without waiting for a fresh SSE event to re-render the
+ * parent. Lightweight: a single setInterval per card, no parent re-renders.
+ * ============================================================================ */
+
+function LiveTimeSince({ since, prefix = "" }: { since: number | null; prefix?: string }) {
+  const [, force] = useState(0);
+  useEffect(() => {
+    if (!since) return;
+    const id = setInterval(() => force((n) => n + 1), 1000);
+    return () => clearInterval(id);
+  }, [since]);
+  if (!since) return <span className="text-blox-muted/40">never</span>;
+  return <span>{prefix}{timeSince(since)}</span>;
+}
+
+/* ============================================================================
+ * RefreshButton — per-card refresh icon with self-contained spinner state
+ * ============================================================================ */
+
+function RefreshButton({ onRefresh }: { onRefresh: (e: React.MouseEvent) => void }) {
+  const [refreshing, setRefreshing] = useState(false);
+
+  const handleClick = (e: React.MouseEvent) => {
+    if (refreshing) return;
+    setRefreshing(true);
+    onRefresh(e);
+    // Stop the spinner after 1.5s — fresh metrics typically arrive within
+    // ~500ms via SSE, but we don't get an explicit "refresh complete"
+    // signal so we time out the visual feedback.
+    setTimeout(() => setRefreshing(false), 1500);
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      disabled={refreshing}
+      className="p-1 rounded text-blox-muted/40 hover:text-blox-blue hover:bg-blox-blue/10 transition-colors disabled:opacity-50"
+      title="Refresh metrics"
+      aria-label="Refresh metrics for this machine"
+    >
+      <RefreshCw className={`w-3 h-3 ${refreshing ? "animate-spin" : ""}`} />
+    </button>
   );
 }
 
