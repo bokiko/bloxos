@@ -1563,6 +1563,105 @@ func TestAgentVersionAnnouncedOnReconnect(t *testing.T) {
 	}
 }
 
+// TestAnnouncedSHAIsPerPlatform locks in Phase 9's per-OS SHA routing:
+// a Windows agent must receive the Windows binary SHA, not the Linux
+// SHA. Half-implementing this is the failure mode where Windows agents
+// see the Linux SHA, mistake it for "out of date", download the Linux
+// binary on Windows, fail, and update-loop forever.
+func TestAnnouncedSHAIsPerPlatform(t *testing.T) {
+	const linuxSHA = "1111111111111111111111111111111111111111111111111111111111111111"
+	const windowsSHA = "2222222222222222222222222222222222222222222222222222222222222222"
+
+	hubAgentBinaryMu.Lock()
+	prevLinux := hubAgentBinarySHA
+	prevWindows := hubWindowsAgentBinarySHA
+	hubAgentBinarySHA = linuxSHA
+	hubWindowsAgentBinarySHA = windowsSHA
+	hubAgentBinaryMu.Unlock()
+	t.Cleanup(func() {
+		hubAgentBinaryMu.Lock()
+		hubAgentBinarySHA = prevLinux
+		hubWindowsAgentBinarySHA = prevWindows
+		hubAgentBinaryMu.Unlock()
+	})
+
+	if got := announcedSHAFor("linux"); got != linuxSHA {
+		t.Fatalf("announcedSHAFor(linux) = %s, want %s", got, linuxSHA)
+	}
+	if got := announcedSHAFor("windows"); got != windowsSHA {
+		t.Fatalf("announcedSHAFor(windows) = %s, want %s", got, windowsSHA)
+	}
+	// Empty / unknown OS should fall back to the Linux SHA so legacy
+	// agents stay coherent.
+	if got := announcedSHAFor(""); got != linuxSHA {
+		t.Fatalf("announcedSHAFor(\"\") = %s, want %s (fallback)", got, linuxSHA)
+	}
+}
+
+// TestRecordAgentRunningVersionTracksOS verifies that when an agent
+// reports its running version with an `os` field, the per-machine
+// record is keyed against that OS so subsequent announces route to the
+// right binary.
+func TestRecordAgentRunningVersionTracksOS(t *testing.T) {
+	// Use the test setup so the in-memory DB exists for lookupVersionHostname.
+	_ = setupTestServer(t)
+
+	const linuxSHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const windowsSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+	hubAgentBinaryMu.Lock()
+	prevLinux := hubAgentBinarySHA
+	prevWindows := hubWindowsAgentBinarySHA
+	hubAgentBinarySHA = linuxSHA
+	hubWindowsAgentBinarySHA = windowsSHA
+	hubAgentBinaryMu.Unlock()
+	t.Cleanup(func() {
+		hubAgentBinaryMu.Lock()
+		hubAgentBinarySHA = prevLinux
+		hubWindowsAgentBinarySHA = prevWindows
+		hubAgentBinaryMu.Unlock()
+	})
+
+	// Cleanup test entries from the in-memory map.
+	t.Cleanup(func() {
+		agentRunningVersionsMu.Lock()
+		delete(agentRunningVersions, "test-machine-windows")
+		delete(agentRunningVersions, "test-machine-linux")
+		agentRunningVersionsMu.Unlock()
+	})
+
+	// A Windows agent reporting the Windows SHA is up-to-date.
+	recordAgentRunningVersion("test-machine-windows", windowsSHA, "windows")
+	agentRunningVersionsMu.RLock()
+	winInfo := agentRunningVersions["test-machine-windows"]
+	agentRunningVersionsMu.RUnlock()
+	if winInfo.OS != "windows" {
+		t.Fatalf("windows agent OS = %q, want windows", winInfo.OS)
+	}
+	if winInfo.UpdatePending {
+		t.Fatalf("windows agent reporting matching SHA must not be UpdatePending")
+	}
+
+	// A Windows agent reporting the LINUX SHA must be flagged as pending —
+	// otherwise the symptom (perpetual update loop) cannot be detected.
+	recordAgentRunningVersion("test-machine-windows", linuxSHA, "windows")
+	agentRunningVersionsMu.RLock()
+	winInfo = agentRunningVersions["test-machine-windows"]
+	agentRunningVersionsMu.RUnlock()
+	if !winInfo.UpdatePending {
+		t.Fatalf("windows agent reporting linux SHA must be UpdatePending")
+	}
+
+	// And vice versa for a Linux agent on the linux SHA.
+	recordAgentRunningVersion("test-machine-linux", linuxSHA, "linux")
+	agentRunningVersionsMu.RLock()
+	linInfo := agentRunningVersions["test-machine-linux"]
+	agentRunningVersionsMu.RUnlock()
+	if linInfo.UpdatePending {
+		t.Fatalf("linux agent reporting matching SHA must not be UpdatePending")
+	}
+}
+
 func TestAgentReconnectWithInvalidSecret(t *testing.T) {
 	e := setupTestServer(t)
 

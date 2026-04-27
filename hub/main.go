@@ -255,6 +255,7 @@ func registerRoutes(e *echo.Echo) {
 	e.GET("/ws/agent", handleAgentWS)
 	e.POST("/api/auth/login", handleLogin)
 	e.GET("/install.sh", handleInstallScript)
+	e.GET("/install.ps1", handleWindowsInstallScript)
 	e.GET("/download/agent", handleDownloadAgent)
 	e.GET("/download/ca.crt", handleDownloadCACert)
 	e.GET("/api/setup/status", handleSetupStatus)
