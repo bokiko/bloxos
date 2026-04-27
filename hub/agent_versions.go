@@ -45,6 +45,10 @@ type agentVersionInfo struct {
 	RunningSHA    string    `json:"running_sha,omitempty"`
 	ReportedAt    time.Time `json:"reported_at"`
 	UpdatePending bool      `json:"update_pending"`
+	// OS is the operating system the agent reported running on
+	// ("linux", "windows"). Empty for legacy agents that predate
+	// per-platform tracking — those fall back to the linux SHA.
+	OS string `json:"os,omitempty"`
 }
 
 type rolloutFailure struct {
@@ -55,7 +59,11 @@ type rolloutFailure struct {
 var (
 	hubAgentBinarySHA   string
 	hubAgentBinaryMtime time.Time
-	hubAgentBinaryMu    sync.RWMutex
+	// Phase 9 — separate Windows binary SHA so a Windows agent doesn't
+	// mistake the Linux SHA for "out of date" and update-loop forever.
+	hubWindowsAgentBinarySHA   string
+	hubWindowsAgentBinaryMtime time.Time
+	hubAgentBinaryMu           sync.RWMutex
 
 	agentRunningVersions   = make(map[string]agentVersionInfo)
 	agentRunningVersionsMu sync.RWMutex
@@ -108,8 +116,17 @@ func reconnectMonitorLoop() {
 	}
 }
 
+// recomputeAgentBinarySHA refreshes the cached SHA for every supported
+// platform's agent binary. Each platform is mtime-cached independently
+// — a Linux build kicking the Linux SHA does not reset the Windows
+// SHA (and vice-versa).
 func recomputeAgentBinarySHA() {
-	binaryPath := agentBinaryPath()
+	recomputeBinaryFor("linux")
+	recomputeBinaryFor("windows")
+}
+
+func recomputeBinaryFor(osName string) {
+	binaryPath := agentBinaryPathFor(osName)
 	if binaryPath == "" {
 		return
 	}
@@ -120,8 +137,16 @@ func recomputeAgentBinarySHA() {
 	}
 
 	hubAgentBinaryMu.RLock()
-	cached := hubAgentBinaryMtime
-	cachedSHA := hubAgentBinarySHA
+	var cached time.Time
+	var cachedSHA string
+	switch osName {
+	case "windows":
+		cached = hubWindowsAgentBinaryMtime
+		cachedSHA = hubWindowsAgentBinarySHA
+	default:
+		cached = hubAgentBinaryMtime
+		cachedSHA = hubAgentBinarySHA
+	}
 	hubAgentBinaryMu.RUnlock()
 
 	if info.ModTime().Equal(cached) && cachedSHA != "" {
@@ -136,20 +161,28 @@ func recomputeAgentBinarySHA() {
 
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
-		log.Printf("version: hash error: %v", err)
+		log.Printf("version: hash error (%s): %v", osName, err)
 		return
 	}
 	sha := hex.EncodeToString(h.Sum(nil))
 
 	hubAgentBinaryMu.Lock()
-	previousSHA := hubAgentBinarySHA
-	hubAgentBinarySHA = sha
-	hubAgentBinaryMtime = info.ModTime()
+	var previousSHA string
+	switch osName {
+	case "windows":
+		previousSHA = hubWindowsAgentBinarySHA
+		hubWindowsAgentBinarySHA = sha
+		hubWindowsAgentBinaryMtime = info.ModTime()
+	default:
+		previousSHA = hubAgentBinarySHA
+		hubAgentBinarySHA = sha
+		hubAgentBinaryMtime = info.ModTime()
+	}
 	hubAgentBinaryMu.Unlock()
 
 	if previousSHA != "" && previousSHA != sha {
-		log.Printf("version: agent binary changed (%s -> %s), update will propagate",
-			versionShortSHA(previousSHA), versionShortSHA(sha))
+		log.Printf("version: %s agent binary changed (%s -> %s), update will propagate",
+			osName, versionShortSHA(previousSHA), versionShortSHA(sha))
 		// Reset circuit breaker — a fresh build deserves a fresh rollout.
 		rolloutFailuresMu.Lock()
 		rolloutFailures = nil
@@ -161,13 +194,30 @@ func recomputeAgentBinarySHA() {
 	}
 }
 
-// agentBinaryPath mirrors the resolution in handleDownloadAgent so we hash
-// the same file the agents will download.
+// agentBinaryPath returns the path to the Linux agent binary. Kept for
+// backwards compatibility — production callers should prefer
+// agentBinaryPathFor.
 func agentBinaryPath() string {
-	candidates := []string{
-		os.Getenv("BLOXOS_AGENT_BINARY"),
-		"./agent/bloxos-agent",
-		"/usr/local/bin/bloxos-agent",
+	return agentBinaryPathFor("linux")
+}
+
+// agentBinaryPathFor returns the on-disk path of the agent binary for
+// the given OS, mirroring the resolution in handleDownloadAgent.
+func agentBinaryPathFor(osName string) string {
+	var candidates []string
+	switch osName {
+	case "windows":
+		candidates = []string{
+			os.Getenv("BLOXOS_AGENT_BINARY_WINDOWS"),
+			"./agent/bloxos-agent.exe",
+			"/usr/local/bin/bloxos-agent.exe",
+		}
+	default:
+		candidates = []string{
+			os.Getenv("BLOXOS_AGENT_BINARY"),
+			"./agent/bloxos-agent",
+			"/usr/local/bin/bloxos-agent",
+		}
 	}
 	for _, p := range candidates {
 		if p == "" {
@@ -181,7 +231,9 @@ func agentBinaryPath() string {
 }
 
 // announceVersionToAgent sends an "agent_version" frame to a freshly
-// connected agent, unless rollout is paused.
+// connected agent, unless rollout is paused. The SHA announced is
+// platform-specific: Windows agents get the Windows binary SHA,
+// Linux/unknown agents get the Linux SHA.
 func announceVersionToAgent(machineID string, agent *ConnectedAgent) {
 	rolloutPausedMu.RLock()
 	paused := rolloutPaused
@@ -191,9 +243,8 @@ func announceVersionToAgent(machineID string, agent *ConnectedAgent) {
 		return
 	}
 
-	hubAgentBinaryMu.RLock()
-	sha := hubAgentBinarySHA
-	hubAgentBinaryMu.RUnlock()
+	osName := lookupAgentOS(machineID)
+	sha := announcedSHAFor(osName)
 	if sha == "" {
 		return
 	}
@@ -215,6 +266,66 @@ func announceVersionToAgent(machineID string, agent *ConnectedAgent) {
 	expectReconnect(machineID)
 }
 
+// announcedSHAFor returns the SHA the hub will announce to an agent of
+// the given OS. Falls back to the linux SHA for unknown / empty OS so
+// pre-Phase-9 agents still see something coherent.
+func announcedSHAFor(osName string) string {
+	hubAgentBinaryMu.RLock()
+	defer hubAgentBinaryMu.RUnlock()
+	switch osName {
+	case "windows":
+		if hubWindowsAgentBinarySHA != "" {
+			return hubWindowsAgentBinarySHA
+		}
+		// Don't announce a Linux SHA to a Windows agent — that would
+		// trigger a perpetual update loop. Better to stay quiet.
+		return ""
+	default:
+		return hubAgentBinarySHA
+	}
+}
+
+// lookupAgentOS returns the recorded OS for a machine ("linux",
+// "windows", or "" if unknown / pre-Phase-9 agent).
+func lookupAgentOS(machineID string) string {
+	agentRunningVersionsMu.RLock()
+	v, ok := agentRunningVersions[machineID]
+	agentRunningVersionsMu.RUnlock()
+	if ok && v.OS != "" {
+		return v.OS
+	}
+	// Fall back to the metrics OS string if we have one. Format is
+	// "linux/amd64" / "windows/amd64". Split on "/".
+	if osStr := lookupMetricsOS(machineID); osStr != "" {
+		if idx := indexByte(osStr, '/'); idx > 0 {
+			return osStr[:idx]
+		}
+		return osStr
+	}
+	return ""
+}
+
+// indexByte is a tiny helper to keep this file free of strings imports.
+func indexByte(s string, c byte) int {
+	for i := 0; i < len(s); i++ {
+		if s[i] == c {
+			return i
+		}
+	}
+	return -1
+}
+
+// lookupMetricsOS returns the most recently reported `os` string from
+// the metrics table for a given machine, e.g. "linux/amd64". Returns
+// empty if not found.
+func lookupMetricsOS(machineID string) string {
+	var osStr string
+	if err := db.QueryRow(`SELECT COALESCE(os, '') FROM machines WHERE id = ?`, machineID).Scan(&osStr); err != nil {
+		return ""
+	}
+	return osStr
+}
+
 func expectReconnect(machineID string) {
 	pendingReconnectsMu.Lock()
 	defer pendingReconnectsMu.Unlock()
@@ -228,10 +339,16 @@ func clearReconnectExpectation(machineID string) {
 }
 
 // recordAgentRunningVersion is called when the agent sends its SHA on connect.
-func recordAgentRunningVersion(machineID, runningSHA string) {
-	hubAgentBinaryMu.RLock()
-	hubSHA := hubAgentBinarySHA
-	hubAgentBinaryMu.RUnlock()
+// osName is the agent's reported OS ("linux" / "windows" / ""). For pre-Phase-9
+// agents that don't include the os field, an empty string is fine — the OS is
+// inferred lazily from the machine's metrics OS string.
+func recordAgentRunningVersion(machineID, runningSHA, osName string) {
+	// Resolve the per-OS expected SHA. If we don't yet know the agent's
+	// OS (legacy agent), treat the linux SHA as authoritative.
+	if osName == "" {
+		osName = lookupAgentOS(machineID)
+	}
+	expectedSHA := announcedSHAFor(osName)
 
 	hostname := lookupVersionHostname(machineID)
 
@@ -241,11 +358,12 @@ func recordAgentRunningVersion(machineID, runningSHA string) {
 		Hostname:      hostname,
 		RunningSHA:    runningSHA,
 		ReportedAt:    time.Now(),
-		UpdatePending: hubSHA != "" && runningSHA != hubSHA,
+		UpdatePending: expectedSHA != "" && runningSHA != expectedSHA,
+		OS:            osName,
 	}
 	agentRunningVersionsMu.Unlock()
 
-	if hubSHA != "" && runningSHA == hubSHA {
+	if expectedSHA != "" && runningSHA == expectedSHA {
 		clearReconnectExpectation(machineID)
 		recordRolloutSuccess(machineID)
 	}
@@ -310,13 +428,16 @@ func handleListVersions(c echo.Context) error {
 	hubAgentBinaryMu.RLock()
 	hubSHA := hubAgentBinarySHA
 	hubMtime := hubAgentBinaryMtime
+	hubWindowsSHA := hubWindowsAgentBinarySHA
+	hubWindowsMtime := hubWindowsAgentBinaryMtime
 	hubAgentBinaryMu.RUnlock()
 
 	agentRunningVersionsMu.RLock()
 	versions := make([]agentVersionInfo, 0, len(agentRunningVersions))
 	for _, v := range agentRunningVersions {
 		v.Hostname = lookupVersionHostname(v.MachineID)
-		v.UpdatePending = hubSHA != "" && v.RunningSHA != hubSHA
+		expected := announcedSHAFor(v.OS)
+		v.UpdatePending = expected != "" && v.RunningSHA != expected
 		versions = append(versions, v)
 	}
 	agentRunningVersionsMu.RUnlock()
@@ -327,12 +448,15 @@ func handleListVersions(c echo.Context) error {
 	rolloutPausedMu.RUnlock()
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
-		"hub_sha":        hubSHA,
-		"hub_short_sha":  versionShortSHA(hubSHA),
-		"hub_mtime":      hubMtime.Format(time.RFC3339),
-		"agents":         versions,
-		"rollout_paused": paused,
-		"pause_reason":   pauseReason,
+		"hub_sha":               hubSHA,
+		"hub_short_sha":         versionShortSHA(hubSHA),
+		"hub_mtime":             hubMtime.Format(time.RFC3339),
+		"hub_windows_sha":       hubWindowsSHA,
+		"hub_windows_short_sha": versionShortSHA(hubWindowsSHA),
+		"hub_windows_mtime":     hubWindowsMtime.Format(time.RFC3339),
+		"agents":                versions,
+		"rollout_paused":        paused,
+		"pause_reason":          pauseReason,
 	})
 }
 

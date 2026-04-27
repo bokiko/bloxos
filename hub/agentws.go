@@ -327,14 +327,37 @@ func buildInstallCommand(httpBase, wsBase, token string) (command string, caURL 
 }
 
 func handleDownloadAgent(c echo.Context) error {
-	// Configurable binary path (Finding #7).
-	// Resolution order: env var -> relative to working dir -> standard install path -> 404.
-	binaryPath := ""
-	candidates := []string{
-		os.Getenv("BLOXOS_AGENT_BINARY"),
-		"./agent/bloxos-agent",
-		"/usr/local/bin/bloxos-agent",
+	// Phase 9: per-OS binary resolution. The target OS is detected from
+	// either the explicit ?os= query parameter (PowerShell installer
+	// passes this) or the User-Agent string.
+	osName := strings.ToLower(strings.TrimSpace(c.QueryParam("os")))
+	if osName == "" {
+		ua := strings.ToLower(c.Request().UserAgent())
+		if strings.Contains(ua, "windows") {
+			osName = "windows"
+		} else {
+			osName = "linux"
+		}
 	}
+
+	var candidates []string
+	switch osName {
+	case "windows":
+		candidates = []string{
+			os.Getenv("BLOXOS_AGENT_BINARY_WINDOWS"),
+			"./agent/bloxos-agent.exe",
+			"/usr/local/bin/bloxos-agent.exe",
+		}
+	default:
+		osName = "linux"
+		candidates = []string{
+			os.Getenv("BLOXOS_AGENT_BINARY"),
+			"./agent/bloxos-agent",
+			"/usr/local/bin/bloxos-agent",
+		}
+	}
+
+	binaryPath := ""
 	for _, p := range candidates {
 		if p == "" {
 			continue
@@ -345,13 +368,13 @@ func handleDownloadAgent(c echo.Context) error {
 		}
 	}
 	if binaryPath == "" {
-		return c.JSON(http.StatusNotFound, map[string]string{"error": "agent binary not found; set BLOXOS_AGENT_BINARY env var"})
+		return c.JSON(http.StatusNotFound, map[string]string{
+			"error": fmt.Sprintf("agent binary for os=%s not found; set BLOXOS_AGENT_BINARY%s env var", osName, map[string]string{"windows": "_WINDOWS"}[osName]),
+		})
 	}
-	// Log requested arch for future multi-arch support.
+
 	arch := c.QueryParam("arch")
-	if arch != "" {
-		log.Printf("agent download: arch=%s (serving default binary)", arch)
-	}
+	log.Printf("agent download: os=%s arch=%s path=%s", osName, arch, binaryPath)
 	return c.File(binaryPath)
 }
 
@@ -583,16 +606,19 @@ func handleAgentWS(c echo.Context) error {
 
 		case "agent_running_version":
 			// Phase 8 — agent reported its current binary SHA on connect.
+			// Phase 9 added the optional `os` field so per-platform
+			// SHA tracking can route the right announce on next reconnect.
 			var versionMsg struct {
 				Type   string `json:"type"`
 				SHA256 string `json:"sha256"`
+				OS     string `json:"os"`
 			}
 			if err := json.Unmarshal(msg, &versionMsg); err != nil {
 				log.Printf("invalid agent_running_version JSON: %v", err)
 				continue
 			}
 			if versionMsg.SHA256 != "" && machineID != "" {
-				recordAgentRunningVersion(machineID, versionMsg.SHA256)
+				recordAgentRunningVersion(machineID, versionMsg.SHA256, versionMsg.OS)
 			}
 
 		case "command_response":
@@ -615,6 +641,99 @@ func handleAgentWS(c echo.Context) error {
 			log.Printf("unknown message type from agent: %s", envelope.Type)
 		}
 	}
+}
+
+// handleWindowsInstallScript serves a PowerShell installer that mirrors
+// install.sh: download the agent, register a Windows service, start it.
+//
+// The script is intentionally returned as plain text so a one-liner like
+//   iex (irm https://hub.example/install.ps1)
+// works as expected. It honours the BLOXOS_HUB / BLOXOS_TOKEN environment
+// variables set by `gh api .../install-script` callers, and it requests
+// admin via WindowsBuiltInRole before doing anything destructive.
+func handleWindowsInstallScript(c echo.Context) error {
+	// PowerShell raw block. Go raw strings can't contain backticks, and
+	// PowerShell doesn't strictly need them here — we keep the script
+	// backtick-free. The C# add-type block uses an @"..."@ here-string
+	// for its source which is fine inside a Go raw string.
+	script := `# BloxOS Windows Agent installer
+$ErrorActionPreference = 'Stop'
+
+# Require admin.
+$current = [Security.Principal.WindowsIdentity]::GetCurrent()
+$principal = New-Object Security.Principal.WindowsPrincipal($current)
+if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Write-Error "This installer must be run from an elevated PowerShell session."
+    exit 1
+}
+
+$Hub = $env:BLOXOS_HUB
+$Token = $env:BLOXOS_TOKEN
+if (-not $Hub)   { Write-Error "BLOXOS_HUB must be set"; exit 1 }
+if (-not $Token) { Write-Error "BLOXOS_TOKEN must be set"; exit 1 }
+
+# Convert wss:// -> https://, ws:// -> http://
+$HubHttp = $Hub -replace '^wss://','https://' -replace '^ws://','http://'
+Write-Host "Hub:    $HubHttp"
+Write-Host "WS hub: $Hub"
+
+# Allow self-signed cert during bootstrap (mirrors install.sh's curl -k).
+add-type @"
+using System.Net;
+using System.Security.Cryptography.X509Certificates;
+public class TrustAllCerts {
+    public static bool Validate(object sender, X509Certificate cert, X509Chain chain, System.Net.Security.SslPolicyErrors err) { return true; }
+}
+"@
+[System.Net.ServicePointManager]::ServerCertificateValidationCallback = [TrustAllCerts]::Validate
+[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+
+# Stop + remove existing service if present.
+$svc = Get-Service -Name BloxOSAgent -ErrorAction SilentlyContinue
+if ($svc) {
+    Write-Host "Existing BloxOSAgent service found, stopping..."
+    if ($svc.Status -ne 'Stopped') {
+        Stop-Service -Name BloxOSAgent -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 2
+    }
+    & sc.exe delete BloxOSAgent | Out-Null
+    Start-Sleep -Seconds 2
+}
+
+$InstallDir = "C:\Program Files\BloxOS"
+$AgentExe   = Join-Path $InstallDir "bloxos-agent.exe"
+if (-not (Test-Path $InstallDir)) {
+    New-Item -ItemType Directory -Path $InstallDir | Out-Null
+}
+
+Write-Host "Downloading agent binary to $AgentExe ..."
+$DownloadUrl = "$HubHttp/download/agent?os=windows"
+Invoke-WebRequest -Uri $DownloadUrl -OutFile $AgentExe -UseBasicParsing
+
+# Persist HUB + TOKEN for the service to pick up at next start.
+[Environment]::SetEnvironmentVariable("BLOXOS_HUB", $Hub, "Machine")
+[Environment]::SetEnvironmentVariable("BLOXOS_TOKEN", $Token, "Machine")
+
+# Register the service via the agent's own SCM installer.
+Write-Host "Installing BloxOSAgent service..."
+& $AgentExe -install-service
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "Service installation failed (exit code $LASTEXITCODE)"
+    exit 1
+}
+
+Write-Host "Starting BloxOSAgent ..."
+Start-Service -Name BloxOSAgent
+
+Start-Sleep -Seconds 3
+$svc = Get-Service -Name BloxOSAgent -ErrorAction SilentlyContinue
+if ($svc -and $svc.Status -eq 'Running') {
+    Write-Host "=== BloxOS agent installed and running ==="
+} else {
+    Write-Warning "BloxOSAgent service is not running. Check Event Viewer or services.msc."
+}
+`
+	return c.String(http.StatusOK, script)
 }
 
 // validateAgentToken checks a token against the DB (Finding #1).
