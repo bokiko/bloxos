@@ -33,6 +33,7 @@ const (
 	scopeAPIMachinesAdmin = "api_machines.admin"
 	scopeTokensAdmin      = "install_tokens.admin"
 	scopeUsersAdmin       = "users.admin"
+	scopeBrandingAdmin    = "branding.admin"
 )
 
 const authClaimsContextKey = "auth_claims"
@@ -57,6 +58,7 @@ var roleScopes = map[UserRole][]string{
 		scopeAPIMachinesAdmin,
 		scopeTokensAdmin,
 		scopeUsersAdmin,
+		scopeBrandingAdmin,
 	},
 	RoleOperator: {
 		scopeAuthSelf,
@@ -113,6 +115,14 @@ var routeScopeRequirements = map[string]string{
 	routeScopeKey(http.MethodPost, "/api/users"):                               scopeUsersAdmin,
 	routeScopeKey(http.MethodPatch, "/api/users/:id"):                          scopeUsersAdmin,
 	routeScopeKey(http.MethodDelete, "/api/users/:id"):                         scopeUsersAdmin,
+
+	// Phase 10 — branding (admin) and per-user theme prefs.
+	routeScopeKey(http.MethodPatch, "/api/branding"):                           scopeBrandingAdmin,
+	routeScopeKey(http.MethodPost, "/api/branding/logo"):                       scopeBrandingAdmin,
+	routeScopeKey(http.MethodPost, "/api/branding/favicon"):                    scopeBrandingAdmin,
+	routeScopeKey(http.MethodDelete, "/api/branding/:kind"):                    scopeBrandingAdmin,
+	routeScopeKey(http.MethodGet, "/api/me/theme"):                             scopeAuthSelf,
+	routeScopeKey(http.MethodPatch, "/api/me/theme"):                           scopeAuthSelf,
 }
 
 func permissionMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
@@ -205,9 +215,15 @@ func roleHasScope(role UserRole, requiredScope string) bool {
 
 // publicAPIRoutes lists the /api/* endpoints that are served without RBAC enforcement.
 var publicAPIRoutes = map[string]struct{}{
-	routeScopeKey(http.MethodPost, "/api/auth/login"):  {},
-	routeScopeKey(http.MethodGet, "/api/setup/status"): {},
-	routeScopeKey(http.MethodPost, "/api/setup"):       {},
+	routeScopeKey(http.MethodPost, "/api/auth/login"):       {},
+	routeScopeKey(http.MethodGet, "/api/setup/status"):      {},
+	routeScopeKey(http.MethodPost, "/api/setup"):            {},
+	// Phase 10 — branding metadata + image bytes are public so the
+	// dashboard can fetch them before authentication (login screen,
+	// document.title, favicon). Writes still require branding.admin.
+	routeScopeKey(http.MethodGet, "/api/branding"):          {},
+	routeScopeKey(http.MethodGet, "/api/branding/logo"):     {},
+	routeScopeKey(http.MethodGet, "/api/branding/favicon"):  {},
 }
 
 // auditRBACRouteCoverage verifies every protected /api/* route registered on e has a

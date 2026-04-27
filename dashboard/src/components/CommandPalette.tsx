@@ -25,6 +25,7 @@ import {
   ArrowRight,
   GitBranch,
   Boxes,
+  Settings,
 } from "lucide-react";
 
 interface CommandPaletteProps {
@@ -45,7 +46,7 @@ export function CommandPalette({
   const router = useRouter();
   const { isAuthenticated, hasScope, logout } = useAuth();
   const { machines } = useSSE();
-  const { setTheme } = useTheme();
+  const { setMode } = useTheme();
   const [search, setSearch] = useState("");
 
   // Clear search in the close event handler instead of a useEffect — avoids
@@ -140,6 +141,13 @@ export function CommandPalette({
                   <span>User management</span>
                 </Command.Item>
               )}
+              <Command.Item
+                value="settings preferences theme branding"
+                onSelect={() => runCommand(() => router.push("/settings"))}
+              >
+                <Settings />
+                <span>Settings</span>
+              </Command.Item>
             </Command.Group>
 
             {/* Machines — dynamic list */}
@@ -192,25 +200,25 @@ export function CommandPalette({
             {/* Theme */}
             <Command.Group heading="Theme">
               <Command.Item
-                value="theme light"
-                onSelect={() => runCommand(() => setTheme("light"))}
+                value="theme light mode"
+                onSelect={() => runCommand(() => setMode("light"))}
               >
                 <Sun />
-                <span>Switch to light</span>
+                <span>Switch to light mode</span>
               </Command.Item>
               <Command.Item
-                value="theme dark"
-                onSelect={() => runCommand(() => setTheme("dark"))}
+                value="theme dark mode"
+                onSelect={() => runCommand(() => setMode("dark"))}
               >
                 <Moon />
-                <span>Switch to dark</span>
+                <span>Switch to dark mode</span>
               </Command.Item>
               <Command.Item
-                value="theme system auto"
-                onSelect={() => runCommand(() => setTheme("system"))}
+                value="theme system auto mode"
+                onSelect={() => runCommand(() => setMode("system"))}
               >
                 <MonitorSmartphone />
-                <span>Use system theme</span>
+                <span>Use system mode</span>
               </Command.Item>
             </Command.Group>
 

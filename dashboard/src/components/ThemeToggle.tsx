@@ -11,9 +11,11 @@ import {
 } from "@/components/ui/dropdown-menu";
 
 export function ThemeToggle() {
-  const { theme, setTheme } = useTheme();
+  // Phase 10 — toggles only the light/dark/system mode. Named-theme switching
+  // happens in the user menu and the /settings page.
+  const { themeMode, setMode } = useTheme();
 
-  const Icon = theme === "light" ? Sun : theme === "dark" ? Moon : Monitor;
+  const Icon = themeMode === "light" ? Sun : themeMode === "dark" ? Moon : Monitor;
 
   return (
     <DropdownMenu>
@@ -22,8 +24,8 @@ export function ThemeToggle() {
           <Button
             variant="ghost"
             size="icon-sm"
-            aria-label="Toggle theme"
-            title="Toggle theme"
+            aria-label="Toggle theme mode"
+            title="Toggle theme mode"
             className="text-blox-muted hover:text-blox-text"
           >
             <Icon className="w-4 h-4" />
@@ -32,28 +34,28 @@ export function ThemeToggle() {
       />
       <DropdownMenuContent align="end" className="bg-blox-card border-blox-border min-w-[140px]">
         <DropdownMenuItem
-          onClick={() => setTheme("light")}
+          onClick={() => setMode("light")}
           className="text-xs gap-2 text-blox-text"
         >
           <Sun className="w-3.5 h-3.5" />
           Light
-          {theme === "light" && <span className="ml-auto text-[10px] text-blox-blue">●</span>}
+          {themeMode === "light" && <span className="ml-auto text-[10px] text-blox-blue">●</span>}
         </DropdownMenuItem>
         <DropdownMenuItem
-          onClick={() => setTheme("dark")}
+          onClick={() => setMode("dark")}
           className="text-xs gap-2 text-blox-text"
         >
           <Moon className="w-3.5 h-3.5" />
           Dark
-          {theme === "dark" && <span className="ml-auto text-[10px] text-blox-blue">●</span>}
+          {themeMode === "dark" && <span className="ml-auto text-[10px] text-blox-blue">●</span>}
         </DropdownMenuItem>
         <DropdownMenuItem
-          onClick={() => setTheme("system")}
+          onClick={() => setMode("system")}
           className="text-xs gap-2 text-blox-text"
         >
           <Monitor className="w-3.5 h-3.5" />
           System
-          {theme === "system" && <span className="ml-auto text-[10px] text-blox-blue">●</span>}
+          {themeMode === "system" && <span className="ml-auto text-[10px] text-blox-blue">●</span>}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

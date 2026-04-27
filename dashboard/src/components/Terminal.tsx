@@ -74,7 +74,9 @@ export function Terminal({ sessionId, browserToken, onDisconnect }: TerminalProp
   const wsRef = useRef<WebSocket | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const [status, setStatus] = useState<"connecting" | "connected" | "disconnected">("connecting");
-  const { resolvedTheme } = useTheme();
+  // Phase 10 — context renamed to resolvedMode; alias to keep the rest of
+  // the file unchanged.
+  const { resolvedMode: resolvedTheme } = useTheme();
 
   const cleanup = useCallback(() => {
     if (wsRef.current) {

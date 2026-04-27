@@ -261,6 +261,11 @@ func registerRoutes(e *echo.Echo) {
 	e.GET("/api/setup/status", handleSetupStatus)
 	e.POST("/api/setup", handleSetup)
 
+	// Phase 10 — branding reads are public (dashboard fetches before auth).
+	e.GET("/api/branding", handleGetBranding)
+	e.GET("/api/branding/logo", handleGetLogo)
+	e.GET("/api/branding/favicon", handleGetFavicon)
+
 	// Protected endpoints.
 	api := e.Group("", jwtMiddleware, credentialRotationMiddleware, permissionMiddleware)
 	api.GET("/api/events", handleSSE)
@@ -310,6 +315,14 @@ func registerRoutes(e *echo.Echo) {
 	api.POST("/api/users", handleCreateUser)
 	api.PATCH("/api/users/:id", handleUpdateUser)
 	api.DELETE("/api/users/:id", handleDeleteUser)
+
+	// Phase 10 — per-user theme prefs and admin branding writes.
+	api.GET("/api/me/theme", handleGetMyThemePrefs)
+	api.PATCH("/api/me/theme", handleUpdateMyThemePrefs)
+	api.PATCH("/api/branding", handleUpdateBrandingText)
+	api.POST("/api/branding/logo", handleUploadLogo)
+	api.POST("/api/branding/favicon", handleUploadFavicon)
+	api.DELETE("/api/branding/:kind", handleClearBrandingImage)
 }
 
 func getEnvOrDefault(key, def string) string {
