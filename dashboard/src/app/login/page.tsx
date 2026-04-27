@@ -8,6 +8,7 @@ import { motion } from "framer-motion";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { BrandedHeader } from "@/components/BrandedHeader";
 
 export default function LoginPage() {
   const [username, setUsername] = useState("");
@@ -71,12 +72,8 @@ export default function LoginPage() {
         transition={{ duration: 0.3, ease: "easeOut" }}
         className="w-full max-w-sm relative z-10"
       >
-        <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold tracking-tight">
-            <span className="text-blox-blue">Blox</span>
-            <span className="text-blox-text">OS</span>
-          </h1>
-          <p className="text-sm text-blox-muted mt-2">Fleet Management Dashboard</p>
+        <div className="mb-8">
+          <BrandedHeader size="expanded" />
         </div>
 
         <Card className="bg-blox-card/80 backdrop-blur-sm border-blox-border ring-0 shadow-2xl shadow-black/40">

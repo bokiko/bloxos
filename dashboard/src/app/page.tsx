@@ -37,6 +37,7 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { CommandPalette, useCommandPaletteHotkey } from "@/components/CommandPalette";
 import { FleetPulse } from "@/components/FleetPulse";
 import { UserMenu } from "@/components/UserMenu";
+import { BrandedHeader } from "@/components/BrandedHeader";
 
 type SortOption = "name" | "status" | "cpu" | "gpu_temp";
 type StatusFilter = "all" | "online" | "warning" | "offline";
@@ -314,10 +315,7 @@ export default function Home() {
         <div className="max-w-[1600px] mx-auto px-4 sm:px-6 h-14 flex items-center justify-between gap-4">
           {/* Brand */}
           <div className="flex items-center gap-3 shrink-0">
-            <h1 className="text-base font-bold tracking-tight">
-              <span className="text-blox-blue">Blox</span>
-              <span className="text-blox-text">OS</span>
-            </h1>
+            <BrandedHeader size="compact" />
             {isDemo && (
               <Badge variant="outline" className="text-[10px] border-amber-500/30 bg-amber-500/10 text-amber-400 h-auto py-0 px-2">
                 Demo

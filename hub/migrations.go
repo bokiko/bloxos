@@ -242,6 +242,45 @@ var migrations = []migration{
 			return err
 		},
 	},
+	{
+		description: "add theme_name and theme_mode columns to users for per-user theme prefs",
+		apply: func(tx *sql.Tx) error {
+			stmts := []string{
+				`ALTER TABLE users ADD COLUMN theme_name TEXT NOT NULL DEFAULT 'bloxos'`,
+				`ALTER TABLE users ADD COLUMN theme_mode TEXT NOT NULL DEFAULT 'system'`,
+			}
+			for _, s := range stmts {
+				if _, err := tx.Exec(s); err != nil {
+					if isDuplicateColumnErr(err) {
+						continue
+					}
+					return fmt.Errorf("migration stmt %q: %w", s, err)
+				}
+			}
+			return nil
+		},
+	},
+	{
+		description: "create branding_config table for admin instance branding (Phase 10)",
+		apply: func(tx *sql.Tx) error {
+			_, err := tx.Exec(`
+			CREATE TABLE IF NOT EXISTS branding_config (
+				id INTEGER PRIMARY KEY CHECK (id = 1),
+				title TEXT NOT NULL DEFAULT '',
+				subtitle TEXT NOT NULL DEFAULT '',
+				logo_data BLOB,
+				logo_mime TEXT,
+				logo_sha TEXT,
+				favicon_data BLOB,
+				favicon_mime TEXT,
+				favicon_sha TEXT,
+				updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			);
+			INSERT OR IGNORE INTO branding_config (id) VALUES (1);
+			`)
+			return err
+		},
+	},
 }
 
 // isDuplicateColumnErr returns true when SQLite rejects an ALTER TABLE ADD

@@ -1,8 +1,9 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { User, Users as UsersIcon, LogOut } from "lucide-react";
+import { User, Users as UsersIcon, LogOut, Settings as SettingsIcon } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
+import { useTheme, THEMES, type ThemeName } from "@/contexts/ThemeContext";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -13,10 +14,14 @@ import {
   DropdownMenuGroup,
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+
+const THEME_ORDER: ThemeName[] = ["bloxos", "solarized", "dracula", "nord", "tokyo-night"];
 
 export function UserMenu() {
   const router = useRouter();
   const { logout, hasScope, role } = useAuth();
+  const { themeName, setTheme } = useTheme();
   const canManageUsers = hasScope("users.admin");
 
   return (
@@ -34,7 +39,7 @@ export function UserMenu() {
           </Button>
         }
       />
-      <DropdownMenuContent align="end" className="bg-blox-card border-blox-border min-w-[200px]">
+      <DropdownMenuContent align="end" className="bg-blox-card border-blox-border min-w-[240px]">
         {/* Group wrapper is required by Base UI — DropdownMenuLabel is a
             MenuPrimitive.GroupLabel and must live inside a Menu.Group, or
             it throws Base UI error #31 at runtime. */}
@@ -44,6 +49,52 @@ export function UserMenu() {
           </DropdownMenuLabel>
         </DropdownMenuGroup>
         <DropdownMenuSeparator className="bg-blox-border" />
+
+        {/* Phase 10 — quick theme tile row. Each tile is a 5-column grid
+            preview; clicking applies the theme immediately. The "Theme"
+            label is wrapped in DropdownMenuGroup for the same Base UI
+            reason as above. */}
+        <DropdownMenuGroup>
+          <DropdownMenuLabel className="text-blox-muted text-[10px] uppercase tracking-wider">
+            Theme
+          </DropdownMenuLabel>
+        </DropdownMenuGroup>
+        <div className="px-1 pb-1">
+          <div className="grid grid-cols-5 gap-1">
+            {THEME_ORDER.map((name) => {
+              const meta = THEMES[name];
+              const active = themeName === name;
+              return (
+                <button
+                  key={name}
+                  type="button"
+                  onClick={() => setTheme(name)}
+                  title={meta.label}
+                  aria-pressed={active}
+                  aria-label={`Use ${meta.label} theme`}
+                  className={cn(
+                    "h-9 rounded-md border transition-all",
+                    active
+                      ? "border-blox-blue ring-1 ring-blox-blue/40"
+                      : "border-blox-border hover:border-blox-blue/40"
+                  )}
+                  style={{
+                    background: `linear-gradient(135deg, ${meta.preview.background} 0%, ${meta.preview.surface} 60%, ${meta.preview.accent} 100%)`,
+                  }}
+                />
+              );
+            })}
+          </div>
+        </div>
+        <DropdownMenuSeparator className="bg-blox-border" />
+
+        <DropdownMenuItem
+          onClick={() => router.push("/settings")}
+          className="text-xs gap-2 text-blox-text"
+        >
+          <SettingsIcon className="w-3.5 h-3.5" />
+          Settings
+        </DropdownMenuItem>
 
         {canManageUsers && (
           <DropdownMenuItem
@@ -55,7 +106,7 @@ export function UserMenu() {
           </DropdownMenuItem>
         )}
 
-        {canManageUsers && <DropdownMenuSeparator className="bg-blox-border" />}
+        <DropdownMenuSeparator className="bg-blox-border" />
 
         <DropdownMenuItem
           onClick={logout}

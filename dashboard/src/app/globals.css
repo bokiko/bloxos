@@ -104,6 +104,225 @@
 }
 
 /* ============================================================================
+ * Phase 10 — additional themes
+ *
+ * Each named theme overrides the same tokens defined above. The `theme-bloxos`
+ * default needs no class — the existing `:root` and `.dark` blocks already
+ * cover it. Adding `theme-<name>` to <html> swaps the palette; `dark` is
+ * applied alongside for dark-mode variants.
+ *
+ * Dark-only themes (Dracula, Tokyo Night) ignore `light` mode and always
+ * paint dark; the `.dark` toggle is applied by the ThemeProvider regardless
+ * of user mode choice for these themes.
+ * ============================================================================ */
+
+/* --- Solarized Light --- */
+.theme-solarized:not(.dark) {
+  --surface-base: #fdf6e3;
+  --surface-raised: #eee8d5;
+  --surface-overlay: #fdf6e3;
+  --surface-sunken: #e4dcc4;
+
+  --text-primary: #073642;
+  --text-secondary: #586e75;
+  --text-tertiary: #93a1a1;
+  --text-disabled: #b8b09a;
+
+  --border-subtle: rgba(7, 54, 66, 0.06);
+  --border-default: rgba(7, 54, 66, 0.12);
+  --border-strong: rgba(7, 54, 66, 0.22);
+
+  --accent: #268bd2;
+  --accent-hover: #1d6fa5;
+  --accent-subtle: rgba(38, 139, 210, 0.12);
+  --accent-foreground: #fdf6e3;
+
+  --success: #859900;
+  --success-subtle: rgba(133, 153, 0, 0.14);
+  --warning: #b58900;
+  --warning-subtle: rgba(181, 137, 0, 0.14);
+  --danger: #dc322f;
+  --danger-subtle: rgba(220, 50, 47, 0.14);
+
+  --shadow-sm: 0 1px 2px 0 rgba(7, 54, 66, 0.06);
+  --shadow-md: 0 4px 12px -2px rgba(7, 54, 66, 0.10);
+  --shadow-lg: 0 12px 32px -8px rgba(7, 54, 66, 0.14);
+  --shadow-overlay: 0 24px 64px -16px rgba(7, 54, 66, 0.22);
+}
+
+/* --- Solarized Dark --- */
+.theme-solarized.dark {
+  --surface-base: #002b36;
+  --surface-raised: #073642;
+  --surface-overlay: #0a3a47;
+  --surface-sunken: #001f27;
+
+  --text-primary: #fdf6e3;
+  --text-secondary: #93a1a1;
+  --text-tertiary: #657b83;
+  --text-disabled: #586e75;
+
+  --border-subtle: rgba(253, 246, 227, 0.06);
+  --border-default: rgba(253, 246, 227, 0.10);
+  --border-strong: rgba(253, 246, 227, 0.20);
+
+  --accent: #268bd2;
+  --accent-hover: #4ea4dd;
+  --accent-subtle: rgba(38, 139, 210, 0.18);
+  --accent-foreground: #fdf6e3;
+
+  --success: #859900;
+  --success-subtle: rgba(133, 153, 0, 0.18);
+  --warning: #b58900;
+  --warning-subtle: rgba(181, 137, 0, 0.18);
+  --danger: #dc322f;
+  --danger-subtle: rgba(220, 50, 47, 0.18);
+
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.30);
+  --shadow-md: 0 4px 12px -2px rgba(0, 0, 0, 0.40);
+  --shadow-lg: 0 12px 32px -8px rgba(0, 0, 0, 0.50);
+  --shadow-overlay: 0 24px 64px -16px rgba(0, 0, 0, 0.70);
+}
+
+/* --- Dracula (dark-only) --- */
+.theme-dracula,
+.theme-dracula:not(.dark) {
+  --surface-base: #282a36;
+  --surface-raised: #343746;
+  --surface-overlay: #3d4053;
+  --surface-sunken: #1e1f29;
+
+  --text-primary: #f8f8f2;
+  --text-secondary: #bd93f9;
+  --text-tertiary: #6272a4;
+  --text-disabled: #44475a;
+
+  --border-subtle: rgba(248, 248, 242, 0.06);
+  --border-default: rgba(248, 248, 242, 0.12);
+  --border-strong: rgba(248, 248, 242, 0.22);
+
+  --accent: #bd93f9;
+  --accent-hover: #cdaaff;
+  --accent-subtle: rgba(189, 147, 249, 0.18);
+  --accent-foreground: #282a36;
+
+  --success: #50fa7b;
+  --success-subtle: rgba(80, 250, 123, 0.16);
+  --warning: #ffb86c;
+  --warning-subtle: rgba(255, 184, 108, 0.16);
+  --danger: #ff5555;
+  --danger-subtle: rgba(255, 85, 85, 0.16);
+
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.30);
+  --shadow-md: 0 4px 12px -2px rgba(0, 0, 0, 0.40);
+  --shadow-lg: 0 12px 32px -8px rgba(0, 0, 0, 0.50);
+  --shadow-overlay: 0 24px 64px -16px rgba(0, 0, 0, 0.70);
+}
+
+/* --- Nord Light --- */
+.theme-nord:not(.dark) {
+  --surface-base: #eceff4;
+  --surface-raised: #e5e9f0;
+  --surface-overlay: #ffffff;
+  --surface-sunken: #d8dee9;
+
+  --text-primary: #2e3440;
+  --text-secondary: #4c566a;
+  --text-tertiary: #8fa1b3;
+  --text-disabled: #b8c0cc;
+
+  --border-subtle: rgba(46, 52, 64, 0.06);
+  --border-default: rgba(46, 52, 64, 0.12);
+  --border-strong: rgba(46, 52, 64, 0.22);
+
+  --accent: #5e81ac;
+  --accent-hover: #4c6f9a;
+  --accent-subtle: rgba(94, 129, 172, 0.14);
+  --accent-foreground: #eceff4;
+
+  --success: #a3be8c;
+  --success-subtle: rgba(163, 190, 140, 0.18);
+  --warning: #ebcb8b;
+  --warning-subtle: rgba(235, 203, 139, 0.18);
+  --danger: #bf616a;
+  --danger-subtle: rgba(191, 97, 106, 0.16);
+
+  --shadow-sm: 0 1px 2px 0 rgba(46, 52, 64, 0.05);
+  --shadow-md: 0 4px 12px -2px rgba(46, 52, 64, 0.08);
+  --shadow-lg: 0 12px 32px -8px rgba(46, 52, 64, 0.12);
+  --shadow-overlay: 0 24px 64px -16px rgba(46, 52, 64, 0.18);
+}
+
+/* --- Nord Dark --- */
+.theme-nord.dark {
+  --surface-base: #2e3440;
+  --surface-raised: #3b4252;
+  --surface-overlay: #434c5e;
+  --surface-sunken: #232831;
+
+  --text-primary: #eceff4;
+  --text-secondary: #d8dee9;
+  --text-tertiary: #8fa1b3;
+  --text-disabled: #4c566a;
+
+  --border-subtle: rgba(236, 239, 244, 0.06);
+  --border-default: rgba(236, 239, 244, 0.10);
+  --border-strong: rgba(236, 239, 244, 0.20);
+
+  --accent: #88c0d0;
+  --accent-hover: #a3d4e0;
+  --accent-subtle: rgba(136, 192, 208, 0.18);
+  --accent-foreground: #2e3440;
+
+  --success: #a3be8c;
+  --success-subtle: rgba(163, 190, 140, 0.18);
+  --warning: #ebcb8b;
+  --warning-subtle: rgba(235, 203, 139, 0.18);
+  --danger: #bf616a;
+  --danger-subtle: rgba(191, 97, 106, 0.18);
+
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.30);
+  --shadow-md: 0 4px 12px -2px rgba(0, 0, 0, 0.40);
+  --shadow-lg: 0 12px 32px -8px rgba(0, 0, 0, 0.50);
+  --shadow-overlay: 0 24px 64px -16px rgba(0, 0, 0, 0.70);
+}
+
+/* --- Tokyo Night (dark-only) --- */
+.theme-tokyo-night,
+.theme-tokyo-night:not(.dark) {
+  --surface-base: #1a1b26;
+  --surface-raised: #24283b;
+  --surface-overlay: #2f334d;
+  --surface-sunken: #16161e;
+
+  --text-primary: #c0caf5;
+  --text-secondary: #9aa5ce;
+  --text-tertiary: #565f89;
+  --text-disabled: #414868;
+
+  --border-subtle: rgba(192, 202, 245, 0.06);
+  --border-default: rgba(192, 202, 245, 0.10);
+  --border-strong: rgba(192, 202, 245, 0.20);
+
+  --accent: #7aa2f7;
+  --accent-hover: #9bb8ff;
+  --accent-subtle: rgba(122, 162, 247, 0.18);
+  --accent-foreground: #1a1b26;
+
+  --success: #9ece6a;
+  --success-subtle: rgba(158, 206, 106, 0.16);
+  --warning: #e0af68;
+  --warning-subtle: rgba(224, 175, 104, 0.16);
+  --danger: #f7768e;
+  --danger-subtle: rgba(247, 118, 142, 0.16);
+
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.30);
+  --shadow-md: 0 4px 12px -2px rgba(0, 0, 0, 0.40);
+  --shadow-lg: 0 12px 32px -8px rgba(0, 0, 0, 0.50);
+  --shadow-overlay: 0 24px 64px -16px rgba(0, 0, 0, 0.70);
+}
+
+/* ============================================================================
  * Tailwind theme mapping — exposes tokens as utility classes
  * ============================================================================ */
 
