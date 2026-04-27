@@ -48,6 +48,7 @@ type Metrics struct {
 	IP             string    `json:"ip,omitempty"`
 	OS             string    `json:"os,omitempty"`
 	CPUPercent     float64   `json:"cpu_percent"`
+	CPUTempC       float64   `json:"cpu_temp_c,omitempty"`
 	RAMUsedBytes   uint64    `json:"ram_used_bytes"`
 	RAMTotalBytes  uint64    `json:"ram_total_bytes"`
 	DiskUsedBytes  uint64    `json:"disk_used_bytes"`
@@ -527,6 +528,7 @@ func collectMetrics(machineID string) (*Metrics, error) {
 		IP:             localIP,
 		OS:             osInfo,
 		CPUPercent:     cpuAvg,
+		CPUTempC:       collectCPUTempC(),
 		RAMUsedBytes:   memInfo.Used,
 		RAMTotalBytes:  memInfo.Total,
 		DiskUsedBytes:  diskInfo.Used,

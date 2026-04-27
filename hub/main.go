@@ -46,6 +46,7 @@ type AgentMetrics struct {
 	IP             string    `json:"ip,omitempty"`
 	OS             string    `json:"os,omitempty"`
 	CPUPercent     float64   `json:"cpu_percent"`
+	CPUTempC       float64   `json:"cpu_temp_c,omitempty"`
 	RAMUsedBytes   int64     `json:"ram_used_bytes"`
 	RAMTotalBytes  int64     `json:"ram_total_bytes"`
 	DiskUsedBytes  int64     `json:"disk_used_bytes"`
@@ -285,6 +286,8 @@ func registerRoutes(e *echo.Echo) {
 	api.POST("/api/versions/pause", handlePauseRollout)
 	api.POST("/api/versions/resume", handleResumeRollout)
 	api.PUT("/api/machines/:id/tags", handleSetTags)
+	api.GET("/api/machines/:id/notes", handleGetMachineNotes)
+	api.PUT("/api/machines/:id/notes", handleSetMachineNotes)
 	api.GET("/api/machines/:id/metrics/history", handleMetricsHistory)
 	api.DELETE("/api/machines/:id", handleDeleteMachine)
 
@@ -464,7 +467,8 @@ func handleMetricsHistory(c echo.Context) error {
 			COALESCE(gpu_temp, 0),
 			COALESCE(gpu_util_percent, 0),
 			COALESCE(gpu_vram_used_bytes, 0),
-			COALESCE(gpu_vram_total_bytes, 0)
+			COALESCE(gpu_vram_total_bytes, 0),
+			COALESCE(cpu_temp_c, 0)
 		FROM metrics
 		WHERE machine_id = ? AND timestamp > datetime('now', ?)
 		ORDER BY timestamp ASC
@@ -484,13 +488,14 @@ func handleMetricsHistory(c echo.Context) error {
 		GPUUtil      float64 `json:"gpu_util"`
 		GPUVRAMUsed  int64   `json:"gpu_vram_used"`
 		GPUVRAMTotal int64   `json:"gpu_vram_total"`
+		CPUTempC     float64 `json:"cpu_temp_c,omitempty"`
 	}
 
 	var points []Point
 	for rows.Next() {
 		var p Point
 		if err := rows.Scan(&p.Timestamp, &p.CPUPercent, &p.RAMUsed, &p.RAMTotal,
-			&p.GPUTemp, &p.GPUUtil, &p.GPUVRAMUsed, &p.GPUVRAMTotal); err != nil {
+			&p.GPUTemp, &p.GPUUtil, &p.GPUVRAMUsed, &p.GPUVRAMTotal, &p.CPUTempC); err != nil {
 			continue
 		}
 		points = append(points, p)
@@ -596,6 +601,54 @@ func handleBulkCommand(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"results": results,
 	})
+}
+
+// --- Notes ---
+
+// notesMaxLen caps free-text machine notes server-side. Mirrors the
+// dashboard MachineNotes counter so a clipboard paste can't blow up
+// the SQLite row.
+const notesMaxLen = 10000
+
+func handleGetMachineNotes(c echo.Context) error {
+	id := c.Param("id")
+	var notes string
+	err := db.QueryRow(`SELECT COALESCE(notes, '') FROM machines WHERE id = ?`, id).Scan(&notes)
+	if err == sql.ErrNoRows {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "machine not found"})
+	}
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	return c.JSON(http.StatusOK, map[string]string{"notes": notes})
+}
+
+func handleSetMachineNotes(c echo.Context) error {
+	id := c.Param("id")
+	var body struct {
+		Notes string `json:"notes"`
+	}
+	if err := c.Bind(&body); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid body"})
+	}
+	if len(body.Notes) > notesMaxLen {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": fmt.Sprintf("notes exceed maximum length of %d characters", notesMaxLen),
+		})
+	}
+
+	res, err := db.Exec(`UPDATE machines SET notes = ? WHERE id = ?`, body.Notes, id)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	if rows == 0 {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "machine not found"})
+	}
+	return c.JSON(http.StatusOK, map[string]string{"status": "updated"})
 }
 
 // --- Tags ---
@@ -751,6 +804,17 @@ func upsertMachine(m AgentMetrics) {
 	}
 }
 
+// nullableFloat converts a zero-valued float64 to a SQL NULL. Used for
+// optional metrics like cpu_temp_c that older agents (or platforms that
+// can't read the sensor) emit as 0 — we want NULL in the column so the
+// dashboard can show an em-dash placeholder rather than "0°C".
+func nullableFloat(v float64) sql.NullFloat64 {
+	if v == 0 {
+		return sql.NullFloat64{}
+	}
+	return sql.NullFloat64{Float64: v, Valid: true}
+}
+
 func storeMetrics(m AgentMetrics) {
 	var gpuTemp, gpuUtil float64
 	var gpuVRAMUsed, gpuVRAMTotal int64
@@ -764,10 +828,11 @@ func storeMetrics(m AgentMetrics) {
 	_, err := db.Exec(`
 		INSERT INTO metrics (machine_id, cpu_percent, ram_used_bytes, ram_total_bytes,
 			disk_used_bytes, disk_total_bytes, gpu_temp, gpu_util_percent,
-			gpu_vram_used_bytes, gpu_vram_total_bytes)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			gpu_vram_used_bytes, gpu_vram_total_bytes, cpu_temp_c)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, m.MachineID, m.CPUPercent, m.RAMUsedBytes, m.RAMTotalBytes,
-		m.DiskUsedBytes, m.DiskTotalBytes, gpuTemp, gpuUtil, gpuVRAMUsed, gpuVRAMTotal)
+		m.DiskUsedBytes, m.DiskTotalBytes, gpuTemp, gpuUtil, gpuVRAMUsed, gpuVRAMTotal,
+		nullableFloat(m.CPUTempC))
 	if err != nil {
 		log.Printf("store metrics error: %v", err)
 	}
@@ -879,10 +944,11 @@ func handleGetMachine(c echo.Context) error {
 		Status       string  `json:"status"`
 		Tags         *string `json:"tags"`
 		LastSeen     *string `json:"last_seen"`
+		Notes        string  `json:"notes"`
 		HardwareInfo *string `json:"-"`
 	}
-	err := db.QueryRow(`SELECT id, hostname, ip, os, status, tags, last_seen, hardware_info FROM machines WHERE id = ?`, id).
-		Scan(&m.ID, &m.Hostname, &m.IP, &m.OS, &m.Status, &m.Tags, &m.LastSeen, &m.HardwareInfo)
+	err := db.QueryRow(`SELECT id, hostname, ip, os, status, tags, last_seen, COALESCE(notes, ''), hardware_info FROM machines WHERE id = ?`, id).
+		Scan(&m.ID, &m.Hostname, &m.IP, &m.OS, &m.Status, &m.Tags, &m.LastSeen, &m.Notes, &m.HardwareInfo)
 	if err == sql.ErrNoRows {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "machine not found"})
 	}
@@ -908,6 +974,7 @@ func handleGetMachine(c echo.Context) error {
 		GPUUtil        float64 `json:"gpu_util_percent"`
 		GPUVRAMUsed    int64   `json:"gpu_vram_used_bytes"`
 		GPUVRAMTotal   int64   `json:"gpu_vram_total_bytes"`
+		CPUTempC       float64 `json:"cpu_temp_c,omitempty"`
 	}
 	// COALESCE every column because API-polled machines (and agents that
 	// haven't reported GPU yet) store NULLs here, and Scan of NULL into
@@ -922,11 +989,12 @@ func handleGetMachine(c echo.Context) error {
 			COALESCE(gpu_temp, 0),
 			COALESCE(gpu_util_percent, 0),
 			COALESCE(gpu_vram_used_bytes, 0),
-			COALESCE(gpu_vram_total_bytes, 0)
+			COALESCE(gpu_vram_total_bytes, 0),
+			COALESCE(cpu_temp_c, 0)
 		FROM metrics WHERE machine_id = ? ORDER BY timestamp DESC LIMIT 1
 	`, id).Scan(&met.CPUPercent, &met.RAMUsedBytes, &met.RAMTotalBytes,
 		&met.DiskUsedBytes, &met.DiskTotalBytes, &met.GPUTemp, &met.GPUUtil,
-		&met.GPUVRAMUsed, &met.GPUVRAMTotal)
+		&met.GPUVRAMUsed, &met.GPUVRAMTotal, &met.CPUTempC)
 	if err != nil && err != sql.ErrNoRows {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}

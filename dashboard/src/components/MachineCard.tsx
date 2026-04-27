@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { motion } from "framer-motion";
-import { Trash2, Pencil, Zap, RefreshCw, Star } from "lucide-react";
+import { Trash2, Pencil, Zap, RefreshCw, Star, Thermometer } from "lucide-react";
 import type { MachineMetrics } from "@/lib/demo-data";
 import { ProgressBar, type ProgressVariant } from "./ProgressBar";
 import { Sparkline } from "./Sparkline";
@@ -75,6 +75,16 @@ function deriveMetricVariant(pct: number, warningAt: number, dangerAt: number): 
   if (pct >= dangerAt) return "danger";
   if (pct >= warningAt) return "warning";
   return "active";
+}
+
+// PHASE12-NOTE: shared thermal-color thresholds. The existing GPU row
+// uses a slightly different palette (emerald-400 below 60°C) so we
+// can't trivially reuse this there without changing GPU-row semantics
+// — kept as its own helper to avoid touching GPU rendering.
+function getTempColorClass(c: number): string {
+  if (c >= 80) return "text-red-400";
+  if (c >= 60) return "text-amber-400";
+  return "text-blox-text";
 }
 
 /* ============================================================================
@@ -335,6 +345,37 @@ export function MachineCard({ machine, onDelete, onEdit, onRefresh }: MachineCar
             warningAt={75}
             dangerAt={90}
           />
+
+          {/* PHASE12-NOTE: chose the *additive* thermal row (CPU + GPU temps
+              together) above the existing GPU row instead of pulling GPU
+              temp out of the GPU row. The GPU row's "72°C · 85% util · 18/24
+              GB" rhythm is load-bearing for visual scan; carving the temp
+              out of it would force a layout reflow we'd rather not ship in
+              this phase. */}
+          {!showPlaceholders && ((machine.cpu_temp_c ?? 0) > 0 || hasGpu) && (
+            <div className="flex items-center gap-2 px-0 py-1.5 text-[11px] text-blox-muted pt-1.5 mt-1.5 border-t border-blox-border/30">
+              <Thermometer className="w-3 h-3 shrink-0" />
+              {(machine.cpu_temp_c ?? 0) > 0 && (
+                <>
+                  <span className="uppercase tracking-[0.08em] text-[9px] font-medium">CPU</span>
+                  <span className={`tabular-nums font-mono ${getTempColorClass(machine.cpu_temp_c!)}`}>
+                    {machine.cpu_temp_c!.toFixed(0)}°C
+                  </span>
+                </>
+              )}
+              {(machine.cpu_temp_c ?? 0) > 0 && hasGpu && (
+                <span className="text-blox-muted/40">·</span>
+              )}
+              {hasGpu && (
+                <>
+                  <span className="uppercase tracking-[0.08em] text-[9px] font-medium">GPU</span>
+                  <span className={`tabular-nums font-mono ${getTempColorClass(gpuTemp)}`}>
+                    {gpuTemp.toFixed(0)}°C
+                  </span>
+                </>
+              )}
+            </div>
+          )}
 
           {hasGpu && !showPlaceholders && (
             <div className="flex items-center gap-2 text-[11px] pt-1.5 mt-1.5 border-t border-blox-border/30">

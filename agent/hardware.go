@@ -743,3 +743,52 @@ func parseLspciMmLine(line string) []string {
 	}
 	return fields
 }
+
+// collectCPUTempC reads /sys/class/thermal looking for the CPU package
+// temperature. Prefers zones whose `type` contains "pkg_temp" or
+// "coretemp"; falls back to the first non-pkg zone. Returns 0 if no
+// usable reading is found.
+//
+// PHASE12-NOTE: filters out implausible readings (<0 or >120°C) which
+// occasionally show up on flaky firmware/sensors.
+func collectCPUTempC() float64 {
+	entries, err := os.ReadDir("/sys/class/thermal")
+	if err != nil {
+		return 0
+	}
+	var preferred, fallback float64
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasPrefix(name, "thermal_zone") {
+			continue
+		}
+		tb, err := os.ReadFile(filepath.Join("/sys/class/thermal", name, "type"))
+		if err != nil {
+			continue
+		}
+		zoneType := strings.ToLower(strings.TrimSpace(string(tb)))
+		rb, err := os.ReadFile(filepath.Join("/sys/class/thermal", name, "temp"))
+		if err != nil {
+			continue
+		}
+		raw, err := strconv.ParseFloat(strings.TrimSpace(string(rb)), 64)
+		if err != nil {
+			continue
+		}
+		c := raw / 1000.0
+		if c < 0 || c > 120 {
+			continue
+		}
+		if strings.Contains(zoneType, "pkg_temp") || strings.Contains(zoneType, "coretemp") {
+			if c > preferred {
+				preferred = c
+			}
+		} else if fallback == 0 {
+			fallback = c
+		}
+	}
+	if preferred > 0 {
+		return preferred
+	}
+	return fallback
+}
