@@ -32,12 +32,13 @@ const (
 // payload only carries metadata so a hot-cached client can decide whether
 // to refetch the image.
 type BrandingConfig struct {
-	Title       string `json:"title"`
-	Subtitle    string `json:"subtitle"`
-	HasLogo     bool   `json:"has_logo"`
-	LogoSHA     string `json:"logo_sha,omitempty"`
-	HasFavicon  bool   `json:"has_favicon"`
-	FaviconSHA  string `json:"favicon_sha,omitempty"`
+	Title          string `json:"title"`
+	Subtitle       string `json:"subtitle"`
+	WelcomeMessage string `json:"welcome_message"`
+	HasLogo        bool   `json:"has_logo"`
+	LogoSHA        string `json:"logo_sha,omitempty"`
+	HasFavicon     bool   `json:"has_favicon"`
+	FaviconSHA     string `json:"favicon_sha,omitempty"`
 }
 
 // validatePNG rejects empty, oversize, or non-PNG byte slices and returns
@@ -62,14 +63,14 @@ func validatePNG(data []byte, maxBytes int, label string) (sha string, err error
 // handleGetBranding returns the public branding metadata. No auth.
 func handleGetBranding(c echo.Context) error {
 	var (
-		title, subtitle           string
-		logoSHA, faviconSHA       sql.NullString
-		logoMime, faviconMime     sql.NullString
+		title, subtitle, welcome string
+		logoSHA, faviconSHA      sql.NullString
+		logoMime, faviconMime    sql.NullString
 	)
 	err := db.QueryRow(`
-		SELECT title, subtitle, logo_sha, logo_mime, favicon_sha, favicon_mime
+		SELECT title, subtitle, COALESCE(welcome_message, ''), logo_sha, logo_mime, favicon_sha, favicon_mime
 		FROM branding_config WHERE id = 1
-	`).Scan(&title, &subtitle, &logoSHA, &logoMime, &faviconSHA, &faviconMime)
+	`).Scan(&title, &subtitle, &welcome, &logoSHA, &logoMime, &faviconSHA, &faviconMime)
 	if err == sql.ErrNoRows {
 		// First run before migration ran — return empty branding.
 		c.Response().Header().Set("Cache-Control", "public, max-age=60")
@@ -80,10 +81,11 @@ func handleGetBranding(c echo.Context) error {
 	}
 
 	cfg := BrandingConfig{
-		Title:      title,
-		Subtitle:   subtitle,
-		HasLogo:    logoSHA.Valid && logoSHA.String != "" && logoMime.Valid,
-		HasFavicon: faviconSHA.Valid && faviconSHA.String != "" && faviconMime.Valid,
+		Title:          title,
+		Subtitle:       subtitle,
+		WelcomeMessage: welcome,
+		HasLogo:        logoSHA.Valid && logoSHA.String != "" && logoMime.Valid,
+		HasFavicon:     faviconSHA.Valid && faviconSHA.String != "" && faviconMime.Valid,
 	}
 	if cfg.HasLogo {
 		cfg.LogoSHA = logoSHA.String
@@ -144,8 +146,9 @@ func handleGetFavicon(c echo.Context) error {
 // handleUpdateBrandingText accepts PATCH {title?, subtitle?}.
 func handleUpdateBrandingText(c echo.Context) error {
 	var body struct {
-		Title    *string `json:"title,omitempty"`
-		Subtitle *string `json:"subtitle,omitempty"`
+		Title          *string `json:"title,omitempty"`
+		Subtitle       *string `json:"subtitle,omitempty"`
+		WelcomeMessage *string `json:"welcome_message,omitempty"`
 	}
 	if err := c.Bind(&body); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid body"})
@@ -168,6 +171,15 @@ func handleUpdateBrandingText(c echo.Context) error {
 		}
 		sets = append(sets, "subtitle = ?")
 		args = append(args, s)
+	}
+	if body.WelcomeMessage != nil {
+		w := strings.TrimSpace(*body.WelcomeMessage)
+		// Count runes so multibyte messages aren't truncated by byte count.
+		if len([]rune(w)) > 500 {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "welcome_message must be 500 characters or fewer"})
+		}
+		sets = append(sets, "welcome_message = ?")
+		args = append(args, w)
 	}
 	if len(sets) == 0 {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "no fields to update"})

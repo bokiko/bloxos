@@ -3,11 +3,12 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { motion } from "framer-motion";
-import { Trash2, Pencil, Zap, RefreshCw } from "lucide-react";
+import { Trash2, Pencil, Zap, RefreshCw, Star } from "lucide-react";
 import type { MachineMetrics } from "@/lib/demo-data";
 import { ProgressBar, type ProgressVariant } from "./ProgressBar";
 import { Sparkline } from "./Sparkline";
 import { useVersions } from "@/contexts/VersionsContext";
+import { usePreferences } from "@/contexts/PreferencesContext";
 
 /* ============================================================================
  * Helpers
@@ -95,6 +96,13 @@ export function MachineCard({ machine, onDelete, onEdit, onRefresh }: MachineCar
   const { getMachineVersion } = useVersions();
   const versionInfo = getMachineVersion(machine.machine_id);
 
+  // Phase 11 — pin state. PHASE11-NOTE: every card subscribes to the full
+  // pinned_machines array, so pinning ONE machine triggers all cards to
+  // re-render. Acceptable for v1 (30-50 cards). Future: pass `pinned`
+  // boolean from parent, hoisted from a Set.
+  const { isPinned, pinMachine, unpinMachine } = usePreferences();
+  const pinned = isPinned(machine.machine_id);
+
   const { status, reason } = classifyMachine(machine);
   const awaiting = isAwaitingData(machine);
   const showPlaceholders = awaiting || status === "offline";
@@ -155,7 +163,8 @@ export function MachineCard({ machine, onDelete, onEdit, onRefresh }: MachineCar
         transition={{ type: "spring", stiffness: 420, damping: 28 }}
         className={[
           "group relative h-full flex flex-col cursor-pointer",
-          "bg-blox-card border border-blox-border rounded-xl p-4",
+          "bg-blox-card border border-blox-border rounded-xl",
+          "[padding:var(--card-padding)]",
           "before:absolute before:left-0 before:top-3 before:bottom-3 before:w-[3px] before:rounded-full",
           accentClass,
           "hover:border-blox-muted/30 hover:shadow-lg",
@@ -184,6 +193,29 @@ export function MachineCard({ machine, onDelete, onEdit, onRefresh }: MachineCar
           </div>
 
           <div className="flex items-center gap-0.5 shrink-0 -mr-1">
+            {/* Phase 11 — pin star, always first in the action group. */}
+            <button
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (pinned) {
+                  void unpinMachine(machine.machine_id);
+                } else {
+                  void pinMachine(machine.machine_id);
+                }
+              }}
+              className={`p-1 rounded transition-colors ${
+                pinned
+                  ? "text-amber-400 hover:text-amber-300"
+                  : "text-blox-muted/40 hover:text-amber-400 hover:bg-amber-500/10"
+              }`}
+              title={pinned ? "Unpin from top" : "Pin to top"}
+              aria-label={pinned ? "Unpin machine" : "Pin machine"}
+              aria-pressed={pinned}
+            >
+              <Star className={`w-3 h-3 ${pinned ? "fill-amber-400" : ""}`} />
+            </button>
             {onRefresh && status !== "offline" && (
               <RefreshButton
                 onRefresh={(e) => {

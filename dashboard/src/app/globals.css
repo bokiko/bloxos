@@ -323,6 +323,27 @@
 }
 
 /* ============================================================================
+ * Phase 11 — density tokens
+ *
+ * These vary card padding, grid gap, and minimum column width. The class is
+ * applied to <html> by PreferencesContext and inherited by every descendant.
+ * ============================================================================ */
+
+.density-comfortable {
+  --card-padding: 1rem;
+  --grid-gap: 1rem;
+  --grid-min-col: 300px;
+  --card-text-scale: 1;
+}
+
+.density-compact {
+  --card-padding: 0.75rem;
+  --grid-gap: 0.625rem;
+  --grid-min-col: 260px;
+  --card-text-scale: 0.95;
+}
+
+/* ============================================================================
  * Tailwind theme mapping — exposes tokens as utility classes
  * ============================================================================ */
 

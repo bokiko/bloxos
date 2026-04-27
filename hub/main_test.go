@@ -132,6 +132,12 @@ func setupTestServer(t *testing.T) *echo.Echo {
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { db.Close() })
 
+	// Phase 11 — match production: enable SQLite foreign-key enforcement so
+	// ON DELETE CASCADE behaves the same in tests as in the live binary.
+	if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
+		t.Fatalf("enable foreign_keys: %v", err)
+	}
+
 	if err := runMigrations(db); err != nil {
 		t.Fatalf("run migrations: %v", err)
 	}
@@ -172,6 +178,12 @@ func setupEmptyTestServer(t *testing.T) *echo.Echo {
 	// same in-memory DB.
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { db.Close() })
+
+	// Phase 11 — match production: enable SQLite foreign-key enforcement so
+	// ON DELETE CASCADE behaves the same in tests as in the live binary.
+	if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
+		t.Fatalf("enable foreign_keys: %v", err)
+	}
 
 	if err := runMigrations(db); err != nil {
 		t.Fatalf("run migrations: %v", err)

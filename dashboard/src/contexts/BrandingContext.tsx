@@ -21,6 +21,8 @@ import { HUB_URL } from "@/lib/session";
 export interface Branding {
   title: string;
   subtitle: string;
+  /** Phase 11 — admin-set login welcome message. Newlines render via whitespace-pre-line. */
+  welcome_message: string;
   hasLogo: boolean;
   logoSha: string;
   hasFavicon: boolean;
@@ -40,6 +42,7 @@ interface BrandingContextValue {
 const EMPTY: Branding = {
   title: "",
   subtitle: "",
+  welcome_message: "",
   hasLogo: false,
   logoSha: "",
   hasFavicon: false,
@@ -83,6 +86,7 @@ export function BrandingProvider({ children }: { children: ReactNode }) {
       setBranding({
         title: typeof data.title === "string" ? data.title : "",
         subtitle: typeof data.subtitle === "string" ? data.subtitle : "",
+        welcome_message: typeof data.welcome_message === "string" ? data.welcome_message : "",
         hasLogo: !!data.has_logo,
         logoSha: typeof data.logo_sha === "string" ? data.logo_sha : "",
         hasFavicon: !!data.has_favicon,
