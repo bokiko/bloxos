@@ -7,6 +7,7 @@ import { Trash2, Pencil, Zap, RefreshCw } from "lucide-react";
 import type { MachineMetrics } from "@/lib/demo-data";
 import { ProgressBar, type ProgressVariant } from "./ProgressBar";
 import { Sparkline } from "./Sparkline";
+import { useVersions } from "@/contexts/VersionsContext";
 
 /* ============================================================================
  * Helpers
@@ -89,6 +90,10 @@ interface MachineCardProps {
 export function MachineCard({ machine, onDelete, onEdit, onRefresh }: MachineCardProps) {
   // The footer's "12s ago" timer is owned by <LiveTimeSince/> below — it
   // mounts its own 1Hz ticker, so the parent doesn't need to force re-renders.
+
+  // Phase 8 — version info from /api/versions for the update-pending badge.
+  const { getMachineVersion } = useVersions();
+  const versionInfo = getMachineVersion(machine.machine_id);
 
   const { status, reason } = classifyMachine(machine);
   const awaiting = isAwaitingData(machine);
@@ -328,6 +333,18 @@ export function MachineCard({ machine, onDelete, onEdit, onRefresh }: MachineCar
             <>
               <span aria-hidden>·</span>
               <span className="font-mono">{machine.latency_ms}ms</span>
+            </>
+          )}
+          {/* Phase 8 — version badge, only when an update is pending */}
+          {versionInfo && versionInfo.update_pending && (
+            <>
+              <span aria-hidden>·</span>
+              <span
+                className="inline-flex items-center gap-0.5 px-1 py-0 rounded bg-amber-500/10 text-amber-400 font-mono text-[9px]"
+                title={`Running ${versionInfo.running_sha?.slice(0, 8) ?? "unknown"}, update pending`}
+              >
+                update pending
+              </span>
             </>
           )}
           {otherTags.length > 0 && (

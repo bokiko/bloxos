@@ -4,6 +4,7 @@ import { ToastProvider } from "@/components/Toast";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { SSEProvider } from "@/contexts/SSEContext";
 import { ThemeProvider } from "@/contexts/ThemeContext";
+import { VersionsProvider } from "@/contexts/VersionsContext";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Geist, Geist_Mono } from "next/font/google";
@@ -61,9 +62,11 @@ export default function RootLayout({
           <AuthProvider>
             <ErrorBoundary>
               <SSEProvider>
-                <TooltipProvider>
-                  <ToastProvider>{children}</ToastProvider>
-                </TooltipProvider>
+                <VersionsProvider>
+                  <TooltipProvider>
+                    <ToastProvider>{children}</ToastProvider>
+                  </TooltipProvider>
+                </VersionsProvider>
               </SSEProvider>
             </ErrorBoundary>
           </AuthProvider>
