@@ -85,6 +85,8 @@ var routeScopeRequirements = map[string]string{
 	routeScopeKey(http.MethodGet, "/api/machines/:id/containers"):              scopeFleetRead,
 	routeScopeKey(http.MethodGet, "/api/machines/:id/metrics/history"):         scopeFleetRead,
 	routeScopeKey(http.MethodPost, "/api/machines/:id/command"):                scopeFleetControl,
+	routeScopeKey(http.MethodPost, "/api/machines/:id/refresh"):                scopeFleetControl,
+	routeScopeKey(http.MethodPost, "/api/refresh"):                             scopeFleetControl,
 	routeScopeKey(http.MethodPut, "/api/machines/:id/tags"):                    scopeFleetMetadata,
 	routeScopeKey(http.MethodDelete, "/api/machines/:id"):                      scopeFleetAdmin,
 	routeScopeKey(http.MethodPost, "/api/machines/:id/terminal"):               scopeFleetControl,

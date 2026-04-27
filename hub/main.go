@@ -264,6 +264,8 @@ func registerRoutes(e *echo.Echo) {
 	api.GET("/api/machines/:id/services", handleGetServices)
 	api.GET("/api/machines/:id/containers", handleGetContainers)
 	api.POST("/api/machines/:id/command", handleCommand)
+	api.POST("/api/machines/:id/refresh", handleMachineRefresh)
+	api.POST("/api/refresh", handleFleetRefresh)
 	api.PUT("/api/machines/:id/tags", handleSetTags)
 	api.GET("/api/machines/:id/metrics/history", handleMetricsHistory)
 	api.DELETE("/api/machines/:id", handleDeleteMachine)
