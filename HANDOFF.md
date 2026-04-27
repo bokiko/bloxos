@@ -101,9 +101,16 @@
     - New aggregating endpoint `GET /api/inventory` (RBAC scope `fleet.read`): top-line totals (machine count, total RAM, total storage by type, total CPU cores, GPU count, unique CPU/GPU/motherboard counts), per-machine summary rows, CPU/memory/GPU groups, per-disk and per-NIC rows.
     - Pre-compiled regex package-level vars in agent (one-shot compile, not per-call). `inventoryMaxInt` / `appendUnique` / `dedupedGPUModels` helpers scoped to `inventory.go`.
     - Backwards-compatible: agents on the old binary continue working; new fields backfill as agents redeploy. Hub VM (virtualized) won't expose DMI — fields stay empty and the dashboard degrades gracefully. Bare-metal agents (`ai-04`, `ic-brain`) will populate them on next agent restart.
+  - [x] Phase 6 Unit B: `/inventory` dashboard page — closes Phase 6
+    - `InventoryProvider` (`dashboard/src/contexts/InventoryContext.tsx`) fetches `/api/inventory` on demand with idle/loading/ready/error states; resets cache on auth change.
+    - New `/inventory` route with hero + 5-cell summary strip (Total RAM, Total Cores, Total Storage with NVMe/SSD/HDD breakdown, GPUs, Motherboards) + 6 tabbed views (Machines / CPU / Memory / Storage / GPU / Network) wired to URL via `?view=` for deep-linking.
+    - Generic `<InventoryTable>` (sort any column, free-text filter, group-by any column, column-visibility toggle). State resets on view change via parent's `key={activeView}` remount — no view-watching effect needed (avoids React 19 `set-state-in-effect`).
+    - `<InventoryExportMenu>` — download CSV / JSON / Markdown plus clipboard-copy Markdown. Filenames include view + ISO date.
+    - Header link: `Boxes` icon between Theme and divider. Cmd+K palette: "Hardware inventory" entry under Navigate.
+    - Honest empty rendering — fields not yet collected by an agent show `—`. Page works against current data and progressively shows more as Unit A's expanded collection rolls out fleet-wide.
+    - Reused the Base UI error #31 fix pattern (wrap `DropdownMenuLabel` in `DropdownMenuGroup`) for the table toolbar dropdowns.
 - Remaining:
-  - [ ] Phase 6 Unit B: `/inventory` dashboard page — six tabbed views (Machines / CPU / Memory / Storage / GPU / Network), summary cards, CSV/JSON/Markdown export, Cmd+K palette entry. Independent of Unit A's rollout state — works against current data, surfaces new fields as they appear.
-  - [ ] Roll out new agent binary to `ai-04`, `ic-brain`, `AiFarm-01` (operator step — `curl /download/agent` + `systemctl restart bloxos-agent` on each).
+  - [ ] Roll out new agent binary to `ai-04`, `ic-brain`, `AiFarm-01` (operator step — `curl /download/agent` + `systemctl restart bloxos-agent` on each), then auto-update takes over for all future deploys.
 
 ## Credentials
 All live credentials live outside git in `~/.bloxos/`-style paths or operator memory. **Never** put raw secrets, tokens, passwords, PINs, or SSH credentials in this file or any committed file.
