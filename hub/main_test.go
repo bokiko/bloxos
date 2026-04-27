@@ -1479,6 +1479,90 @@ func TestAgentReconnectWithSecret(t *testing.T) {
 	server.Close()
 }
 
+// TestAgentVersionAnnouncedOnReconnect locks in Phase 8's auto-update path:
+// when an agent reconnects via durable secret, the hub MUST send an
+// agent_version frame so an out-of-date binary can self-update. The original
+// Phase 8 wired the announce only into the new-enrolment branch, leaving
+// every existing fleet member stuck on the old binary across hub redeploys.
+func TestAgentVersionAnnouncedOnReconnect(t *testing.T) {
+	e := setupTestServer(t)
+	token := seedValidToken(t)
+
+	const stagedSHA = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+	hubAgentBinaryMu.Lock()
+	prevSHA := hubAgentBinarySHA
+	hubAgentBinarySHA = stagedSHA
+	hubAgentBinaryMu.Unlock()
+	t.Cleanup(func() {
+		hubAgentBinaryMu.Lock()
+		hubAgentBinarySHA = prevSHA
+		hubAgentBinaryMu.Unlock()
+	})
+
+	server := httptest.NewServer(e)
+	defer server.Close()
+
+	// Step 1: enrol via token, capture the durable secret. The enrolment
+	// path also calls registerAgentConnection so an agent_version frame may
+	// arrive on conn1 too — drain everything until we see the enrolled msg.
+	conn1, err := wsDialAgent(t, server, "token="+token)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	sendMetricsMsg(t, conn1, "test-machine-version-announce")
+
+	var secret string
+	conn1.SetReadDeadline(time.Now().Add(5 * time.Second))
+	for secret == "" {
+		_, msg, err := conn1.ReadMessage()
+		if err != nil {
+			t.Fatalf("read on enrol conn: %v", err)
+		}
+		var probe struct {
+			Type        string `json:"type"`
+			AgentSecret string `json:"agent_secret"`
+		}
+		if err := json.Unmarshal(msg, &probe); err != nil {
+			continue
+		}
+		if probe.Type == "enrolled" {
+			secret = probe.AgentSecret
+		}
+	}
+	if secret == "" {
+		t.Fatal("enrolment did not yield a secret")
+	}
+	conn1.Close()
+	waitAgentDrain(t, "test-machine-version-announce", 2*time.Second)
+
+	// Step 2: reconnect via secret. The fix under test: the hub MUST send
+	// an agent_version frame off the back of registerAgentConnection.
+	conn2, err := wsDialAgent(t, server, "secret="+secret)
+	if err != nil {
+		t.Fatalf("reconnect: %v", err)
+	}
+	defer conn2.Close()
+
+	conn2.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, msg, err := conn2.ReadMessage()
+	if err != nil {
+		t.Fatalf("expected agent_version frame on reconnect, read err: %v", err)
+	}
+	var versionMsg struct {
+		Type   string `json:"type"`
+		SHA256 string `json:"sha256"`
+	}
+	if err := json.Unmarshal(msg, &versionMsg); err != nil {
+		t.Fatalf("parse version frame: %v (raw=%q)", err, string(msg))
+	}
+	if versionMsg.Type != "agent_version" {
+		t.Fatalf("expected type=agent_version, got %q (raw=%q)", versionMsg.Type, string(msg))
+	}
+	if versionMsg.SHA256 != stagedSHA {
+		t.Fatalf("expected sha256=%s, got %s", stagedSHA, versionMsg.SHA256)
+	}
+}
+
 func TestAgentReconnectWithInvalidSecret(t *testing.T) {
 	e := setupTestServer(t)
 
