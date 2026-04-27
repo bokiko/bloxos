@@ -226,7 +226,12 @@ func websocketDialerFor(rawURL string) (*websocket.Dialer, error) {
 	}
 
 	dialer := *websocket.DefaultDialer
-	if u.Scheme != "wss" {
+	// Phase 8 update flow reuses this for HTTPS downloads (`/download/agent`),
+	// not just the WS dial. Both wss:// and https:// need the same TLS config
+	// (custom CA, optional InsecureSkipVerify); without this, the auto-update
+	// HTTP fetch failed with "x509: certificate signed by unknown authority"
+	// and the rollout circuit breaker tripped.
+	if u.Scheme != "wss" && u.Scheme != "https" {
 		return &dialer, nil
 	}
 
