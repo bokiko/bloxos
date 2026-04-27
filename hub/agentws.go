@@ -27,6 +27,21 @@ type ConnectedAgent struct {
 	WriteMu   sync.Mutex
 }
 
+// registerAgentConnection finalises an authenticated WebSocket handshake.
+// It is the single chokepoint between "agent authed" and "agent fully
+// online", so any per-connect work (registry insert, version announce,
+// future hooks) must go here. Both auth paths — durable-secret reconnect
+// and token-based fresh enrolment — call this exactly once per connection,
+// which guarantees Phase-8 auto-update propagates on reconnect (the bug
+// that originally motivated extracting this helper).
+func registerAgentConnection(machineID string, agent *ConnectedAgent) {
+	agent.MachineID = machineID
+	agentsMu.Lock()
+	agents[machineID] = agent
+	agentsMu.Unlock()
+	go announceVersionToAgent(machineID, agent)
+}
+
 func handleCreateToken(c echo.Context) error {
 	ip := getRealIP(c)
 	if !rateLimiter.Allow("token_create", ip, 3) {
@@ -124,6 +139,9 @@ if [[ -n "$CA_URL" ]]; then
   fi
 
   sudo mkdir -p /etc/bloxos
+  # 0755 so the next curl (running as the invoking user, not root) can traverse
+  # /etc/bloxos to read ca.crt. The agent-secret file inside is 0600.
+  sudo chmod 755 /etc/bloxos
   sudo install -m 0644 "$TMP_CA" /etc/bloxos/ca.crt
   CA_CURL_ARGS+=(--cacert /etc/bloxos/ca.crt)
   AGENT_CA_ENV='Environment="BLOXOS_CA_CERT=/etc/bloxos/ca.crt"'
@@ -144,7 +162,7 @@ sudo mv /tmp/bloxos-agent /usr/local/bin/bloxos-agent
 
 # Create credential directory for agent secret (post-enrollment).
 sudo mkdir -p /etc/bloxos
-sudo chmod 700 /etc/bloxos
+sudo chmod 755 /etc/bloxos
 
 # Create systemd service.
 # The agent uses the token for initial enrollment only.
@@ -398,10 +416,7 @@ func handleAgentWS(c echo.Context) error {
 	agent := &ConnectedAgent{Conn: ws}
 	if secretMachineID != "" {
 		machineID = secretMachineID
-		agent.MachineID = machineID
-		agentsMu.Lock()
-		agents[machineID] = agent
-		agentsMu.Unlock()
+		registerAgentConnection(machineID, agent)
 		log.Printf("agent authenticated via secret: machine_id=%s", machineID)
 	}
 
@@ -478,16 +493,8 @@ func handleAgentWS(c echo.Context) error {
 					return nil
 				}
 
-				agent.MachineID = machineID
-				agentsMu.Lock()
-				agents[machineID] = agent
-				agentsMu.Unlock()
+				registerAgentConnection(machineID, agent)
 				log.Printf("agent registered: %s (%s)", m.Hostname, machineID)
-
-				// Phase 8 — announce the current agent binary SHA. If the
-				// agent's running SHA differs, it will download/install/exit
-				// and systemd will bring it back on the new binary.
-				go announceVersionToAgent(machineID, agent)
 			}
 
 			// Calculate latency from sent_at.

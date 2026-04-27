@@ -109,8 +109,12 @@
     - Header link: `Boxes` icon between Theme and divider. Cmd+K palette: "Hardware inventory" entry under Navigate.
     - Honest empty rendering — fields not yet collected by an agent show `—`. Page works against current data and progressively shows more as Unit A's expanded collection rolls out fleet-wide.
     - Reused the Base UI error #31 fix pattern (wrap `DropdownMenuLabel` in `DropdownMenuGroup`) for the table toolbar dropdowns.
+  - [x] Install-script CA-dir mode fix (2026-04-27): non-root re-runs of `install.sh` were failing on real Ubuntu with `curl: (77) error setting certificate file: /etc/bloxos/ca.crt` because `/etc/bloxos` was being created/forced to mode `0700` (in `hub/agentws.go` line 147 and `agent/main.go` line 176). Fixed by switching the dir to `0755` in both sites and adding an early `chmod 755` in the installer so re-runs reset the mode on already-broken machines. WSL was unaffected because DrvFs ignores Unix mode bits. Verified end-to-end: `ai-04` (which had been failing) enrolled cleanly within minutes of redeploy. Hub tests still 18.7s green.
+  - [x] Phase 8 announce-on-reconnect fix (2026-04-27): `announceVersionToAgent` was missing from the secret-auth reconnect branch in `handleAgentWS`, so existing fleet members never received the new-binary SHA after a hub redeploy and auto-update never propagated past the first deploy. Extracted a single `registerAgentConnection(machineID, agent)` helper called from both auth paths (durable-secret reconnect + token-based new enrolment) so future Phase-N work can't recreate the divergence. New `TestAgentVersionAnnouncedOnReconnect` locks the behaviour in.
 - Remaining:
-  - [ ] Roll out new agent binary to `ai-04`, `ic-brain`, `AiFarm-01` (operator step — `curl /download/agent` + `systemctl restart bloxos-agent` on each), then auto-update takes over for all future deploys.
+  - [ ] Roll out new agent binary to remaining fleet members so they pick up the recovery infrastructure (`OnFailure=`, recovery unit + script). After that, every future agent deploy is zero-touch via Phase 8 auto-update.
+  - [ ] Re-add `Dasman` (Synology) + `Dell` (Proxmox) API machines via the dashboard once their credentials are rotated.
+  - [ ] Decide what to do with the `dont-know` (offline WSL) row — delete via dashboard, or have its operator re-enrol with a real hostname.
 
 ## Credentials
 All live credentials live outside git in `~/.bloxos/`-style paths or operator memory. **Never** put raw secrets, tokens, passwords, PINs, or SSH credentials in this file or any committed file.
@@ -169,8 +173,13 @@ All live credentials live outside git in `~/.bloxos/`-style paths or operator me
 - `rbac.go`, `users.go`, `migrations.go` — unchanged, already separated.
 
 ## Current Fleet
-- Three enrolled agents online: `BloxOs` (hub self), `ai-04`, `ic-brain` — all on the hardware-aware build.
-- Two API machines polling: `Dasman` (Synology DSM), `Dell` (Proxmox VE — `custom_ca` since PR #30).
+- Five agent rows in DB after the post-redesign re-enrolment round (2026-04-27):
+  - `ai-03`     — 192.168.16.205 — online (LAN, Ubuntu 24.04)
+  - `ai-04`     — 192.168.16.215 — online (LAN, Ubuntu 24.04) — first machine to enroll cleanly after the install-script chmod fix
+  - `FAT-LOLO`  — 192.168.16.85  — online (LAN, Ubuntu 24.04)
+  - `Ai-05`     — 172.29.140.117 — online (WSL2)
+  - `dont-know` — 172.27.161.140 — offline (WSL2, hostname was never set; safe to delete from the dashboard)
+- API machines: **none currently re-added.** The pre-wipe `Dasman` (Synology) and `Dell` (Proxmox) need to be re-added via the dashboard "Add API Machine" button after their credentials are rotated.
 - Recheck live state from the dashboard or hub API before any ops work.
 
 ## Key URLs

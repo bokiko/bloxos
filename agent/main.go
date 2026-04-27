@@ -173,7 +173,9 @@ func loadCredentialFile() string {
 func saveCredentialFile(secret string) error {
 	path := credentialFilePath()
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	// 0755 so the install-time curl (running as the invoking user) can traverse
+	// the dir to read /etc/bloxos/ca.crt. The secret file itself is 0600.
+	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("create credential dir: %w", err)
 	}
 	if err := os.WriteFile(path, []byte(secret+"\n"), 0600); err != nil {
