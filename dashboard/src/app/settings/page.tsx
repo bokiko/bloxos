@@ -1,9 +1,10 @@
 "use client";
 
-// Phase 10 — settings page.
+// Phase 10/11 — settings page.
 //
 // Sticky header with a back link to the fleet, hero with title + tagline,
-// and tabs for Theme (always) and Branding (admin only).
+// and tabs for Profile (Phase 11), Preferences (Phase 11), Theme (Phase
+// 10), and Branding (Phase 10, admin only).
 
 import Link from "next/link";
 import { ChevronLeft } from "lucide-react";
@@ -16,11 +17,13 @@ import {
 } from "@/components/ui/tabs";
 import { ThemeSettings } from "@/components/settings/ThemeSettings";
 import { BrandingSettings } from "@/components/settings/BrandingSettings";
+import { ProfileSettings } from "@/components/settings/ProfileSettings";
+import { PreferencesSettings } from "@/components/settings/PreferencesSettings";
 
 export default function SettingsPage() {
   const { hasScope } = useAuth();
   const canEditBranding = hasScope("branding.admin");
-  const defaultTab = "theme";
+  const defaultTab = "profile";
 
   return (
     <div className="min-h-screen bg-blox-bg">
@@ -46,9 +49,19 @@ export default function SettingsPage() {
 
         <Tabs defaultValue={defaultTab} className="w-full">
           <TabsList className="bg-blox-card border border-blox-border">
+            <TabsTrigger value="profile">Profile</TabsTrigger>
+            <TabsTrigger value="preferences">Preferences</TabsTrigger>
             <TabsTrigger value="theme">Theme</TabsTrigger>
             {canEditBranding && <TabsTrigger value="branding">Branding</TabsTrigger>}
           </TabsList>
+
+          <TabsContent value="profile" className="mt-6">
+            <ProfileSettings />
+          </TabsContent>
+
+          <TabsContent value="preferences" className="mt-6">
+            <PreferencesSettings />
+          </TabsContent>
 
           <TabsContent value="theme" className="mt-6">
             <ThemeSettings />

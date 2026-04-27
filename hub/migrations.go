@@ -281,6 +281,75 @@ var migrations = []migration{
 			return err
 		},
 	},
+	{
+		description: "Phase 11 — add per-user workflow personalization columns to users",
+		apply: func(tx *sql.Tx) error {
+			stmts := []string{
+				`ALTER TABLE users ADD COLUMN display_name TEXT NOT NULL DEFAULT ''`,
+				`ALTER TABLE users ADD COLUMN avatar_data BLOB`,
+				`ALTER TABLE users ADD COLUMN avatar_mime TEXT`,
+				`ALTER TABLE users ADD COLUMN avatar_sha TEXT`,
+				`ALTER TABLE users ADD COLUMN density TEXT NOT NULL DEFAULT 'comfortable'`,
+				`ALTER TABLE users ADD COLUMN default_view TEXT NOT NULL DEFAULT 'grid'`,
+				`ALTER TABLE users ADD COLUMN default_sort TEXT NOT NULL DEFAULT 'name'`,
+			}
+			for _, s := range stmts {
+				if _, err := tx.Exec(s); err != nil {
+					if isDuplicateColumnErr(err) {
+						continue
+					}
+					return fmt.Errorf("migration stmt %q: %w", s, err)
+				}
+			}
+			return nil
+		},
+	},
+	{
+		description: "Phase 11 — create user_pinned_machines table",
+		apply: func(tx *sql.Tx) error {
+			// FK ON DELETE CASCADE relies on `PRAGMA foreign_keys = ON` set in
+			// hub/main.go. Without it cascades are silently no-ops.
+			_, err := tx.Exec(`
+			CREATE TABLE IF NOT EXISTS user_pinned_machines (
+				user_id TEXT NOT NULL,
+				machine_id TEXT NOT NULL,
+				pinned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+				PRIMARY KEY (user_id, machine_id),
+				FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+				FOREIGN KEY (machine_id) REFERENCES machines(id) ON DELETE CASCADE
+			);
+			CREATE INDEX IF NOT EXISTS idx_user_pinned_machines_user ON user_pinned_machines(user_id);
+			`)
+			return err
+		},
+	},
+	{
+		description: "Phase 11 — create user_saved_filters table",
+		apply: func(tx *sql.Tx) error {
+			_, err := tx.Exec(`
+			CREATE TABLE IF NOT EXISTS user_saved_filters (
+				id TEXT PRIMARY KEY,
+				user_id TEXT NOT NULL,
+				name TEXT NOT NULL,
+				filter_json TEXT NOT NULL,
+				created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+				FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+			);
+			CREATE INDEX IF NOT EXISTS idx_user_saved_filters_user ON user_saved_filters(user_id);
+			`)
+			return err
+		},
+	},
+	{
+		description: "Phase 11 — add welcome_message to branding_config",
+		apply: func(tx *sql.Tx) error {
+			_, err := tx.Exec(`ALTER TABLE branding_config ADD COLUMN welcome_message TEXT NOT NULL DEFAULT ''`)
+			if err != nil && isDuplicateColumnErr(err) {
+				return nil
+			}
+			return err
+		},
+	},
 }
 
 // isDuplicateColumnErr returns true when SQLite rejects an ALTER TABLE ADD

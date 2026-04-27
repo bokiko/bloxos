@@ -3,6 +3,9 @@
 import { useState, useMemo, useCallback, useEffect } from "react";
 import { useSSE } from "@/contexts/SSEContext";
 import { useAuth } from "@/contexts/AuthContext";
+import { usePreferences } from "@/contexts/PreferencesContext";
+import { SaveFilterButton } from "@/components/SaveFilterButton";
+import { SavedFiltersDropdown } from "@/components/SavedFiltersDropdown";
 import { demoMachines, MachineMetrics, AlertData } from "@/lib/demo-data";
 import { DEMO_MODE, HUB_URL } from "@/lib/session";
 import { MachineCard, MachineCardSkeleton } from "@/components/MachineCard";
@@ -92,11 +95,64 @@ export default function Home() {
   const canManageAPIMachines = hasScope("api_machines.admin");
   const canControlFleet = hasScope("fleet.control");
   const canDeleteMachines = hasScope("fleet.admin");
+  // Phase 11 — hydrate viewMode/sortBy from per-user preferences. The
+  // PreferencesContext lazy-init reads from localStorage so the defaults
+  // are correct on first paint after a reload (no flash).
+  const { preferences, updateScalar } = usePreferences();
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
-  const [sortBy, setSortBy] = useState<SortOption>("name");
-  const [viewMode, setViewMode] = useState<ViewMode>("grid");
+  const [sortBy, setSortBy] = useState<SortOption>(() => preferences.default_sort);
+  const [viewMode, setViewMode] = useState<ViewMode>(() => preferences.default_view);
   const [tagFilter, setTagFilter] = useState<string | null>(null);
+
+  // Keep local state in sync if preferences change post-mount (e.g. user
+  // changes default in another tab/device, then we refresh from the
+  // server). This is a legitimate external→React sync — the same pattern
+  // used by BrandingContext / PreferencesContext, suppressed for the same
+  // reason.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setViewMode(preferences.default_view);
+  }, [preferences.default_view]);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setSortBy(preferences.default_sort);
+  }, [preferences.default_sort]);
+
+  const changeView = useCallback(
+    (next: ViewMode) => {
+      setViewMode(next);
+      void updateScalar({ default_view: next });
+    },
+    [updateScalar],
+  );
+
+  const changeSort = useCallback(
+    (next: SortOption) => {
+      setSortBy(next);
+      void updateScalar({ default_sort: next });
+    },
+    [updateScalar],
+  );
+
+  const applySavedFilter = useCallback(
+    (f: { search?: unknown; statusFilter?: unknown; tagFilter?: unknown; sortBy?: unknown }) => {
+      if (typeof f.search === "string") setSearch(f.search);
+      if (
+        f.statusFilter === "all" ||
+        f.statusFilter === "online" ||
+        f.statusFilter === "warning" ||
+        f.statusFilter === "offline"
+      ) {
+        setStatusFilter(f.statusFilter);
+      }
+      setTagFilter(typeof f.tagFilter === "string" ? f.tagFilter : null);
+      if (f.sortBy === "name" || f.sortBy === "status" || f.sortBy === "cpu" || f.sortBy === "gpu_temp") {
+        changeSort(f.sortBy);
+      }
+    },
+    [changeSort],
+  );
   const [alertPanelOpen, setAlertPanelOpen] = useState(false);
   const [addMachineOpen, setAddMachineOpen] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -199,8 +255,18 @@ export default function Home() {
       }
     });
 
+    // Phase 11 — pinned machines float to the top while preserving the
+    // primary sort order within each partition. Stable two-phase: pinned
+    // first (in their primary-sort order), then the rest.
+    if (preferences.pinned_machines.length > 0) {
+      const pinnedSet = new Set(preferences.pinned_machines);
+      const pinned = result.filter((m) => pinnedSet.has(m.machine_id));
+      const rest = result.filter((m) => !pinnedSet.has(m.machine_id));
+      result = [...pinned, ...rest];
+    }
+
     return result;
-  }, [machines, search, statusFilter, sortBy, tagFilter]);
+  }, [machines, search, statusFilter, sortBy, tagFilter, preferences.pinned_machines]);
 
 
   const handleAcknowledge = useCallback(async (id: string) => {
@@ -479,6 +545,11 @@ export default function Home() {
             </button>
           </div>
 
+          {/* Phase 11 — saved filter quick-apply (only when at least one exists). */}
+          {preferences.saved_filters.length > 0 && (
+            <SavedFiltersDropdown onApply={applySavedFilter} />
+          )}
+
           {/* Status filter dropdown */}
           <DropdownMenu>
             <DropdownMenuTrigger
@@ -513,7 +584,7 @@ export default function Home() {
               <DropdownMenuLabel className="text-blox-muted">Sort by</DropdownMenuLabel>
               <DropdownMenuSeparator className="bg-blox-border" />
               {(Object.keys(sortLabels) as SortOption[]).map((key) => (
-                <DropdownMenuItem key={key} onClick={() => setSortBy(key)} className="text-xs text-blox-text">
+                <DropdownMenuItem key={key} onClick={() => changeSort(key)} className="text-xs text-blox-text">
                   {sortLabels[key]}
                 </DropdownMenuItem>
               ))}
@@ -548,9 +619,18 @@ export default function Home() {
 
           <div className="flex-1" />
 
+          {/* Phase 11 — save current filter as a named saved filter. Only
+              shown when filters are actually active so the bar stays clean. */}
+          {(search || statusFilter !== "all" || tagFilter) && (
+            <SaveFilterButton
+              currentFilter={{ search, statusFilter, tagFilter, sortBy }}
+              disabled={!canControlFleet && preferences.saved_filters.length >= 20}
+            />
+          )}
+
           <div className="flex items-center rounded-lg border border-blox-border overflow-hidden">
             <button
-              onClick={() => setViewMode("grid")}
+              onClick={() => changeView("grid")}
               className={`p-2 transition-colors ${
                 viewMode === "grid"
                   ? "bg-blox-blue/10 text-blox-blue"
@@ -561,7 +641,7 @@ export default function Home() {
               <LayoutGrid className="w-3.5 h-3.5" />
             </button>
             <button
-              onClick={() => setViewMode("list")}
+              onClick={() => changeView("list")}
               className={`p-2 transition-colors ${
                 viewMode === "list"
                   ? "bg-blox-blue/10 text-blox-blue"
@@ -583,8 +663,11 @@ export default function Home() {
       <main className="max-w-[1600px] mx-auto px-4 sm:px-6 pb-6">
         {viewMode === "grid" ? (
           <motion.div
-            className="grid gap-4 auto-rows-fr justify-start"
-            style={{ gridTemplateColumns: "repeat(auto-fill, minmax(300px, 360px))" }}
+            className="grid auto-rows-fr justify-start"
+            style={{
+              gap: "var(--grid-gap)",
+              gridTemplateColumns: "repeat(auto-fill, minmax(var(--grid-min-col), 360px))",
+            }}
           >
             {!hasReceivedData && machines.length === 0 && !isDemo && (
               <>

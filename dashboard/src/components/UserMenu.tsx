@@ -1,9 +1,10 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { User, Users as UsersIcon, LogOut, Settings as SettingsIcon } from "lucide-react";
+import { Users as UsersIcon, LogOut, Settings as SettingsIcon } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useTheme, THEMES, type ThemeName } from "@/contexts/ThemeContext";
+import { usePreferences } from "@/contexts/PreferencesContext";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -14,6 +15,7 @@ import {
   DropdownMenuGroup,
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
+import { Avatar } from "@/components/Avatar";
 import { cn } from "@/lib/utils";
 
 const THEME_ORDER: ThemeName[] = ["bloxos", "solarized", "dracula", "nord", "tokyo-night"];
@@ -22,7 +24,9 @@ export function UserMenu() {
   const router = useRouter();
   const { logout, hasScope, role } = useAuth();
   const { themeName, setTheme } = useTheme();
+  const { preferences, myAvatarURL } = usePreferences();
   const canManageUsers = hasScope("users.admin");
+  const displayName = preferences.display_name || "Account";
 
   return (
     <DropdownMenu>
@@ -32,28 +36,32 @@ export function UserMenu() {
             variant="ghost"
             size="icon-sm"
             aria-label="Account menu"
-            title="Account"
+            title={displayName}
             className="text-blox-muted hover:text-blox-text"
           >
-            <User className="w-4 h-4" />
+            <Avatar url={myAvatarURL} name={displayName} size={28} />
           </Button>
         }
       />
       <DropdownMenuContent align="end" className="bg-blox-card border-blox-border min-w-[240px]">
-        {/* Group wrapper is required by Base UI — DropdownMenuLabel is a
-            MenuPrimitive.GroupLabel and must live inside a Menu.Group, or
-            it throws Base UI error #31 at runtime. */}
-        <DropdownMenuGroup>
-          <DropdownMenuLabel className="text-blox-muted text-[10px] uppercase tracking-wider">
-            {role ? `Role: ${role}` : "Account"}
-          </DropdownMenuLabel>
-        </DropdownMenuGroup>
+        {/* Phase 11 — header row: avatar + display name + role. Plain JSX,
+            not a DropdownMenuItem (it isn't interactive). */}
+        <div className="flex items-center gap-3 px-2 py-2">
+          <Avatar url={myAvatarURL} name={displayName} size={32} />
+          <div className="min-w-0">
+            <div className="text-sm font-medium text-blox-text truncate">{displayName}</div>
+            {role && (
+              <div className="text-[10px] uppercase tracking-wider text-blox-muted">
+                {role.charAt(0).toUpperCase() + role.slice(1)}
+              </div>
+            )}
+          </div>
+        </div>
         <DropdownMenuSeparator className="bg-blox-border" />
 
         {/* Phase 10 — quick theme tile row. Each tile is a 5-column grid
             preview; clicking applies the theme immediately. The "Theme"
-            label is wrapped in DropdownMenuGroup for the same Base UI
-            reason as above. */}
+            label is wrapped in DropdownMenuGroup to satisfy Base UI #31. */}
         <DropdownMenuGroup>
           <DropdownMenuLabel className="text-blox-muted text-[10px] uppercase tracking-wider">
             Theme

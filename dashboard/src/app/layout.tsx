@@ -5,6 +5,7 @@ import { AuthProvider } from "@/contexts/AuthContext";
 import { SSEProvider } from "@/contexts/SSEContext";
 import { ThemeProvider } from "@/contexts/ThemeContext";
 import { BrandingProvider } from "@/contexts/BrandingContext";
+import { PreferencesProvider } from "@/contexts/PreferencesContext";
 import { VersionsProvider } from "@/contexts/VersionsContext";
 import { InventoryProvider } from "@/contexts/InventoryContext";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
@@ -96,17 +97,23 @@ export default function RootLayout({
         <AuthProvider>
           <ThemeProvider>
             <BrandingProvider>
-              <ErrorBoundary>
-                <SSEProvider>
-                  <VersionsProvider>
-                    <InventoryProvider>
-                      <TooltipProvider>
-                        <ToastProvider>{children}</ToastProvider>
-                      </TooltipProvider>
-                    </InventoryProvider>
-                  </VersionsProvider>
-                </SSEProvider>
-              </ErrorBoundary>
+              {/* Phase 11 — PreferencesProvider sits inside AuthProvider
+                  (it reads the JWT for user_id) but outside the SSE/data
+                  layers that consume preferences (density, default view,
+                  pinned machines, saved filters). */}
+              <PreferencesProvider>
+                <ErrorBoundary>
+                  <SSEProvider>
+                    <VersionsProvider>
+                      <InventoryProvider>
+                        <TooltipProvider>
+                          <ToastProvider>{children}</ToastProvider>
+                        </TooltipProvider>
+                      </InventoryProvider>
+                    </VersionsProvider>
+                  </SSEProvider>
+                </ErrorBoundary>
+              </PreferencesProvider>
             </BrandingProvider>
           </ThemeProvider>
         </AuthProvider>

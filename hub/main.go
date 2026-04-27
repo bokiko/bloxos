@@ -150,7 +150,10 @@ var (
 
 func main() {
 	var err error
-	db, err = sql.Open("sqlite", "bloxos.db?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)")
+	// Phase 11 — `foreign_keys=on` is load-bearing: ON DELETE CASCADE on
+	// user_pinned_machines / user_saved_filters relies on it being set per
+	// connection. Without this pragma SQLite silently ignores cascade clauses.
+	db, err = sql.Open("sqlite", "bloxos.db?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
 	if err != nil {
 		log.Fatalf("failed to open database: %v", err)
 	}
@@ -323,6 +326,18 @@ func registerRoutes(e *echo.Echo) {
 	api.POST("/api/branding/logo", handleUploadLogo)
 	api.POST("/api/branding/favicon", handleUploadFavicon)
 	api.DELETE("/api/branding/:kind", handleClearBrandingImage)
+
+	// Phase 11 — per-user workflow personalization.
+	api.GET("/api/me/preferences", handleGetMyPreferences)
+	api.PATCH("/api/me/preferences", handlePatchMyPreferences)
+	api.POST("/api/me/avatar", handleUploadAvatar)
+	api.DELETE("/api/me/avatar", handleDeleteAvatar)
+	api.GET("/api/users/:user_id/avatar", handleGetAvatar)
+	api.POST("/api/me/pinned/:machine_id", handlePinMachine)
+	api.DELETE("/api/me/pinned/:machine_id", handleUnpinMachine)
+	api.GET("/api/me/filters", handleListSavedFilters)
+	api.POST("/api/me/filters", handleCreateSavedFilter)
+	api.DELETE("/api/me/filters/:id", handleDeleteSavedFilter)
 }
 
 func getEnvOrDefault(key, def string) string {

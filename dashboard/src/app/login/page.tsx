@@ -9,6 +9,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { BrandedHeader } from "@/components/BrandedHeader";
+import { useBranding } from "@/contexts/BrandingContext";
 
 export default function LoginPage() {
   const [username, setUsername] = useState("");
@@ -17,6 +18,7 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [checkingSetup, startSetupCheck] = useTransition();
   const { login, isAuthenticated } = useAuth();
+  const { branding } = useBranding();
   const router = useRouter();
 
   useEffect(() => {
@@ -74,6 +76,11 @@ export default function LoginPage() {
       >
         <div className="mb-8">
           <BrandedHeader size="expanded" />
+          {branding.welcome_message && (
+            <p className="text-[11px] text-blox-muted text-center mt-3 max-w-md whitespace-pre-line">
+              {branding.welcome_message}
+            </p>
+          )}
         </div>
 
         <Card className="bg-blox-card/80 backdrop-blur-sm border-blox-border ring-0 shadow-2xl shadow-black/40">

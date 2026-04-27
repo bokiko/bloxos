@@ -27,6 +27,7 @@ export function BrandingSettings() {
 
   const [title, setTitle] = useState(branding.title);
   const [subtitle, setSubtitle] = useState(branding.subtitle);
+  const [welcomeMessage, setWelcomeMessage] = useState(branding.welcome_message);
   const [savingText, setSavingText] = useState(false);
 
   const handleSaveText = async () => {
@@ -35,7 +36,7 @@ export function BrandingSettings() {
       const res = await authFetch(`${HUB_URL}/api/branding`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title, subtitle }),
+        body: JSON.stringify({ title, subtitle, welcome_message: welcomeMessage }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -85,6 +86,22 @@ export function BrandingSettings() {
               className="bg-blox-bg border-blox-border text-blox-text h-9 text-sm"
               placeholder="Fleet Management Dashboard"
             />
+          </div>
+          <div>
+            <label className="block text-xs text-blox-muted mb-1.5 font-medium">
+              Login welcome message
+            </label>
+            <textarea
+              value={welcomeMessage}
+              maxLength={500}
+              rows={3}
+              onChange={(e) => setWelcomeMessage(e.target.value)}
+              className="block w-full rounded-md bg-blox-bg border border-blox-border text-blox-text text-sm px-3 py-2 placeholder:text-blox-muted/50 focus:outline-none focus:ring-2 focus:ring-blox-blue/40"
+              placeholder="A short note shown beneath the title on the login screen."
+            />
+            <p className="mt-1 text-[10px] text-blox-muted/70">
+              Up to 500 characters. Newlines are preserved.
+            </p>
           </div>
           <div className="pt-1">
             <Button onClick={handleSaveText} disabled={savingText} size="sm">

@@ -123,6 +123,19 @@ var routeScopeRequirements = map[string]string{
 	routeScopeKey(http.MethodDelete, "/api/branding/:kind"):                    scopeBrandingAdmin,
 	routeScopeKey(http.MethodGet, "/api/me/theme"):                             scopeAuthSelf,
 	routeScopeKey(http.MethodPatch, "/api/me/theme"):                           scopeAuthSelf,
+
+	// Phase 11 — per-user workflow personalization. All ten routes are
+	// "self-only" — every authenticated user can read/write their own row.
+	routeScopeKey(http.MethodGet, "/api/me/preferences"):                       scopeAuthSelf,
+	routeScopeKey(http.MethodPatch, "/api/me/preferences"):                     scopeAuthSelf,
+	routeScopeKey(http.MethodPost, "/api/me/avatar"):                           scopeAuthSelf,
+	routeScopeKey(http.MethodDelete, "/api/me/avatar"):                         scopeAuthSelf,
+	routeScopeKey(http.MethodGet, "/api/users/:user_id/avatar"):                scopeAuthSelf,
+	routeScopeKey(http.MethodPost, "/api/me/pinned/:machine_id"):               scopeAuthSelf,
+	routeScopeKey(http.MethodDelete, "/api/me/pinned/:machine_id"):             scopeAuthSelf,
+	routeScopeKey(http.MethodGet, "/api/me/filters"):                           scopeAuthSelf,
+	routeScopeKey(http.MethodPost, "/api/me/filters"):                          scopeAuthSelf,
+	routeScopeKey(http.MethodDelete, "/api/me/filters/:id"):                    scopeAuthSelf,
 }
 
 func permissionMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
