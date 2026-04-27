@@ -350,6 +350,26 @@ var migrations = []migration{
 			return err
 		},
 	},
+	{
+		description: "Phase 12 — add notes column to machines",
+		apply: func(tx *sql.Tx) error {
+			_, err := tx.Exec(`ALTER TABLE machines ADD COLUMN notes TEXT NOT NULL DEFAULT ''`)
+			if err != nil && isDuplicateColumnErr(err) {
+				return nil
+			}
+			return err
+		},
+	},
+	{
+		description: "Phase 12 — add cpu_temp_c column to metrics",
+		apply: func(tx *sql.Tx) error {
+			_, err := tx.Exec(`ALTER TABLE metrics ADD COLUMN cpu_temp_c REAL`)
+			if err != nil && isDuplicateColumnErr(err) {
+				return nil
+			}
+			return err
+		},
+	},
 }
 
 // isDuplicateColumnErr returns true when SQLite rejects an ALTER TABLE ADD

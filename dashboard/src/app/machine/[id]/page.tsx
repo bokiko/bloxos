@@ -12,6 +12,7 @@ import { ContainerPanel, Container } from "@/components/ContainerPanel";
 import { RebootModal } from "@/components/RebootModal";
 import { MetricCharts } from "@/components/MetricCharts";
 import { HardwareCard, type HardwareInfo } from "@/components/HardwareCard";
+import { MachineNotes } from "@/components/MachineNotes";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -25,13 +26,13 @@ import {
   ArrowLeft, Cpu, HardDrive, MemoryStick, Thermometer,
   Activity, Zap, Terminal as TerminalIcon, RotateCcw,
   Lock, Unlock, X, Maximize2, Minimize2, Wifi, BarChart3, Trash2,
-  LayoutDashboard, Box, Container as ContainerIcon,
+  LayoutDashboard, Box, Container as ContainerIcon, StickyNote,
 } from "lucide-react";
 import { HUB_URL, getAuthHeaders } from "@/lib/session";
 import { useAuth } from "@/contexts/AuthContext";
 
-type DetailTab = "overview" | "services" | "containers" | "metrics" | "terminal";
-const DETAIL_TABS: readonly DetailTab[] = ["overview", "services", "containers", "metrics", "terminal"] as const;
+type DetailTab = "overview" | "services" | "containers" | "metrics" | "notes" | "terminal";
+const DETAIL_TABS: readonly DetailTab[] = ["overview", "services", "containers", "metrics", "notes", "terminal"] as const;
 function parseTab(raw: string | null): DetailTab {
   return DETAIL_TABS.includes(raw as DetailTab) ? (raw as DetailTab) : "overview";
 }
@@ -64,9 +65,11 @@ interface MachineData {
     os: string | null;
     status: string;
     last_seen: string | null;
+    notes?: string;
   };
   metrics: {
     cpu_percent: number;
+    cpu_temp_c?: number;
     ram_used_bytes: number;
     ram_total_bytes: number;
     disk_used_bytes: number;
@@ -517,6 +520,10 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
               <BarChart3 className="w-4 h-4" />
               Metrics
             </TabsTrigger>
+            <TabsTrigger value="notes" className="px-4 py-1.5 gap-1.5 text-sm">
+              <StickyNote className="w-4 h-4" />
+              Notes
+            </TabsTrigger>
             {!isAPIMachine && canControl && (
               <TabsTrigger value="terminal" className="px-4 py-1.5 gap-1.5 text-sm">
                 <TerminalIcon className="w-4 h-4" />
@@ -704,6 +711,20 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
               className="bg-blox-card border border-blox-border rounded-xl p-5"
             >
               <MetricCharts machineId={id} hasGpu={hasGpu} />
+            </motion.div>
+          </TabsContent>
+
+          <TabsContent value="notes" className="mt-6">
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}>
+              {/* PHASE12-NOTE: keying on `notes ?? ""` remounts the
+                  component when the server-fetched notes change (e.g.
+                  after a refresh) so MachineNotes can avoid the React 19
+                  set-state-in-effect anti-pattern. */}
+              <MachineNotes
+                key={machine.notes ?? ""}
+                machineId={id}
+                initialNotes={machine.notes ?? ""}
+              />
             </motion.div>
           </TabsContent>
 

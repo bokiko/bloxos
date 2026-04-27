@@ -713,3 +713,41 @@ func coalesce(a, b string) string {
 	}
 	return b
 }
+
+// win32ThermalZone shadows the WMI MSAcpi_ThermalZoneTemperature view.
+// CurrentTemperature is reported in tenths of Kelvin per the ACPI spec.
+type win32ThermalZone struct {
+	InstanceName       string
+	CurrentTemperature uint32
+}
+
+// collectCPUTempC asks WMI's root\WMI namespace for ACPI thermal zones
+// and returns the highest plausible reading. Returns 0 when no zone is
+// readable — many Windows systems either don't expose
+// MSAcpi_ThermalZoneTemperature at all or only do so under elevated
+// rights, so 0 is treated by the dashboard as "unknown".
+//
+// PHASE12-NOTE: ignores readings <0 or >120°C as sensor faults.
+func collectCPUTempC() float64 {
+	var zones []win32ThermalZone
+	if err := wmi.QueryNamespace(
+		"SELECT InstanceName, CurrentTemperature FROM MSAcpi_ThermalZoneTemperature",
+		&zones, `root\WMI`,
+	); err != nil || len(zones) == 0 {
+		return 0
+	}
+	var max float64
+	for _, z := range zones {
+		if z.CurrentTemperature == 0 {
+			continue
+		}
+		c := float64(z.CurrentTemperature)/10.0 - 273.15
+		if c < 0 || c > 120 {
+			continue
+		}
+		if c > max {
+			max = c
+		}
+	}
+	return max
+}

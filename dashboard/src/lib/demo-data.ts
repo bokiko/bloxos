@@ -15,6 +15,7 @@ export interface MachineMetrics {
   ip?: string;
   os?: string;
   cpu_percent: number;
+  cpu_temp_c?: number;
   ram_used_bytes: number;
   ram_total_bytes: number;
   disk_used_bytes: number;
