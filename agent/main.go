@@ -368,24 +368,39 @@ func runAgent(machineID string) error {
 				return
 			}
 
-			// Check for enrollment message from hub.
+			// Decode the type field to dispatch.
 			var envelope struct {
 				Type        string `json:"type"`
 				AgentSecret string `json:"agent_secret"`
 			}
-			if json.Unmarshal(msg, &envelope) == nil && envelope.Type == "enrolled" && envelope.AgentSecret != "" {
-				log.Printf("received enrollment secret from hub")
-				agentSecret = envelope.AgentSecret
-				token = "" // Clear token from memory.
-				if err := saveCredentialFile(agentSecret); err != nil {
-					log.Printf("WARNING: failed to save credential file: %v", err)
-				} else {
-					log.Printf("enrollment complete - will use secret for future connections")
-				}
+			if err := json.Unmarshal(msg, &envelope); err != nil {
+				log.Printf("invalid message from hub: %v", err)
 				continue
 			}
 
-			go handleCommand(conn, &writeMu, msg)
+			switch envelope.Type {
+			case "enrolled":
+				if envelope.AgentSecret != "" {
+					log.Printf("received enrollment secret from hub")
+					agentSecret = envelope.AgentSecret
+					token = "" // Clear token from memory.
+					if err := saveCredentialFile(agentSecret); err != nil {
+						log.Printf("WARNING: failed to save credential file: %v", err)
+					} else {
+						log.Printf("enrollment complete - will use secret for future connections")
+					}
+				}
+
+			case "agent_version":
+				// Hub announced what version it expects us to be running.
+				// Phase 8 self-update — runs the download/verify/install
+				// flow in its own goroutine internally.
+				handleAgentVersion(msg)
+
+			default:
+				// Anything else is a command (restart_service, refresh_metrics, etc.)
+				go handleCommand(conn, &writeMu, msg)
+			}
 		}
 	}()
 
@@ -407,6 +422,10 @@ func runAgent(machineID string) error {
 	if err := sendHardware(conn, &writeMu, machineID); err != nil {
 		log.Printf("send hardware error: %v", err)
 	}
+
+	// Phase 8 — report our running version so the hub can display it on
+	// the dashboard and detect if we're out of date.
+	reportAgentVersion(conn, &writeMu)
 
 	for {
 		select {

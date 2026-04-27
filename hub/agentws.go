@@ -154,6 +154,9 @@ sudo tee /etc/systemd/system/bloxos-agent.service > /dev/null << SVCEOF
 [Unit]
 Description=BloxOS Agent
 After=network.target
+# Phase 8: if the agent crash-loops 3 times within 60s after a self-update,
+# OnFailure triggers the recovery unit which rolls back to the .prev binary.
+OnFailure=bloxos-agent-recover.service
 
 [Service]
 Type=simple
@@ -164,10 +167,61 @@ ${AGENT_CA_ENV}
 ExecStart=/usr/local/bin/bloxos-agent
 Restart=always
 RestartSec=5
+StartLimitInterval=60
+StartLimitBurst=3
 
 [Install]
 WantedBy=multi-user.target
 SVCEOF
+
+# Phase 8 — install the rollback recovery script.
+# Single-quoted heredoc ('RECOVEREOF') so bash does NOT expand variables
+# during the cat — the literal $VAR ends up in the recovery script file
+# and is expanded when the recovery script itself runs.
+sudo tee /usr/local/bin/bloxos-agent-recover > /dev/null << 'RECOVEREOF'
+#!/bin/bash
+set -euo pipefail
+AGENT_PATH="/usr/local/bin/bloxos-agent"
+PREV_PATH="${AGENT_PATH}.prev"
+MARKER_PATH="$(dirname "${AGENT_PATH}")/.bloxos-agent-updated-at"
+ROLLBACK_LOG="/var/log/bloxos-agent-rollback.log"
+log() {
+    echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $1" | tee -a "$ROLLBACK_LOG"
+}
+log "Recovery script invoked"
+if [ ! -f "$PREV_PATH" ]; then
+    log "No .prev binary exists, cannot roll back"
+    exit 0
+fi
+if [ ! -f "$MARKER_PATH" ]; then
+    log "No update marker exists, skipping rollback"
+    exit 0
+fi
+MARKER_AGE_SECONDS=$(($(date +%s) - $(stat -c %Y "$MARKER_PATH")))
+if [ "$MARKER_AGE_SECONDS" -gt 600 ]; then
+    log "Update marker is $MARKER_AGE_SECONDS seconds old, not rolling back"
+    exit 0
+fi
+log "Recent update detected, rolling back to .prev"
+cp "$AGENT_PATH" "${AGENT_PATH}.failed.$(date +%s)"
+mv "$PREV_PATH" "$AGENT_PATH"
+chmod +x "$AGENT_PATH"
+rm -f "$MARKER_PATH"
+log "Rollback complete, restarting agent"
+systemctl restart bloxos-agent.service
+RECOVEREOF
+sudo chmod +x /usr/local/bin/bloxos-agent-recover
+
+# Phase 8 — recovery unit (triggered by OnFailure on the main agent unit).
+sudo tee /etc/systemd/system/bloxos-agent-recover.service > /dev/null << 'RECEOF'
+[Unit]
+Description=BloxOS Agent Recovery (automatic rollback)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/bloxos-agent-recover
+RemainAfterExit=no
+RECEOF
 
 # Enable and start.
 sudo systemctl daemon-reload
@@ -429,6 +483,11 @@ func handleAgentWS(c echo.Context) error {
 				agents[machineID] = agent
 				agentsMu.Unlock()
 				log.Printf("agent registered: %s (%s)", m.Hostname, machineID)
+
+				// Phase 8 — announce the current agent binary SHA. If the
+				// agent's running SHA differs, it will download/install/exit
+				// and systemd will bring it back on the new binary.
+				go announceVersionToAgent(machineID, agent)
 			}
 
 			// Calculate latency from sent_at.
@@ -513,6 +572,20 @@ func handleAgentWS(c echo.Context) error {
 				ON CONFLICT(id) DO UPDATE SET hardware_info = excluded.hardware_info
 			`, mid, string(msg)); err != nil {
 				log.Printf("store hardware_info: %v", err)
+			}
+
+		case "agent_running_version":
+			// Phase 8 — agent reported its current binary SHA on connect.
+			var versionMsg struct {
+				Type   string `json:"type"`
+				SHA256 string `json:"sha256"`
+			}
+			if err := json.Unmarshal(msg, &versionMsg); err != nil {
+				log.Printf("invalid agent_running_version JSON: %v", err)
+				continue
+			}
+			if versionMsg.SHA256 != "" && machineID != "" {
+				recordAgentRunningVersion(machineID, versionMsg.SHA256)
 			}
 
 		case "command_response":

@@ -23,6 +23,7 @@ import {
   Users,
   LogOut,
   ArrowRight,
+  GitBranch,
 } from "lucide-react";
 
 interface CommandPaletteProps {
@@ -105,6 +106,13 @@ export function CommandPalette({
                 <Monitor />
                 <span>Fleet dashboard</span>
                 <ArrowRight className="ml-auto opacity-50" />
+              </Command.Item>
+              <Command.Item
+                value="versions agent rollout updates"
+                onSelect={() => runCommand(() => router.push("/versions"))}
+              >
+                <GitBranch />
+                <span>Agent versions</span>
               </Command.Item>
               {onOpenAlerts && (
                 <Command.Item

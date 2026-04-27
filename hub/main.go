@@ -169,6 +169,10 @@ func main() {
 	// Seed default alert rules.
 	seedAlertRules()
 
+	// Phase 8 — initialize agent version tracking. Computes the SHA of the
+	// agent binary the hub is serving, and starts the reconnect-monitor loop.
+	initAgentVersionTracking()
+
 	// Generate setup token if no users exist (Finding #11 — first-boot setup).
 	generateSetupToken()
 
@@ -266,6 +270,11 @@ func registerRoutes(e *echo.Echo) {
 	api.POST("/api/machines/:id/command", handleCommand)
 	api.POST("/api/machines/:id/refresh", handleMachineRefresh)
 	api.POST("/api/refresh", handleFleetRefresh)
+
+	// Phase 8 — agent version tracking and rollout control
+	api.GET("/api/versions", handleListVersions)
+	api.POST("/api/versions/pause", handlePauseRollout)
+	api.POST("/api/versions/resume", handleResumeRollout)
 	api.PUT("/api/machines/:id/tags", handleSetTags)
 	api.GET("/api/machines/:id/metrics/history", handleMetricsHistory)
 	api.DELETE("/api/machines/:id", handleDeleteMachine)
