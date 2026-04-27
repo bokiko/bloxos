@@ -30,7 +30,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Plus, WifiOff, Search, LayoutGrid, List,
   ChevronDown, Square, CheckSquare, RotateCcw, Trash2, Pencil,
-  ArrowUpDown, Filter, Monitor, Server, RefreshCw,
+  ArrowUpDown, Filter, Monitor, Server, RefreshCw, Boxes,
 } from "lucide-react";
 import Link from "next/link";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -335,6 +335,16 @@ export default function Home() {
 
             {/* Theme toggle (Phase 1) */}
             <ThemeToggle />
+
+            {/* Inventory link (Phase 6 Unit B) */}
+            <Link
+              href="/inventory"
+              className="inline-flex items-center justify-center rounded-md w-8 h-8 text-blox-muted hover:text-blox-text hover:bg-blox-border/50 transition-colors"
+              title="Hardware inventory"
+              aria-label="Hardware inventory"
+            >
+              <Boxes className="w-4 h-4" />
+            </Link>
 
             {/* Vertical divider — separates utility icons from create actions */}
             <div className="w-px h-5 bg-blox-border/50 mx-1.5" aria-hidden />
