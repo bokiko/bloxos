@@ -250,6 +250,6 @@ This project uses a **handoff ledger** (`HANDOFF.md`) in the repo root. Any Clau
 
 ## License
 
-Private.
+still Private.
 
 <img src="https://capsule-render.vercel.app/api?type=waving&color=gradient&customColorList=14,20,24&height=100&section=footer" />
