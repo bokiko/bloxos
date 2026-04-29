@@ -51,7 +51,7 @@ If you run a homelab with multiple Ubuntu/Debian machines doing AI inference, LL
 Open dashboard  →  See all machines  →  Click one  →  Check GPU / services  →  Restart Ollama  →  Open terminal  →  Done
 ```
 
-No cloud. No subscription. No agents phoning home to someone else's server. Everything runs on your network.
+All local. No cloud. No subscription. No agents phoning home to someone else's server. Everything runs on your network.
 
 ---
 
