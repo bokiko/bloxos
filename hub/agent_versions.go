@@ -280,8 +280,21 @@ func announcedSHAFor(osName string) string {
 		// Don't announce a Linux SHA to a Windows agent — that would
 		// trigger a perpetual update loop. Better to stay quiet.
 		return ""
-	default:
+	case "linux":
 		return hubAgentBinarySHA
+	default:
+		// Unknown/empty OS — don't announce a SHA at all. Same logic as
+		// the Windows protective comment above: announcing the wrong-OS
+		// SHA loops the agent through perpetual self-update. The legacy
+		// "fall back to Linux SHA for pre-Phase-9 agents" behavior is
+		// dropped because (a) every agent in the fleet now sends an `os`
+		// field with agent_running_version, and (b) lookupMetricsOS
+		// recovers the OS from DB-stored metrics for any agent that has
+		// previously sent metrics. recordAgentRunningVersion triggers a
+		// fresh announce as soon as the OS is learned, so brand-new
+		// agents still get auto-update propagation — just deferred from
+		// WS-upgrade time to first-message-arrival time.
+		return ""
 	}
 }
 
@@ -344,7 +357,9 @@ func clearReconnectExpectation(machineID string) {
 // inferred lazily from the machine's metrics OS string.
 func recordAgentRunningVersion(machineID, runningSHA, osName string) {
 	// Resolve the per-OS expected SHA. If we don't yet know the agent's
-	// OS (legacy agent), treat the linux SHA as authoritative.
+	// OS, lookupAgentOS will check the DB metrics for it. New-on-this-hub
+	// agents return "" here and that's fine — we'll announce after we
+	// learn the OS below.
 	if osName == "" {
 		osName = lookupAgentOS(machineID)
 	}
@@ -353,6 +368,7 @@ func recordAgentRunningVersion(machineID, runningSHA, osName string) {
 	hostname := lookupVersionHostname(machineID)
 
 	agentRunningVersionsMu.Lock()
+	prev, hadPrev := agentRunningVersions[machineID]
 	agentRunningVersions[machineID] = agentVersionInfo{
 		MachineID:     machineID,
 		Hostname:      hostname,
@@ -366,6 +382,20 @@ func recordAgentRunningVersion(machineID, runningSHA, osName string) {
 	if expectedSHA != "" && runningSHA == expectedSHA {
 		clearReconnectExpectation(machineID)
 		recordRolloutSuccess(machineID)
+	}
+
+	// If we just learned (or relearned) the OS, the first-connect announce
+	// was suppressed because OS was unknown at WS-upgrade time. Trigger
+	// one now. Without this, brand-new agents would never receive an
+	// update notification on their very first connect, and would have to
+	// reconnect (e.g. after a hub restart) before auto-update could fire.
+	if osName != "" && (!hadPrev || prev.OS != osName) {
+		agentsMu.RLock()
+		agent, online := agents[machineID]
+		agentsMu.RUnlock()
+		if online {
+			go announceVersionToAgent(machineID, agent)
+		}
 	}
 }
 

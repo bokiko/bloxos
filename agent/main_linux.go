@@ -62,6 +62,15 @@ func platformUninstallService() error {
 	return fmt.Errorf("uninstall-service is Windows-only")
 }
 
+// wipeMachineTokenIfBootstrapped is a no-op on Linux. BLOXOS_TOKEN is set in
+// the systemd unit's Environment= line, not the machine env, so wiping it
+// requires editing /etc/systemd/system/bloxos-agent.service and a daemon-
+// reload — intentionally invasive and tracked separately. The install.sh
+// flow on Linux also doesn't suffer from the bug this guards against on
+// Windows: install.sh exchanges the token for a secret before starting the
+// service, so a stale token never persists past a successful install.
+func wipeMachineTokenIfBootstrapped() {}
+
 // runPlatformAgent runs the agent in foreground mode on Linux. The systemd
 // unit invokes the binary directly, so all we need is the connection loop
 // plus signal-driven shutdown.

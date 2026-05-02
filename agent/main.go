@@ -118,6 +118,13 @@ var (
 	token       string
 	agentSecret string
 
+	// tokenCleanupOnce gates the post-bootstrap BLOXOS_TOKEN wipe to once
+	// per process. After a service restart this runs again — which is correct:
+	// if the credential file still exists, the wipe is idempotent (env var is
+	// already gone). If the credential file is missing, the wipe condition
+	// guards us. Implementation is platform-specific; see main_<os>.go.
+	tokenCleanupOnce sync.Once
+
 	// validTarget allows alphanumeric, hyphens, underscores, dots only.
 	validTarget = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
 
@@ -347,10 +354,16 @@ func runAgent(machineID string) error {
 	}
 
 	q := u.Query()
-	// Prefer secret for reconnection, fall back to token for initial enrollment.
+	// Send whichever credentials we have. The hub will try the secret first
+	// (if present) and fall back to the token (if also present) when the secret
+	// fails validation. This handles credential drift cleanly: stale agent-secret
+	// + fresh enrollment token re-enrolls instead of looping with an invalid
+	// secret. See hub/agentws.go::handleAgentWS for the fallback contract:
+	// secret error → agentSecret = "" → drop into the token-mode branch.
 	if agentSecret != "" {
 		q.Set("secret", agentSecret)
-	} else if token != "" {
+	}
+	if token != "" {
 		q.Set("token", token)
 	}
 	u.RawQuery = q.Encode()
@@ -389,6 +402,13 @@ func runAgent(machineID string) error {
 				log.Printf("invalid message from hub: %v", err)
 				continue
 			}
+
+			// First successful message decode = we're authenticated. If a
+			// durable secret exists on disk, BLOXOS_TOKEN env var is no longer
+			// needed and persisting it lets re-installs accidentally inherit
+			// it. Best-effort wipe; failures don't affect this agent's
+			// operation. Platform-specific implementation in main_<os>.go.
+			tokenCleanupOnce.Do(wipeMachineTokenIfBootstrapped)
 
 			switch envelope.Type {
 			case "enrolled":
