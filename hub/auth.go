@@ -169,8 +169,8 @@ func handleSetup(c echo.Context) error {
 	if body.Username == "" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "username is required"})
 	}
-	if len(body.Password) < 8 {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "password must be at least 8 characters"})
+	if err := validatePassword(body.Password); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
 	if !regexp.MustCompile(`^\d{4,}$`).MatchString(body.PIN) {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "PIN must be at least 4 digits"})
@@ -467,8 +467,8 @@ func handleChangePassword(c echo.Context) error {
 	if err := c.Bind(&body); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid body"})
 	}
-	if body.NewPassword == "" || len(body.NewPassword) < 6 {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "new password must be at least 6 characters"})
+	if err := validatePassword(body.NewPassword); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
 
 	// Get user from JWT.
