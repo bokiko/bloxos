@@ -200,10 +200,10 @@ func main() {
 	}
 
 	// Start alert evaluation loop.
-	go alertEvalLoop()
+	goSafelyForever("alertEvalLoop", alertEvalLoop)
 
 	// Start cleanup goroutine.
-	go cleanupLoop()
+	goSafelyForever("cleanupLoop", cleanupLoop)
 	startAPIPollers()
 
 	e := echo.New()
