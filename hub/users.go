@@ -38,8 +38,8 @@ func handleCreateUser(c echo.Context) error {
 	if body.Username == "" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "username is required"})
 	}
-	if len(body.Password) < 8 {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "password must be at least 8 characters"})
+	if err := validatePassword(body.Password); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
 	if !pinPattern.MatchString(body.PIN) {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "PIN must be at least 4 digits"})
@@ -162,8 +162,8 @@ func handleUpdateUser(c echo.Context) error {
 	}
 
 	if body.Password != nil {
-		if len(*body.Password) < 8 {
-			return c.JSON(http.StatusBadRequest, map[string]string{"error": "password must be at least 8 characters"})
+		if err := validatePassword(*body.Password); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 		}
 		hash, err := bcrypt.GenerateFromPassword([]byte(*body.Password), bcrypt.DefaultCost)
 		if err != nil {
