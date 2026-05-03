@@ -2467,6 +2467,74 @@ func TestHardwareInfoUpsertPreCreatesRow(t *testing.T) {
 	}
 }
 
+// TestBulkCommandRejectsOversize locks in B3 (size cap): the bulk
+// command endpoint had no upper bound on machine_ids. A request with
+// 10000 IDs would spawn 10000 goroutines instantly, each holding a
+// pendingCmds entry + a goroutine + (per WriteMessage) a per-agent
+// write-mutex contention. Easy DoS surface for any authenticated
+// operator. The fix caps the request size at maxBulkCommandTargets
+// and returns 400 above that.
+func TestBulkCommandRejectsOversize(t *testing.T) {
+	e := setupTestServer(t)
+	markCredentialsRotated(t)
+	adminToken := loginAndGetToken(t, e)
+
+	ids := make([]string, maxBulkCommandTargets+1)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("machine-%d", i)
+	}
+	bodyBytes, _ := json.Marshal(map[string]interface{}{
+		"machine_ids": ids,
+		"type":        "restart_service",
+		"target":      "nginx",
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/bulk/command", strings.NewReader(string(bodyBytes)))
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for %d targets (limit=%d), got %d: %s",
+			len(ids), maxBulkCommandTargets, rec.Code, rec.Body.String())
+	}
+}
+
+// TestBulkCommandAcceptsAtLimit confirms the cap is exactly
+// maxBulkCommandTargets — exactly that many IDs must be accepted.
+// Without this, the off-by-one between < and <= silently bites only
+// at the boundary. (None of the IDs are real, so the response will
+// still be 200 with N rows containing "agent not connected" — the
+// per-machine error is fine here, we only assert the request itself
+// wasn't bounced at the size check.)
+func TestBulkCommandAcceptsAtLimit(t *testing.T) {
+	e := setupTestServer(t)
+	markCredentialsRotated(t)
+	adminToken := loginAndGetToken(t, e)
+
+	ids := make([]string, maxBulkCommandTargets)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("machine-%d", i)
+	}
+	bodyBytes, _ := json.Marshal(map[string]interface{}{
+		"machine_ids": ids,
+		"type":        "restart_service",
+		"target":      "nginx",
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/bulk/command", strings.NewReader(string(bodyBytes)))
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusBadRequest {
+		t.Fatalf("expected acceptance at exactly the limit (%d), got 400: %s",
+			maxBulkCommandTargets, rec.Body.String())
+	}
+}
+
 // TestAgentWSRateLimited locks in B2: /ws/agent had no rate limit
 // before this fix. A flood of WebSocket upgrade requests could exhaust
 // the hub's file descriptors and goroutine count — the agent endpoint
