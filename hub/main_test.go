@@ -2509,6 +2509,82 @@ func TestHardwareInfoUpsertPreCreatesRow(t *testing.T) {
 	}
 }
 
+// TestResolveCORSOrigins locks in B7: the prior CORS setup fell back
+// to AllowOrigins=[]string{"*"} when neither ALLOWED_ORIGINS nor
+// PUBLIC_URL was set. Combined with JWT-in-localStorage, that means
+// any malicious page could read authenticated responses if the user
+// happened to have a hub session in another tab. The fix is to
+// REFUSE TO START in that configuration — operators must opt in to
+// origin policy explicitly.
+func TestResolveCORSOrigins(t *testing.T) {
+	t.Run("explicit_ALLOWED_ORIGINS_wins", func(t *testing.T) {
+		t.Setenv("ALLOWED_ORIGINS", "https://app.example.com,https://staging.example.com")
+		t.Setenv("PUBLIC_URL", "https://ignored.example.com")
+		got, err := resolveCORSOrigins()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := []string{"https://app.example.com", "https://staging.example.com"}
+		if !slices.Equal(got, want) {
+			t.Errorf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("ALLOWED_ORIGINS_trims_whitespace", func(t *testing.T) {
+		t.Setenv("ALLOWED_ORIGINS", "  https://a.example.com ,https://b.example.com  ")
+		t.Setenv("PUBLIC_URL", "")
+		got, err := resolveCORSOrigins()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := []string{"https://a.example.com", "https://b.example.com"}
+		if !slices.Equal(got, want) {
+			t.Errorf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("falls_back_to_PUBLIC_URL", func(t *testing.T) {
+		t.Setenv("ALLOWED_ORIGINS", "")
+		t.Setenv("PUBLIC_URL", "https://192.168.16.113")
+		got, err := resolveCORSOrigins()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !slices.Equal(got, []string{"https://192.168.16.113"}) {
+			t.Errorf("got %v, want [https://192.168.16.113]", got)
+		}
+	})
+
+	t.Run("both_unset_returns_error", func(t *testing.T) {
+		t.Setenv("ALLOWED_ORIGINS", "")
+		t.Setenv("PUBLIC_URL", "")
+		got, err := resolveCORSOrigins()
+		if err == nil {
+			t.Fatalf("expected error for missing CORS config, got origins=%v", got)
+		}
+		if got != nil {
+			t.Errorf("expected nil origins on error, got %v", got)
+		}
+		// Error message must NOT silently fall back to "*" — that's
+		// exactly the regression the test guards.
+		if !strings.Contains(err.Error(), "PUBLIC_URL") || !strings.Contains(err.Error(), "ALLOWED_ORIGINS") {
+			t.Errorf("error %q should mention both env vars so the operator knows the fix", err)
+		}
+	})
+
+	t.Run("ALLOWED_ORIGINS_only_whitespace_falls_through_to_PUBLIC_URL", func(t *testing.T) {
+		t.Setenv("ALLOWED_ORIGINS", "  , , ")
+		t.Setenv("PUBLIC_URL", "https://example.com")
+		got, err := resolveCORSOrigins()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !slices.Equal(got, []string{"https://example.com"}) {
+			t.Errorf("got %v, want [https://example.com]", got)
+		}
+	})
+}
+
 // TestBuildTelegramPayloadIsPlainText locks in B5: the alert
 // notification path used parse_mode="HTML" and substituted
 // agent-reported strings (m.hostname, rule.Name) into the message
