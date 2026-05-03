@@ -315,7 +315,7 @@ func handleTerminalWS(c echo.Context) error {
 	session.mu.Unlock()
 
 	if agentWS != nil && browserWS != nil {
-		go terminalRelay(sessionID, session)
+		goSafelyOnce("terminalRelay/"+sessionID, func() { terminalRelay(sessionID, session) })
 	} else {
 		go func() {
 			time.Sleep(30 * time.Second)
