@@ -16,6 +16,7 @@ import {
   getStoredToken,
 } from "@/lib/session";
 import { readCache, clearCache, makeDebouncedWriter } from "@/lib/metrics-cache";
+import { parseServerTimestamp } from "@/lib/timestamps";
 
 interface SSEContextType {
   machines: MachineMetrics[];
@@ -161,7 +162,16 @@ export function SSEProvider({ children }: { children: ReactNode }) {
         setMachineMap(() => {
           const next = new Map<string, MachineMetrics>();
           for (const m of list) {
-            next.set(m.machine_id, { ...m, last_seen: Date.now() });
+            // Snapshot's `timestamp` field carries the latest metric row's
+            // server-side time (COALESCE(met.timestamp, m.last_seen) in
+            // hub/main.go::getEnrichedMachinesJSON). Parse it; never
+            // substitute Date.now() — that would mark every machine "live"
+            // on every reconnect regardless of actual liveness.
+            // See dashboard staleness postmortem in HANDOFF.md.
+            next.set(m.machine_id, {
+              ...m,
+              last_seen: parseServerTimestamp(m.timestamp),
+            });
           }
           // Persist to cache so the next page load hydrates instantly.
           cacheWriterRef.current?.(Array.from(next.values()));
@@ -179,7 +189,14 @@ export function SSEProvider({ children }: { children: ReactNode }) {
         setHasReceivedData(true);
         setMachineMap((prev) => {
           const next = new Map(prev);
-          next.set(m.machine_id, { ...m, last_seen: Date.now() });
+          // Per-metric event carries the agent's `timestamp`. Parse it.
+          // If parsing fails, fall back to 0 (machine flips to "offline" in
+          // 120s) rather than Date.now() — a malformed timestamp is not
+          // evidence the machine is alive.
+          next.set(m.machine_id, {
+            ...m,
+            last_seen: parseServerTimestamp(m.timestamp),
+          });
           cacheWriterRef.current?.(Array.from(next.values()));
           return next;
         });

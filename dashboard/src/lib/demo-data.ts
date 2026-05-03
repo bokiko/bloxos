@@ -27,7 +27,7 @@ export interface MachineMetrics {
   gpus?: GPUInfo[];
   tags?: string;
   timestamp: string;
-  last_seen?: number; // epoch ms, set by dashboard
+  last_seen?: number; // epoch ms, parsed from server `timestamp` (see lib/timestamps.ts)
   latency_ms?: number;
 }
 
