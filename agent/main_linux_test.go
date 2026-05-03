@@ -9,6 +9,8 @@ package main
 
 import (
 	"errors"
+	"os/exec"
+	"os/user"
 	"sync"
 	"testing"
 )
@@ -103,5 +105,126 @@ func TestWaitCoordinatorPropagatesNilError(t *testing.T) {
 	}
 	if got := fake.callCount(); got != 1 {
 		t.Errorf("call count = %d, want 1", got)
+	}
+}
+
+// TestApplyTerminalCredentials_NonNumericUIDFailsClosed locks in C4:
+// when the resolved terminal user has a UID string that cannot be
+// parsed as an integer, applyTerminalCredentials must return an error
+// rather than silently defaulting to UID 0 (root). The pre-fix code
+// at agent/main_linux.go:139-140 used `uid, _ := strconv.ParseUint(...)`
+// which made parse failure a privilege-escalation vector by malformed
+// /etc/passwd content.
+func TestApplyTerminalCredentials_NonNumericUIDFailsClosed(t *testing.T) {
+	bashCmd := exec.Command("/bin/true")
+	termUser := &user.User{
+		Uid:      "not-a-number",
+		Gid:      "1000",
+		Username: "nope",
+		HomeDir:  "/home/nope",
+	}
+
+	err := applyTerminalCredentials(bashCmd, termUser)
+	if err == nil {
+		t.Fatal("expected error for non-numeric UID, got nil")
+	}
+	// SysProcAttr must NOT have been set — the whole point is that we
+	// abort BEFORE configuring the process to run as anything.
+	if bashCmd.SysProcAttr != nil {
+		t.Errorf("SysProcAttr was set despite parse failure: %+v", bashCmd.SysProcAttr)
+	}
+}
+
+// TestApplyTerminalCredentials_NonNumericGIDFailsClosed mirrors the
+// UID test for GID. A valid UID + invalid GID must still abort —
+// otherwise a malformed group entry would put us in root's gid (0).
+func TestApplyTerminalCredentials_NonNumericGIDFailsClosed(t *testing.T) {
+	bashCmd := exec.Command("/bin/true")
+	termUser := &user.User{
+		Uid:      "1000",
+		Gid:      "junk",
+		Username: "nope",
+		HomeDir:  "/home/nope",
+	}
+
+	err := applyTerminalCredentials(bashCmd, termUser)
+	if err == nil {
+		t.Fatal("expected error for non-numeric GID, got nil")
+	}
+	if bashCmd.SysProcAttr != nil {
+		t.Errorf("SysProcAttr was set despite GID parse failure: %+v", bashCmd.SysProcAttr)
+	}
+}
+
+// TestApplyTerminalCredentials_ValidUser is the happy-path baseline.
+// Without it the fail-closed tests could pass by always returning an
+// error, even on valid input.
+func TestApplyTerminalCredentials_ValidUser(t *testing.T) {
+	bashCmd := exec.Command("/bin/true")
+	termUser := &user.User{
+		Uid:      "1000",
+		Gid:      "1000",
+		Username: "ok",
+		HomeDir:  "/home/ok",
+	}
+
+	if err := applyTerminalCredentials(bashCmd, termUser); err != nil {
+		t.Fatalf("unexpected error for valid user: %v", err)
+	}
+	if bashCmd.SysProcAttr == nil {
+		t.Fatal("SysProcAttr was not set for a valid user")
+	}
+	if bashCmd.SysProcAttr.Credential == nil {
+		t.Fatal("Credential was not set for a valid user")
+	}
+	if got := bashCmd.SysProcAttr.Credential.Uid; got != 1000 {
+		t.Errorf("Credential.Uid = %d, want 1000", got)
+	}
+	if got := bashCmd.SysProcAttr.Credential.Gid; got != 1000 {
+		t.Errorf("Credential.Gid = %d, want 1000", got)
+	}
+	if bashCmd.Dir != "/home/ok" {
+		t.Errorf("Dir = %q, want /home/ok", bashCmd.Dir)
+	}
+}
+
+// TestApplyTerminalCredentials_NilUserFallback covers the existing
+// pre-Phase-A behaviour: if no non-root user can be resolved, we fall
+// back to running as the current user (which on the agent host means
+// root). The helper must accept this without error — it's the right
+// behaviour for a misconfigured single-user host where no
+// BLOXOS_TERMINAL_USER, "bokiko", or other candidate exists. SysProcAttr
+// stays nil so the spawned process inherits the agent's identity.
+func TestApplyTerminalCredentials_NilUserFallback(t *testing.T) {
+	bashCmd := exec.Command("/bin/true")
+
+	if err := applyTerminalCredentials(bashCmd, nil); err != nil {
+		t.Fatalf("nil user must not error (it's the documented fallback): %v", err)
+	}
+	if bashCmd.SysProcAttr != nil {
+		t.Errorf("SysProcAttr was set for nil user: %+v", bashCmd.SysProcAttr)
+	}
+}
+
+// TestApplyTerminalCredentials_RootUserFallback covers the same
+// fallback path when the resolved user happens to be root (UID 0).
+// We deliberately skip the credential setup in that case rather than
+// setting Credential{Uid:0, Gid:0} — both produce the same effect but
+// the no-SysProcAttr form is what the existing code does and what
+// callers test against.
+func TestApplyTerminalCredentials_RootUserFallback(t *testing.T) {
+	bashCmd := exec.Command("/bin/true")
+	termUser := &user.User{
+		Uid:      "0",
+		Gid:      "0",
+		Username: "root",
+		HomeDir:  "/root",
+	}
+
+	if err := applyTerminalCredentials(bashCmd, termUser); err != nil {
+		t.Fatalf("root user must not error (existing fallback): %v", err)
+	}
+	if bashCmd.SysProcAttr != nil {
+		t.Errorf("SysProcAttr was set for root fallback: %+v", bashCmd.SysProcAttr)
 	}
 }
