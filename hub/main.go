@@ -511,6 +511,22 @@ func handleMetricsHistory(c echo.Context) error {
 
 // --- Bulk Command ---
 
+// maxBulkCommandTargets caps the number of machine_ids a single
+// /api/bulk/command request may target. Without this, an authenticated
+// operator (or a compromised dashboard session) could spawn an
+// unbounded number of goroutines, each holding a pendingCmds entry +
+// a 15s timeout + per-agent WriteMu contention. 100 targets is well
+// past any reasonable real-world fleet operation; legitimate "restart
+// nginx everywhere" uses cases stay comfortably under this.
+const maxBulkCommandTargets = 100
+
+// bulkCommandConcurrency caps the number of in-flight goroutines for
+// a single bulk request. With 100 targets and a 15s per-target
+// timeout, an unbounded fan-out would spike to 100 simultaneous WS
+// writes; capping at 20 spreads the load over time without sacrificing
+// throughput on the common case (most targets reply in <1s).
+const bulkCommandConcurrency = 20
+
 func handleBulkCommand(c echo.Context) error {
 	var body struct {
 		MachineIDs []string `json:"machine_ids"`
@@ -519,6 +535,11 @@ func handleBulkCommand(c echo.Context) error {
 	}
 	if err := c.Bind(&body); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid body"})
+	}
+	if len(body.MachineIDs) > maxBulkCommandTargets {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": fmt.Sprintf("too many targets: %d > %d", len(body.MachineIDs), maxBulkCommandTargets),
+		})
 	}
 
 	type BulkResult struct {
@@ -531,11 +552,18 @@ func handleBulkCommand(c echo.Context) error {
 	var results []BulkResult
 	var mu sync.Mutex
 	var wg sync.WaitGroup
+	// Buffered channel acts as a counting semaphore. Acquire BEFORE
+	// spawning the goroutine so the for-loop itself blocks once
+	// bulkCommandConcurrency goroutines are in flight — that bounds
+	// the spawn rate, not just the active work.
+	sem := make(chan struct{}, bulkCommandConcurrency)
 
 	for _, mid := range body.MachineIDs {
 		wg.Add(1)
+		sem <- struct{}{}
 		go func(machineID string) {
 			defer wg.Done()
+			defer func() { <-sem }()
 
 			agentsMu.RLock()
 			agent, ok := agents[machineID]
