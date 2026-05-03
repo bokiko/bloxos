@@ -49,6 +49,48 @@ func (w *waitOnce) Wait() error {
 	return w.err
 }
 
+// applyTerminalCredentials configures bashCmd to run as termUser, or
+// returns an error if the user's UID/GID cannot be parsed. Pre-fix
+// behaviour at agent/main_linux.go:139-140 was
+// `uid, _ := strconv.ParseUint(...)` — discarding the error meant a
+// malformed /etc/passwd entry would silently produce uid=0 (root) and
+// the spawned shell would inherit root privileges. Now any parse
+// failure aborts the call site rather than falling back to root.
+//
+// Nil termUser and termUser.Uid == "0" both fall through with
+// SysProcAttr unset, matching the existing behaviour where the spawned
+// shell inherits the agent's identity (root). The caller logs a
+// WARNING in that case so the deployment misconfiguration is visible.
+func applyTerminalCredentials(bashCmd *exec.Cmd, termUser *user.User) error {
+	if termUser == nil || termUser.Uid == "0" {
+		bashCmd.Env = append(os.Environ(), "TERM=xterm-256color")
+		return nil
+	}
+	uid, err := strconv.ParseUint(termUser.Uid, 10, 32)
+	if err != nil {
+		return fmt.Errorf("parse uid %q for user %q: %w", termUser.Uid, termUser.Username, err)
+	}
+	gid, err := strconv.ParseUint(termUser.Gid, 10, 32)
+	if err != nil {
+		return fmt.Errorf("parse gid %q for user %q: %w", termUser.Gid, termUser.Username, err)
+	}
+	bashCmd.SysProcAttr = &syscall.SysProcAttr{
+		Credential: &syscall.Credential{
+			Uid: uint32(uid),
+			Gid: uint32(gid),
+		},
+	}
+	bashCmd.Dir = termUser.HomeDir
+	bashCmd.Env = []string{
+		"TERM=xterm-256color",
+		"HOME=" + termUser.HomeDir,
+		"USER=" + termUser.Username,
+		"SHELL=/bin/bash",
+		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+	}
+	return nil
+}
+
 // buildPlatformCommand returns the OS-specific *exec.Cmd for an incoming
 // hub command. Linux uses sudo+systemd+docker.
 func buildPlatformCommand(cmdType, target string) (*exec.Cmd, error) {
@@ -165,26 +207,17 @@ func handleStartTerminal(cmd Command, rawMsg []byte) {
 	// agent binary's parent directory, or "bokiko", or current user.
 	bashCmd := exec.Command("bash", "-l")
 	termUser := resolveTerminalUser()
+	if err := applyTerminalCredentials(bashCmd, termUser); err != nil {
+		// Fail-closed: if the resolved user's UID/GID strings cannot be
+		// parsed, refuse to start the session rather than silently
+		// running bash as the agent's identity (root). Better to surface
+		// a confusing terminal failure than escalate.
+		log.Printf("terminal: refusing to start session — credential setup failed: %v", err)
+		return
+	}
 	if termUser != nil && termUser.Uid != "0" {
-		uid, _ := strconv.ParseUint(termUser.Uid, 10, 32)
-		gid, _ := strconv.ParseUint(termUser.Gid, 10, 32)
-		bashCmd.SysProcAttr = &syscall.SysProcAttr{
-			Credential: &syscall.Credential{
-				Uid: uint32(uid),
-				Gid: uint32(gid),
-			},
-		}
-		bashCmd.Dir = termUser.HomeDir
-		bashCmd.Env = []string{
-			"TERM=xterm-256color",
-			"HOME=" + termUser.HomeDir,
-			"USER=" + termUser.Username,
-			"SHELL=/bin/bash",
-			fmt.Sprintf("PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"),
-		}
 		log.Printf("terminal: spawning shell as user %s (uid=%s)", termUser.Username, termUser.Uid)
 	} else {
-		bashCmd.Env = append(os.Environ(), "TERM=xterm-256color")
 		log.Printf("terminal: WARNING spawning shell as current user (root)")
 	}
 	ptmx, err := pty.Start(bashCmd)
