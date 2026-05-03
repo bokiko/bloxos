@@ -18,33 +18,6 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-func ensureDefaultAdmin() {
-	var count int
-	err := db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count)
-	if err != nil {
-		log.Printf("error checking users count: %v", err)
-		return
-	}
-	if count > 0 {
-		return
-	}
-
-	hash, err := bcrypt.GenerateFromPassword([]byte("bloxos"), bcrypt.DefaultCost)
-	if err != nil {
-		log.Printf("error hashing default password: %v", err)
-		return
-	}
-
-	id := uuid.New().String()
-	_, err = db.Exec(`INSERT INTO users (id, username, password_hash) VALUES (?, ?, ?)`,
-		id, "admin", string(hash))
-	if err != nil {
-		log.Printf("error creating default admin: %v", err)
-		return
-	}
-	log.Println("created default admin user (admin/bloxos)")
-}
-
 // --- First-Boot Setup (Finding #11) ---
 
 // setupTokenValue holds the current setup token in memory (for env-provided tokens
@@ -441,21 +414,6 @@ func generateRandomSecret() []byte {
 		log.Fatalf("failed to generate random JWT secret: %v", err)
 	}
 	return secret
-}
-
-// warnDefaultPassword logs a warning if admin still uses default password (Finding #2).
-func warnDefaultPassword() {
-	var passwordHash string
-	err := db.QueryRow(`SELECT password_hash FROM users WHERE username = 'admin'`).Scan(&passwordHash)
-	if err != nil {
-		return
-	}
-	if bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte("bloxos")) == nil {
-		log.Println("==========================================================")
-		log.Println("WARNING: Using default admin password. Change it via the API.")
-		log.Println("  POST /api/auth/change-password")
-		log.Println("==========================================================")
-	}
 }
 
 // handleChangePassword allows authenticated users to change their password (Finding #2).
