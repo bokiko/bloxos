@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -307,13 +308,38 @@ func lookupAgentOS(machineID string) string {
 	if ok && v.OS != "" {
 		return v.OS
 	}
-	// Fall back to the metrics OS string if we have one. Format is
-	// "linux/amd64" / "windows/amd64". Split on "/".
-	if osStr := lookupMetricsOS(machineID); osStr != "" {
-		if idx := indexByte(osStr, '/'); idx > 0 {
-			return osStr[:idx]
-		}
-		return osStr
+	// Fall back to the OS string stored in machines.os. Two formats exist:
+	//   1. Legacy "linux/amd64" / "windows/amd64" — agent_running_version
+	//      messages from older agents that explicitly sent GOOS/GOARCH.
+	//   2. Hardware-reported strings populated by upsertMachine from agent
+	//      metrics, e.g. "ubuntu 24.04 (x86_64)" or
+	//      "Microsoft Windows 10 Pro 22H2 (x86_64)".
+	// Normalise both into the "linux"/"windows" family that announcedSHAFor
+	// expects. Returning the un-normalised string would cause the default
+	// switch arm to fire and suppress the announce — exactly the
+	// regression that surfaced after the Phase-9 unknown-OS protection.
+	osStr := lookupMetricsOS(machineID)
+	if osStr == "" {
+		return ""
+	}
+	if idx := indexByte(osStr, '/'); idx > 0 {
+		return osStr[:idx]
+	}
+	lower := strings.ToLower(osStr)
+	if strings.Contains(lower, "windows") {
+		return "windows"
+	}
+	if strings.Contains(lower, "linux") ||
+		strings.Contains(lower, "ubuntu") ||
+		strings.Contains(lower, "debian") ||
+		strings.Contains(lower, "fedora") ||
+		strings.Contains(lower, "centos") ||
+		strings.Contains(lower, "rhel") ||
+		strings.Contains(lower, "arch") ||
+		strings.Contains(lower, "alpine") ||
+		strings.Contains(lower, "suse") ||
+		strings.Contains(lower, "raspbian") {
+		return "linux"
 	}
 	return ""
 }
