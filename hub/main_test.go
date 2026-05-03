@@ -2467,6 +2467,56 @@ func TestHardwareInfoUpsertPreCreatesRow(t *testing.T) {
 	}
 }
 
+// TestAgentWSRateLimited locks in B2: /ws/agent had no rate limit
+// before this fix. A flood of WebSocket upgrade requests could exhaust
+// the hub's file descriptors and goroutine count — the agent endpoint
+// was the only request handler in the hub without a rateLimiter.Allow
+// gate. Modeled on TestLoginRateLimiting.
+//
+// The handler now rejects the (N+1)th request from the same IP within
+// a one-minute window with HTTP 429. Real agents reconnect at most a
+// few times per minute even on flaky networks, so wsAgentRateLimit=30
+// per minute leaves significant headroom while shutting down a flood.
+func TestAgentWSRateLimited(t *testing.T) {
+	e := setupTestServer(t)
+
+	const ip = "10.99.0.1:55555"
+	var lastCode int
+	for i := 0; i < wsAgentRateLimit+1; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/ws/agent?secret=test", nil)
+		req.RemoteAddr = ip
+		rec := httptest.NewRecorder()
+		e.ServeHTTP(rec, req)
+		lastCode = rec.Code
+	}
+	if lastCode != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 on request %d (limit=%d), got %d",
+			wsAgentRateLimit+1, wsAgentRateLimit, lastCode)
+	}
+}
+
+// TestAgentWSRateLimitPerIP confirms the limit is per-source-IP, not
+// global. Fleet-wide reconnect after a hub restart must not be blocked
+// — each agent has its own IP so each gets its own bucket.
+func TestAgentWSRateLimitPerIP(t *testing.T) {
+	e := setupTestServer(t)
+
+	for i := 0; i < wsAgentRateLimit+1; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/ws/agent?secret=test", nil)
+		req.RemoteAddr = "10.99.0.1:1111"
+		rec := httptest.NewRecorder()
+		e.ServeHTTP(rec, req)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/ws/agent?secret=test", nil)
+	req.RemoteAddr = "10.99.0.2:2222"
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	if rec.Code == http.StatusTooManyRequests {
+		t.Fatalf("rate limit leaked across IPs — IP-B should not be limited by IP-A's bucket")
+	}
+}
+
 // TestRunWithRecoverCatchesPanic locks in B1: every long-running hub
 // goroutine (alertEvalLoop, cleanupLoop, versionRefreshLoop,
 // reconnectMonitorLoop, terminalRelay) was previously a `go funcName()`

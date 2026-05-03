@@ -412,7 +412,22 @@ func handleDownloadCACert(c echo.Context) error {
 	return c.Blob(http.StatusOK, "application/x-pem-file", caPEM)
 }
 
+// wsAgentRateLimit caps WebSocket-upgrade requests to /ws/agent at this
+// many per minute, per source IP. Real agents reconnect at most a few
+// times per minute (a cycling Caddy-loopback agent peaks around 2/min,
+// fleet-wide reconnect after hub restart hits maybe 5/min). 30/min/IP
+// gives ~10x headroom for legitimate use while shutting down an
+// FD-exhaustion flood from any single source. The full fleet still
+// scales fine because each agent gets its own bucket.
+const wsAgentRateLimit = 30
+
 func handleAgentWS(c echo.Context) error {
+	ip := getRealIP(c)
+	if !rateLimiter.Allow("ws_agent", ip, wsAgentRateLimit) {
+		log.Printf("rate limit exceeded: ws_agent from %s", ip)
+		return c.JSON(http.StatusTooManyRequests, map[string]string{"error": "rate limit exceeded"})
+	}
+
 	token := c.QueryParam("token")
 	agentSecret := c.QueryParam("secret")
 
