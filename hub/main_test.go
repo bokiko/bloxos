@@ -2467,6 +2467,41 @@ func TestHardwareInfoUpsertPreCreatesRow(t *testing.T) {
 	}
 }
 
+// TestBuildTelegramPayloadIsPlainText locks in B5: the alert
+// notification path used parse_mode="HTML" and substituted
+// agent-reported strings (m.hostname, rule.Name) into the message
+// body unescaped. An agent that reported its hostname as something
+// containing `<` or `&` would either get rendered weirdly by Telegram
+// or cause the API to reject the message as malformed HTML — either
+// way, the alert silently fails. A malicious agent hostname could
+// also smuggle markup through to operators reading the alerts.
+//
+// Fix: drop parse_mode entirely. Telegram's default is plain text.
+// Future "I want bold formatting" callers would explicitly opt in
+// via a separate path.
+func TestBuildTelegramPayloadIsPlainText(t *testing.T) {
+	payload, err := buildTelegramPayload("chat-id-123", "alert with <script>tag")
+	if err != nil {
+		t.Fatalf("build payload: %v", err)
+	}
+	var parsed map[string]string
+	if err := json.Unmarshal(payload, &parsed); err != nil {
+		t.Fatalf("payload is not valid JSON: %v", err)
+	}
+	if _, ok := parsed["parse_mode"]; ok {
+		t.Errorf("payload still contains parse_mode=%q — this is the regression we just fixed; Telegram will parse user-supplied strings as HTML",
+			parsed["parse_mode"])
+	}
+	if got := parsed["chat_id"]; got != "chat-id-123" {
+		t.Errorf("chat_id = %q, want chat-id-123", got)
+	}
+	// Text is preserved verbatim — no escaping applied here. Plain-text
+	// mode means Telegram doesn't interpret it, so we don't need to.
+	if got := parsed["text"]; got != "alert with <script>tag" {
+		t.Errorf("text = %q, want verbatim original", got)
+	}
+}
+
 // TestBulkCommandRejectsOversize locks in B3 (size cap): the bulk
 // command endpoint had no upper bound on machine_ids. A request with
 // 10000 IDs would spawn 10000 goroutines instantly, each holding a

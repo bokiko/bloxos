@@ -305,16 +305,29 @@ func broadcastAlertSSE(alert Alert) {
 	}
 }
 
+// buildTelegramPayload returns the JSON body for the Telegram
+// sendMessage API. parse_mode is intentionally omitted so the API
+// treats text as plain (no HTML parsing). Pre-fix, this set
+// parse_mode="HTML" while substituting agent-reported strings
+// (machine hostnames, alert-rule names) into the body unescaped —
+// an agent that reported its hostname as <script>... would either
+// crash Telegram's parser or smuggle markup through to operators.
+func buildTelegramPayload(chatID, text string) ([]byte, error) {
+	return json.Marshal(map[string]string{
+		"chat_id": chatID,
+		"text":    text,
+	})
+}
+
 func sendTelegram(text string) {
 	if telegramToken == "" || telegramChatID == "" {
 		return
 	}
-	payload := map[string]string{
-		"chat_id":    telegramChatID,
-		"text":       text,
-		"parse_mode": "HTML",
+	body, err := buildTelegramPayload(telegramChatID, text)
+	if err != nil {
+		log.Printf("telegram payload error: %v", err)
+		return
 	}
-	body, _ := json.Marshal(payload)
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", telegramToken)
 	resp, err := http.Post(url, "application/json", bytes.NewReader(body))
 	if err != nil {
