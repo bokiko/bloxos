@@ -654,8 +654,7 @@ func handleAgentWS(c echo.Context) error {
 func handleWindowsInstallScript(c echo.Context) error {
 	// PowerShell raw block. Go raw strings can't contain backticks, and
 	// PowerShell doesn't strictly need them here — we keep the script
-	// backtick-free. The C# add-type block uses an @"..."@ here-string
-	// for its source which is fine inside a Go raw string.
+	// backtick-free.
 	script := `# BloxOS Windows Agent installer
 $ErrorActionPreference = 'Stop'
 
@@ -677,16 +676,9 @@ $HubHttp = $Hub -replace '^wss://','https://' -replace '^ws://','http://'
 Write-Host "Hub:    $HubHttp"
 Write-Host "WS hub: $Hub"
 
-# Allow self-signed cert during bootstrap (mirrors install.sh's curl -k).
-add-type @"
-using System.Net;
-using System.Security.Cryptography.X509Certificates;
-public class TrustAllCerts {
-    public static bool Validate(object sender, X509Certificate cert, X509Chain chain, System.Net.Security.SslPolicyErrors err) { return true; }
-}
-"@
-[System.Net.ServicePointManager]::ServerCertificateValidationCallback = [TrustAllCerts]::Validate
-[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+# install.ps1 is invoked via 'powershell.exe -ExecutionPolicy Bypass -File'.
+# All HTTP downloads use curl.exe with -k for self-signed cert tolerance, so
+# no PowerShell-side cert callback or SecurityProtocol pinning is needed.
 
 # Stop + remove existing service if present.
 $svc = Get-Service -Name BloxOSAgent -ErrorAction SilentlyContinue
@@ -700,6 +692,35 @@ if ($svc) {
     Start-Sleep -Seconds 2
 }
 
+# Wipe stale credentials from any prior install. The Windows agent runs as
+# LocalSystem so its credential dir is C:\Windows\System32\config\systemprofile\.bloxos.
+# Without this cleanup, a re-install would inherit the prior secret and the
+# agent would attempt to authenticate with stale credentials instead of using
+# the new enrollment token. (See agent/main.go credentialFilePath() and the
+# secret>token priority in the WebSocket URL builder.)
+$CredDir = "C:\Windows\System32\config\systemprofile\.bloxos"
+if (Test-Path $CredDir) {
+    Write-Host "Removing stale agent credentials at $CredDir ..."
+    Remove-Item -Path $CredDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# Fetch the hub's local CA so the agent can validate wss:// without depending
+# on the Windows system trust store. Linux install.sh does the equivalent
+# (writes /etc/bloxos/ca.crt and sets BLOXOS_CA_CERT). Windows install.ps1
+# historically did not — fleet trust silently relied on whatever ca.crt was
+# already in .bloxos\ from a previous-era install.
+$CaPath = Join-Path $CredDir "ca.crt"
+if (-not (Test-Path $CredDir)) {
+    New-Item -ItemType Directory -Path $CredDir -Force | Out-Null
+}
+Write-Host "Downloading hub CA certificate to $CaPath ..."
+& curl.exe -ksfL -o $CaPath "$HubHttp/download/ca.crt"
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "CA cert download failed (curl exit code $LASTEXITCODE)"
+    exit 1
+}
+[Environment]::SetEnvironmentVariable("BLOXOS_CA_CERT", $CaPath, "Machine")
+
 $InstallDir = "C:\Program Files\BloxOS"
 $AgentExe   = Join-Path $InstallDir "bloxos-agent.exe"
 if (-not (Test-Path $InstallDir)) {
@@ -708,7 +729,16 @@ if (-not (Test-Path $InstallDir)) {
 
 Write-Host "Downloading agent binary to $AgentExe ..."
 $DownloadUrl = "$HubHttp/download/agent?os=windows"
-Invoke-WebRequest -Uri $DownloadUrl -OutFile $AgentExe -UseBasicParsing
+# Use curl.exe (ships with Win10 1803+ and Win11) instead of Invoke-WebRequest.
+# IWR uses .NET HttpWebRequest, which mishandles TLS 1.3 post-handshake frames
+# (NewSessionTicket) and HTTP/2 ALPN against self-signed Caddy certs and bails
+# with "underlying connection was closed". curl.exe uses Schannel for TLS but
+# its own HTTP stack, which handles both cleanly.
+& curl.exe -ksfL -o $AgentExe $DownloadUrl
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "Agent binary download failed (curl exit code $LASTEXITCODE)"
+    exit 1
+}
 
 # Persist HUB + TOKEN for the service to pick up at next start.
 [Environment]::SetEnvironmentVariable("BLOXOS_HUB", $Hub, "Machine")

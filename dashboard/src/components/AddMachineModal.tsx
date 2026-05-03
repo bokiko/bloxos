@@ -53,18 +53,33 @@ function deriveWsHubBase(): string {
 function buildWindowsCommand(token: string): string {
   const wsBase = deriveWsHubBase();
   const httpBase = deriveHttpHubBase();
-  // PHASE12-NOTE: deliberately omitting `-SkipCertificateCheck` — that
-  // flag is PowerShell 7+ only. install.ps1 itself installs a
-  // TrustAllCerts shim (see hub/agentws.go handleWindowsInstallScript)
-  // so the bootstrap IWR is the only call that needs cert tolerance.
-  // We add a Tls12 + ServerCertificateValidationCallback={$true} prelude
-  // so the IWR succeeds on PS 5.1 against a self-signed Caddy cert.
+  // Bootstrap with curl.exe (ships on Win10 1803+ and all Win11) instead
+  // of Invoke-WebRequest. IWR sits on .NET HttpWebRequest, which fails
+  // against self-signed Caddy certs over TLS 1.3 — Schannel mislabels the
+  // TLS 1.3 NewSessionTicket frame as renegotiation and HttpWebRequest
+  // bails with "underlying connection was closed". curl.exe uses Schannel
+  // for TLS but its own HTTP stack and handles both cleanly.
+  //
+  // The downloaded install.ps1 is then run via `powershell.exe
+  // -ExecutionPolicy Bypass -File`. Stock Windows PowerShell 5.1 has
+  // ExecutionPolicy=Restricted by default (all scopes Undefined → falls
+  // back to Restricted), which blocks running .ps1 files from disk. The
+  // Bypass flag scopes ONLY to that single child PowerShell process — it
+  // does NOT modify the system, user, or process-scope policy persistently.
+  // Same pattern used by winget, scoop, oh-my-posh.
+  //
+  // Why this works under Restricted: execution policy gates loading .ps1
+  // files from disk. It does NOT gate (a) inline `-Command "..."` strings,
+  // (b) string `iex`/Invoke-Expression of in-memory content, (c) built-in
+  // cmdlets, or (d) `Add-Type` C# compilation. install.ps1 itself uses
+  // only built-in cmdlets and Win32 binaries (sc.exe, curl.exe, the agent
+  // .exe), so no nested .ps1 invocations exist that would need the same
+  // bypass treatment.
   return [
     `$env:BLOXOS_HUB="${wsBase}"`,
     `$env:BLOXOS_TOKEN="${token}"`,
-    `[System.Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12`,
-    `[System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}`,
-    `iwr -UseBasicParsing ${httpBase}/install.ps1 | iex`,
+    `curl.exe -ksfL -o $env:TEMP\\bloxos-install.ps1 ${httpBase}/install.ps1`,
+    `powershell.exe -ExecutionPolicy Bypass -File $env:TEMP\\bloxos-install.ps1`,
   ].join("; ");
 }
 

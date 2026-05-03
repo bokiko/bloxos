@@ -1603,10 +1603,18 @@ func TestAnnouncedSHAIsPerPlatform(t *testing.T) {
 	if got := announcedSHAFor("windows"); got != windowsSHA {
 		t.Fatalf("announcedSHAFor(windows) = %s, want %s", got, windowsSHA)
 	}
-	// Empty / unknown OS should fall back to the Linux SHA so legacy
-	// agents stay coherent.
-	if got := announcedSHAFor(""); got != linuxSHA {
-		t.Fatalf("announcedSHAFor(\"\") = %s, want %s (fallback)", got, linuxSHA)
+	// Empty / unknown OS must NOT announce a SHA — the legacy "fall back
+	// to Linux SHA" behavior caused perpetual update loops on Windows
+	// agents whose OS hadn't been learned yet at WS-upgrade time.
+	// recordAgentRunningVersion now triggers an announce after the OS is
+	// learned from the first agent_running_version message, so brand-new
+	// agents still get auto-update — just deferred from WS-upgrade time
+	// to first-message-arrival time.
+	if got := announcedSHAFor(""); got != "" {
+		t.Fatalf("announcedSHAFor(\"\") = %q, want %q (no announce until OS is known)", got, "")
+	}
+	if got := announcedSHAFor("unknown"); got != "" {
+		t.Fatalf("announcedSHAFor(unknown) = %q, want %q", got, "")
 	}
 }
 

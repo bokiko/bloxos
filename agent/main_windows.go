@@ -4,7 +4,11 @@ package main
 
 import (
 	"fmt"
+	"log"
+	"os"
 	"os/exec"
+
+	"golang.org/x/sys/windows/registry"
 )
 
 // buildPlatformCommand returns the OS-specific *exec.Cmd for an incoming
@@ -51,4 +55,40 @@ func platformUninstallService() error { return uninstallService() }
 // running under SCM and dispatches accordingly.
 func runPlatformAgent() {
 	runWindowsService()
+}
+
+// wipeMachineTokenIfBootstrapped removes BLOXOS_TOKEN from the persistent
+// machine environment (HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\
+// Environment) once the agent has a durable credential on disk. No-op if the
+// env var is unset or no credential file exists. Best-effort: failures are
+// logged but do not affect agent operation.
+//
+// Why: install.ps1 persists BLOXOS_TOKEN to machine env so the agent service
+// can read it on first start. After successful enrollment the agent has a
+// durable secret in credentialFilePath() and the token is no longer needed.
+// Persisting it indefinitely (a) is a small security smell and (b) lets a
+// re-install accidentally inherit a now-stale token.
+func wipeMachineTokenIfBootstrapped() {
+	if os.Getenv("BLOXOS_TOKEN") == "" {
+		return
+	}
+	info, err := os.Stat(credentialFilePath())
+	if err != nil || info.Size() == 0 {
+		return
+	}
+	key, err := registry.OpenKey(
+		registry.LOCAL_MACHINE,
+		`SYSTEM\CurrentControlSet\Control\Session Manager\Environment`,
+		registry.SET_VALUE,
+	)
+	if err != nil {
+		log.Printf("token-wipe: open registry: %v", err)
+		return
+	}
+	defer key.Close()
+	if err := key.DeleteValue("BLOXOS_TOKEN"); err != nil {
+		log.Printf("token-wipe: delete BLOXOS_TOKEN: %v", err)
+		return
+	}
+	log.Printf("token-wipe: removed BLOXOS_TOKEN from machine env (durable secret in place at %s)", credentialFilePath())
 }
