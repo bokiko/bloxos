@@ -2466,6 +2466,78 @@ func TestHardwareInfoUpsertPreCreatesRow(t *testing.T) {
 	}
 }
 
+// TestExtractAPIMachineIP locks in C5: the IP for an API-polled
+// machine must be derived from the baseURL field (which is always a
+// well-formed URL the user typed when registering the machine), NOT
+// from the display-name field. The pre-fix code at hub/main.go:2208
+// did `strings.TrimPrefix(strings.TrimPrefix(name, "https://"), "http://")`
+// against the wrong variable — for typical display names like
+// "dasman-syn" or "Synology NAS" this produced garbage IP values like
+// "dasman-syn" in the machines table.
+//
+// When the adapter has already discovered the IP via its API
+// (result.IP), prefer that — it's the canonical answer. Fall back to
+// parsing baseURL only when the adapter didn't report one.
+func TestExtractAPIMachineIP(t *testing.T) {
+	cases := []struct {
+		name      string
+		baseURL   string
+		resultIP  string
+		want      string
+	}{
+		{
+			name:     "adapter_provided_ip_wins",
+			baseURL:  "https://192.168.16.50:5001",
+			resultIP: "10.0.0.1",
+			want:     "10.0.0.1",
+		},
+		{
+			name:    "extract_ip_from_https_url_with_port",
+			baseURL: "https://192.168.16.50:5001",
+			want:    "192.168.16.50",
+		},
+		{
+			name:    "extract_ip_from_https_url_no_port",
+			baseURL: "https://192.168.16.50",
+			want:    "192.168.16.50",
+		},
+		{
+			name:    "extract_hostname_from_url",
+			baseURL: "https://syn.local:5001",
+			want:    "syn.local",
+		},
+		{
+			name:    "extract_from_http_url",
+			baseURL: "http://10.20.30.40:8006",
+			want:    "10.20.30.40",
+		},
+		{
+			name:    "ipv6_url",
+			baseURL: "https://[2001:db8::1]:5001",
+			want:    "2001:db8::1",
+		},
+		{
+			name:    "garbage_baseurl_returns_empty",
+			baseURL: "not-a-valid-url",
+			want:    "",
+		},
+		{
+			name:    "empty_inputs_return_empty",
+			baseURL: "",
+			want:    "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := extractAPIMachineIP(tc.baseURL, tc.resultIP)
+			if got != tc.want {
+				t.Errorf("extractAPIMachineIP(%q, %q) = %q, want %q",
+					tc.baseURL, tc.resultIP, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestUnregisterAgentConnectionDeletesOwn verifies the happy path:
 // when a connection cleanly exits and no reconnect has happened,
 // unregisterAgentConnection removes the entry. Without this baseline,
