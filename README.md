@@ -1,255 +1,260 @@
-<p align="center">
-  <img src="https://capsule-render.vercel.app/api?type=waving&color=gradient&customColorList=14,20,24&height=200&section=header&text=BloxOS&fontSize=60&fontColor=ffffff&animation=fadeIn&fontAlignY=38&desc=Fleet%20Management%20Dashboard%20for%20AI%20Machines&descAlignY=55&descAlign=50" />
-</p>
+<div align="center">
 
-<p align="center">
-  <a href="https://github.com/bokiko/bloxos"><img src="https://img.shields.io/badge/GitHub-BloxOS-181717?style=for-the-badge&logo=github" alt="GitHub"></a>
-  <a href="https://x.com/bokiko"><img src="https://img.shields.io/badge/X-@bokiko-000000?style=for-the-badge&logo=x&logoColor=white" alt="X"></a>
-</p>
+# BloxOS
 
-<p align="center">
-  <img src="https://img.shields.io/badge/Go-1.24+-2ecc71?style=flat-square&logo=go&logoColor=white" alt="Go">
-  <img src="https://img.shields.io/badge/Next.js-15-2ecc71?style=flat-square&logo=next.js&logoColor=white" alt="Next.js">
-  <img src="https://img.shields.io/badge/SQLite-WAL-2ecc71?style=flat-square&logo=sqlite&logoColor=white" alt="SQLite">
-  <img src="https://img.shields.io/badge/NVIDIA-GPU_Monitoring-2ecc71?style=flat-square&logo=nvidia&logoColor=white" alt="NVIDIA">
-  <img src="https://img.shields.io/badge/xterm.js-Terminal-2ecc71?style=flat-square&logo=windowsterminal&logoColor=white" alt="xterm.js">
-  <img src="https://img.shields.io/badge/version-1.0.0-2ecc71?style=flat-square" alt="Version">
-  <img src="https://img.shields.io/github/last-commit/bokiko/bloxos?style=flat-square&color=2ecc71" alt="Last Commit">
-</p>
+**The operator console your homelab actually deserves.**
 
-<p align="center">
-  <img src="https://readme-typing-svg.demolab.com?font=Fira+Code&size=18&pause=1000&color=2ecc71&center=true&vCenter=true&width=600&lines=Monitor+GPU+health+across+your+fleet;Restart+services+without+SSH;Built-in+web+terminal+in+your+browser;Dark+mode+%7C+Real-time+%7C+Self-hosted" alt="Typing SVG" />
-</p>
+Real-time fleet management for self-hosted infrastructure — Linux servers, Windows workstations, Proxmox VMs, NAS units, mining rigs. One dashboard, live metrics, web terminals, hardware inventory, native Windows + Linux agents, auto-update, multi-user RBAC.
 
-## Contents
+[![License](https://img.shields.io/badge/license-Apache_2.0-blue.svg)](LICENSE)
+[![Made with Go](https://img.shields.io/badge/agent-Go-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![Made with Next.js](https://img.shields.io/badge/dashboard-Next.js-000000?logo=next.js&logoColor=white)](https://nextjs.org)
+[![SQLite](https://img.shields.io/badge/storage-SQLite-003B57?logo=sqlite&logoColor=white)](https://sqlite.org)
+[![Website](https://img.shields.io/badge/site-bloxos.dev-58A6FF)](https://bloxos.dev)
 
-- [Why BloxOS?](#why-bloxos)
-- [Quick Start](#quick-start)
-- [Features](#features)
-- [Architecture](#architecture)
-- [Tech Stack](#tech-stack)
-- [Project Structure](#project-structure)
-- [Systemd Services](#systemd-services)
-- [Continuity](#continuity)
-- [License](#license)
+[Website](https://bloxos.dev) · [Documentation](https://bloxos.dev/docs) · [Report a bug](https://github.com/bokiko/bloxos/issues) · [Author](https://bokiko.io)
+
+<br />
+
+<!-- Replace with a real screenshot once available -->
+<img src="docs/images/dashboard-hero.png" alt="BloxOS dashboard" width="900" />
+
+</div>
 
 ---
 
-## Why BloxOS?
+## Why BloxOS exists
 
-If you run a homelab with multiple Ubuntu/Debian machines doing AI inference, LLM serving, or GPU workloads — you know the pain:
+I run a homelab. Multiple Proxmox boxes, a Synology NAS, a Windows workstation, a Mac Studio doing AI work, a couple of mining rigs, plus VMs spread across all of it. The existing options to manage that fleet are all wrong for me:
 
-1. SSH into each box to check if things are healthy
-2. Discover a service crashed 6 hours ago because nobody was watching
-3. Restart Ollama on machine #7, then realize machine #3 also needs it
-4. Check GPU temps one by one with `nvidia-smi`
-5. Lose track of which machine runs what
+- **Datadog / New Relic** — built for SaaS companies, priced like SaaS companies, send my home network telemetry to a third party.
+- **Grafana + Prometheus + node_exporter** — three services to maintain just to see if a box is alive. Charts are great. Operating the fleet is not what they do.
+- **Cockpit / Webmin** — per-machine dashboards, no fleet view, no Windows story.
+- **Proxmox UI** — only sees Proxmox.
 
-**BloxOS replaces all of that with one dashboard.** A lightweight Go agent runs on each machine, reports metrics over WebSocket, and lets you control everything from a single dark-mode web UI — including opening a terminal right in your browser.
+BloxOS is what I wanted instead: **one dashboard that treats my whole fleet as one thing**, runs entirely on my hardware, holds zero of my data on someone else's servers, and is fast enough that it feels alive instead of feeling like a monitoring tool.
 
-```
-Open dashboard  →  See all machines  →  Click one  →  Check GPU / services  →  Restart Ollama  →  Open terminal  →  Done
-```
-
-All local. No cloud. No subscription. No agents phoning home to someone else's server. Everything runs on your network.
+If you've ever opened five browser tabs to check on five machines, this is for you.
 
 ---
 
-## Quick Start
+## What you actually get
 
-### Hub + Dashboard (on your server)
+### Live, not polled
+Metrics stream over WebSocket from agent to hub, then push to your browser via SSE. CPU, RAM, GPU usage, GPU power, thermals, network throughput, disk I/O — all updating multiple times per second. No 15-second scrape intervals. No "did it just freeze or is it just slow." When a value changes, you see it change.
+
+### Real hardware inventory
+Every agent collects DMI data, RAM modules (manufacturer, speed, slot, ECC status), GPU devices (model, VRAM, driver), PCI bus, network adapters, disks, BIOS, and motherboard. The fleet-wide `/inventory` page is sortable, filterable, groupable, and exports to CSV / JSON / Markdown. The first time you use it to find "every machine with less than 32GB RAM" in three seconds, you'll understand why it's there.
+
+### Web terminal that actually works
+xterm.js, theme-aware, stable 360px pane. Hit a machine, get a real shell. No SSH key juggling, no port forwarding, no "what was the IP again." The terminal session belongs to the operator's auth context, not the machine's.
+
+### Two operating systems, one dashboard
+The Linux agent and the Windows agent speak the same WebSocket protocol to the same hub. The Windows agent registers itself as a Windows Service via SCM, collects hardware via WMI, and supports the same auto-update flow. From the dashboard, a Windows machine and a Linux machine look and behave identically.
+
+### Auto-update with rollback
+The hub announces the agent's current SHA. Agents compare against their own binary. If different, they download the new version, verify the SHA, save the previous binary as `.prev`, atomically rename, and exit — systemd or SCM restarts them on the new version. If anything goes wrong, a recovery service swaps the previous binary back. A circuit breaker pauses rollout after two failures in five minutes.
+
+You push an update to the hub. The fleet self-heals to the new version. Or rolls back. Either way, you don't get paged.
+
+### Multi-user with real permissions
+Viewers, operators, admins. Every endpoint has a scope (`fleet.read`, `fleet.control`, `fleet.metadata`, `fleet.admin`, `branding.admin`, `users.admin`). Operators can run actions but not change roles. Admins can change branding. Viewers can look but not touch. JWT-based, bcrypt for passwords.
+
+### Personalization that respects your eyes
+Five themes — BloxOS (default), Solarized, Dracula, Nord, Tokyo Night — each in light and dark variants where appropriate. Per-user. Plus org-wide custom branding: upload your own logo, favicon, and login welcome message. Density toggle (comfortable / compact). Pinned machines. Saved filters. Default views per user.
+
+### Cmd+K everywhere
+Command palette opens on `Cmd+K` (or `Ctrl+K`). Jump to any machine by name, run any action, open any setting, search inventory, switch themes. The palette is how operators actually use the system once they know it exists.
+
+### One-file database
+SQLite. The whole system — users, machines, metrics history, inventory, branding, preferences, saved filters, notes — lives in `bloxos.db`. Backup is `cp bloxos.db backup.db`. Restore is the inverse. No replication setup, no migration nightmares, no "which Postgres version are we on."
+
+### Built for operators, not viewers
+- Notes per machine (markdown-ish, URL auto-link)
+- Persistent last-known state in localStorage so the dashboard hydrates instantly even before WebSocket reconnects
+- Live freshness timer per card so you always know how stale the data is
+- Per-card refresh button + global refresh button
+- Skeleton loading states everywhere — no flashes of blank UI
+- `prefers-reduced-motion` honored throughout
+
+---
+
+## Architecture at a glance
+
+```
+┌─────────────────┐         ┌─────────────────┐
+│   Linux Agent   │◀──WS───▶│                 │
+└─────────────────┘         │                 │
+                            │       Hub       │◀──SSE──▶  Dashboard (browser)
+┌─────────────────┐         │   (Go + SQLite) │
+│  Windows Agent  │◀──WS───▶│                 │◀──REST──▶  CLI / scripts
+└─────────────────┘         │                 │
+                            └─────────────────┘
+┌─────────────────┐                  ▲
+│   API-polled    │──────────────────┘
+│  (Synology, etc)│
+└─────────────────┘
+```
+
+- **Hub** is a single Go binary. Holds the SQLite database. Speaks WebSocket to agents, SSE to dashboards, REST to CLIs and scripts.
+- **Agents** are single Go binaries. Linux runs under systemd; Windows runs under SCM. They open one outbound WebSocket to the hub — no inbound ports needed on agent machines.
+- **Dashboard** is Next.js, served by the hub or hosted separately. The dashboard never talks to agents directly; it always goes through the hub.
+- **API-polled targets** (Synology, Proxmox, anything without a native agent) are scraped by the hub on a schedule and surfaced as machines in the same dashboard.
+
+### Why this shape
+
+A central hub means agents don't need inbound network access — they punch out to the hub from wherever they live. Works through NATs, behind home routers, across Tailscale, across UniFi VLANs. The hub is the only thing that needs a stable address.
+
+WebSocket from agents to hub means real-time, bidirectional. The hub can push commands (`refresh_metrics`, `run_command`, `open_terminal`) without polling. Agents can stream metrics without scrape intervals.
+
+SSE from hub to browser means the dashboard updates live without WebSocket complexity in the frontend. SSE survives proxies and corporate firewalls better than WebSocket. Reconnect is automatic.
+
+---
+
+## Quick start
+
+> **Status:** BloxOS is currently being prepared for public release. The instructions below are the target shape. The full installer is in active development — see [Project status](#project-status) below.
+
+### 1. Install the hub
+
+On any Linux machine you want as the central server:
 
 ```bash
-# Build
-cd hub && go build -o bloxos-hub .
-cd ../dashboard && pnpm install && pnpm build
-
-# Run
-./hub/bloxos-hub &                            # API on :4000
-cd dashboard && npx next start -H 0.0.0.0 &   # Dashboard on :3000
+curl -fsSL https://bloxos.dev/install/hub | sudo bash
 ```
 
-### Agent (on each machine)
+This sets up the hub as a systemd service on port `:8080`, creates a default admin user, and prints the bootstrap login details.
 
+### 2. Open the dashboard
+
+Browse to `http://<your-hub-ip>:8080` and log in with the credentials printed in step 1. Change the admin password immediately. Set a custom logo if you want one.
+
+### 3. Add your first machine
+
+Click **Add Machine** in the dashboard. Pick **Linux** or **Windows**. Copy the displayed install command. Run it on the target machine. The agent installs, registers, and shows up in the dashboard within seconds.
+
+For Linux:
 ```bash
-# One-line install (generate token from dashboard)
-curl -fsSLk https://<hub>/install.sh | \
-  BLOXOS_HUB=wss://<hub> \
-  BLOXOS_TOKEN=<token> \
-  BLOXOS_CA_URL=https://<hub>/download/ca.crt \
-  BLOXOS_CA_SHA256=<sha256-from-token-response> \
-  bash
-
-# If your hub uses a publicly trusted certificate, you can drop BLOXOS_CA_* and -k:
-curl -fsSL https://<hub>/install.sh | \
-  BLOXOS_HUB=wss://<hub> \
-  BLOXOS_TOKEN=<token> \
-  bash
-
-# Or manual
-cd agent && go build -o bloxos-agent .
-BLOXOS_CA_CERT=/etc/bloxos/ca.crt ./bloxos-agent --hub wss://<hub>/ws/agent --token <token>
+curl -fsSL https://<your-hub>/install/agent?token=<one-time-token> | sudo bash
 ```
 
-`POST /api/tokens` now returns `ca_url` and `ca_sha256` when the hub has a local CA available via `BLOXOS_CA_CERT`. Use those values for self-signed Caddy deployments.
+For Windows (PowerShell as Administrator):
+```powershell
+iwr -useb https://<your-hub>/install/agent.ps1?token=<one-time-token> | iex
+```
 
-### First Boot Setup
+### 4. That's it
 
-1. Start the hub.
-2. Read the one-time setup token from `~/.bloxos/setup-token`, or set `BLOXOS_SETUP_TOKEN`.
-3. Open `https://<hub>/setup`.
-4. Enter the setup token, admin username, password, and terminal PIN.
-5. The dashboard completes setup and then hands off to the normal login/dashboard flow.
-
-### API-Polled Machines
-
-API-polled integrations like Proxmox and Synology now choose TLS trust per machine:
-
-- `System`: use the hub host's normal system trust store
-- `Custom CA`: paste the target API's CA PEM into the add-machine form
-- `Insecure`: temporary fallback that skips verification only for that machine and logs a warning on every poll
-
-Use `Custom CA` for self-signed appliances instead of a hub-wide insecure override.
-You can edit an existing API machine from the dashboard to change credentials, TLS mode, or poll interval; the hub reloads that machine's poller without a service restart.
+The agent self-updates from now on. Add more machines the same way.
 
 ---
 
-## Features
+## Tech stack
 
-<table>
-<tr>
-<td width="50%">
+| Layer | Stack |
+|---|---|
+| Hub | Go, SQLite, WebSocket, SSE, JWT, bcrypt |
+| Linux agent | Go, systemd, `/sys/class/thermal`, `/proc`, `dmidecode`, `lspci`, `nvidia-smi` |
+| Windows agent | Go, Windows Service Manager, WMI (`Win32_*`, `MSAcpi_ThermalZoneTemperature`), `nvidia-smi.exe` |
+| Dashboard | Next.js 16 (App Router), React, TypeScript, Tailwind CSS v4, lucide-react, cmdk, recharts, xterm.js |
+| Auth | JWT (HS256), bcrypt password hashing, scope-based RBAC |
+| Real-time | WebSocket (agent ↔ hub), SSE (hub ↔ browser) |
+| Deployment | Single Go binary for the hub, single binary for each agent, static Next.js bundle served by the hub |
 
-### Fleet Dashboard
-HiveOS-style grid of machine cards with colored status borders (green / amber / red). Real-time CPU, RAM, disk, GPU metrics. Grid and list view toggle for large fleets.
-
-### GPU Monitoring
-nvidia-smi integration reporting temperature, utilization, VRAM, power draw, and fan speed. Tested on RTX 3090, 3080, 3070 Ti. Graceful fallback when no GPU present.
-
-### Service & Container Control
-Discover and display systemd services and Docker containers. Restart, stop, or start any service or container with one click from the detail view.
-
-### Built-in Web Terminal
-xterm.js terminal embedded in the dashboard. PTY relay via WebSocket through the hub. PIN-gated access with session audit metadata. No SSH client needed.
-
-</td>
-<td width="50%">
-
-### Alert Engine
-6 default rules (CPU >90%, RAM >95%, disk >90%, GPU >80C, GPU >90C, machine offline). Auto-resolve when conditions clear. Telegram push notifications. Slide-out alert panel with badge counter.
-
-### Metric Charts
-Sparkline CPU trends on machine cards. Full area charts on detail page for CPU, RAM, GPU temp, and VRAM. Time range selector: 30m, 1h, 6h, 24h, 7d.
-
-### Bulk Actions
-Multi-select machines in list view. Restart a service or reboot across the entire selection with one click.
-
-### One-Line Agent Install
-Generate a time-limited token from the dashboard. Run one curl command on the target machine. Agent downloads, installs as systemd service, and starts reporting.
-
-### Supported Deploy Path
-The supported checked-in deployment path is `Caddy + systemd` on a single host. The Docker Compose files are not currently maintained as a supported runtime path.
-
-</td>
-</tr>
-</table>
-
-### Additional
-
-- **Search / Filter / Sort** — Filter by hostname, IP, status, or tags. Sort by name, status, CPU, or GPU temp. All client-side, instant results.
-- **Machine Tags** — Group machines with custom labels. Filter the fleet by tag.
-- **JWT Authentication** — Login-protected dashboard. 24-hour token expiry. Re-auth gate for destructive actions.
-- **Metric Retention** — Automatic cleanup: 7 days for metrics, 30 days for alerts. Prevents unbounded DB growth.
-- **Network Latency** — Agent-to-hub round-trip displayed on each card and detail view.
+No Docker required. No Kubernetes. No Redis. No Postgres. No external services. Three binaries and a SQLite file.
 
 ---
 
-## Architecture
+## Project status
 
-```
-┌──────────────────────────────────────────────────────────┐
-│  BloxOS Hub                                               │
-│  ┌────────────┐  ┌───────────┐  ┌─────────────────────┐  │
-│  │ Dashboard  │  │  Hub API  │  │  Terminal Relay      │  │
-│  │ Next.js 15 │  │  Go/Echo  │  │  WebSocket <-> PTY  │  │
-│  │ :3000      │  │  :4000    │  │                     │  │
-│  └────────────┘  └─────┬─────┘  └──────────┬──────────┘  │
-│                        │ SQLite (WAL)       │             │
-└────────────────────────┼────────────────────┘             │
-                         │                                  │
-         ┌───────────────┴───────────────┐                  │
-         │  Agent (per machine, ~15MB)   │                  │
-         │  gopsutil + nvidia-smi + pty  │<--- WebSocket ---┘
-         │  Connects OUTBOUND to hub     │
-         └───────────────────────────────┘
-```
+BloxOS is **pre-1.0** and currently powering the author's homelab fleet of ~10 machines across Proxmox, Synology, Windows, Linux, and Mac. It's stable enough to be the only dashboard I look at, but not yet documented enough for a stranger to install without reading source.
 
-**Key design decisions:**
-- Agents connect **outbound** to the hub — no ports opened on target machines
-- Separate WebSocket for terminal I/O (not multiplexed with metrics)
-- SSE for dashboard updates (30s fleet view, 5-10s detail view)
-- 15-second keepalive pings prevent browser disconnects
-- nvidia-smi XML parsing works on all GeForce consumer GPUs
-- Agent runs as non-root with sudo whitelist for specific commands
+**What's solid:**
+- Hub, Linux agent, Windows agent — all three run continuously on my fleet
+- Auto-update with rollback — battle-tested through several agent updates
+- Hardware inventory, metrics, terminal, RBAC, themes, branding — all working
+- ~20,000 lines of dashboard code, ~5,000 lines of Go across hub and agents
 
----
+**What's not done:**
+- Public installer scripts (the `curl | bash` flows above)
+- Mobile-responsive layout
+- Historical metrics retention beyond the live ring buffer
+- Custom alert rules UI (alerts exist; the rule editor isn't shipped)
+- Audit log
+- Backup/restore tooling beyond "copy the SQLite file"
 
-## Tech Stack
+**What's planned for v1.0:**
+- Polished installer flow for hub and agents
+- Documentation site at [bloxos.dev/docs](https://bloxos.dev/docs)
+- Mobile responsive pass
+- Custom alert rules editor
+- Per-machine power tracking chart (GPU first, total system later)
 
-| Component | Technology |
-|-----------|-----------|
-| **Hub API** | Go 1.24, Echo, gorilla/websocket, SQLite (WAL mode) |
-| **Agent** | Go, gopsutil, nvidia-smi XML parsing, creack/pty |
-| **Dashboard** | Next.js 15, React, Tailwind CSS, Recharts, xterm.js |
-| **Auth** | JWT (HS256), bcrypt password hashing |
-| **Alerts** | Configurable rule engine + Telegram Bot API |
-| **Database** | SQLite with WAL mode (single file, zero config) |
+See [the roadmap](#roadmap) for what's coming after v1.0.
 
 ---
 
-## Project Structure
+## Roadmap
 
-```
-bloxos/
-├── hub/           Go API server + WebSocket relay + alert engine
-├── agent/         Go agent binary (metrics, services, Docker, PTY)
-├── dashboard/     Next.js 15 frontend (dark mode, Tailwind)
-├── scripts/       Install scripts + systemd service files
-├── proto/         Shared protocol definitions
-├── docs/          Architecture plan
-├── HANDOFF.md     Continuity ledger for AI-assisted development
-└── CLAUDE.md      Repo-level AI coding instructions
-```
+Beyond v1.0:
 
----
+- **Audit log** — every privileged action recorded with operator + timestamp
+- **Fleet-wide full-text search** — across machine names, notes, tags, hardware
+- **Historical metrics** — opt-in long-term storage with downsampling
+- **Custom dashboard layouts** — drag-to-arrange machine cards, save layouts per user
+- **Alert delivery** — webhooks (Discord, Slack, Telegram, generic)
+- **API tokens** — long-lived tokens for automation scripts, with scope restrictions
+- **Plugin system for API-polled machines** — first-class Synology, Proxmox, UniFi, TrueNAS support
 
-## Systemd Services
-
-```bash
-# Status
-sudo systemctl status bloxos-hub bloxos-agent bloxos-dashboard
-
-# Restart
-sudo systemctl restart bloxos-hub
-
-# Logs
-journalctl -u bloxos-hub -f
-journalctl -u bloxos-agent -f
-journalctl -u bloxos-dashboard -f
-```
-
-Service files are in `scripts/systemd/` and can be copied to `/etc/systemd/system/`.
+If something on this list matters more to you than the others, [open an issue](https://github.com/bokiko/bloxos/issues) and tell me — operator pull is how priorities move.
 
 ---
 
-## Continuity
+## Comparison
 
-This project uses a **handoff ledger** (`HANDOFF.md`) in the repo root. Any Claude Code session on any machine can read it on start and know what is done, in progress, and next. See `CLAUDE.md` for repo conventions.
+|  | BloxOS | Datadog | Grafana stack | Cockpit |
+|---|---|---|---|---|
+| Self-hosted | ✅ | ❌ | ✅ | ✅ |
+| Single binary install | ✅ | n/a | ❌ | ✅ |
+| Linux + Windows agents | ✅ | ✅ | partial | ❌ |
+| Live web terminal | ✅ | ❌ | ❌ | ✅ |
+| Hardware inventory | ✅ | ❌ | ❌ | partial |
+| Multi-user RBAC | ✅ | ✅ | ✅ | ❌ |
+| Auto-updating agents | ✅ | ✅ | ❌ | ❌ |
+| Fleet view | ✅ | ✅ | ✅ | ❌ |
+| No subscription | ✅ | ❌ | ✅ | ✅ |
+
+BloxOS isn't trying to compete with Datadog on enterprise observability or with Grafana on time-series visualization. It's competing for the **single operator running their own infrastructure** who wants one tool that does the operator-facing job well.
+
+---
+
+## Naming note
+
+There is a separate, unrelated project also called BloxOS by [BotBlox](https://github.com/botblox/bloxos-releases) — embedded Linux for industrial Ethernet switches. Different audience entirely (hardware firmware vs. fleet management). If you're looking for switch firmware, that's not this. If you're looking for the homelab dashboard, you're in the right place.
+
+---
+
+## Contributing
+
+The project is open source under the Apache 2.0 license. Issues, ideas, and pull requests are welcome.
+
+If you're building something on BloxOS or want a feature added, the fastest path is to open an issue describing the use case before opening a PR — that way we can talk about the shape of the change before code happens.
 
 ---
 
 ## License
 
-still Private.
+[Apache License 2.0](LICENSE) — permissive, includes an explicit patent grant, requires preserving the `NOTICE` file when redistributing. Use it commercially or personally; modify it, fork it, ship it inside another product. Just don't sue contributors over patents and don't strip the attribution.
 
-<img src="https://capsule-render.vercel.app/api?type=waving&color=gradient&customColorList=14,20,24&height=100&section=footer" />
+---
+
+## Author
+
+Built by [Bokiko](https://bokiko.io) — infrastructure between hardware and intelligence.
+
+- 🌐 [bokiko.io](https://bokiko.io)
+- 🐦 [@Bokiko](https://x.com/Bokiko)
+- ✍️ [Medium](https://medium.com/@bokiko)
+- 📧 Open an [issue](https://github.com/bokiko/bloxos/issues) for project-specific contact
+
+If BloxOS makes your homelab quieter to operate, ⭐ the repo. That's the only marketing this project will ever do.
