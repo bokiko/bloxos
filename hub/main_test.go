@@ -2466,6 +2466,152 @@ func TestHardwareInfoUpsertPreCreatesRow(t *testing.T) {
 	}
 }
 
+// TestUnregisterAgentConnectionDeletesOwn verifies the happy path:
+// when a connection cleanly exits and no reconnect has happened,
+// unregisterAgentConnection removes the entry. Without this baseline,
+// the identity-check logic in the next test could be vacuous.
+func TestUnregisterAgentConnectionDeletesOwn(t *testing.T) {
+	_ = setupTestServer(t)
+
+	mid := "test-c2-clean-exit"
+	conn := &ConnectedAgent{}
+
+	t.Cleanup(func() {
+		agentsMu.Lock()
+		delete(agents, mid)
+		agentsMu.Unlock()
+	})
+
+	agentsMu.Lock()
+	agents[mid] = conn
+	agentsMu.Unlock()
+
+	unregisterAgentConnection(mid, conn)
+
+	agentsMu.RLock()
+	_, exists := agents[mid]
+	agentsMu.RUnlock()
+	if exists {
+		t.Errorf("agents[%q] should have been deleted by its owning connection", mid)
+	}
+}
+
+// TestUnregisterAgentConnectionLeavesNewerEntry locks in the C2 fix:
+// when a fast-reconnect has installed a new ConnectedAgent at the same
+// machine_id BEFORE the prior handler's defer fires, the prior defer
+// must NOT delete the new entry. Pre-fix code at hub/agentws.go:450-454
+// did `delete(agents, machineID)` unconditionally, causing a real
+// production false-offline on flaky-network agents.
+//
+// Deterministic — no sleeps, no goroutines. Simulates the race by
+// sequentially registering A → registering B (overwrite) → running
+// A's cleanup → asserting B is still there.
+func TestUnregisterAgentConnectionLeavesNewerEntry(t *testing.T) {
+	_ = setupTestServer(t)
+
+	mid := "test-c2-reconnect-race"
+	connA := &ConnectedAgent{}
+	connB := &ConnectedAgent{}
+
+	t.Cleanup(func() {
+		agentsMu.Lock()
+		delete(agents, mid)
+		agentsMu.Unlock()
+	})
+
+	agentsMu.Lock()
+	agents[mid] = connA
+	agentsMu.Unlock()
+
+	// Simulate fast reconnect — B installs itself before A's cleanup runs.
+	agentsMu.Lock()
+	agents[mid] = connB
+	agentsMu.Unlock()
+
+	// A's defer fires. Must not touch B.
+	unregisterAgentConnection(mid, connA)
+
+	agentsMu.RLock()
+	got, exists := agents[mid]
+	agentsMu.RUnlock()
+	if !exists {
+		t.Fatalf("agents[%q] was deleted; expected B's entry to remain", mid)
+	}
+	if got != connB {
+		t.Errorf("agents[%q] = %p, want %p (connB)", mid, got, connB)
+	}
+}
+
+// TestUnregisterAgentConnectionEmptyMachineIDNoOp guards the call site:
+// handleAgentWS may call cleanup with machineID="" if auth never
+// succeeded. Helper must no-op rather than delete the "" key.
+func TestUnregisterAgentConnectionEmptyMachineIDNoOp(t *testing.T) {
+	_ = setupTestServer(t)
+
+	sentinel := &ConnectedAgent{}
+	agentsMu.Lock()
+	agents[""] = sentinel
+	agentsMu.Unlock()
+	t.Cleanup(func() {
+		agentsMu.Lock()
+		delete(agents, "")
+		agentsMu.Unlock()
+	})
+
+	unregisterAgentConnection("", &ConnectedAgent{})
+
+	agentsMu.RLock()
+	got, exists := agents[""]
+	agentsMu.RUnlock()
+	if !exists || got != sentinel {
+		t.Errorf("empty-machineID call must be a no-op; got=%p exists=%v want=%p", got, exists, sentinel)
+	}
+}
+
+// TestUnregisterAgentConnectionMarksOfflineOnlyForOwn validates that
+// markOffline (status='offline' in DB) is also gated by the identity
+// check. Without it, a fast-reconnect briefly flips the dashboard to
+// offline before B's metrics flip it back — visible flicker on the UI.
+func TestUnregisterAgentConnectionMarksOfflineOnlyForOwn(t *testing.T) {
+	_ = setupTestServer(t)
+
+	mid := "test-c2-offline-gating"
+	connA := &ConnectedAgent{}
+	connB := &ConnectedAgent{}
+
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM machines WHERE id = ?`, mid)
+		agentsMu.Lock()
+		delete(agents, mid)
+		agentsMu.Unlock()
+	})
+
+	if _, err := db.Exec(
+		`INSERT INTO machines (id, hostname, status) VALUES (?, ?, 'online')`,
+		mid, "c2-offline-host",
+	); err != nil {
+		t.Fatalf("seed machine: %v", err)
+	}
+
+	// B has reconnected after A's drop.
+	agentsMu.Lock()
+	agents[mid] = connB
+	agentsMu.Unlock()
+
+	// A's cleanup runs. Must NOT flip status to offline because B is alive.
+	unregisterAgentConnection(mid, connA)
+
+	var status string
+	if err := db.QueryRow(
+		`SELECT status FROM machines WHERE id = ?`, mid,
+	).Scan(&status); err != nil {
+		t.Fatalf("read status: %v", err)
+	}
+	if status != "online" {
+		t.Errorf("status flipped to %q despite B being live; want 'online'", status)
+	}
+}
+
 // TestAPIMachineErrorUpsert locks in the SQL contract for the API-poll
 // error path. Pre-fix bug: the literal `error` keyword in
 // VALUES (?, ?, error, ?, ...) was unquoted, so SQLite parsed it as a
