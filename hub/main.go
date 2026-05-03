@@ -11,6 +11,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -1847,6 +1848,23 @@ func parseJSONInt(raw json.RawMessage) int64 {
 	return 0
 }
 
+// rfc1918Networks are the IPv4 private-use ranges from RFC 1918.
+// validateBaseURL rejects URLs targeting these by default to defend
+// against an authenticated user pointing the hub at internal-only
+// services (databases, Kubernetes APIs, etc.). Homelab deployments
+// where the entire fleet lives on a private subnet must opt back in
+// via BLOXOS_ALLOW_PRIVATE_TARGETS=1 — this is the bloxos default
+// for the typical 192.168.x.y / 10.x.y.z dev environment.
+var rfc1918Networks = func() []*net.IPNet {
+	cidrs := []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"}
+	out := make([]*net.IPNet, 0, len(cidrs))
+	for _, c := range cidrs {
+		_, n, _ := net.ParseCIDR(c)
+		out = append(out, n)
+	}
+	return out
+}()
+
 // validateBaseURL checks that a base URL is safe to poll (prevents SSRF).
 func validateBaseURL(rawURL string) error {
 	if rawURL == "" {
@@ -1863,17 +1881,29 @@ func validateBaseURL(rawURL string) error {
 	if host == "" {
 		return fmt.Errorf("base_url must include a hostname")
 	}
-	// Block localhost variants
+	// Block localhost variants — never bypassable.
 	if host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "0.0.0.0" {
 		return fmt.Errorf("base_url must not target localhost")
 	}
-	// Block cloud metadata endpoint
+	// Block cloud metadata endpoint.
 	if host == "169.254.169.254" {
 		return fmt.Errorf("base_url must not target cloud metadata service")
 	}
-	// Block link-local range 169.254.x.x
+	// Block link-local range 169.254.x.x.
 	if strings.HasPrefix(host, "169.254.") {
 		return fmt.Errorf("base_url must not target link-local addresses")
+	}
+	// Block RFC 1918 private ranges by default. Homelab use cases
+	// (the typical bloxos deployment, where the fleet lives at
+	// 192.168.x.y or 10.x.y.z) opt back in via env var. Only relevant
+	// when host parses as an IP literal — public hostnames are not
+	// resolved here, the live HTTP client will follow DNS.
+	if ip := net.ParseIP(host); ip != nil {
+		for _, n := range rfc1918Networks {
+			if n.Contains(ip) && os.Getenv("BLOXOS_ALLOW_PRIVATE_TARGETS") != "1" {
+				return fmt.Errorf("base_url targets RFC 1918 private range; set BLOXOS_ALLOW_PRIVATE_TARGETS=1 to allow homelab use")
+			}
+		}
 	}
 	return nil
 }
