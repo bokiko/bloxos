@@ -153,6 +153,11 @@
     - `AddMachineModal` refactored: still mints via `POST /api/tokens` (real shape `{token, expires_at, command, ca_url, ca_sha256}`), now renders Linux + Windows tabs from one mint. Linux tab shows the hub's pre-built `command` verbatim. Windows tab is constructed client-side from `token` + http hub base (derived from `HUB_URL`/`window.location.origin` to match what the hub embeds in `command`); includes a Tls12 + `ServerCertificateValidationCallback={$true}` prelude so the bootstrap `iwr` works on PowerShell 5.1 against the self-signed Caddy cert. Switching tabs preserves the same token. Per-tab Copy button with 2s "Copied" pulse.
     - Backwards compatible: older agents that don't send `cpu_temp_c` → field is absent → thermal row hides on a CPU-only-no-GPU card (or shows GPU-only on a GPU machine still on the old binary). Notes column defaults to empty string, no agent change required.
     - Verified: hub tests 19.25s green, hub vet clean, agent Linux 10.2 MB build clean, agent Windows 10.5 MB cross-compile clean (vet under GOOS=windows clean), dashboard `pnpm lint` 0/0, `pnpm build` exit 0.
+  - [x] Phase 13: dashboard render-correctness postmortem (2026-05-03)
+    - `parseServerTimestamp` was using `Date.parse()` as a fast path; SQLite's `YYYY-MM-DD HH:MM:SS` (no zone) is parsed as **local time** by JS engines, so every online machine's `last_seen` displayed offset by the browser's UTC offset (UTC+3 browser → "3h ago" for a machine that ticked 30s ago). Fixed: always normalize to UTC + Z before parsing. Commit `0227af6`.
+    - Cache schema bumped 1→2 (`metrics-cache.ts`) to discard pre-fix localStorage entries. Commit `37389d2`.
+    - SSE event mis-tagging: `agentws.go` called `broadcastSSE(msg)` with raw services/containers JSON; the SSE writer's fallback wrapped un-prefixed payloads as `event: metrics`. The dashboard's metrics handler did `next.set(machine_id, { ...m, last_seen })` — wholesale replace — wiping ip/os/metric fields every 30s. Cards rotted to "Awaiting first metrics… never" within one tick. Linux agents (with systemctl + Docker) hit it every cycle; Windows ai-07 didn't (no `sendServices` output) and rendered correctly, which is what made the bug confusing. Fixed: hub frames `event: services` and `event: containers` explicitly; dashboard validates metric payload shape and merges into existing row instead of replacing. Commit `7c3aacd`.
+    - Diagnostic-process discovery: dashboard UI is the only ground truth that matters when answering "is the fleet healthy?" — VM-side instruments (DB rows, journalctl, /api/* curls) each tell directionally-correct sub-stories that diverge from the rendered page. Prior session's "rc2 stable" call was based on hub-side instruments; reality was the fleet was online but the dashboard was rendering them as offline due to two independent frontend bugs. Going forward: any rc-stability claim must be screenshot-backed.
   - [x] Phase 8 auto-update HTTPS-CA fix (2026-04-27, commit `a3306f5`): root cause of every auto-update failure since Phase 9 shipped. `agent/main.go` `websocketDialerFor` only attached the trusted CA (`/etc/bloxos/ca.crt`) when the URL scheme was `wss://`. The Phase 8 update path reuses this helper for HTTPS downloads of `/download/agent` — which means the binary fetch ran with the system root pool only, dropped Caddy's self-signed leaf, and failed with `x509: certificate signed by unknown authority`. Agent stayed on the old binary, hub tripped the rollout circuit breaker after 90s. Diagnosed from FAT-LOLO's local `journalctl -u bloxos-agent`. One-line fix: treat `https://` the same as `wss://` for TLS-config purposes. Verified end-to-end: after a final `install.sh` re-run on each existing fleet member to bootstrap onto the fix, the `/versions` page shows all three agents (ai-03, ai-04, FAT-LOLO) on running SHA `0aab1d7e34ec` matching the hub's served SHA, rollout active, no breaker trips.
 - Remaining:
   - [ ] First real Windows enrolment + verification — Phase 9 has been compile-checked and unit-tested but not exercised on a live Windows host (SCM behaviour, WMI queries, applyPendingUpdate batch handoff are unverified).
@@ -206,7 +211,9 @@ All live credentials live outside git in `~/.bloxos/`-style paths or operator me
 - Dashboard detail Overview tab shows it in a Hardware panel; absent fields are hidden.
 
 ## Known Issues
-- (none — flake fixed 2026-04-26 in PR #40)
+- (open) ai-07 Windows agent (Win10 22H2) flaps every ~30s with ~2s online windows; sends a metric on each connect, then drops before reaching `reportAgentVersion`. Suspect WMI panic in `hardware_windows.go` or an auto-update loop in `updater_windows.go`. Diagnosis blocked on Windows Event Log access from the box itself.
+- (cosmetic) Alert message frozen at fire-time. `alerts.go:200` has no UPDATE branch when triggered && hasActive, so messages like "Machine offline for 144s" stay literal even after days of additional offline time.
+- (cosmetic) `/versions` "Last reported" actually shows last-connect time. Agents on stable long-lived connections appear stuck at hub-start time despite sending metrics every 30s. Field naming + semantics mismatch.
 
 ## hub/ file map (post-split)
 - `main.go` — entrypoint, route registration, DB init, metrics ingest, machine REST handlers, SSE, bulk commands, API-machine pollers, rate limiter, log redactor.
@@ -217,11 +224,13 @@ All live credentials live outside git in `~/.bloxos/`-style paths or operator me
 - `rbac.go`, `users.go`, `migrations.go` — unchanged, already separated.
 
 ## Current Fleet
-- Five agent rows in DB after the post-redesign re-enrolment round (2026-04-27):
+- Seven agent rows in DB (post-Phase-13 verification, 2026-05-03):
   - `ai-03`     — 192.168.16.205 — online (LAN, Ubuntu 24.04)
   - `ai-04`     — 192.168.16.215 — online (LAN, Ubuntu 24.04) — first machine to enroll cleanly after the install-script chmod fix
   - `FAT-LOLO`  — 192.168.16.85  — online (LAN, Ubuntu 24.04)
-  - `Ai-05`     — 172.29.140.117 — online (WSL2)
+  - `ai-07`     — 192.168.16.242 — online (flapping ~30s cycles, Win10 22H2 — see Known Issues)
+  - `AiFarm-01` — 192.168.16.145 — offline (Win11, last seen 2026-04-28; pending re-enrolment or removal)
+  - `Ai-05`     — 172.29.140.117 — offline (WSL2, last seen 2026-04-27; pending re-enrolment or removal)
   - `dont-know` — 172.27.161.140 — offline (WSL2, hostname was never set; safe to delete from the dashboard)
 - API machines: **none currently re-added.** The pre-wipe `Dasman` (Synology) and `Dell` (Proxmox) need to be re-added via the dashboard "Add API Machine" button after their credentials are rotated.
 - Recheck live state from the dashboard or hub API before any ops work.
