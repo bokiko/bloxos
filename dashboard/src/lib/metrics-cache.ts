@@ -19,7 +19,7 @@ import type { MachineMetrics } from "./demo-data";
  * ============================================================================ */
 
 const CACHE_KEY_PREFIX = "bloxos-fleet-cache-v";
-const CACHE_VERSION = 1;
+const CACHE_VERSION = 2;
 const WRITE_DEBOUNCE_MS = 2000;
 const MAX_CACHE_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 

@@ -14,15 +14,12 @@ export function parseServerTimestamp(raw: string | number | undefined | null): n
   if (typeof raw === "number") return raw;
   if (!raw) return 0;
 
-  // Try direct JS Date parse first — handles RFC3339/ISO 8601 natively.
-  const direct = Date.parse(raw);
-  if (!isNaN(direct)) return direct;
-
-  // Fall back to Go/SQLite "YYYY-MM-DD HH:MM:SS[.fff] [+0000 UTC]" normalization.
-  const isoish = raw
+  const normalized = raw
     .replace(" +0000 UTC", "")
     .replace(" UTC", "")
-    .replace(" ", "T") + "Z";
-  const fallback = Date.parse(isoish);
-  return isNaN(fallback) ? 0 : fallback;
+    .replace(" ", "T")
+    .replace(/Z?$/, "Z");
+
+  const parsed = Date.parse(normalized);
+  return isNaN(parsed) ? 0 : parsed;
 }
