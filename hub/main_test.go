@@ -1682,6 +1682,52 @@ func TestRecordAgentRunningVersionTracksOS(t *testing.T) {
 	}
 }
 
+// TestLookupAgentOSNormalisesHardwareStrings locks in the auto-update
+// rollout fix: machines.os holds human-readable values such as
+// "ubuntu 24.04 (x86_64)" or "Microsoft Windows 10 Pro 22H2 (x86_64)",
+// not legacy "linux/amd64". lookupAgentOS must collapse both into the
+// "linux"/"windows" family announcedSHAFor expects, otherwise the
+// post-Phase-9 unknown-OS protection silently suppresses every
+// announce and the entire fleet stops auto-updating.
+func TestLookupAgentOSNormalisesHardwareStrings(t *testing.T) {
+	_ = setupTestServer(t)
+
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM machines WHERE id LIKE 'lookup-os-test-%'`)
+	})
+
+	cases := []struct {
+		id     string
+		stored string
+		want   string
+	}{
+		{"lookup-os-test-ubuntu", "ubuntu 24.04 (x86_64)", "linux"},
+		{"lookup-os-test-debian", "debian 12 (aarch64)", "linux"},
+		{"lookup-os-test-fedora", "Fedora 41 (x86_64)", "linux"},
+		{"lookup-os-test-arch", "Arch Linux (x86_64)", "linux"},
+		{"lookup-os-test-alpine", "Alpine 3.21 (x86_64)", "linux"},
+		{"lookup-os-test-rpi", "raspbian 12", "linux"},
+		{"lookup-os-test-w10", "Microsoft Windows 10 Pro 22H2 (x86_64)", "windows"},
+		{"lookup-os-test-w11", "Microsoft Windows 11 Pro 25H2 (x86_64)", "windows"},
+		{"lookup-os-test-legacy-l", "linux/amd64", "linux"},
+		{"lookup-os-test-legacy-w", "windows/amd64", "windows"},
+		{"lookup-os-test-empty", "", ""},
+	}
+	for _, tc := range cases {
+		_, err := db.Exec(
+			`INSERT OR REPLACE INTO machines (id, hostname, os, status) VALUES (?, ?, ?, 'offline')`,
+			tc.id, tc.id, tc.stored,
+		)
+		if err != nil {
+			t.Fatalf("seed %s: %v", tc.id, err)
+		}
+		got := lookupAgentOS(tc.id)
+		if got != tc.want {
+			t.Errorf("lookupAgentOS(stored=%q) = %q, want %q", tc.stored, got, tc.want)
+		}
+	}
+}
+
 func TestAgentReconnectWithInvalidSecret(t *testing.T) {
 	e := setupTestServer(t)
 

@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -231,6 +232,13 @@ func agentBinaryPathFor(osName string) string {
 }
 
 // announceVersionToAgent sends an "agent_version" frame to a freshly
+//
+// (Note: the function is also invoked from registerAgentConnection at
+// WS-upgrade time, before the agent has sent agent_running_version. In
+// that path agentRunningVersions[machineID] is empty, so the early-return
+// gate below correctly does NOT skip the announce — we still need to
+// inform brand-new agents what SHA they should be on.)
+//
 // connected agent, unless rollout is paused. The SHA announced is
 // platform-specific: Windows agents get the Windows binary SHA,
 // Linux/unknown agents get the Linux SHA.
@@ -246,6 +254,19 @@ func announceVersionToAgent(machineID string, agent *ConnectedAgent) {
 	osName := lookupAgentOS(machineID)
 	sha := announcedSHAFor(osName)
 	if sha == "" {
+		return
+	}
+
+	// If we already know the agent's running SHA matches what we'd
+	// announce, skip both the message AND the reconnect-expectation
+	// timer. The agent's handleAgentVersion would silently no-op the
+	// announce (matching SHAs), so arming a 90s reconnect timer for a
+	// reconnect that will never come just trips the rollout circuit
+	// breaker on healthy fleets every time the hub restarts.
+	agentRunningVersionsMu.RLock()
+	v, hadVersion := agentRunningVersions[machineID]
+	agentRunningVersionsMu.RUnlock()
+	if hadVersion && v.RunningSHA == sha {
 		return
 	}
 
@@ -307,13 +328,38 @@ func lookupAgentOS(machineID string) string {
 	if ok && v.OS != "" {
 		return v.OS
 	}
-	// Fall back to the metrics OS string if we have one. Format is
-	// "linux/amd64" / "windows/amd64". Split on "/".
-	if osStr := lookupMetricsOS(machineID); osStr != "" {
-		if idx := indexByte(osStr, '/'); idx > 0 {
-			return osStr[:idx]
-		}
-		return osStr
+	// Fall back to the OS string stored in machines.os. Two formats exist:
+	//   1. Legacy "linux/amd64" / "windows/amd64" — agent_running_version
+	//      messages from older agents that explicitly sent GOOS/GOARCH.
+	//   2. Hardware-reported strings populated by upsertMachine from agent
+	//      metrics, e.g. "ubuntu 24.04 (x86_64)" or
+	//      "Microsoft Windows 10 Pro 22H2 (x86_64)".
+	// Normalise both into the "linux"/"windows" family that announcedSHAFor
+	// expects. Returning the un-normalised string would cause the default
+	// switch arm to fire and suppress the announce — exactly the
+	// regression that surfaced after the Phase-9 unknown-OS protection.
+	osStr := lookupMetricsOS(machineID)
+	if osStr == "" {
+		return ""
+	}
+	if idx := indexByte(osStr, '/'); idx > 0 {
+		return osStr[:idx]
+	}
+	lower := strings.ToLower(osStr)
+	if strings.Contains(lower, "windows") {
+		return "windows"
+	}
+	if strings.Contains(lower, "linux") ||
+		strings.Contains(lower, "ubuntu") ||
+		strings.Contains(lower, "debian") ||
+		strings.Contains(lower, "fedora") ||
+		strings.Contains(lower, "centos") ||
+		strings.Contains(lower, "rhel") ||
+		strings.Contains(lower, "arch") ||
+		strings.Contains(lower, "alpine") ||
+		strings.Contains(lower, "suse") ||
+		strings.Contains(lower, "raspbian") {
+		return "linux"
 	}
 	return ""
 }
@@ -378,6 +424,9 @@ func recordAgentRunningVersion(machineID, runningSHA, osName string) {
 		OS:            osName,
 	}
 	agentRunningVersionsMu.Unlock()
+	log.Printf("rollout: agent reported running=%s expected=%s os=%s pending=%v machine=%s",
+		versionShortSHA(runningSHA), versionShortSHA(expectedSHA), osName,
+		expectedSHA != "" && runningSHA != expectedSHA, machineID)
 
 	if expectedSHA != "" && runningSHA == expectedSHA {
 		clearReconnectExpectation(machineID)
@@ -386,10 +435,15 @@ func recordAgentRunningVersion(machineID, runningSHA, osName string) {
 
 	// If we just learned (or relearned) the OS, the first-connect announce
 	// was suppressed because OS was unknown at WS-upgrade time. Trigger
-	// one now. Without this, brand-new agents would never receive an
-	// update notification on their very first connect, and would have to
-	// reconnect (e.g. after a hub restart) before auto-update could fire.
-	if osName != "" && (!hadPrev || prev.OS != osName) {
+	// one now — but only when there's an actual pending update. Announcing
+	// to an already-up-to-date agent makes it silently no-op (the agent's
+	// handleAgentVersion compares SHAs and returns when they match), but
+	// announceVersionToAgent unconditionally arms a 90s reconnect-expectation
+	// timer that then fires a false-positive "rollout failure" log and
+	// counts toward the circuit breaker. Skip the announce when the agent
+	// is already on the announced SHA.
+	if osName != "" && (!hadPrev || prev.OS != osName) &&
+		expectedSHA != "" && runningSHA != expectedSHA {
 		agentsMu.RLock()
 		agent, online := agents[machineID]
 		agentsMu.RUnlock()
