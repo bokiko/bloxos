@@ -109,6 +109,14 @@ func generateTestCertPEM(t *testing.T) string {
 func setupTestServer(t *testing.T) *echo.Echo {
 	t.Helper()
 
+	// Default the homelab opt-in to ON for the test suite. Bloxos is a
+	// homelab tool — the realistic deployment shape has the fleet on
+	// RFC 1918 ranges (192.168.x or 10.x), so existing tests that
+	// create API machines pointed at 192.168 URLs reflect production.
+	// TestValidateBaseURL overrides this per sub-case via t.Setenv
+	// when it specifically tests the default-block path.
+	t.Setenv("BLOXOS_ALLOW_PRIVATE_TARGETS", "1")
+
 	// Drain stale goroutines from prior tests that may still reference
 	// the old db via the global agents map or markOffline calls.
 	agentsMu.Lock()
@@ -2377,31 +2385,65 @@ func TestDeleteAPIMachineNotFound(t *testing.T) {
 	t.Log("delete nonexistent: 404 OK")
 }
 
+// TestValidateBaseURL covers the SSRF guard. Pre-B6, RFC 1918 ranges
+// were silently allowed even without an opt-in — the only explicit
+// blocks were localhost / 0.0.0.0 / 169.254.x. After B6, 10.0.0.0/8,
+// 172.16.0.0/12, and 192.168.0.0/16 are blocked unless
+// BLOXOS_ALLOW_PRIVATE_TARGETS=1 is set in the hub's environment.
+//
+// Tests run with the homelab opt-in cleared by default; the homelab
+// sub-tests explicitly enable it via t.Setenv. Public IPs are
+// allowed in both modes.
 func TestValidateBaseURL(t *testing.T) {
 	tests := []struct {
 		name    string
 		url     string
+		homelab bool
 		wantErr bool
 	}{
-		{"valid http", "http://192.168.16.234:5000", false},
-		{"valid https", "https://192.168.7.99:8006", false},
-		{"empty", "", true},
-		{"no scheme", "192.168.1.1:8006", true},
-		{"ftp scheme", "ftp://192.168.1.1", true},
-		{"localhost", "http://localhost:8080", true},
-		{"127.0.0.1", "http://127.0.0.1:8080", true},
-		{"ipv6 loopback", "http://[::1]:8080", true},
-		{"0.0.0.0", "http://0.0.0.0:8080", true},
-		{"cloud metadata", "http://169.254.169.254/latest/meta-data/", true},
-		{"link-local", "http://169.254.1.1/foo", true},
-		{"valid internal ip", "http://192.168.0.199:5000", false},
+		// Format / scheme errors — independent of homelab mode.
+		{"empty", "", false, true},
+		{"no scheme", "192.168.1.1:8006", false, true},
+		{"ftp scheme", "ftp://192.168.1.1", false, true},
+
+		// Localhost / metadata blocks — never bypassable, homelab=true
+		// is set on these to prove the env var doesn't unlock them.
+		{"localhost", "http://localhost:8080", true, true},
+		{"127.0.0.1", "http://127.0.0.1:8080", true, true},
+		{"ipv6 loopback", "http://[::1]:8080", true, true},
+		{"0.0.0.0", "http://0.0.0.0:8080", true, true},
+		{"cloud metadata", "http://169.254.169.254/latest/meta-data/", true, true},
+		{"link-local", "http://169.254.1.1/foo", true, true},
+
+		// RFC 1918 — blocked by default (B6 fix).
+		{"10/8 default blocked", "http://10.20.30.40:8006", false, true},
+		{"172.16/12 default blocked", "http://172.20.5.10:8080", false, true},
+		{"192.168/16 default blocked", "http://192.168.16.234:5000", false, true},
+
+		// RFC 1918 — allowed when homelab opt-in is set.
+		{"10/8 homelab allowed", "http://10.20.30.40:8006", true, false},
+		{"172.16/12 homelab allowed", "http://172.20.5.10:8080", true, false},
+		{"192.168/16 homelab allowed", "http://192.168.16.234:5000", true, false},
+
+		// 172.x outside 16-31 (RFC 1918 is 172.16/12) is public.
+		{"172.32 is public", "http://172.32.0.1:8080", false, false},
+
+		// Public IPs always allowed.
+		{"public ip allowed default", "http://8.8.8.8:443", false, false},
+		{"public hostname allowed default", "https://example.com", false, false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.homelab {
+				t.Setenv("BLOXOS_ALLOW_PRIVATE_TARGETS", "1")
+			} else {
+				t.Setenv("BLOXOS_ALLOW_PRIVATE_TARGETS", "")
+			}
 			err := validateBaseURL(tt.url)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("validateBaseURL(%q) error = %v, wantErr %v", tt.url, err, tt.wantErr)
+				t.Errorf("validateBaseURL(%q) homelab=%v error = %v, wantErr %v",
+					tt.url, tt.homelab, err, tt.wantErr)
 			}
 		})
 	}
