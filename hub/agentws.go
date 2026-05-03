@@ -42,6 +42,29 @@ func registerAgentConnection(machineID string, agent *ConnectedAgent) {
 	go announceVersionToAgent(machineID, agent)
 }
 
+// unregisterAgentConnection is the symmetric cleanup for
+// registerAgentConnection. Called from handleAgentWS's read-loop exit
+// path. Only flips the machine to offline AND deletes the agents map
+// entry when the entry under machineID still points at THIS connection
+// — otherwise we'd false-offline a fast-reconnecting agent whose new
+// handler already overwrote the entry. Empty machineID (auth never
+// succeeded) is a no-op.
+func unregisterAgentConnection(machineID string, agent *ConnectedAgent) {
+	if machineID == "" {
+		return
+	}
+	agentsMu.Lock()
+	current, ok := agents[machineID]
+	stillOurs := ok && current == agent
+	if stillOurs {
+		delete(agents, machineID)
+	}
+	agentsMu.Unlock()
+	if stillOurs {
+		markOffline(machineID)
+	}
+}
+
 func handleCreateToken(c echo.Context) error {
 	ip := getRealIP(c)
 	if !rateLimiter.Allow("token_create", ip, 3) {
@@ -447,12 +470,7 @@ func handleAgentWS(c echo.Context) error {
 		_, msg, err := ws.ReadMessage()
 		if err != nil {
 			log.Printf("agent disconnected: %v", err)
-			if machineID != "" {
-				markOffline(machineID)
-				agentsMu.Lock()
-				delete(agents, machineID)
-				agentsMu.Unlock()
-			}
+			unregisterAgentConnection(machineID, agent)
 			return nil
 		}
 
