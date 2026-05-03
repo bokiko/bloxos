@@ -221,6 +221,21 @@ func evaluateAlerts() {
 				sendTelegram(fmt.Sprintf("BloxOS Alert\n\nMachine: %s\nSeverity: %s\n%s",
 					m.hostname, rule.Severity, msg))
 
+			} else if triggered && hasActive {
+				// Already-active alert: refresh the message so it reflects
+				// current state (e.g. offline duration grows from "144s"
+				// at fire time to "172800s" two days later) instead of
+				// freezing at the moment the threshold was crossed.
+				// We don't broadcast SSE here — would spam every connected
+				// dashboard with one alert event per machine per 30s. The
+				// dashboard picks up the refreshed message on next reload
+				// or fetch of /api/alerts.
+				_, err := db.Exec(`UPDATE alerts SET message = ? WHERE id = ?`, msg, existingID)
+				if err != nil {
+					log.Printf("alert eval: error refreshing alert message: %v", err)
+					continue
+				}
+
 			} else if !triggered && hasActive {
 				// Resolve the alert.
 				_, err := db.Exec(`UPDATE alerts SET status = 'resolved', resolved_at = CURRENT_TIMESTAMP WHERE id = ?`, existingID)
