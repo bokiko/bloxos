@@ -186,14 +186,27 @@ export function SSEProvider({ children }: { children: ReactNode }) {
       if (!mountedRef.current) return;
       try {
         const m = JSON.parse(event.data) as MachineMetrics;
+        if (!m.machine_id) return;
+        // Defense in depth: a genuine metrics payload always carries
+        // cpu_percent/ram_total_bytes as numbers plus a timestamp. Reject
+        // anything else — protects against mislabeled SSE frames (services
+        // /containers payloads that historically arrived under
+        // event: metrics due to a hub-side mis-tagging bug — fixed
+        // separately, but keep the guard).
+        if (
+          typeof m.cpu_percent !== "number" ||
+          typeof m.ram_total_bytes !== "number" ||
+          !m.timestamp
+        ) {
+          return;
+        }
         setHasReceivedData(true);
         setMachineMap((prev) => {
           const next = new Map(prev);
-          // Per-metric event carries the agent's `timestamp`. Parse it.
-          // If parsing fails, fall back to 0 (machine flips to "offline" in
-          // 120s) rather than Date.now() — a malformed timestamp is not
-          // evidence the machine is alive.
+          // Merge into existing row so snapshot-seeded fields the metrics
+          // payload doesn't carry (ip, os) survive subsequent ticks.
           next.set(m.machine_id, {
+            ...prev.get(m.machine_id),
             ...m,
             last_seen: parseServerTimestamp(m.timestamp),
           });
