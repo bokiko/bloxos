@@ -593,7 +593,8 @@ func handleAgentWS(c echo.Context) error {
 				mid = machineID
 			}
 			upsertServices(mid, sm.Services)
-			broadcastSSE(msg)
+			framed := []byte(fmt.Sprintf("event: services\ndata: %s\n\n", msg))
+			broadcastSSE(framed)
 
 		case "containers":
 			var cm ContainersMessage
@@ -606,7 +607,8 @@ func handleAgentWS(c echo.Context) error {
 				mid = machineID
 			}
 			upsertContainers(mid, cm.Containers)
-			broadcastSSE(msg)
+			framed := []byte(fmt.Sprintf("event: containers\ndata: %s\n\n", msg))
+			broadcastSSE(framed)
 
 		case "hardware_info":
 			// Static hardware snapshot — store the raw JSON as-is so adding
