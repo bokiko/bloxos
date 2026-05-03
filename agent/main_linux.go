@@ -13,11 +13,41 @@ import (
 	"os/signal"
 	"os/user"
 	"strconv"
+	"sync"
 	"syscall"
 
 	"github.com/creack/pty"
 	"github.com/gorilla/websocket"
 )
+
+// waitable is what waitOnce coordinates over. Defined as an interface
+// so tests can substitute a fake without spawning a real process.
+// *exec.Cmd satisfies it via its Wait() method.
+type waitable interface {
+	Wait() error
+}
+
+// waitOnce ensures Wait() is called exactly once on the underlying
+// waitable, regardless of how many goroutines race for the result.
+// Used by handleStartTerminal where both the cleanup defer and the
+// waitCh goroutine would otherwise call cmd.Wait() — calling Wait()
+// twice on a *exec.Cmd is undefined per stdlib contract.
+type waitOnce struct {
+	once sync.Once
+	err  error
+	cmd  waitable
+}
+
+func newWaitOnce(cmd waitable) *waitOnce {
+	return &waitOnce{cmd: cmd}
+}
+
+func (w *waitOnce) Wait() error {
+	w.once.Do(func() {
+		w.err = w.cmd.Wait()
+	})
+	return w.err
+}
 
 // buildPlatformCommand returns the OS-specific *exec.Cmd for an incoming
 // hub command. Linux uses sudo+systemd+docker.
@@ -162,10 +192,14 @@ func handleStartTerminal(cmd Command, rawMsg []byte) {
 		log.Printf("terminal: pty.Start failed: %v", err)
 		return
 	}
+	// waitOnce coordinates Wait() between the cleanup defer below and
+	// the waitCh goroutine further down. Calling cmd.Wait() twice is
+	// undefined per stdlib; the coordinator caches the first result.
+	waiter := newWaitOnce(bashCmd)
 	defer func() {
 		ptmx.Close()
 		_ = bashCmd.Process.Kill()
-		_, _ = bashCmd.Process.Wait()
+		_ = waiter.Wait()
 		log.Printf("terminal session %s: PTY cleaned up", sessionID)
 	}()
 
@@ -256,9 +290,11 @@ func handleStartTerminal(cmd Command, rawMsg []byte) {
 	}()
 
 	// Wait for either direction to finish, or for the bash process to exit.
+	// Routed through waiter so the cleanup defer's Wait() and this Wait()
+	// share the same single underlying call.
 	waitCh := make(chan error, 1)
 	go func() {
-		waitCh <- bashCmd.Wait()
+		waitCh <- waiter.Wait()
 	}()
 
 	select {
