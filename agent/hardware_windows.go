@@ -297,6 +297,10 @@ func collectCPUFlagsWindows() []string {
 	}
 	if name == "" {
 		// Fall back to PowerShell's Get-WmiObject.
+		// Uses -Command inline string, not -File. Safe under Restricted
+		// execution policy (default on stock Windows): policy gates loading
+		// .ps1 files from disk, not inline expressions. Do not change to
+		// -File without also adding -ExecutionPolicy Bypass.
 		out, err := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive",
 			"-Command", "(Get-WmiObject Win32_Processor).Name").Output()
 		if err == nil {
