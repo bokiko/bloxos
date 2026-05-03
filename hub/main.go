@@ -2167,7 +2167,7 @@ func handleForceAPIPoll(c echo.Context) error {
 		return c.JSON(http.StatusBadGateway, map[string]string{"error": pollErr.Error()})
 	}
 
-	storeAPIPollResult(id, m.Name, m.AdapterType, result)
+	storeAPIPollResult(id, m.Name, m.AdapterType, m.BaseURL, result)
 	db.Exec("UPDATE api_machines SET last_poll_at = CURRENT_TIMESTAMP, last_error = NULL WHERE id = ?", id)
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
@@ -2193,23 +2193,46 @@ func doPoll(adapterType, baseURL string, authConfig json.RawMessage, tlsConfig j
 	}
 }
 
+// extractAPIMachineIP returns the IP address (or hostname) for an
+// API-polled machine. If the adapter has already discovered the IP,
+// that wins — it's the authoritative answer from inside the device.
+// Otherwise we parse baseURL (a well-formed URL the user typed when
+// registering the machine) and return its hostname.
+//
+// Pre-fix bug at hub/main.go:2208 fed the *display name* into the
+// strip-and-split logic instead of baseURL. For a machine named e.g.
+// "dasman-syn" this produced "dasman-syn" as the IP — meaningless,
+// and rendered as a garbage value in the dashboard's IP column.
+func extractAPIMachineIP(baseURL, resultIP string) string {
+	if resultIP != "" {
+		return resultIP
+	}
+	if baseURL == "" {
+		return ""
+	}
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return ""
+	}
+	// url.Parse accepts "not-a-valid-url" because RFC 3986 allows
+	// path-only refs. Reject anything without a scheme — those aren't
+	// the well-formed baseURLs handleCreateAPIMachine validates and
+	// stores.
+	if u.Scheme == "" {
+		return ""
+	}
+	return u.Hostname()
+}
+
 // storeAPIPollResult upserts the machine and inserts metrics.
-func storeAPIPollResult(apiMachineID, name, adapterType string, result *APIPollResult) {
+func storeAPIPollResult(apiMachineID, name, adapterType, baseURL string, result *APIPollResult) {
 	machineID := "api-" + apiMachineID
 	hostname := result.Hostname
 	if hostname == "" {
 		hostname = name
 	}
 
-	// Extract IP from base_url if not provided.
-	ip := result.IP
-	if ip == "" {
-		// Try to extract host from URL.
-		parts := strings.Split(strings.TrimPrefix(strings.TrimPrefix(name, "https://"), "http://"), ":")
-		if len(parts) > 0 {
-			ip = parts[0]
-		}
-	}
+	ip := extractAPIMachineIP(baseURL, result.IP)
 
 	// Upsert machine.
 	_, err := db.Exec(`INSERT INTO machines (id, hostname, ip, os, status, tags, last_seen)
@@ -2323,7 +2346,7 @@ func startAPIPoller(id, name, adapterType, baseURL string, authConfig json.RawMe
 					log.Printf("api poll: error-status upsert failed for %s: %v", name, mErr)
 				}
 			} else {
-				storeAPIPollResult(id, name, adapterType, result)
+				storeAPIPollResult(id, name, adapterType, baseURL, result)
 				db.Exec("UPDATE api_machines SET last_poll_at = CURRENT_TIMESTAMP, last_error = NULL WHERE id = ?", id)
 			}
 
