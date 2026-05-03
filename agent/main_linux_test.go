@@ -8,9 +8,12 @@
 package main
 
 import (
+	"bytes"
 	"errors"
+	"io"
 	"os/exec"
 	"os/user"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -107,6 +110,70 @@ func TestWaitCoordinatorPropagatesNilError(t *testing.T) {
 		t.Errorf("call count = %d, want 1", got)
 	}
 }
+
+// TestDownloadWithLimit locks in B4: agent self-update used a bare
+// io.Copy(out, resp.Body) over the hub's HTTPS response with no upper
+// bound on bytes copied. A compromised hub announcing a multi-GB
+// payload would fill the agent's /tmp (and then disk), wedging the
+// host. Real agent binaries are ~10MB; capping at 250MB gives 25x
+// headroom for future growth while shutting down the attack.
+//
+// Tests use bytes.Buffer + strings.NewReader so they exercise the
+// pure-Go logic without touching the network or filesystem.
+func TestDownloadWithLimit(t *testing.T) {
+	const limit int64 = 100
+
+	t.Run("under_limit_copies_all_bytes", func(t *testing.T) {
+		src := strings.Repeat("x", 50)
+		var dst bytes.Buffer
+		if err := downloadWithLimit(&dst, strings.NewReader(src), limit); err != nil {
+			t.Fatalf("under-limit copy errored: %v", err)
+		}
+		if dst.String() != src {
+			t.Errorf("dst length = %d, want %d", dst.Len(), len(src))
+		}
+	})
+
+	t.Run("at_exact_limit_copies_all_bytes", func(t *testing.T) {
+		src := strings.Repeat("y", int(limit))
+		var dst bytes.Buffer
+		if err := downloadWithLimit(&dst, strings.NewReader(src), limit); err != nil {
+			t.Fatalf("at-limit copy errored: %v", err)
+		}
+		if int64(dst.Len()) != limit {
+			t.Errorf("dst length = %d, want %d", dst.Len(), limit)
+		}
+	})
+
+	t.Run("over_limit_returns_error", func(t *testing.T) {
+		src := strings.Repeat("z", int(limit)+1)
+		var dst bytes.Buffer
+		err := downloadWithLimit(&dst, strings.NewReader(src), limit)
+		if err == nil {
+			t.Fatal("expected error for over-limit source, got nil")
+		}
+		if !strings.Contains(err.Error(), "exceed") {
+			t.Errorf("error %q should mention 'exceed' so the agent log makes the attack visible", err)
+		}
+	})
+
+	t.Run("propagates_reader_error", func(t *testing.T) {
+		var dst bytes.Buffer
+		wantErr := errors.New("read failure")
+		err := downloadWithLimit(&dst, &errReader{err: wantErr}, limit)
+		if !errors.Is(err, wantErr) {
+			t.Errorf("expected reader error %v to propagate, got %v", wantErr, err)
+		}
+	})
+}
+
+// errReader returns the configured error on first Read. Used to
+// validate that downloadWithLimit doesn't swallow upstream errors.
+type errReader struct{ err error }
+
+func (e *errReader) Read(p []byte) (int, error) { return 0, e.err }
+
+var _ io.Reader = (*errReader)(nil)
 
 // TestApplyTerminalCredentials_NonNumericUIDFailsClosed locks in C4:
 // when the resolved terminal user has a UID string that cannot be
