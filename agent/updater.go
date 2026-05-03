@@ -211,7 +211,7 @@ func downloadAgentBinary(destPath string) error {
 	}
 	defer out.Close()
 
-	if _, err := io.Copy(out, resp.Body); err != nil {
+	if err := downloadWithLimit(out, resp.Body, maxAgentBinarySize); err != nil {
 		return fmt.Errorf("write file: %w", err)
 	}
 
