@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import { Trash2, Pencil, Zap, RefreshCw, Star, Thermometer } from "lucide-react";
 import type { MachineMetrics } from "@/lib/demo-data";
@@ -102,6 +102,16 @@ export function MachineCard({ machine, onDelete, onEdit, onRefresh }: MachineCar
   // The footer's "12s ago" timer is owned by <LiveTimeSince/> below — it
   // mounts its own 1Hz ticker, so the parent doesn't need to force re-renders.
 
+  // B9 — was previously wrapped in a <Link>, which produced invalid
+  // <a><button>...</button></a> nesting because the action buttons
+  // (pin / refresh / edit / delete) live inside the card body. Now the
+  // card is a div with role=link + programmatic navigation. Trade-off:
+  // loses middle-click-to-open-in-new-tab (no real <a href>). Worth it
+  // for valid HTML + working keyboard a11y.
+  const router = useRouter();
+  const detailPath = `/machine/${machine.machine_id}`;
+  const navigateToDetail = () => router.push(detailPath);
+
   // Phase 8 — version info from /api/versions for the update-pending badge.
   const { getMachineVersion } = useVersions();
   const versionInfo = getMachineVersion(machine.machine_id);
@@ -167,7 +177,19 @@ export function MachineCard({ machine, onDelete, onEdit, onRefresh }: MachineCar
       : "text-emerald-400";
 
   return (
-    <Link href={`/machine/${machine.machine_id}`} className="block h-full">
+    <div
+      role="link"
+      tabIndex={0}
+      onClick={navigateToDetail}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          navigateToDetail();
+        }
+      }}
+      aria-label={`Open ${machine.hostname} details`}
+      className="block h-full cursor-pointer"
+    >
       <motion.div
         whileHover={{ y: -2 }}
         transition={{ type: "spring", stiffness: 420, damping: 28 }}
@@ -428,7 +450,7 @@ export function MachineCard({ machine, onDelete, onEdit, onRefresh }: MachineCar
           )}
         </div>
       </motion.div>
-    </Link>
+    </div>
   );
 }
 
