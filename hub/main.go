@@ -219,15 +219,9 @@ func main() {
 	e.IPExtractor = echo.ExtractIPFromXFFHeader(
 		echo.TrustLoopback(true),
 	)
-	// CORS: use ALLOWED_ORIGINS env var (comma-separated), fall back to PUBLIC_URL, then wildcard.
-	corsOrigins := []string{"*"}
-	if ao := os.Getenv("ALLOWED_ORIGINS"); ao != "" {
-		corsOrigins = strings.Split(ao, ",")
-		for i := range corsOrigins {
-			corsOrigins[i] = strings.TrimSpace(corsOrigins[i])
-		}
-	} else if pu := os.Getenv("PUBLIC_URL"); pu != "" {
-		corsOrigins = []string{pu}
+	corsOrigins, err := resolveCORSOrigins()
+	if err != nil {
+		log.Fatalf("startup: %v", err)
 	}
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
 		AllowOrigins: corsOrigins,
@@ -1846,6 +1840,38 @@ func parseJSONInt(raw json.RawMessage) int64 {
 		return n
 	}
 	return 0
+}
+
+// resolveCORSOrigins returns the list of allowed origins for the CORS
+// middleware, derived from ALLOWED_ORIGINS (comma-separated) or
+// PUBLIC_URL. Pre-fix, when neither was set the hub fell back to
+// AllowOrigins=[]string{"*"} — combined with JWT-in-localStorage,
+// that meant any malicious page could read authenticated responses
+// if the user happened to have a hub session in another tab.
+//
+// The hardened behaviour: refuse to start (caller log.Fatals on the
+// returned error) so operators must opt in to origin policy
+// explicitly. The error message names both env vars so the operator
+// knows the fix without reading source.
+func resolveCORSOrigins() ([]string, error) {
+	if ao := os.Getenv("ALLOWED_ORIGINS"); ao != "" {
+		parts := strings.Split(ao, ",")
+		out := make([]string, 0, len(parts))
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				out = append(out, p)
+			}
+		}
+		if len(out) > 0 {
+			return out, nil
+		}
+		// fall through: ALLOWED_ORIGINS was set but empty / whitespace-only
+	}
+	if pu := strings.TrimSpace(os.Getenv("PUBLIC_URL")); pu != "" {
+		return []string{pu}, nil
+	}
+	return nil, fmt.Errorf("CORS: neither ALLOWED_ORIGINS nor PUBLIC_URL is set; refusing to start with wildcard origin")
 }
 
 // rfc1918Networks are the IPv4 private-use ranges from RFC 1918.
