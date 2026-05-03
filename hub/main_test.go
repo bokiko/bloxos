@@ -2419,3 +2419,64 @@ func TestHardwareInfoUpsertPreCreatesRow(t *testing.T) {
 		t.Fatalf("upsertMachine clobbered hardware_info: got %q", hwAfter.String)
 	}
 }
+
+// TestAPIMachineErrorUpsert locks in the SQL contract for the API-poll
+// error path. Pre-fix bug: the literal `error` keyword in
+// VALUES (?, ?, error, ?, ...) was unquoted, so SQLite parsed it as a
+// column reference and the INSERT crashed at runtime — silently, because
+// the caller (startAPIPoller's goroutine in hub/main.go) discarded the
+// error. Result: API-polled machines (Synology / Proxmox / etc.) never
+// transitioned to `status='error'` in the dashboard when their poll
+// failed. The fix quotes the literal as 'error'.
+//
+// This test calls the extracted markAPIMachineError helper directly so
+// failure propagates as a return value, not a swallowed log line.
+func TestAPIMachineErrorUpsert(t *testing.T) {
+	_ = setupTestServer(t)
+
+	machineID := "api-c1-test"
+	displayName := "test-synology"
+	adapter := "synology"
+
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM machines WHERE id = ?`, machineID)
+	})
+
+	// First call: INSERT path. Must not error and must write status='error'.
+	if err := markAPIMachineError(machineID, displayName, adapter); err != nil {
+		t.Fatalf("markAPIMachineError (insert): %v", err)
+	}
+
+	var hostname, status, tags string
+	if err := db.QueryRow(
+		`SELECT hostname, status, COALESCE(tags, '') FROM machines WHERE id = ?`,
+		machineID,
+	).Scan(&hostname, &status, &tags); err != nil {
+		t.Fatalf("read after insert: %v", err)
+	}
+	if status != "error" {
+		t.Errorf("status after insert = %q, want %q", status, "error")
+	}
+	if hostname != displayName {
+		t.Errorf("hostname after insert = %q, want %q", hostname, displayName)
+	}
+	if tags != adapter {
+		t.Errorf("tags after insert = %q, want %q", tags, adapter)
+	}
+
+	// Second call: ON CONFLICT UPDATE path. Must not error and must keep
+	// status='error'. (Also validates the ON CONFLICT branch itself.)
+	if err := markAPIMachineError(machineID, displayName, adapter); err != nil {
+		t.Fatalf("markAPIMachineError (upsert): %v", err)
+	}
+
+	var statusAfterUpsert string
+	if err := db.QueryRow(
+		`SELECT status FROM machines WHERE id = ?`, machineID,
+	).Scan(&statusAfterUpsert); err != nil {
+		t.Fatalf("read after upsert: %v", err)
+	}
+	if statusAfterUpsert != "error" {
+		t.Errorf("status after upsert = %q, want %q", statusAfterUpsert, "error")
+	}
+}

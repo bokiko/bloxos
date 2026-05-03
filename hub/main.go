@@ -850,6 +850,20 @@ func storeMetrics(m AgentMetrics) {
 	}
 }
 
+// markAPIMachineError upserts an API-polled machine row with status='error'.
+// Called by startAPIPoller when its periodic poll returns an error so the
+// dashboard reflects the failed-poll state. Returns the underlying SQL error
+// (if any) so the caller can log it — the prior call site swallowed errors,
+// which masked a SQL syntax bug for the entire lifetime of the API-machines
+// feature.
+func markAPIMachineError(machineID, hostname, adapterType string) error {
+	_, err := db.Exec(`INSERT INTO machines (id, hostname, status, tags, last_seen)
+		VALUES (?, ?, 'error', ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(id) DO UPDATE SET status = 'error', last_seen = CURRENT_TIMESTAMP`,
+		machineID, hostname, adapterType)
+	return err
+}
+
 func markOffline(machineID string) {
 	_, err := db.Exec(`UPDATE machines SET status = 'offline' WHERE id = ?`, machineID)
 	if err != nil {
@@ -2305,12 +2319,9 @@ func startAPIPoller(id, name, adapterType, baseURL string, authConfig json.RawMe
 			if err != nil {
 				log.Printf("api poll error: %s (%s): %v", name, adapterType, err)
 				db.Exec("UPDATE api_machines SET last_error = ?, last_poll_at = CURRENT_TIMESTAMP WHERE id = ?", err.Error(), id)
-				// Set machine status to error.
-				machineID := "api-" + id
-				db.Exec(`INSERT INTO machines (id, hostname, status, tags, last_seen)
-					VALUES (?, ?, error, ?, CURRENT_TIMESTAMP)
-					ON CONFLICT(id) DO UPDATE SET status = 'error', last_seen = CURRENT_TIMESTAMP`,
-					machineID, name, adapterType)
+				if mErr := markAPIMachineError("api-"+id, name, adapterType); mErr != nil {
+					log.Printf("api poll: error-status upsert failed for %s: %v", name, mErr)
+				}
 			} else {
 				storeAPIPollResult(id, name, adapterType, result)
 				db.Exec("UPDATE api_machines SET last_poll_at = CURRENT_TIMESTAMP, last_error = NULL WHERE id = ?", id)
