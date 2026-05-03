@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
@@ -2463,6 +2464,65 @@ func TestHardwareInfoUpsertPreCreatesRow(t *testing.T) {
 	}
 	if !hwAfter.Valid || hwAfter.String != hardwareJSON {
 		t.Fatalf("upsertMachine clobbered hardware_info: got %q", hwAfter.String)
+	}
+}
+
+// TestRunWithRecoverCatchesPanic locks in B1: every long-running hub
+// goroutine (alertEvalLoop, cleanupLoop, versionRefreshLoop,
+// reconnectMonitorLoop, terminalRelay) was previously a `go funcName()`
+// spawn with no panic recovery. A panic inside any of them silently
+// killed that subsystem until the next hub restart — alerts stop
+// firing, cleanup stops running, agent SHAs go stale, terminals
+// stop relaying. Net effect: invisible degradation.
+//
+// runWithRecover is the inner seam that wraps the panicking call and
+// reports back whether a panic occurred. Tested directly; the outer
+// goSafelyForever (which uses a sleep + for-loop to restart) is a
+// thin wrapper reviewed by inspection.
+func TestRunWithRecoverCatchesPanic(t *testing.T) {
+	cases := []struct {
+		name      string
+		fn        func()
+		wantPanic bool
+	}{
+		{
+			name:      "no_panic_returns_false",
+			fn:        func() {},
+			wantPanic: false,
+		},
+		{
+			name:      "string_panic_returns_true",
+			fn:        func() { panic("boom") },
+			wantPanic: true,
+		},
+		{
+			name:      "error_panic_returns_true",
+			fn:        func() { panic(errors.New("typed")) },
+			wantPanic: true,
+		},
+		{
+			name:      "nil_panic_returns_true",
+			fn:        func() { panic(nil) },
+			wantPanic: true,
+		},
+		{
+			name:      "runtime_panic_returns_true",
+			fn:        func() { var p *int; _ = *p }, // nil-deref
+			wantPanic: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("runWithRecover let a panic propagate to the caller: %v", r)
+				}
+			}()
+			got := runWithRecover("test/"+tc.name, tc.fn)
+			if got != tc.wantPanic {
+				t.Errorf("runWithRecover panicked=%v, want %v", got, tc.wantPanic)
+			}
+		})
 	}
 }
 

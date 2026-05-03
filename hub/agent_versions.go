@@ -81,8 +81,8 @@ var (
 
 // initAgentVersionTracking is called from main() at hub startup.
 func initAgentVersionTracking() {
-	go versionRefreshLoop()
-	go reconnectMonitorLoop()
+	goSafelyForever("versionRefreshLoop", versionRefreshLoop)
+	goSafelyForever("reconnectMonitorLoop", reconnectMonitorLoop)
 }
 
 func versionRefreshLoop() {
