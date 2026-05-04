@@ -198,13 +198,28 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
   }, [id]);
 
   const sseData = getMachine(id);
+
+  // Liveness derived from last_seen age (120s threshold, matches
+  // MachineCard.tsx::classifyMachine). Computed from the actual
+  // timestamp, NOT from "SSE map has data for this id" — the snapshot
+  // delivers every machine in the fleet, including offline ones, so the
+  // prior check force-stamped offline boxes as 'online' the moment you
+  // opened their detail page.
+  const isLive = useMemo(() => {
+    const lastSeenMs = sseData?.last_seen ?? 0;
+    if (lastSeenMs <= 0) return false;
+    return Date.now() - lastSeenMs < 120_000;
+  }, [sseData, tick]);
+
   const data = useMemo<MachineData | null>(() => {
-    if (!baseData || !sseData) return baseData;
+    if (!baseData) return null;
+    if (!sseData) return baseData;
 
     return {
       ...baseData,
       metrics: {
         cpu_percent: sseData.cpu_percent ?? baseData.metrics.cpu_percent,
+        cpu_temp_c: sseData.cpu_temp_c ?? baseData.metrics.cpu_temp_c,
         ram_used_bytes: sseData.ram_used_bytes ?? baseData.metrics.ram_used_bytes,
         ram_total_bytes: sseData.ram_total_bytes ?? baseData.metrics.ram_total_bytes,
         disk_used_bytes: sseData.disk_used_bytes ?? baseData.metrics.disk_used_bytes,
@@ -214,15 +229,25 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
         gpu_vram_used_bytes: sseData.gpu_vram_used_bytes ?? baseData.metrics.gpu_vram_used_bytes,
         gpu_vram_total_bytes: sseData.gpu_vram_total_bytes ?? baseData.metrics.gpu_vram_total_bytes,
       },
-      machine: { ...baseData.machine, status: "online" },
+      machine: {
+        ...baseData.machine,
+        // Promote to online ONLY when last_seen says so. Otherwise trust
+        // the API status, which itself reflects agent disconnect events.
+        status: isLive ? "online" : baseData.machine.status,
+        last_seen: sseData.last_seen
+          ? new Date(sseData.last_seen).toISOString()
+          : baseData.machine.last_seen,
+      },
       latency_ms: sseData.latency_ms ?? baseData.latency_ms,
     };
-  }, [baseData, sseData]);
+  }, [baseData, sseData, isLive]);
 
-  const effectiveLastUpdated = useMemo(
-    () => (sseData ? new Date().toISOString() : lastUpdated),
-    [sseData, lastUpdated]
-  );
+  const effectiveLastUpdated = useMemo(() => {
+    // Real last-metric timestamp, never Date.now(). This field tells the
+    // user when the agent last reported, not when the page re-rendered.
+    if (data?.machine.last_seen) return data.machine.last_seen;
+    return lastUpdated;
+  }, [data, lastUpdated]);
   const liveServices = useMemo(() => {
     const raw = sseData as Record<string, unknown> | undefined;
     return Array.isArray(raw?._services) ? (raw._services as Service[]) : services;
@@ -401,7 +426,7 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
           </Link>
 
           <div className="flex items-center gap-1.5">
-            {connected && (
+            {isLive && (
               <span className="hidden sm:flex items-center gap-1 text-[10px] text-emerald-400 mr-1">
                 <span className="relative flex h-1.5 w-1.5">
                   <span className="animate-status-pulse absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
