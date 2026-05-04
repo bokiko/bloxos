@@ -8,7 +8,6 @@
  *
  * Returns 0 for any unparseable input. Callers MUST treat 0 as "unknown / never";
  * never substitute Date.now() — that's the bug this helper exists to prevent.
- * (See dashboard staleness postmortem in HANDOFF.md.)
  */
 export function parseServerTimestamp(raw: string | number | undefined | null): number {
   if (typeof raw === "number") return raw;

@@ -167,7 +167,6 @@ export function SSEProvider({ children }: { children: ReactNode }) {
             // hub/main.go::getEnrichedMachinesJSON). Parse it; never
             // substitute Date.now() — that would mark every machine "live"
             // on every reconnect regardless of actual liveness.
-            // See dashboard staleness postmortem in HANDOFF.md.
             next.set(m.machine_id, {
               ...m,
               last_seen: parseServerTimestamp(m.timestamp),

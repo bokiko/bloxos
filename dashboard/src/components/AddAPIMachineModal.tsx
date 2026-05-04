@@ -229,7 +229,7 @@ export function AddAPIMachineModal({ open, onClose, onSaved, machine }: AddAPIMa
                 </label>
                 <Input
                   type="text"
-                  placeholder='e.g. "Dasman", "Proxmox-HP"'
+                  placeholder='e.g. "MyNAS", "Proxmox-01"'
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   className="h-8 text-xs bg-blox-bg border-blox-border text-blox-text placeholder:text-blox-muted/50"
@@ -264,7 +264,7 @@ export function AddAPIMachineModal({ open, onClose, onSaved, machine }: AddAPIMa
                 </label>
                 <Input
                   type="text"
-                  placeholder={adapterType === "proxmox" ? "https://192.168.3.2:8006" : "http://192.168.16.234:5000"}
+                  placeholder={adapterType === "proxmox" ? "https://192.168.1.10:8006" : "http://192.168.1.20:5000"}
                   value={baseUrl}
                   onChange={(e) => setBaseUrl(e.target.value)}
                   className="h-8 text-xs bg-blox-bg border-blox-border text-blox-text placeholder:text-blox-muted/50 font-mono"

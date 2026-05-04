@@ -14,10 +14,6 @@ Fleet management dashboard for AI machines. Go hub + agent, Next.js dashboard.
 - Agent: `cd agent && go run . --hub ws://localhost:4000/ws/agent --token <token>`
 - Dashboard: `cd dashboard && pnpm dev`
 
-## Continuity
-Read `HANDOFF.md` at the start of every session. It tracks what is done, in progress, and next.
-Update it before any commit that changes project state.
-
 ## Rules
 - Agent runs as non-root user with sudo whitelist
 - Terminal sessions require re-auth (PIN/password gate)

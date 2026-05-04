@@ -25,8 +25,7 @@ cd agent && go run . --hub ws://localhost:4000/ws/agent --token <install-token>
 cd dashboard && pnpm install && pnpm dev
 ```
 
-See `CLAUDE.md` for repo conventions and `HANDOFF.md` for the current state of
-in-progress work.
+See `AGENTS.md` for repo conventions.
 
 ## Pull request gates
 
@@ -63,7 +62,7 @@ span components:
 - `subject` — imperative, no trailing period, lowercase after the colon.
 
 Phase-style umbrella commits (e.g. `feat(hub+agent+ui): Phase N — …`) are
-reserved for shipped product phases tracked in `HANDOFF.md`.
+reserved for shipped product phases.
 
 ## Branch naming
 

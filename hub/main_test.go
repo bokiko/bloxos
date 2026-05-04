@@ -2078,7 +2078,7 @@ func TestCreateAPIMachineWithCustomCATrust(t *testing.T) {
 	api := e.Group("", jwtMiddleware, credentialRotationMiddleware)
 	api.POST("/api/api-machines", handleCreateAPIMachine)
 
-	body := fmt.Sprintf(`{"name":"Secure Synology","adapter_type":"synology","base_url":"https://192.168.16.10:5001","auth_config":{"username":"u","password":"p"},"tls_config":{"mode":"custom_ca","ca_cert_pem":%q},"poll_interval_secs":60}`, generateTestCertPEM(t))
+	body := fmt.Sprintf(`{"name":"Secure Synology","adapter_type":"synology","base_url":"https://192.168.1.52:5001","auth_config":{"username":"u","password":"p"},"tls_config":{"mode":"custom_ca","ca_cert_pem":%q},"poll_interval_secs":60}`, generateTestCertPEM(t))
 	req := httptest.NewRequest(http.MethodPost, "/api/api-machines", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -2333,7 +2333,7 @@ func TestUpdateAPIMachineRequiresAuthConfigOnAdapterChange(t *testing.T) {
 	api.POST("/api/api-machines", handleCreateAPIMachine)
 	api.PATCH("/api/api-machines/:id", handleUpdateAPIMachine)
 
-	createBody := `{"name":"Dasman","adapter_type":"synology","base_url":"http://192.168.16.234:5000","auth_config":{"username":"u","password":"p"}}`
+	createBody := `{"name":"MyNAS","adapter_type":"synology","base_url":"http://192.168.1.50:5000","auth_config":{"username":"u","password":"p"}}`
 	req := httptest.NewRequest(http.MethodPost, "/api/api-machines", strings.NewReader(createBody))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -2418,12 +2418,12 @@ func TestValidateBaseURL(t *testing.T) {
 		// RFC 1918 — blocked by default (B6 fix).
 		{"10/8 default blocked", "http://10.20.30.40:8006", false, true},
 		{"172.16/12 default blocked", "http://172.20.5.10:8080", false, true},
-		{"192.168/16 default blocked", "http://192.168.16.234:5000", false, true},
+		{"192.168/16 default blocked", "http://192.168.1.50:5000", false, true},
 
 		// RFC 1918 — allowed when homelab opt-in is set.
 		{"10/8 homelab allowed", "http://10.20.30.40:8006", true, false},
 		{"172.16/12 homelab allowed", "http://172.20.5.10:8080", true, false},
-		{"192.168/16 homelab allowed", "http://192.168.16.234:5000", true, false},
+		{"192.168/16 homelab allowed", "http://192.168.1.50:5000", true, false},
 
 		// 172.x outside 16-31 (RFC 1918 is 172.16/12) is public.
 		{"172.32 is public", "http://172.32.0.1:8080", false, false},
@@ -2545,13 +2545,13 @@ func TestResolveCORSOrigins(t *testing.T) {
 
 	t.Run("falls_back_to_PUBLIC_URL", func(t *testing.T) {
 		t.Setenv("ALLOWED_ORIGINS", "")
-		t.Setenv("PUBLIC_URL", "https://192.168.16.113")
+		t.Setenv("PUBLIC_URL", "https://192.168.1.100")
 		got, err := resolveCORSOrigins()
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if !slices.Equal(got, []string{"https://192.168.16.113"}) {
-			t.Errorf("got %v, want [https://192.168.16.113]", got)
+		if !slices.Equal(got, []string{"https://192.168.1.100"}) {
+			t.Errorf("got %v, want [https://192.168.1.100]", got)
 		}
 	})
 
@@ -2818,19 +2818,19 @@ func TestExtractAPIMachineIP(t *testing.T) {
 	}{
 		{
 			name:     "adapter_provided_ip_wins",
-			baseURL:  "https://192.168.16.50:5001",
+			baseURL:  "https://192.168.1.51:5001",
 			resultIP: "10.0.0.1",
 			want:     "10.0.0.1",
 		},
 		{
 			name:    "extract_ip_from_https_url_with_port",
-			baseURL: "https://192.168.16.50:5001",
-			want:    "192.168.16.50",
+			baseURL: "https://192.168.1.51:5001",
+			want:    "192.168.1.51",
 		},
 		{
 			name:    "extract_ip_from_https_url_no_port",
-			baseURL: "https://192.168.16.50",
-			want:    "192.168.16.50",
+			baseURL: "https://192.168.1.51",
+			want:    "192.168.1.51",
 		},
 		{
 			name:    "extract_hostname_from_url",
