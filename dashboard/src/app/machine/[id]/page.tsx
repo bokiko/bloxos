@@ -121,13 +121,13 @@ function getStatus(data: MachineData): MachineStatus {
 
 export default function MachineDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
-  const { getMachine, connected } = useSSE();
+  const { getMachine } = useSSE();
   const [baseData, setBaseData] = useState<MachineData | null>(null);
   const [services, setServices] = useState<Service[]>([]);
   const [containers, setContainers] = useState<Container[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
-  const [tick, setTick] = useState(0);
+  const [now, setNow] = useState(() => Date.now());
   const [showReboot, setShowReboot] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -199,17 +199,11 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
 
   const sseData = getMachine(id);
 
-  // Liveness derived from last_seen age (120s threshold, matches
-  // MachineCard.tsx::classifyMachine). Computed from the actual
-  // timestamp, NOT from "SSE map has data for this id" — the snapshot
-  // delivers every machine in the fleet, including offline ones, so the
-  // prior check force-stamped offline boxes as 'online' the moment you
-  // opened their detail page.
-  const isLive = useMemo(() => {
-    const lastSeenMs = sseData?.last_seen ?? 0;
-    if (lastSeenMs <= 0) return false;
-    return Date.now() - lastSeenMs < 120_000;
-  }, [sseData, tick]);
+  // Liveness — derived at render time, no useMemo needed. The `now` state
+  // is updated by a 1Hz interval (above), so this re-evaluates each tick
+  // without tripping React 19's idempotence rule on Date.now().
+  const lastSeenMs = sseData?.last_seen ?? 0;
+  const isLive = lastSeenMs > 0 && now - lastSeenMs < 120_000;
 
   const data = useMemo<MachineData | null>(() => {
     if (!baseData) return null;
@@ -258,10 +252,9 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
   }, [sseData, containers]);
 
   useEffect(() => {
-    const interval = setInterval(() => setTick((t) => t + 1), 1000);
-    return () => clearInterval(interval);
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
   }, []);
-  void tick;
 
   const handlePinSubmit = useCallback(() => {
     setPinError(false);
