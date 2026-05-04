@@ -41,7 +41,6 @@ type win32Processor struct {
 	NumberOfCores             uint32
 	NumberOfLogicalProcessors uint32
 	MaxClockSpeed             uint32
-	Stepping                  string
 	L2CacheSize               uint32
 	L3CacheSize               uint32
 	SocketDesignation         string
