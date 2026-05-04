@@ -1,12 +1,14 @@
 "use client";
 
-import { useState, useCallback, useMemo } from "react";
-import { Copy, Check, Terminal } from "lucide-react";
+import { useState, useCallback } from "react";
+import { Copy, Check, Terminal, ArrowLeft } from "lucide-react";
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle,
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { HUB_URL, getStoredToken } from "@/lib/session";
 
@@ -15,31 +17,25 @@ interface AddMachineModalProps {
   onClose: () => void;
 }
 
-type OSTab = "linux" | "windows";
-
 interface TokenResponse {
   token: string;
-  expires_at: string; // RFC3339; informational only on this UI
-  command: string; // Linux paste-block, already includes BLOXOS_CA_URL/SHA when needed
+  expires_at: string; // RFC3339
+  command: string; // server-built Linux paste-block (env vars + curl bootstrap)
   ca_url?: string;
   ca_sha256?: string;
 }
 
-// PHASE12-NOTE: the spec called the token endpoint `/api/install-tokens`,
-// the actual hub route is `/api/tokens` (handleCreateToken). Spec also
-// names a non-existent `expires_in` (seconds) field — the response is
-// `expires_at` RFC3339. We use the real shape.
-//
-// PHASE12-NOTE: there is no `hub_url` field on the response. The Linux
-// `command` already embeds the hub URL via `export BLOXOS_HUB=...`. For
-// the Windows tab we derive the http hub base from `getHubWsBaseUrl()`'s
-// http analogue (HUB_URL || window.location.origin), which matches what
-// the Linux command embeds (publicAndWebsocketBase in the hub).
+type OSChoice = "linux" | "windows";
+
+type ModalState =
+  | { kind: "choose-os" }
+  | { kind: "loading"; os: OSChoice }
+  | { kind: "show-command"; os: OSChoice; resp: TokenResponse };
+
 function deriveHttpHubBase(): string {
   const base =
     HUB_URL ||
     (typeof window !== "undefined" ? window.location.origin : "");
-  // Normalize wss:///ws:// -> https/http for IWR.
   return base.replace(/^wss:/, "https:").replace(/^ws:/, "http:");
 }
 
@@ -53,95 +49,80 @@ function deriveWsHubBase(): string {
 function buildWindowsCommand(token: string): string {
   const wsBase = deriveWsHubBase();
   const httpBase = deriveHttpHubBase();
-  // Bootstrap with curl.exe (ships on Win10 1803+ and all Win11) instead
-  // of Invoke-WebRequest. IWR sits on .NET HttpWebRequest, which fails
-  // against self-signed Caddy certs over TLS 1.3 — Schannel mislabels the
-  // TLS 1.3 NewSessionTicket frame as renegotiation and HttpWebRequest
-  // bails with "underlying connection was closed". curl.exe uses Schannel
-  // for TLS but its own HTTP stack and handles both cleanly.
-  //
-  // The downloaded install.ps1 is then run via `powershell.exe
-  // -ExecutionPolicy Bypass -File`. Stock Windows PowerShell 5.1 has
-  // ExecutionPolicy=Restricted by default (all scopes Undefined → falls
-  // back to Restricted), which blocks running .ps1 files from disk. The
-  // Bypass flag scopes ONLY to that single child PowerShell process — it
-  // does NOT modify the system, user, or process-scope policy persistently.
-  // Same pattern used by winget, scoop, oh-my-posh.
-  //
-  // Why this works under Restricted: execution policy gates loading .ps1
-  // files from disk. It does NOT gate (a) inline `-Command "..."` strings,
-  // (b) string `iex`/Invoke-Expression of in-memory content, (c) built-in
-  // cmdlets, or (d) `Add-Type` C# compilation. install.ps1 itself uses
-  // only built-in cmdlets and Win32 binaries (sc.exe, curl.exe, the agent
-  // .exe), so no nested .ps1 invocations exist that would need the same
-  // bypass treatment.
+  // Tls12 + ServerCertificateValidationCallback shim makes the bootstrap IWR
+  // tolerate Caddy's self-signed cert on PowerShell 5.1 (the default on
+  // Windows 10/11). install.ps1 itself installs a TrustAllCerts shim for the
+  // subsequent agent fetches. -SkipCertificateCheck is PS 7+ only and would
+  // break on stock Windows installs.
   return [
     `$env:BLOXOS_HUB="${wsBase}"`,
     `$env:BLOXOS_TOKEN="${token}"`,
-    `curl.exe -ksfL -o $env:TEMP\\bloxos-install.ps1 ${httpBase}/install.ps1`,
-    `powershell.exe -ExecutionPolicy Bypass -File $env:TEMP\\bloxos-install.ps1`,
+    `[System.Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12`,
+    `[System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}`,
+    `iwr -UseBasicParsing ${httpBase}/install.ps1 | iex`,
   ].join("; ");
 }
 
 export function AddMachineModal({ open, onClose }: AddMachineModalProps) {
-  const [resp, setResp] = useState<TokenResponse | null>(null);
+  const [state, setState] = useState<ModalState>({ kind: "choose-os" });
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [tab, setTab] = useState<OSTab>("linux");
-  const [copiedTab, setCopiedTab] = useState<OSTab | null>(null);
+  const [copied, setCopied] = useState(false);
 
-  const generateToken = useCallback(async () => {
-    setLoading(true);
+  const handleClose = useCallback(() => {
+    setState({ kind: "choose-os" });
+    setError(null);
+    setCopied(false);
+    onClose();
+  }, [onClose]);
+
+  const chooseOS = useCallback(async (os: OSChoice) => {
+    setState({ kind: "loading", os });
     setError(null);
     try {
       const authToken = getStoredToken();
       const headers: Record<string, string> = {};
       if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
-      const res = await fetch(`${HUB_URL}/api/tokens`, { method: "POST", headers });
+      const res = await fetch(`${HUB_URL}/api/tokens`, {
+        method: "POST",
+        headers,
+      });
       if (!res.ok) {
-        setResp(null);
         setError("Failed to generate token. Is the hub reachable?");
+        setState({ kind: "choose-os" });
         return;
       }
       const data: TokenResponse = await res.json();
-      setResp(data);
+      setState({ kind: "show-command", os, resp: data });
     } catch {
-      setResp(null);
       setError("Failed to generate token. Is the hub reachable?");
-    } finally {
-      setLoading(false);
+      setState({ kind: "choose-os" });
     }
   }, []);
 
-  const windowsCommand = useMemo(
-    () => (resp ? buildWindowsCommand(resp.token) : ""),
-    [resp]
-  );
-
-  const copy = useCallback(
-    (which: OSTab, text: string) => {
-      if (!text) return;
-      navigator.clipboard.writeText(text);
-      setCopiedTab(which);
-      setTimeout(
-        () => setCopiedTab((current) => (current === which ? null : current)),
-        2000
-      );
-    },
-    []
-  );
-
-  const handleClose = useCallback(() => {
-    setResp(null);
+  const goBack = useCallback(() => {
+    setState({ kind: "choose-os" });
     setError(null);
-    setCopiedTab(null);
-    setTab("linux");
-    onClose();
-  }, [onClose]);
+    setCopied(false);
+  }, []);
+
+  const handleCopy = useCallback((text: string) => {
+    if (!text) return;
+    navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }, []);
 
   return (
-    <Dialog open={open} onOpenChange={(o) => { if (!o) handleClose(); }}>
-      <DialogContent className="bg-blox-card border-blox-border text-blox-text ring-0 sm:max-w-2xl" showCloseButton>
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        if (!o) handleClose();
+      }}
+    >
+      <DialogContent
+        className="bg-blox-card border-blox-border text-blox-text ring-0 sm:max-w-2xl"
+        showCloseButton
+      >
         <DialogHeader>
           <div className="flex items-center gap-2.5">
             <div className="p-1.5 rounded-lg bg-blox-blue/10">
@@ -149,80 +130,39 @@ export function AddMachineModal({ open, onClose }: AddMachineModalProps) {
             </div>
             <DialogTitle className="text-blox-text">Add Machine</DialogTitle>
           </div>
+          <DialogDescription className="text-blox-muted text-xs leading-relaxed pt-1">
+            {state.kind === "show-command"
+              ? "Run the command below on the target machine. Token expires in 15 minutes."
+              : "What OS is this machine? We'll generate the right install command for you."}
+          </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4">
-          {!resp ? (
-            <>
-              <DialogDescription className="text-blox-muted text-xs leading-relaxed">
-                Generate a one-time install token, then run the matching command
-                on the target machine. The same token works for either OS.
-                Tokens expire in 15 minutes.
-              </DialogDescription>
-              {error && (
-                <div className="text-[11px] text-blox-red bg-blox-red/10 border border-blox-red/30 rounded-lg px-3 py-2">
-                  {error}
-                </div>
-              )}
-              <Button
-                onClick={generateToken}
-                disabled={loading}
-                variant="outline"
-                className="w-full text-blox-blue border-blox-blue/20 bg-blox-blue/5 hover:bg-blox-blue/10 text-xs"
-              >
-                {loading ? "Generating..." : "Generate Install Token"}
-              </Button>
-            </>
-          ) : (
-            <>
-              <Tabs value={tab} onValueChange={(v) => setTab(v as OSTab)}>
-                <TabsList variant="line" className="gap-1">
-                  <TabsTrigger value="linux" className="px-4 py-1.5 text-sm">
-                    Linux
-                  </TabsTrigger>
-                  <TabsTrigger value="windows" className="px-4 py-1.5 text-sm">
-                    Windows
-                  </TabsTrigger>
-                </TabsList>
+          {error && state.kind === "choose-os" && (
+            <div className="text-[11px] text-blox-red bg-blox-red/10 border border-blox-red/30 rounded-lg px-3 py-2">
+              {error}
+            </div>
+          )}
 
-                <TabsContent value="linux" className="mt-4">
-                  <CommandBlock
-                    label="Run as root on Linux"
-                    command={resp.command}
-                    onCopy={() => copy("linux", resp.command)}
-                    copied={copiedTab === "linux"}
-                  />
-                  <p className="text-[10px] text-blox-muted mt-2 leading-relaxed">
-                    Downloads the agent, creates a systemd service, and starts
-                    reporting metrics. Token is valid until{" "}
-                    <span className="font-mono">{resp.expires_at}</span>.
-                  </p>
-                </TabsContent>
+          {state.kind === "choose-os" && <OSPicker onChoose={chooseOS} />}
 
-                <TabsContent value="windows" className="mt-4">
-                  <CommandBlock
-                    label="Run in elevated PowerShell on Windows"
-                    command={windowsCommand}
-                    onCopy={() => copy("windows", windowsCommand)}
-                    copied={copiedTab === "windows"}
-                  />
-                  <p className="text-[10px] text-blox-muted mt-2 leading-relaxed">
-                    Downloads the agent to C:\Program Files\BloxOS, registers
-                    the BloxOSAgent Windows service, and starts it. Token is
-                    valid until{" "}
-                    <span className="font-mono">{resp.expires_at}</span>.
-                  </p>
-                </TabsContent>
-              </Tabs>
+          {state.kind === "loading" && (
+            <div className="py-12 flex flex-col items-center gap-3">
+              <div className="w-6 h-6 border-2 border-blox-blue/30 border-t-blox-blue rounded-full animate-spin" />
+              <p className="text-xs text-blox-muted">
+                Generating install token…
+              </p>
+            </div>
+          )}
 
-              <Button
-                onClick={handleClose}
-                variant="outline"
-                className="w-full text-xs border-blox-border text-blox-text"
-              >
-                Done
-              </Button>
-            </>
+          {state.kind === "show-command" && (
+            <CommandDisplay
+              os={state.os}
+              resp={state.resp}
+              copied={copied}
+              onCopy={handleCopy}
+              onBack={goBack}
+            />
           )}
         </div>
       </DialogContent>
@@ -230,36 +170,138 @@ export function AddMachineModal({ open, onClose }: AddMachineModalProps) {
   );
 }
 
-interface CommandBlockProps {
-  label: string;
-  command: string;
-  copied: boolean;
-  onCopy: () => void;
+/* ─── OS Picker ────────────────────────────────────────────────── */
+
+function OSPicker({ onChoose }: { onChoose: (os: OSChoice) => void }) {
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <OSCard
+        emoji="🐧"
+        label="Linux"
+        subtitle="Ubuntu, Debian, Proxmox VM, or any modern Linux distro"
+        onClick={() => onChoose("linux")}
+      />
+      <OSCard
+        emoji="🪟"
+        label="Windows"
+        subtitle="Windows 10, 11, or Server (2019+). Requires Administrator PowerShell"
+        onClick={() => onChoose("windows")}
+      />
+    </div>
+  );
 }
 
-function CommandBlock({ label, command, copied, onCopy }: CommandBlockProps) {
+function OSCard({
+  emoji,
+  label,
+  subtitle,
+  onClick,
+}: {
+  emoji: string;
+  label: string;
+  subtitle: string;
+  onClick: () => void;
+}) {
   return (
-    <div>
-      <label className="text-[10px] text-blox-muted uppercase tracking-wider mb-1.5 block font-medium">
-        {label}
-      </label>
-      <div className="relative">
-        <pre className="text-[10px] text-blox-text bg-blox-bg border border-blox-border rounded-xl p-3 pr-10 overflow-x-auto font-mono leading-relaxed whitespace-pre-wrap break-all">
-          {command}
-        </pre>
+    <button
+      type="button"
+      onClick={onClick}
+      className="group text-left p-5 rounded-xl border border-blox-border bg-blox-card hover:border-blox-blue/40 hover:bg-blox-blue/5 transition-all"
+    >
+      <div className="flex items-start gap-3">
+        <span className="text-3xl leading-none mt-0.5">{emoji}</span>
+        <div className="flex-1 min-w-0">
+          <h3 className="text-sm font-semibold text-blox-text group-hover:text-blox-blue transition-colors">
+            {label}
+          </h3>
+          <p className="text-[11px] text-blox-muted mt-1 leading-snug">
+            {subtitle}
+          </p>
+        </div>
+      </div>
+    </button>
+  );
+}
+
+/* ─── Command Display ──────────────────────────────────────────── */
+
+function CommandDisplay({
+  os,
+  resp,
+  copied,
+  onCopy,
+  onBack,
+}: {
+  os: OSChoice;
+  resp: TokenResponse;
+  copied: boolean;
+  onCopy: (text: string) => void;
+  onBack: () => void;
+}) {
+  const command =
+    os === "linux" ? resp.command : buildWindowsCommand(resp.token);
+  const osLabel = os === "linux" ? "Linux" : "Windows";
+  const osEmoji = os === "linux" ? "🐧" : "🪟";
+  const helpText =
+    os === "linux"
+      ? "Downloads the agent, creates a systemd service, and starts reporting metrics."
+      : "Run this in PowerShell as Administrator. Registers BloxOSAgent as a Windows service.";
+  const cmdLabel =
+    os === "linux"
+      ? "Run as root on Linux"
+      : "Run in elevated PowerShell on Windows";
+
+  return (
+    <>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <span className="text-xl leading-none">{osEmoji}</span>
+          <span className="text-sm font-medium text-blox-text">
+            {osLabel} install command
+          </span>
+        </div>
         <button
-          onClick={onCopy}
-          className="absolute top-2 right-2 p-1.5 rounded-lg hover:bg-blox-border/50 text-blox-muted hover:text-blox-text transition-colors"
-          title="Copy to clipboard"
-          aria-label="Copy install command"
+          type="button"
+          onClick={onBack}
+          className="flex items-center gap-1 text-[11px] text-blox-muted hover:text-blox-blue transition-colors"
         >
-          {copied ? (
-            <Check className="w-3.5 h-3.5 text-emerald-400" />
-          ) : (
-            <Copy className="w-3.5 h-3.5" />
-          )}
+          <ArrowLeft className="w-3 h-3" />
+          Choose different OS
         </button>
       </div>
-    </div>
+
+      <div>
+        <label className="text-[10px] text-blox-muted uppercase tracking-wider mb-1.5 block font-medium">
+          {cmdLabel}
+        </label>
+        <div className="relative">
+          <pre className="bg-blox-bg border border-blox-border rounded-xl p-3 pr-24 text-[10px] font-mono text-blox-text whitespace-pre-wrap break-all overflow-x-auto leading-relaxed">
+            {command}
+          </pre>
+          <Button
+            size="sm"
+            onClick={() => onCopy(command)}
+            className="absolute top-2 right-2 bg-blox-blue text-white hover:bg-blox-blue/90 text-xs gap-1.5"
+            aria-label="Copy install command"
+          >
+            {copied ? (
+              <>
+                <Check className="w-3 h-3" />
+                Copied
+              </>
+            ) : (
+              <>
+                <Copy className="w-3 h-3" />
+                Copy
+              </>
+            )}
+          </Button>
+        </div>
+        <p className="text-[10px] text-blox-muted mt-2 leading-relaxed">
+          {helpText} Token is valid until{" "}
+          <span className="font-mono">{resp.expires_at}</span>.
+        </p>
+      </div>
+    </>
   );
 }
