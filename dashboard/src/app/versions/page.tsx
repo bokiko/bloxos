@@ -208,7 +208,7 @@ export default function VersionsPage() {
                       Status
                     </TableHead>
                     <TableHead className="text-blox-muted text-[11px] uppercase tracking-[0.06em] font-medium">
-                      Last reported
+                      Last connect
                     </TableHead>
                   </TableRow>
                 </TableHeader>
