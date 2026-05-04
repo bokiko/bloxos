@@ -33,6 +33,87 @@ import (
  * something usable on Linux but is unreliable on Windows.
  * ============================================================================ */
 
+// safeWmiQuery wraps wmi.Query with panic recovery. The StackExchange/wmi
+// library v1.2.1 panics via reflect.Value.Uint() when a WMI VARIANT type
+// can't be converted to the destination Go uint kind. Without this wrapper,
+// a single WMI provider drift kills the agent before the Phase 8
+// auto-update path can fire — leaving boxes permanently stuck on broken
+// binaries. Returns the panic as an error so per-query failures degrade
+// to "this provider's data missing" instead of "agent dead".
+func safeWmiQuery(query string, dst interface{}) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("wmi panic recovered: %v", r)
+		}
+	}()
+	return wmi.Query(query, dst)
+}
+
+// coerceUint32 extracts a uint32 from a WMI VARIANT-typed field declared
+// as interface{}. COM marshalling produces int32 on some Windows builds
+// where the MOF schema declared uint16; this normalizes them all.
+// Returns 0 for nil or unrecognized types — caller should treat 0 as "unknown".
+func coerceUint32(v interface{}) uint32 {
+	switch x := v.(type) {
+	case uint32:
+		return x
+	case uint16:
+		return uint32(x)
+	case uint64:
+		return uint32(x)
+	case int16:
+		if x < 0 {
+			return 0
+		}
+		return uint32(x)
+	case int32:
+		if x < 0 {
+			return 0
+		}
+		return uint32(x)
+	case int64:
+		if x < 0 {
+			return 0
+		}
+		return uint32(x)
+	case int:
+		if x < 0 {
+			return 0
+		}
+		return uint32(x)
+	}
+	return 0
+}
+
+// coerceFirstUint32 extracts the first element of an interface{}-typed
+// WMI array (e.g. ChassisTypes — declared []uint16 in MOF, often returned
+// as []int32 by the COM provider). Returns 0 if empty or unrecognized.
+func coerceFirstUint32(v interface{}) uint32 {
+	switch x := v.(type) {
+	case []uint16:
+		if len(x) > 0 {
+			return uint32(x[0])
+		}
+	case []int32:
+		if len(x) > 0 && x[0] >= 0 {
+			return uint32(x[0])
+		}
+	case []uint32:
+		if len(x) > 0 {
+			return x[0]
+		}
+	case []int64:
+		if len(x) > 0 && x[0] >= 0 {
+			return uint32(x[0])
+		}
+	case []int:
+		if len(x) > 0 && x[0] >= 0 {
+			return uint32(x[0])
+		}
+	}
+	return 0
+}
+
 // WMI struct types — fields must be PascalCase to match WMI property names.
 
 type win32Processor struct {
@@ -41,7 +122,6 @@ type win32Processor struct {
 	NumberOfCores             uint32
 	NumberOfLogicalProcessors uint32
 	MaxClockSpeed             uint32
-	Stepping                  string
 	L2CacheSize               uint32
 	L3CacheSize               uint32
 	SocketDesignation         string
@@ -69,7 +149,7 @@ type win32BaseBoard struct {
 
 type win32SystemEnclosure struct {
 	Manufacturer string
-	ChassisTypes []uint16
+	ChassisTypes interface{}
 	SerialNumber string
 }
 
@@ -79,9 +159,9 @@ type win32PhysicalMemory struct {
 	Capacity         uint64
 	Speed            uint32
 	ConfiguredClockSpeed uint32
-	SMBIOSMemoryType uint16
-	MemoryType       uint16
-	FormFactor       uint16
+	SMBIOSMemoryType interface{}
+	MemoryType       interface{}
+	FormFactor       interface{}
 	Manufacturer     string
 	PartNumber       string
 }
@@ -103,7 +183,7 @@ type win32NetworkAdapter struct {
 	Speed             uint64
 	NetEnabled        bool
 	PhysicalAdapter   bool
-	AdapterTypeID     uint16
+	AdapterTypeID     interface{}
 	PNPDeviceID       string
 }
 
@@ -146,7 +226,7 @@ func collectHardware(machineID string, gpus []GPUInfo) HardwareInfo {
 
 	// Sockets + cache via WMI.
 	var procs []win32Processor
-	if err := wmi.Query("SELECT Name, Manufacturer, NumberOfCores, NumberOfLogicalProcessors, MaxClockSpeed, L2CacheSize, L3CacheSize, SocketDesignation FROM Win32_Processor", &procs); err == nil && len(procs) > 0 {
+	if err := safeWmiQuery("SELECT Name, Manufacturer, NumberOfCores, NumberOfLogicalProcessors, MaxClockSpeed, L2CacheSize, L3CacheSize, SocketDesignation FROM Win32_Processor", &procs); err == nil && len(procs) > 0 {
 		seenSockets := map[string]struct{}{}
 		var l2, l3 uint32
 		for _, p := range procs {
@@ -365,7 +445,7 @@ func collectCPUFlagsWindows() []string {
 func collectRAMModulesWindows() (modules []RAMModule, totalSlots, populatedSlots int) {
 	var rows []win32PhysicalMemory
 	q := "SELECT BankLabel, DeviceLocator, Capacity, Speed, ConfiguredClockSpeed, SMBIOSMemoryType, MemoryType, FormFactor, Manufacturer, PartNumber FROM Win32_PhysicalMemory"
-	if err := wmi.Query(q, &rows); err != nil {
+	if err := safeWmiQuery(q, &rows); err != nil {
 		log.Printf("hardware: Win32_PhysicalMemory query: %v", err)
 		return nil, 0, 0
 	}
@@ -380,12 +460,12 @@ func collectRAMModulesWindows() (modules []RAMModule, totalSlots, populatedSlots
 			MaxSpeedMTs:  int(r.Speed),
 			Manufacturer: strings.TrimSpace(r.Manufacturer),
 			PartNumber:   strings.TrimSpace(r.PartNumber),
-			FormFactor:   memFormFactorName(r.FormFactor),
+			FormFactor:   memFormFactorName(coerceUint32(r.FormFactor)),
 		}
 		// Prefer SMBIOS-typed code; fall back to MemoryType.
-		typeCode := r.SMBIOSMemoryType
+		typeCode := coerceUint32(r.SMBIOSMemoryType)
 		if typeCode == 0 {
-			typeCode = r.MemoryType
+			typeCode = coerceUint32(r.MemoryType)
 		}
 		mod.Type = smbiosMemoryTypeName(typeCode)
 		if mod.SizeBytes == 0 {
@@ -400,7 +480,7 @@ func collectRAMModulesWindows() (modules []RAMModule, totalSlots, populatedSlots
 
 // smbiosMemoryTypeName maps SMBIOS memory-type codes to human strings.
 // Based on the SMBIOS 3.6 spec table 7.18.
-func smbiosMemoryTypeName(code uint16) string {
+func smbiosMemoryTypeName(code uint32) string {
 	switch code {
 	case 0x01:
 		return "Other"
@@ -435,7 +515,7 @@ func smbiosMemoryTypeName(code uint16) string {
 }
 
 // memFormFactorName maps Win32_PhysicalMemory.FormFactor codes.
-func memFormFactorName(code uint16) string {
+func memFormFactorName(code uint32) string {
 	switch code {
 	case 8:
 		return "DIMM"
@@ -451,13 +531,13 @@ func memFormFactorName(code uint16) string {
 // querying Win32_ComputerSystem, Win32_BIOS, Win32_BaseBoard, Win32_SystemEnclosure.
 func collectDMIWindows(hw *HardwareInfo) {
 	var sys []win32ComputerSystem
-	if err := wmi.Query("SELECT Manufacturer, Model FROM Win32_ComputerSystem", &sys); err == nil && len(sys) > 0 {
+	if err := safeWmiQuery("SELECT Manufacturer, Model FROM Win32_ComputerSystem", &sys); err == nil && len(sys) > 0 {
 		hw.SystemVendor = cleanWMIValue(sys[0].Manufacturer)
 		hw.SystemProduct = cleanWMIValue(sys[0].Model)
 	}
 
 	var bios []win32BIOS
-	if err := wmi.Query("SELECT Manufacturer, Version, SMBIOSBIOSVersion, ReleaseDate, SerialNumber FROM Win32_BIOS", &bios); err == nil && len(bios) > 0 {
+	if err := safeWmiQuery("SELECT Manufacturer, Version, SMBIOSBIOSVersion, ReleaseDate, SerialNumber FROM Win32_BIOS", &bios); err == nil && len(bios) > 0 {
 		hw.BIOSVendor = cleanWMIValue(bios[0].Manufacturer)
 		v := cleanWMIValue(bios[0].SMBIOSBIOSVersion)
 		if v == "" {
@@ -469,7 +549,7 @@ func collectDMIWindows(hw *HardwareInfo) {
 	}
 
 	var board []win32BaseBoard
-	if err := wmi.Query("SELECT Manufacturer, Product, Version, SerialNumber FROM Win32_BaseBoard", &board); err == nil && len(board) > 0 {
+	if err := safeWmiQuery("SELECT Manufacturer, Product, Version, SerialNumber FROM Win32_BaseBoard", &board); err == nil && len(board) > 0 {
 		hw.BoardVendor = cleanWMIValue(board[0].Manufacturer)
 		hw.BoardProduct = cleanWMIValue(board[0].Product)
 		hw.BoardVersion = cleanWMIValue(board[0].Version)
@@ -477,10 +557,10 @@ func collectDMIWindows(hw *HardwareInfo) {
 	}
 
 	var enc []win32SystemEnclosure
-	if err := wmi.Query("SELECT Manufacturer, ChassisTypes, SerialNumber FROM Win32_SystemEnclosure", &enc); err == nil && len(enc) > 0 {
+	if err := safeWmiQuery("SELECT Manufacturer, ChassisTypes, SerialNumber FROM Win32_SystemEnclosure", &enc); err == nil && len(enc) > 0 {
 		hw.ChassisVendor = cleanWMIValue(enc[0].Manufacturer)
-		if len(enc[0].ChassisTypes) > 0 {
-			hw.ChassisType = parseChassisType(strconv.Itoa(int(enc[0].ChassisTypes[0])))
+		if t := coerceFirstUint32(enc[0].ChassisTypes); t > 0 {
+			hw.ChassisType = parseChassisType(strconv.Itoa(int(t)))
 		}
 	}
 }
@@ -530,7 +610,7 @@ func parseWMIDate(wmiDate string) string {
 func collectDiskHardwareWindows() []DiskHardwareInfo {
 	var rows []win32DiskDrive
 	q := "SELECT DeviceID, Model, SerialNumber, FirmwareRevision, Size, MediaType, InterfaceType FROM Win32_DiskDrive"
-	if err := wmi.Query(q, &rows); err != nil {
+	if err := safeWmiQuery(q, &rows); err != nil {
 		log.Printf("hardware: Win32_DiskDrive query: %v", err)
 		return nil
 	}
@@ -590,7 +670,7 @@ func collectNetworkInterfacesWindows() []NetworkInterfaceInfo {
 	// Build MAC -> speed map from WMI.
 	speedByMAC := map[string]int64{}
 	var adapters []win32NetworkAdapter
-	if err := wmi.Query("SELECT Name, NetConnectionID, MACAddress, Speed, NetEnabled, PhysicalAdapter, PNPDeviceID FROM Win32_NetworkAdapter WHERE PhysicalAdapter = TRUE", &adapters); err == nil {
+	if err := safeWmiQuery("SELECT Name, NetConnectionID, MACAddress, Speed, NetEnabled, PhysicalAdapter, PNPDeviceID FROM Win32_NetworkAdapter WHERE PhysicalAdapter = TRUE", &adapters); err == nil {
 		for _, a := range adapters {
 			mac := strings.ToLower(strings.TrimSpace(a.MACAddress))
 			if mac == "" || a.Speed == 0 {
@@ -662,7 +742,7 @@ func skipInterfaceWindows(name string) bool {
 func collectGPUDevicesWindows() []GPUDevice {
 	var rows []win32VideoController
 	q := "SELECT Name, AdapterCompatibility, AdapterRAM, DriverVersion, PNPDeviceID, VideoProcessor FROM Win32_VideoController"
-	if err := wmi.Query(q, &rows); err != nil {
+	if err := safeWmiQuery(q, &rows); err != nil {
 		log.Printf("hardware: Win32_VideoController query: %v", err)
 		return nil
 	}
@@ -722,7 +802,7 @@ func coalesce(a, b string) string {
 // CurrentTemperature is reported in tenths of Kelvin per the ACPI spec.
 type win32ThermalZone struct {
 	InstanceName       string
-	CurrentTemperature uint32
+	CurrentTemperature interface{}
 }
 
 // collectCPUTempC asks WMI's root\WMI namespace for ACPI thermal zones
@@ -742,10 +822,11 @@ func collectCPUTempC() float64 {
 	}
 	var max float64
 	for _, z := range zones {
-		if z.CurrentTemperature == 0 {
+		temp := coerceUint32(z.CurrentTemperature)
+		if temp == 0 {
 			continue
 		}
-		c := float64(z.CurrentTemperature)/10.0 - 273.15
+		c := float64(temp)/10.0 - 273.15
 		if c < 0 || c > 120 {
 			continue
 		}

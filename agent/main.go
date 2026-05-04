@@ -451,9 +451,16 @@ func runAgent(machineID string) error {
 	// machines row is guaranteed to exist. The hub keeps whatever we last
 	// reported and overwrites on the next connect if anything genuinely
 	// changed (DIMM swap, new disk, etc.).
-	if err := sendHardware(conn, &writeMu, machineID); err != nil {
-		log.Printf("send hardware error: %v", err)
-	}
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("send hardware: panic recovered: %v (continuing — auto-update path remains operational)", r)
+			}
+		}()
+		if err := sendHardware(conn, &writeMu, machineID); err != nil {
+			log.Printf("send hardware error: %v", err)
+		}
+	}()
 
 	// Phase 8 — report our running version so the hub can display it on
 	// the dashboard and detect if we're out of date.
