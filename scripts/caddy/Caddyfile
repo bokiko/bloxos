@@ -2,7 +2,7 @@
 	# Use Caddy's internal CA for self-signed TLS on LAN
 }
 
-https://192.168.16.113 {
+https://{$HUB_HOST} {
 	tls internal
 
 	# Hub API routes
@@ -36,6 +36,6 @@ https://192.168.16.113 {
 	}
 }
 
-http://192.168.16.113 {
-	redir https://192.168.16.113{uri} permanent
+http://{$HUB_HOST} {
+	redir https://{$HUB_HOST}{uri} permanent
 }

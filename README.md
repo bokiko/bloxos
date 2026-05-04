@@ -10,14 +10,8 @@ Real-time fleet management for self-hosted infrastructure — Linux servers, Win
 [![Made with Go](https://img.shields.io/badge/agent-Go-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![Made with Next.js](https://img.shields.io/badge/dashboard-Next.js-000000?logo=next.js&logoColor=white)](https://nextjs.org)
 [![SQLite](https://img.shields.io/badge/storage-SQLite-003B57?logo=sqlite&logoColor=white)](https://sqlite.org)
-[![Website](https://img.shields.io/badge/site-bloxos.dev-58A6FF)](https://bloxos.dev)
 
-[Website](https://bloxos.dev) · [Documentation](https://bloxos.dev/docs) · [Report a bug](https://github.com/bokiko/bloxos/issues) · [Author](https://bokiko.io)
-
-<br />
-
-<!-- Replace with a real screenshot once available -->
-<img src="docs/images/dashboard-hero.png" alt="BloxOS dashboard" width="900" />
+[Report a bug](https://github.com/bokiko/bloxos/issues) · [Author](https://bokiko.io)
 
 </div>
 
@@ -117,13 +111,17 @@ SSE from hub to browser means the dashboard updates live without WebSocket compl
 
 ### 1. Install the hub
 
-On any Linux machine you want as the central server:
+On any Linux machine you want as the central server, build and run from source:
 
 ```bash
-curl -fsSL https://bloxos.dev/install/hub | sudo bash
+git clone https://github.com/bokiko/bloxos.git
+cd bloxos/hub && go build -o bloxos-hub .
+./bloxos-hub
 ```
 
-This sets up the hub as a systemd service on port `:8080`, creates a default admin user, and prints the bootstrap login details.
+This starts the hub on port `:4000`. On first run it creates a setup token in `~/.bloxos/setup-token`; visit the dashboard to complete admin setup.
+
+A one-line installer is on the v1.0 roadmap (see [Project status](#project-status)).
 
 ### 2. Open the dashboard
 
@@ -185,7 +183,7 @@ BloxOS is **pre-1.0** and currently powering the author's homelab fleet of ~10 m
 
 **What's planned for v1.0:**
 - Polished installer flow for hub and agents
-- Documentation site at [bloxos.dev/docs](https://bloxos.dev/docs)
+- Documentation site
 - Mobile responsive pass
 - Custom alert rules editor
 - Per-machine power tracking chart (GPU first, total system later)

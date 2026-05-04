@@ -39,3 +39,6 @@ Thumbs.db
 
 # Local-only audit / analysis drafts (not meant to live in git)
 SECURITY_AUDIT_*.md
+
+# Public-readiness: keep operational handoff out of the public repo
+HANDOFF.md
