@@ -121,13 +121,13 @@ function getStatus(data: MachineData): MachineStatus {
 
 export default function MachineDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
-  const { getMachine, connected } = useSSE();
+  const { getMachine } = useSSE();
   const [baseData, setBaseData] = useState<MachineData | null>(null);
   const [services, setServices] = useState<Service[]>([]);
   const [containers, setContainers] = useState<Container[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
-  const [tick, setTick] = useState(0);
+  const [now, setNow] = useState(() => Date.now());
   const [showReboot, setShowReboot] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -198,13 +198,22 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
   }, [id]);
 
   const sseData = getMachine(id);
+
+  // Liveness — derived at render time, no useMemo needed. The `now` state
+  // is updated by a 1Hz interval (above), so this re-evaluates each tick
+  // without tripping React 19's idempotence rule on Date.now().
+  const lastSeenMs = sseData?.last_seen ?? 0;
+  const isLive = lastSeenMs > 0 && now - lastSeenMs < 120_000;
+
   const data = useMemo<MachineData | null>(() => {
-    if (!baseData || !sseData) return baseData;
+    if (!baseData) return null;
+    if (!sseData) return baseData;
 
     return {
       ...baseData,
       metrics: {
         cpu_percent: sseData.cpu_percent ?? baseData.metrics.cpu_percent,
+        cpu_temp_c: sseData.cpu_temp_c ?? baseData.metrics.cpu_temp_c,
         ram_used_bytes: sseData.ram_used_bytes ?? baseData.metrics.ram_used_bytes,
         ram_total_bytes: sseData.ram_total_bytes ?? baseData.metrics.ram_total_bytes,
         disk_used_bytes: sseData.disk_used_bytes ?? baseData.metrics.disk_used_bytes,
@@ -214,15 +223,25 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
         gpu_vram_used_bytes: sseData.gpu_vram_used_bytes ?? baseData.metrics.gpu_vram_used_bytes,
         gpu_vram_total_bytes: sseData.gpu_vram_total_bytes ?? baseData.metrics.gpu_vram_total_bytes,
       },
-      machine: { ...baseData.machine, status: "online" },
+      machine: {
+        ...baseData.machine,
+        // Promote to online ONLY when last_seen says so. Otherwise trust
+        // the API status, which itself reflects agent disconnect events.
+        status: isLive ? "online" : baseData.machine.status,
+        last_seen: sseData.last_seen
+          ? new Date(sseData.last_seen).toISOString()
+          : baseData.machine.last_seen,
+      },
       latency_ms: sseData.latency_ms ?? baseData.latency_ms,
     };
-  }, [baseData, sseData]);
+  }, [baseData, sseData, isLive]);
 
-  const effectiveLastUpdated = useMemo(
-    () => (sseData ? new Date().toISOString() : lastUpdated),
-    [sseData, lastUpdated]
-  );
+  const effectiveLastUpdated = useMemo(() => {
+    // Real last-metric timestamp, never Date.now(). This field tells the
+    // user when the agent last reported, not when the page re-rendered.
+    if (data?.machine.last_seen) return data.machine.last_seen;
+    return lastUpdated;
+  }, [data, lastUpdated]);
   const liveServices = useMemo(() => {
     const raw = sseData as Record<string, unknown> | undefined;
     return Array.isArray(raw?._services) ? (raw._services as Service[]) : services;
@@ -233,10 +252,9 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
   }, [sseData, containers]);
 
   useEffect(() => {
-    const interval = setInterval(() => setTick((t) => t + 1), 1000);
-    return () => clearInterval(interval);
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
   }, []);
-  void tick;
 
   const handlePinSubmit = useCallback(() => {
     setPinError(false);
@@ -401,7 +419,7 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
           </Link>
 
           <div className="flex items-center gap-1.5">
-            {connected && (
+            {isLive && (
               <span className="hidden sm:flex items-center gap-1 text-[10px] text-emerald-400 mr-1">
                 <span className="relative flex h-1.5 w-1.5">
                   <span className="animate-status-pulse absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
