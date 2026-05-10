@@ -1182,6 +1182,70 @@ func handleCommand(c echo.Context) error {
 }
 
 func getEnrichedMachinesJSON() ([]byte, error) {
+	// Bulk-fetch services for all machines (avoids 1+N per-machine queries).
+	servicesByMachine := map[string][]ServiceInfo{}
+	{
+		svcRows, err := db.Query(`SELECT machine_id, name, status, description FROM services ORDER BY machine_id, name`)
+		if err == nil {
+			for svcRows.Next() {
+				var machineID string
+				var s ServiceInfo
+				if scanErr := svcRows.Scan(&machineID, &s.Name, &s.Status, &s.Description); scanErr == nil {
+					servicesByMachine[machineID] = append(servicesByMachine[machineID], s)
+				}
+			}
+			svcRows.Close()
+		}
+	}
+
+	// Bulk-fetch containers for all machines (avoids 1+N per-machine queries).
+	containersByMachine := map[string][]ContainerInfo{}
+	{
+		ctRows, err := db.Query(`SELECT machine_id, container_id, name, status, image FROM containers ORDER BY machine_id, name`)
+		if err == nil {
+			for ctRows.Next() {
+				var machineID string
+				var ct ContainerInfo
+				if scanErr := ctRows.Scan(&machineID, &ct.ID, &ct.Name, &ct.Status, &ct.Image); scanErr == nil {
+					containersByMachine[machineID] = append(containersByMachine[machineID], ct)
+				}
+			}
+			ctRows.Close()
+		}
+	}
+
+	// Bulk-fetch latest GPU metrics for all machines using the same ROW_NUMBER() window
+	// pattern as the metrics JOIN above (avoids 1+N per-machine queries).
+	gpusByMachine := map[string][]GPUInfo{}
+	{
+		gpuRows, err := db.Query(`
+			SELECT machine_id, gpu_index, gpu_name, temp_c, util_percent,
+				mem_used_bytes, mem_total_bytes, power_watts, fan_percent
+			FROM (
+				SELECT machine_id, gpu_index, gpu_name, temp_c, util_percent,
+					mem_used_bytes, mem_total_bytes, power_watts, fan_percent,
+					ROW_NUMBER() OVER (PARTITION BY machine_id, gpu_index ORDER BY timestamp DESC) as rn
+				FROM gpu_metrics
+			) WHERE rn = 1
+			ORDER BY machine_id, gpu_index
+		`)
+		if err == nil {
+			for gpuRows.Next() {
+				var machineID string
+				var g GPUInfo
+				var name *string
+				if scanErr := gpuRows.Scan(&machineID, &g.Index, &name, &g.TempC, &g.UtilPercent,
+					&g.MemUsedBytes, &g.MemTotalBytes, &g.PowerWatts, &g.FanPercent); scanErr == nil {
+					if name != nil {
+						g.Name = *name
+					}
+					gpusByMachine[machineID] = append(gpusByMachine[machineID], g)
+				}
+			}
+			gpuRows.Close()
+		}
+	}
+
 	rows, err := db.Query(`
 		SELECT m.id, m.hostname, m.ip, m.os, m.status, m.last_seen, COALESCE(m.tags, ''),
 			COALESCE(met.cpu_percent, 0),
@@ -1240,9 +1304,21 @@ func getEnrichedMachinesJSON() ([]byte, error) {
 			return nil, err
 		}
 
-		m.Services = getServicesForMachine(m.MachineID)
-		m.Containers = getContainersForMachine(m.MachineID)
-		m.GPUs = getLatestGPUMetrics(m.MachineID)
+		if svcs, ok := servicesByMachine[m.MachineID]; ok {
+			m.Services = svcs
+		} else {
+			m.Services = []ServiceInfo{}
+		}
+		if cts, ok := containersByMachine[m.MachineID]; ok {
+			m.Containers = cts
+		} else {
+			m.Containers = []ContainerInfo{}
+		}
+		if gpus, ok := gpusByMachine[m.MachineID]; ok {
+			m.GPUs = gpus
+		} else {
+			m.GPUs = []GPUInfo{}
+		}
 
 		machineLatencyMu.RLock()
 		m.LatencyMs = machineLatency[m.MachineID]
