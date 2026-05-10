@@ -148,15 +148,19 @@ func handleUpdateUser(c echo.Context) error {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "role must be admin, operator, or viewer"})
 		}
 		if currentRole == string(RoleAdmin) && newRole != RoleAdmin {
-			last, err := isLastAdmin()
+			// Atomic check-and-demote: the subquery guard ensures we never
+			// drop below 1 admin even under concurrent requests.
+			res, err := db.Exec(
+				`UPDATE users SET role = ? WHERE id = ? AND (SELECT COUNT(*) FROM users WHERE role = ?) > 1`,
+				newRole, targetID, RoleAdmin,
+			)
 			if err != nil {
-				return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database error"})
+				return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to update role"})
 			}
-			if last {
+			if n, _ := res.RowsAffected(); n == 0 {
 				return c.JSON(http.StatusBadRequest, map[string]string{"error": "cannot demote the last admin"})
 			}
-		}
-		if _, err := db.Exec(`UPDATE users SET role = ? WHERE id = ?`, newRole, targetID); err != nil {
+		} else if _, err := db.Exec(`UPDATE users SET role = ? WHERE id = ?`, newRole, targetID); err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to update role"})
 		}
 	}
@@ -222,13 +226,18 @@ func handleDeleteUser(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database error"})
 	}
 	if role == string(RoleAdmin) {
-		last, err := isLastAdmin()
+		// Atomic check-and-delete: only succeeds when >1 admin exists.
+		res, err := db.Exec(
+			`DELETE FROM users WHERE id = ? AND (SELECT COUNT(*) FROM users WHERE role = ?) > 1`,
+			targetID, RoleAdmin,
+		)
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database error"})
 		}
-		if last {
+		if n, _ := res.RowsAffected(); n == 0 {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "cannot delete the last admin"})
 		}
+		return c.JSON(http.StatusOK, map[string]string{"status": "deleted"})
 	}
 
 	if _, err := db.Exec(`DELETE FROM users WHERE id = ?`, targetID); err != nil {

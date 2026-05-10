@@ -848,28 +848,47 @@ func storeMetrics(m AgentMetrics) {
 		gpuVRAMTotal = m.GPUs[0].MemTotalBytes
 	}
 
-	_, err := db.Exec(`
+	tx, err := db.Begin()
+	if err != nil {
+		log.Printf("store metrics tx error: %v", err)
+		return
+	}
+
+	if _, err := tx.Exec(`
 		INSERT INTO metrics (machine_id, cpu_percent, ram_used_bytes, ram_total_bytes,
 			disk_used_bytes, disk_total_bytes, gpu_temp, gpu_util_percent,
 			gpu_vram_used_bytes, gpu_vram_total_bytes, cpu_temp_c)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, m.MachineID, m.CPUPercent, m.RAMUsedBytes, m.RAMTotalBytes,
 		m.DiskUsedBytes, m.DiskTotalBytes, gpuTemp, gpuUtil, gpuVRAMUsed, gpuVRAMTotal,
-		nullableFloat(m.CPUTempC))
-	if err != nil {
+		nullableFloat(m.CPUTempC)); err != nil {
+		tx.Rollback()
 		log.Printf("store metrics error: %v", err)
+		return
 	}
 
-	for _, g := range m.GPUs {
-		_, err := db.Exec(`
+	if len(m.GPUs) > 0 {
+		stmt, err := tx.Prepare(`
 			INSERT INTO gpu_metrics (machine_id, gpu_index, gpu_name, temp_c, util_percent,
 				mem_used_bytes, mem_total_bytes, power_watts, fan_percent)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, m.MachineID, g.Index, g.Name, g.TempC, g.UtilPercent,
-			g.MemUsedBytes, g.MemTotalBytes, g.PowerWatts, g.FanPercent)
+		`)
 		if err != nil {
-			log.Printf("store gpu metric error: %v", err)
+			tx.Rollback()
+			log.Printf("prepare gpu metrics error: %v", err)
+			return
 		}
+		defer stmt.Close()
+		for _, g := range m.GPUs {
+			if _, err := stmt.Exec(m.MachineID, g.Index, g.Name, g.TempC, g.UtilPercent,
+				g.MemUsedBytes, g.MemTotalBytes, g.PowerWatts, g.FanPercent); err != nil {
+				log.Printf("store gpu metric error: %v", err)
+			}
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		log.Printf("commit metrics error: %v", err)
 	}
 }
 
