@@ -28,6 +28,8 @@ type TerminalSession struct {
 	SourceIP      string
 	UserID        string
 	mu            sync.Mutex
+	Done          chan struct{}
+	closeOnce     sync.Once
 }
 
 // maxTerminalSessions is the maximum number of concurrent terminal sessions allowed.
@@ -133,6 +135,7 @@ func handleStartTerminal(c echo.Context) error {
 		LastActivity:  now,
 		SourceIP:      sourceIP,
 		UserID:        userID,
+		Done:          make(chan struct{}),
 	}
 	termSessionsMu.Lock()
 	termSessions[sessionID] = session
@@ -335,20 +338,16 @@ func handleTerminalWS(c echo.Context) error {
 }
 
 func waitForSessionEnd(sessionID string) <-chan struct{} {
-	ch := make(chan struct{})
-	go func() {
-		for {
-			time.Sleep(500 * time.Millisecond)
-			termSessionsMu.RLock()
-			_, exists := termSessions[sessionID]
-			termSessionsMu.RUnlock()
-			if !exists {
-				close(ch)
-				return
-			}
-		}
-	}()
-	return ch
+	termSessionsMu.RLock()
+	session, ok := termSessions[sessionID]
+	termSessionsMu.RUnlock()
+	if !ok {
+		// Session already gone — return an already-closed channel.
+		ch := make(chan struct{})
+		close(ch)
+		return ch
+	}
+	return session.Done
 }
 
 func terminalRelay(sessionID string, session *TerminalSession) {
@@ -451,6 +450,10 @@ func cleanupTerminalSession(sessionID string) {
 	if !ok {
 		return
 	}
+
+	// Signal waiters that the session has ended. closeOnce ensures this is
+	// safe to call from multiple goroutines or repeatedly.
+	session.closeOnce.Do(func() { close(session.Done) })
 
 	session.mu.Lock()
 	if session.AgentWS != nil {

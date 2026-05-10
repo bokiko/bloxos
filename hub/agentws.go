@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	cryptoRand "crypto/rand"
 	"crypto/sha256"
 	"database/sql"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -575,11 +577,20 @@ func handleAgentWS(c echo.Context) error {
 			lat := machineLatency[m.MachineID]
 			machineLatencyMu.RUnlock()
 
-			// Re-marshal with latency included.
-			enriched := make(map[string]interface{})
-			json.Unmarshal(msg, &enriched)
-			enriched["latency_ms"] = lat
-			enrichedData, _ := json.Marshal(enriched)
+			// Inject latency_ms by appending before the closing '}' to avoid
+			// a full JSON unmarshal+marshal round-trip on the hot path.
+			var enrichedData []byte
+			if i := bytes.LastIndexByte(msg, '}'); i >= 0 {
+				suffix := strconv.AppendInt([]byte(",\"latency_ms\":"), lat, 10)
+				suffix = append(suffix, '}')
+				enrichedData = append(append([]byte(nil), msg[:i]...), suffix...)
+			} else {
+				// Malformed JSON — fall back to unmarshal/marshal.
+				enriched := make(map[string]interface{})
+				json.Unmarshal(msg, &enriched)
+				enriched["latency_ms"] = lat
+				enrichedData, _ = json.Marshal(enriched)
+			}
 			broadcastSSE(enrichedData)
 
 		case "services":

@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -2444,14 +2443,9 @@ func storeAPIPollResult(apiMachineID, name, adapterType, baseURL string, result 
 		}
 	}
 
-	// Update containers.
+	// Update containers atomically via the shared upsertContainers helper.
 	if len(result.Containers) > 0 {
-		// Clear old containers first.
-		db.Exec("DELETE FROM containers WHERE machine_id = ?", machineID)
-		for _, ct := range result.Containers {
-			db.Exec(`INSERT INTO containers (machine_id, container_id, name, status, image, updated_at)
-				VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`, machineID, ct.ID, ct.Name, ct.Status, ct.Image)
-		}
+		upsertContainers(machineID, result.Containers)
 	}
 
 	log.Printf("api poll: %s (%s) cpu=%.1f%% ram=%d/%dMB",
@@ -2556,5 +2550,4 @@ func stopAllAPIPollers() {
 	}
 }
 
-var _ = math.Abs
 var _ = strconv.Itoa
