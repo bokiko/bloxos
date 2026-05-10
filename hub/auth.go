@@ -10,6 +10,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -22,7 +23,11 @@ import (
 
 // setupTokenValue holds the current setup token in memory (for env-provided tokens
 // or file-based tokens). Cleared after successful setup.
-var setupTokenValue string
+// setupMu guards all reads/writes of setupTokenValue to prevent TOCTOU races.
+var (
+	setupTokenValue string
+	setupMu         sync.Mutex
+)
 
 // generateSetupToken creates a one-time setup token if no users exist.
 // Token source priority: BLOXOS_SETUP_TOKEN env var > file > auto-generate.
@@ -131,8 +136,15 @@ func handleSetup(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid body"})
 	}
 
-	// Validate setup token.
-	if setupTokenValue == "" || body.SetupToken != setupTokenValue {
+	// Validate and atomically consume the setup token so concurrent requests
+	// with the same token cannot both create an admin user (TOCTOU fix).
+	setupMu.Lock()
+	tokenOK := setupTokenValue != "" && body.SetupToken == setupTokenValue
+	if tokenOK {
+		setupTokenValue = ""
+	}
+	setupMu.Unlock()
+	if !tokenOK {
 		log.Printf("setup: invalid setup token attempt from %s", ip)
 		return c.JSON(http.StatusForbidden, map[string]string{"error": "invalid setup token"})
 	}
@@ -167,8 +179,7 @@ func handleSetup(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to create user"})
 	}
 
-	// Clear the setup token and delete the file.
-	setupTokenValue = ""
+	// Delete the setup token file (token was already cleared under setupMu above).
 	homeDir, err := os.UserHomeDir()
 	if err == nil {
 		tokenFile := homeDir + "/.bloxos/setup-token"
@@ -429,30 +440,14 @@ func handleChangePassword(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
 
-	// Get user from JWT.
-	auth := c.Request().Header.Get("Authorization")
-	tokenStr := ""
-	if strings.HasPrefix(auth, "Bearer ") {
-		tokenStr = auth[7:]
-	}
-	if tokenStr == "" {
-		tokenStr = c.QueryParam("token")
-	}
-
-	tkn, _ := jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
-		return jwtSecret, nil
-	})
-	claims, ok := tkn.Claims.(jwt.MapClaims)
-	if !ok {
-		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid token"})
-	}
-	username, _ := claims["username"].(string)
-	if username == "" {
+	// Get user from the already-validated JWT set by jwtMiddleware.
+	userID := extractUserIDFromRequest(c)
+	if userID == "" {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid token"})
 	}
 
 	var passwordHash string
-	err := db.QueryRow(`SELECT password_hash FROM users WHERE username = ?`, username).Scan(&passwordHash)
+	err := db.QueryRow(`SELECT password_hash FROM users WHERE id = ?`, userID).Scan(&passwordHash)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "user not found"})
 	}
@@ -464,12 +459,12 @@ func handleChangePassword(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to hash password"})
 	}
-	_, err = db.Exec(`UPDATE users SET password_hash = ?, password_changed = TRUE WHERE username = ?`, string(newHash), username)
+	_, err = db.Exec(`UPDATE users SET password_hash = ?, password_changed = TRUE WHERE id = ?`, string(newHash), userID)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to update password"})
 	}
 
-	log.Printf("password changed for user: %s", username)
+	log.Printf("password changed for user id: %s", userID)
 	return c.JSON(http.StatusOK, map[string]string{"status": "password changed"})
 }
 

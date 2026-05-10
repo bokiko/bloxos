@@ -139,6 +139,19 @@ func evaluateAlerts() {
 		machines = append(machines, m)
 	}
 
+	// Pre-fetch all active alerts once to avoid one SELECT per (rule×machine)
+	// in the inner loop. Active alerts are a small set; the cross product is not.
+	active := map[string]string{} // key: ruleID+"|"+machineID → alertID
+	if alertRows, err := db.Query(`SELECT rule_id, machine_id, id FROM alerts WHERE status = 'active'`); err == nil {
+		for alertRows.Next() {
+			var ruleID, machineID, alertID string
+			if alertRows.Scan(&ruleID, &machineID, &alertID) == nil {
+				active[ruleID+"|"+machineID] = alertID
+			}
+		}
+		alertRows.Close()
+	}
+
 	for _, rule := range rules {
 		for _, m := range machines {
 			var metricValue float64
@@ -151,15 +164,17 @@ func evaluateAlerts() {
 				triggered = compareValue(metricValue, rule.Operator, rule.Threshold)
 				msg = fmt.Sprintf("CPU is %.0f%% (threshold: %.0f%%)", metricValue, rule.Threshold)
 			case "ram":
-				if m.ramTotalBytes > 0 {
-					metricValue = float64(m.ramUsedBytes) / float64(m.ramTotalBytes) * 100
+				if m.ramTotalBytes == 0 {
+					continue // No RAM data yet, skip to avoid false triggers.
 				}
+				metricValue = float64(m.ramUsedBytes) / float64(m.ramTotalBytes) * 100
 				triggered = compareValue(metricValue, rule.Operator, rule.Threshold)
 				msg = fmt.Sprintf("RAM is %.0f%% (threshold: %.0f%%)", metricValue, rule.Threshold)
 			case "disk":
-				if m.diskTotalBytes > 0 {
-					metricValue = float64(m.diskUsedBytes) / float64(m.diskTotalBytes) * 100
+				if m.diskTotalBytes == 0 {
+					continue // No disk data yet, skip to avoid false triggers.
 				}
+				metricValue = float64(m.diskUsedBytes) / float64(m.diskTotalBytes) * 100
 				triggered = compareValue(metricValue, rule.Operator, rule.Threshold)
 				msg = fmt.Sprintf("Disk is %.0f%% (threshold: %.0f%%)", metricValue, rule.Threshold)
 			case "gpu_temp":
@@ -188,11 +203,8 @@ func evaluateAlerts() {
 				continue
 			}
 
-			// Check for existing active alert for this machine+rule.
-			var existingID string
-			err := db.QueryRow(`SELECT id FROM alerts WHERE rule_id = ? AND machine_id = ? AND status = 'active'`,
-				rule.ID, m.id).Scan(&existingID)
-			hasActive := err == nil
+			// Look up existing active alert using the pre-fetched map.
+			existingID, hasActive := active[rule.ID+"|"+m.id]
 
 			if triggered && !hasActive {
 				// Create new alert.

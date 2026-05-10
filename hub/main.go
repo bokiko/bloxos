@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -848,28 +847,47 @@ func storeMetrics(m AgentMetrics) {
 		gpuVRAMTotal = m.GPUs[0].MemTotalBytes
 	}
 
-	_, err := db.Exec(`
+	tx, err := db.Begin()
+	if err != nil {
+		log.Printf("store metrics tx error: %v", err)
+		return
+	}
+
+	if _, err := tx.Exec(`
 		INSERT INTO metrics (machine_id, cpu_percent, ram_used_bytes, ram_total_bytes,
 			disk_used_bytes, disk_total_bytes, gpu_temp, gpu_util_percent,
 			gpu_vram_used_bytes, gpu_vram_total_bytes, cpu_temp_c)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, m.MachineID, m.CPUPercent, m.RAMUsedBytes, m.RAMTotalBytes,
 		m.DiskUsedBytes, m.DiskTotalBytes, gpuTemp, gpuUtil, gpuVRAMUsed, gpuVRAMTotal,
-		nullableFloat(m.CPUTempC))
-	if err != nil {
+		nullableFloat(m.CPUTempC)); err != nil {
+		tx.Rollback()
 		log.Printf("store metrics error: %v", err)
+		return
 	}
 
-	for _, g := range m.GPUs {
-		_, err := db.Exec(`
+	if len(m.GPUs) > 0 {
+		stmt, err := tx.Prepare(`
 			INSERT INTO gpu_metrics (machine_id, gpu_index, gpu_name, temp_c, util_percent,
 				mem_used_bytes, mem_total_bytes, power_watts, fan_percent)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, m.MachineID, g.Index, g.Name, g.TempC, g.UtilPercent,
-			g.MemUsedBytes, g.MemTotalBytes, g.PowerWatts, g.FanPercent)
+		`)
 		if err != nil {
-			log.Printf("store gpu metric error: %v", err)
+			tx.Rollback()
+			log.Printf("prepare gpu metrics error: %v", err)
+			return
 		}
+		defer stmt.Close()
+		for _, g := range m.GPUs {
+			if _, err := stmt.Exec(m.MachineID, g.Index, g.Name, g.TempC, g.UtilPercent,
+				g.MemUsedBytes, g.MemTotalBytes, g.PowerWatts, g.FanPercent); err != nil {
+				log.Printf("store gpu metric error: %v", err)
+			}
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		log.Printf("commit metrics error: %v", err)
 	}
 }
 
@@ -1182,6 +1200,70 @@ func handleCommand(c echo.Context) error {
 }
 
 func getEnrichedMachinesJSON() ([]byte, error) {
+	// Bulk-fetch services for all machines (avoids 1+N per-machine queries).
+	servicesByMachine := map[string][]ServiceInfo{}
+	{
+		svcRows, err := db.Query(`SELECT machine_id, name, status, description FROM services ORDER BY machine_id, name`)
+		if err == nil {
+			for svcRows.Next() {
+				var machineID string
+				var s ServiceInfo
+				if scanErr := svcRows.Scan(&machineID, &s.Name, &s.Status, &s.Description); scanErr == nil {
+					servicesByMachine[machineID] = append(servicesByMachine[machineID], s)
+				}
+			}
+			svcRows.Close()
+		}
+	}
+
+	// Bulk-fetch containers for all machines (avoids 1+N per-machine queries).
+	containersByMachine := map[string][]ContainerInfo{}
+	{
+		ctRows, err := db.Query(`SELECT machine_id, container_id, name, status, image FROM containers ORDER BY machine_id, name`)
+		if err == nil {
+			for ctRows.Next() {
+				var machineID string
+				var ct ContainerInfo
+				if scanErr := ctRows.Scan(&machineID, &ct.ID, &ct.Name, &ct.Status, &ct.Image); scanErr == nil {
+					containersByMachine[machineID] = append(containersByMachine[machineID], ct)
+				}
+			}
+			ctRows.Close()
+		}
+	}
+
+	// Bulk-fetch latest GPU metrics for all machines using the same ROW_NUMBER() window
+	// pattern as the metrics JOIN above (avoids 1+N per-machine queries).
+	gpusByMachine := map[string][]GPUInfo{}
+	{
+		gpuRows, err := db.Query(`
+			SELECT machine_id, gpu_index, gpu_name, temp_c, util_percent,
+				mem_used_bytes, mem_total_bytes, power_watts, fan_percent
+			FROM (
+				SELECT machine_id, gpu_index, gpu_name, temp_c, util_percent,
+					mem_used_bytes, mem_total_bytes, power_watts, fan_percent,
+					ROW_NUMBER() OVER (PARTITION BY machine_id, gpu_index ORDER BY timestamp DESC) as rn
+				FROM gpu_metrics
+			) WHERE rn = 1
+			ORDER BY machine_id, gpu_index
+		`)
+		if err == nil {
+			for gpuRows.Next() {
+				var machineID string
+				var g GPUInfo
+				var name *string
+				if scanErr := gpuRows.Scan(&machineID, &g.Index, &name, &g.TempC, &g.UtilPercent,
+					&g.MemUsedBytes, &g.MemTotalBytes, &g.PowerWatts, &g.FanPercent); scanErr == nil {
+					if name != nil {
+						g.Name = *name
+					}
+					gpusByMachine[machineID] = append(gpusByMachine[machineID], g)
+				}
+			}
+			gpuRows.Close()
+		}
+	}
+
 	rows, err := db.Query(`
 		SELECT m.id, m.hostname, m.ip, m.os, m.status, m.last_seen, COALESCE(m.tags, ''),
 			COALESCE(met.cpu_percent, 0),
@@ -1240,9 +1322,21 @@ func getEnrichedMachinesJSON() ([]byte, error) {
 			return nil, err
 		}
 
-		m.Services = getServicesForMachine(m.MachineID)
-		m.Containers = getContainersForMachine(m.MachineID)
-		m.GPUs = getLatestGPUMetrics(m.MachineID)
+		if svcs, ok := servicesByMachine[m.MachineID]; ok {
+			m.Services = svcs
+		} else {
+			m.Services = []ServiceInfo{}
+		}
+		if cts, ok := containersByMachine[m.MachineID]; ok {
+			m.Containers = cts
+		} else {
+			m.Containers = []ContainerInfo{}
+		}
+		if gpus, ok := gpusByMachine[m.MachineID]; ok {
+			m.GPUs = gpus
+		} else {
+			m.GPUs = []GPUInfo{}
+		}
 
 		machineLatencyMu.RLock()
 		m.LatencyMs = machineLatency[m.MachineID]
@@ -2349,14 +2443,9 @@ func storeAPIPollResult(apiMachineID, name, adapterType, baseURL string, result 
 		}
 	}
 
-	// Update containers.
+	// Update containers atomically via the shared upsertContainers helper.
 	if len(result.Containers) > 0 {
-		// Clear old containers first.
-		db.Exec("DELETE FROM containers WHERE machine_id = ?", machineID)
-		for _, ct := range result.Containers {
-			db.Exec(`INSERT INTO containers (machine_id, container_id, name, status, image, updated_at)
-				VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`, machineID, ct.ID, ct.Name, ct.Status, ct.Image)
-		}
+		upsertContainers(machineID, result.Containers)
 	}
 
 	log.Printf("api poll: %s (%s) cpu=%.1f%% ram=%d/%dMB",
@@ -2461,5 +2550,4 @@ func stopAllAPIPollers() {
 	}
 }
 
-var _ = math.Abs
 var _ = strconv.Itoa
