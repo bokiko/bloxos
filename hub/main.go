@@ -110,7 +110,6 @@ type CommandResponse struct {
 	Error   string `json:"error"`
 }
 
-
 // TerminalSession tracks an active terminal relay session.
 var (
 	db       *sql.DB
@@ -693,14 +692,6 @@ func handleSetTags(c echo.Context) error {
 
 // --- Install Script + Token ---
 
-
-
-
-
-
-
-
-
 // --- Existing Handlers ---
 
 func handleDeleteMachine(c echo.Context) error {
@@ -720,7 +711,7 @@ func handleDeleteMachine(c echo.Context) error {
 	}
 	defer tx.Rollback()
 
-	tables := []string{"metrics", "gpu_metrics", "services", "containers", "alerts", "terminal_sessions"}
+	tables := []string{"metrics", "gpu_metrics", "services", "containers", "alerts", "terminal_sessions", "agent_credentials"}
 	for _, table := range tables {
 		if _, err := tx.Exec("DELETE FROM "+table+" WHERE machine_id = ?", id); err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to delete " + table})
@@ -748,7 +739,6 @@ func handleDeleteMachine(c echo.Context) error {
 func handleHealth(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 }
-
 
 func upsertServices(machineID string, services []ServiceInfo) {
 	tx, err := db.Begin()
@@ -1423,15 +1413,6 @@ func getMachinesJSON() ([]byte, error) {
 }
 
 // --- Security Functions ---
-
-
-
-
-
-
-
-
-
 
 // tokenRedactingWriter redacts JWT tokens from log output (Finding #8).
 type tokenRedactingWriter struct {
