@@ -606,6 +606,35 @@ func TestOperatorCanUpdateTagsButCannotDeleteMachine(t *testing.T) {
 	}
 }
 
+func TestDeleteMachineRemovesAgentCredential(t *testing.T) {
+	e := setupTestServer(t)
+	markCredentialsRotated(t)
+	seedTestMachine(t, "machine-delete-credential")
+	adminToken := loginAndGetToken(t, e)
+
+	if _, err := db.Exec(`INSERT INTO agent_credentials (machine_id, secret_hash) VALUES (?, ?)`,
+		"machine-delete-credential", "test-secret-hash"); err != nil {
+		t.Fatalf("seed agent credential: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/machines/machine-delete-credential", nil)
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected delete to succeed, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM agent_credentials WHERE machine_id = ?`, "machine-delete-credential").Scan(&count); err != nil {
+		t.Fatalf("query agent credential count: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected agent credential to be deleted, got %d row(s)", count)
+	}
+}
+
 // --- Tests ---
 
 // 1. Login with valid credentials -> 200 + JWT
@@ -2811,10 +2840,10 @@ func TestRunWithRecoverCatchesPanic(t *testing.T) {
 // parsing baseURL only when the adapter didn't report one.
 func TestExtractAPIMachineIP(t *testing.T) {
 	cases := []struct {
-		name      string
-		baseURL   string
-		resultIP  string
-		want      string
+		name     string
+		baseURL  string
+		resultIP string
+		want     string
 	}{
 		{
 			name:     "adapter_provided_ip_wins",
