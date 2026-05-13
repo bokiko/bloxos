@@ -1,36 +1,52 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# BloxOS Dashboard
 
-## Getting Started
+Next.js dashboard for the BloxOS hub.
 
-First, run the development server:
+## Development
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
+pnpm install
 pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open `http://localhost:3000`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+By default `NEXT_PUBLIC_HUB_URL` is empty, so API calls use the browser's current
+origin. This matches production behind Caddy, where `/api/*`, `/ws/*`,
+`/install.sh`, `/install.ps1`, and `/download/*` are routed to the hub.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+For a split local setup with the hub running directly on port `4000`:
 
-## Learn More
+```bash
+NEXT_PUBLIC_HUB_URL=http://localhost:4000 pnpm dev
+```
 
-To learn more about Next.js, take a look at the following resources:
+## Production
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Build and run the dashboard as a local service:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```bash
+pnpm install --frozen-lockfile
+pnpm build
+pnpm start -- -H 127.0.0.1 -p 3000
+```
 
-## Deploy on Vercel
+The sample systemd unit lives at
+[`scripts/systemd/bloxos-dashboard.service`](../scripts/systemd/bloxos-dashboard.service).
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Runtime Contract
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- Auth uses the hub's `/api/auth/login` endpoint and stores the JWT in browser
+  storage.
+- Live fleet updates arrive over SSE from `/api/events`.
+- Terminal sessions use `/api/machines/:id/terminal` to create a session and
+  `/ws/terminal/:session_id` for the browser side of the relay.
+- Branding, theme, user preferences, pinned machines, saved filters, and avatars
+  are all loaded from hub APIs.
+
+## Checks
+
+```bash
+pnpm lint
+pnpm build
+```

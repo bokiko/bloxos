@@ -92,8 +92,10 @@ SQLite. The whole system — users, machines, metrics history, inventory, brandi
 
 - **Hub** is a single Go binary. Holds the SQLite database. Speaks WebSocket to agents, SSE to dashboards, REST to CLIs and scripts.
 - **Agents** are single Go binaries. Linux runs under systemd; Windows runs under SCM. They open one outbound WebSocket to the hub — no inbound ports needed on agent machines.
-- **Dashboard** is Next.js, served by the hub or hosted separately. The dashboard never talks to agents directly; it always goes through the hub.
+- **Dashboard** is Next.js. In production it normally runs as its own local service on `127.0.0.1:3000` behind Caddy; in development it runs with `pnpm dev`. The dashboard never talks to agents directly; it always goes through the hub.
 - **API-polled targets** (Synology, Proxmox, anything without a native agent) are scraped by the hub on a schedule and surfaced as machines in the same dashboard.
+
+For a deeper component map, see [docs/architecture.md](docs/architecture.md).
 
 ### Why this shape
 
@@ -107,38 +109,49 @@ SSE from hub to browser means the dashboard updates live without WebSocket compl
 
 ## Quick start
 
-> **Status:** BloxOS is currently being prepared for public release. The instructions below are the target shape. The full installer is in active development — see [Project status](#project-status) below.
+> **Status:** BloxOS is pre-1.0. The core app runs in production, but the polished one-line public installer is still in progress. The commands below are the current source-built development path.
 
-### 1. Install the hub
+### 1. Run the hub
 
-On any Linux machine you want as the central server, build and run from source:
+On any Linux machine you want as the central server:
 
 ```bash
 git clone https://github.com/bokiko/bloxos.git
-cd bloxos/hub && go build -o bloxos-hub .
-./bloxos-hub
+cd bloxos/hub
+go run .
 ```
 
-This starts the hub on port `:4000`. On first run it creates a setup token in `~/.bloxos/setup-token`; visit the dashboard to complete admin setup.
+This starts the hub API on `127.0.0.1:4000` by default. On first run it creates a setup token in `~/.bloxos/setup-token`; use that token on the dashboard setup screen to create the first admin.
 
-A one-line installer is on the v1.0 roadmap (see [Project status](#project-status)).
+### 2. Run the dashboard
 
-### 2. Open the dashboard
+In another shell:
 
-Browse to `http://<your-hub-ip>:8080` and log in with the credentials printed in step 1. Change the admin password immediately. Set a custom logo if you want one.
+```bash
+cd bloxos/dashboard
+pnpm install
+pnpm dev
+```
+
+Open `http://localhost:3000`. With the default empty `NEXT_PUBLIC_HUB_URL`, the browser uses the same origin for API calls. For a split dev setup, set `NEXT_PUBLIC_HUB_URL=http://localhost:4000`.
+
+For LAN production, run the hub on `127.0.0.1:4000`, run the dashboard on `127.0.0.1:3000`, and put Caddy in front using [scripts/caddy/Caddyfile](scripts/caddy/Caddyfile). Then browse to `https://<hub-host>`.
 
 ### 3. Add your first machine
 
-Click **Add Machine** in the dashboard. Pick **Linux** or **Windows**. Copy the displayed install command. Run it on the target machine. The agent installs, registers, and shows up in the dashboard within seconds.
+Click **Add Machine** in the dashboard. Pick **Linux** or **Windows**. The hub creates a one-time install token and returns a command that calls the generated `/install.sh` or `/install.ps1` endpoint. Run that command on the target machine. The agent installs, registers, stores a durable per-machine secret, and shows up in the dashboard within seconds.
 
 For Linux:
 ```bash
-curl -fsSL https://<your-hub>/install/agent?token=<one-time-token> | sudo bash
+export BLOXOS_HUB=wss://<your-hub>/ws/agent BLOXOS_TOKEN=<one-time-token>
+curl -fsSL https://<your-hub>/install.sh | bash
 ```
 
 For Windows (PowerShell as Administrator):
 ```powershell
-iwr -useb https://<your-hub>/install/agent.ps1?token=<one-time-token> | iex
+$env:BLOXOS_HUB="wss://<your-hub>/ws/agent"
+$env:BLOXOS_TOKEN="<one-time-token>"
+iex (irm https://<your-hub>/install.ps1)
 ```
 
 ### 4. That's it
@@ -157,9 +170,9 @@ The agent self-updates from now on. Add more machines the same way.
 | Dashboard | Next.js 16 (App Router), React, TypeScript, Tailwind CSS v4, lucide-react, cmdk, recharts, xterm.js |
 | Auth | JWT (HS256), bcrypt password hashing, scope-based RBAC |
 | Real-time | WebSocket (agent ↔ hub), SSE (hub ↔ browser) |
-| Deployment | Single Go binary for the hub, single binary for each agent, static Next.js bundle served by the hub |
+| Deployment | Single Go binary for the hub, single binary for each agent, Next.js dashboard behind Caddy/systemd |
 
-No Docker required. No Kubernetes. No Redis. No Postgres. No external services. Three binaries and a SQLite file.
+No Docker required. No Kubernetes. No Redis. No Postgres. No external services. A hub binary, agent binaries, a dashboard service, and a SQLite file.
 
 ---
 
@@ -174,12 +187,13 @@ BloxOS is **pre-1.0** and currently powering the author's homelab fleet of ~10 m
 - ~20,000 lines of dashboard code, ~5,000 lines of Go across hub and agents
 
 **What's not done:**
-- Public installer scripts (the `curl | bash` flows above)
+- Polished public one-line hub installer
 - Mobile-responsive layout
 - Historical metrics retention beyond the live ring buffer
 - Custom alert rules UI (alerts exist; the rule editor isn't shipped)
 - Audit log
 - Backup/restore tooling beyond "copy the SQLite file"
+- Docker packaging
 
 **What's planned for v1.0:**
 - Polished installer flow for hub and agents
