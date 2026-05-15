@@ -64,43 +64,61 @@
 }
 
 .dark {
-  /* Surfaces */
-  --surface-base: #0a0a0f;
-  --surface-raised: #12121a;
-  --surface-overlay: #1a1a24;
-  --surface-sunken: #050508;
+  /* Surfaces — cool-neutral OKLCH ramp (not slate, not zinc).
+     Sunken < base < raised < overlay < elevated. Tint surfaces are used
+     for state-aware card backgrounds without color flooding. */
+  --surface-sunken: oklch(0.115 0.008 240);
+  --surface-base: oklch(0.155 0.008 240);
+  --surface-raised: oklch(0.195 0.008 240);
+  --surface-elevated: oklch(0.225 0.008 240);
+  --surface-overlay: oklch(0.245 0.008 240);
 
-  /* Text */
-  --text-primary: #fafafa;
-  --text-secondary: #a1a1aa;
-  --text-tertiary: #71717a;
-  --text-disabled: #52525b;
+  /* Text — cool-neutral, four-step descending emphasis */
+  --text-primary: oklch(0.97 0.005 240);
+  --text-secondary: oklch(0.72 0.012 240);
+  --text-tertiary: oklch(0.52 0.012 240);
+  --text-disabled: oklch(0.36 0.008 240);
 
   /* Borders */
-  --border-subtle: rgba(255, 255, 255, 0.06);
-  --border-default: rgba(255, 255, 255, 0.10);
-  --border-strong: rgba(255, 255, 255, 0.18);
+  --border-subtle: rgba(255, 255, 255, 0.05);
+  --border-default: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.16);
 
-  /* Brand + intent — slightly brighter in dark theme to stay legible */
-  --accent: #3b82f6;
-  --accent-hover: #60a5fa;
-  --accent-subtle: rgba(59, 130, 246, 0.15);
-  --accent-foreground: #ffffff;
+  /* Accent — instrument-cyan-shifted blue, not Tailwind blue-500.
+     Used for selection, focus, primary actions, "alive" state hints. */
+  --accent: oklch(0.7 0.155 230);
+  --accent-hover: oklch(0.76 0.14 230);
+  --accent-subtle: oklch(0.7 0.155 230 / 0.14);
+  --accent-foreground: oklch(0.155 0.008 240);
 
-  --success: #22c55e;
-  --success-subtle: rgba(34, 197, 94, 0.15);
+  /* Status — 5 intent states for fleet health.
+     Tints are translucent surfaces used as card backgrounds for state. */
+  --status-ok: oklch(0.74 0.16 158);
+  --status-ok-tint: oklch(0.74 0.16 158 / 0.08);
+  --status-warning: oklch(0.8 0.16 75);
+  --status-warning-tint: oklch(0.8 0.16 75 / 0.07);
+  --status-critical: oklch(0.7 0.21 25);
+  --status-critical-tint: oklch(0.7 0.21 25 / 0.08);
+  --status-stale: oklch(0.62 0.06 285);
+  --status-stale-tint: oklch(0.62 0.06 285 / 0.06);
+  --status-offline: oklch(0.48 0.008 240);
+  --status-offline-tint: oklch(0.4 0.005 240 / 0.5);
 
-  --warning: #f59e0b;
-  --warning-subtle: rgba(245, 158, 11, 0.15);
+  /* Legacy intent aliases — keep so other pages don't break.
+     These now alias the new status namespace. */
+  --success: var(--status-ok);
+  --success-subtle: var(--status-ok-tint);
+  --warning: var(--status-warning);
+  --warning-subtle: var(--status-warning-tint);
+  --danger: var(--status-critical);
+  --danger-subtle: var(--status-critical-tint);
 
-  --danger: #ef4444;
-  --danger-subtle: rgba(239, 68, 68, 0.15);
-
-  /* Shadows — dark theme uses deeper, harder shadows */
-  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.30);
-  --shadow-md: 0 4px 12px -2px rgba(0, 0, 0, 0.40);
-  --shadow-lg: 0 12px 32px -8px rgba(0, 0, 0, 0.50);
-  --shadow-overlay: 0 24px 64px -16px rgba(0, 0, 0, 0.70);
+  /* Shadows — deeper, more defined edges suited to layered console UI */
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.32);
+  --shadow-md: 0 4px 14px -2px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 18px 40px -10px rgba(0, 0, 0, 0.55);
+  --shadow-overlay: 0 28px 72px -18px rgba(0, 0, 0, 0.72);
+  --shadow-focus-ring: 0 0 0 1px var(--accent), 0 0 0 4px oklch(0.7 0.155 230 / 0.18);
 }
 
 /* ============================================================================
@@ -353,6 +371,19 @@
   --color-surface-raised: var(--surface-raised);
   --color-surface-overlay: var(--surface-overlay);
   --color-surface-sunken: var(--surface-sunken);
+  --color-surface-elevated: var(--surface-elevated, var(--surface-overlay));
+
+  /* Status palette — 5 intent states for fleet health */
+  --color-status-ok: var(--status-ok, var(--success));
+  --color-status-ok-tint: var(--status-ok-tint, var(--success-subtle));
+  --color-status-warning: var(--status-warning, var(--warning));
+  --color-status-warning-tint: var(--status-warning-tint, var(--warning-subtle));
+  --color-status-critical: var(--status-critical, var(--danger));
+  --color-status-critical-tint: var(--status-critical-tint, var(--danger-subtle));
+  --color-status-stale: var(--status-stale, var(--text-tertiary));
+  --color-status-stale-tint: var(--status-stale-tint, var(--surface-sunken));
+  --color-status-offline: var(--status-offline, var(--text-tertiary));
+  --color-status-offline-tint: var(--status-offline-tint, var(--surface-sunken));
 
   --color-text-primary: var(--text-primary);
   --color-text-secondary: var(--text-secondary);
@@ -437,14 +468,47 @@
   --color-chart-4: var(--danger);
   --color-chart-5: var(--text-secondary);
 
-  --radius: 0.625rem;
-  --radius-sm: calc(var(--radius) * 0.6);
-  --radius-md: calc(var(--radius) * 0.8);
+  --radius: 0.5rem;
+  --radius-sm: calc(var(--radius) * 0.5);
+  --radius-md: calc(var(--radius) * 0.75);
   --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) * 1.4);
-  --radius-2xl: calc(var(--radius) * 1.8);
-  --radius-3xl: calc(var(--radius) * 2.2);
-  --radius-4xl: calc(var(--radius) * 2.6);
+  --radius-xl: calc(var(--radius) * 1.5);
+  --radius-2xl: calc(var(--radius) * 2);
+  --radius-3xl: calc(var(--radius) * 2.5);
+  --radius-4xl: calc(var(--radius) * 3);
+}
+
+/* ============================================================================
+ * Metric typography — applies to all numeric readouts in the fleet UI.
+ *
+ * Pairs Geist Mono with tabular-nums + slashed-zero + a tight tracking
+ * so values like "0.8%" and "73%" align reliably and read at a glance.
+ * Apply via `.metric-value` (display values) or `.metric-figure`
+ * (inline figures). Critical for any dashboard cell where columns of
+ * numbers need to scan visually as one block.
+ * ============================================================================ */
+.metric-value,
+.metric-figure {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums slashed-zero;
+  font-feature-settings: "ss06", "ss07";
+  letter-spacing: -0.01em;
+}
+.metric-value {
+  font-weight: 500;
+  line-height: 1;
+}
+.metric-figure {
+  font-weight: 400;
+}
+
+/* Unit suffix paired with a metric-value — sized down, muted, baseline-aligned. */
+.metric-unit {
+  font-family: var(--font-sans);
+  color: var(--text-tertiary);
+  font-feature-settings: normal;
+  font-variant-numeric: normal;
+  letter-spacing: 0;
 }
 
 /* ============================================================================
