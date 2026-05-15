@@ -28,8 +28,8 @@ long-term-support branches yet.
 In scope:
 
 - The hub HTTP/WebSocket API (`hub/`).
-- The agent binary and its installer (`agent/`, `scripts/install.sh`,
-  `scripts/install.ps1`).
+- The agent binary and generated install endpoints (`agent/`, hub-served
+  `/install.sh`, hub-served `/install.ps1`).
 - The dashboard (`dashboard/`) when served by an unmodified hub.
 
 Out of scope:
@@ -43,7 +43,9 @@ Out of scope:
 
 - Agents must authenticate with durable, per-machine secrets. Install tokens
   are single-use.
-- Terminal sessions require a per-session PIN gate and produce an audit log.
+- Terminal sessions require a per-session PIN gate and are recorded in the
+  `terminal_sessions` table. A full product-wide audit log is planned but not
+  shipped yet.
 - Database file permissions are enforced at `0600`.
 - Browser-side terminal tokens are short-lived (1-minute) and scoped to a
   single session ID.

@@ -32,10 +32,12 @@ See `AGENTS.md` for repo conventions.
 Before pushing, run the same checks CI runs:
 
 ```sh
-( cd hub      && go test -count=1 ./... && go vet ./... )
-( cd agent    && go test -count=1 ./... && go vet ./... )
+( cd hub      && go test -count=1 ./... )
+( cd agent    && go test -count=1 ./... )
 ( cd dashboard && pnpm lint && pnpm build )
 ```
+
+`go vet ./...` is recommended for Go changes, but it is not currently a CI gate.
 
 For agent changes that affect the Windows build, also run:
 
@@ -76,9 +78,9 @@ reserved for shipped product phases.
 - Hub: new endpoints, bug fixes that have a clear failure surface, security
   changes (auth, RBAC, password/PIN policy). Use the helpers in
   `hub/main_test.go` (`setupTestServer`, `loginAndGetToken`, etc.).
-- Agent: there are no agent unit tests yet. New code is welcome to land its
-  own `_test.go`; we'd like to start a coverage baseline rather than ship
-  another untested module.
+- Agent: bug fixes and safety-sensitive changes should add or update focused
+  `_test.go` coverage when the behavior can be exercised without depending on
+  real hardware or OS services.
 - Dashboard: lint + build must pass. There is no test runner yet.
 
 ## Reporting bugs / requesting features
