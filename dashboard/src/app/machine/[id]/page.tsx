@@ -116,7 +116,7 @@ function getStatus(data: MachineData): MachineStatus {
   const diskPct = (data.metrics?.disk_total_bytes ?? 0) > 0
     ? ((data.metrics?.disk_used_bytes ?? 0) / data.metrics.disk_total_bytes) * 100 : 0;
   if (diskPct > 90) return "warning";
-  return "online";
+  return "live";
 }
 
 export default function MachineDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -467,7 +467,7 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
             <span
               className={[
                 "shrink-0 w-2.5 h-2.5 rounded-full",
-                status === "online"
+                status === "live"
                   ? "bg-emerald-500 animate-status-pulse"
                   : status === "warning"
                   ? "bg-amber-500 animate-status-pulse"

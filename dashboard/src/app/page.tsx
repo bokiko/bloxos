@@ -9,7 +9,7 @@ import { SavedFiltersDropdown } from "@/components/SavedFiltersDropdown";
 import { demoMachines, MachineMetrics, AlertData } from "@/lib/demo-data";
 import { DEMO_MODE, HUB_URL } from "@/lib/session";
 import { MachineCard, MachineCardSkeleton } from "@/components/MachineCard";
-import { MachineStatus } from "@/components/StatusBadge";
+import { MachineStatus, classifyMachine, STATUS_ORDER } from "@/components/StatusBadge";
 import { Sparkline } from "@/components/Sparkline";
 import { AlertPanel } from "@/components/AlertPanel";
 import { AddMachineModal } from "@/components/AddMachineModal";
@@ -39,29 +39,17 @@ import Link from "next/link";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { CommandPalette, useCommandPaletteHotkey } from "@/components/CommandPalette";
 import { FleetPulse } from "@/components/FleetPulse";
+import { NeedsAttention } from "@/components/NeedsAttention";
 import { UserMenu } from "@/components/UserMenu";
 import { BrandedHeader } from "@/components/BrandedHeader";
 
 type SortOption = "name" | "status" | "cpu" | "gpu_temp";
-type StatusFilter = "all" | "online" | "warning" | "offline";
+type StatusFilter = "all" | "live" | "warning" | "critical" | "offline" | "stale";
 type ViewMode = "grid" | "list";
 
 function getStatus(m: MachineMetrics): MachineStatus {
-  const age = Date.now() - (m.last_seen || 0);
-  if (age > 120_000) return "offline";
-  if (m.gpu_temp && m.gpu_temp > 80) return "warning";
-  const diskPct = (m.disk_total_bytes ?? 0) > 0 ? ((m.disk_used_bytes ?? 0) / m.disk_total_bytes) * 100 : 0;
-  if (diskPct > 90) return "warning";
-  const ramPct = (m.ram_total_bytes ?? 0) > 0 ? ((m.ram_used_bytes ?? 0) / m.ram_total_bytes) * 100 : 0;
-  if (ramPct > 95) return "warning";
-  return "online";
+  return classifyMachine(m).status;
 }
-
-const statusOrder: Record<MachineStatus, number> = {
-  offline: 0,
-  warning: 1,
-  online: 2,
-};
 
 function formatBytes(bytes: number | undefined | null): string {
   if (!bytes || bytes === 0) return "0";
@@ -140,11 +128,14 @@ export default function Home() {
       if (typeof f.search === "string") setSearch(f.search);
       if (
         f.statusFilter === "all" ||
-        f.statusFilter === "online" ||
+        f.statusFilter === "live" ||
         f.statusFilter === "warning" ||
-        f.statusFilter === "offline"
+        f.statusFilter === "critical" ||
+        f.statusFilter === "offline" ||
+        f.statusFilter === "stale" ||
+        f.statusFilter === "online"
       ) {
-        setStatusFilter(f.statusFilter);
+        setStatusFilter(f.statusFilter === "online" ? "live" : f.statusFilter);
       }
       setTagFilter(typeof f.tagFilter === "string" ? f.tagFilter : null);
       if (f.sortBy === "name" || f.sortBy === "status" || f.sortBy === "cpu" || f.sortBy === "gpu_temp") {
@@ -240,12 +231,12 @@ export default function Home() {
       );
     }
 
-    result = [...result].sort((a, b) => {
+    const primaryCompare = (a: MachineMetrics, b: MachineMetrics) => {
       switch (sortBy) {
         case "name":
           return (a.hostname ?? "").localeCompare(b.hostname ?? "");
         case "status":
-          return statusOrder[getStatus(a)] - statusOrder[getStatus(b)];
+          return STATUS_ORDER[getStatus(a)] - STATUS_ORDER[getStatus(b)];
         case "cpu":
           return (b.cpu_percent ?? 0) - (a.cpu_percent ?? 0);
         case "gpu_temp":
@@ -253,17 +244,27 @@ export default function Home() {
         default:
           return 0;
       }
-    });
+    };
 
-    // Phase 11 — pinned machines float to the top while preserving the
-    // primary sort order within each partition. Stable two-phase: pinned
-    // first (in their primary-sort order), then the rest.
-    if (preferences.pinned_machines.length > 0) {
-      const pinnedSet = new Set(preferences.pinned_machines);
-      const pinned = result.filter((m) => pinnedSet.has(m.machine_id));
-      const rest = result.filter((m) => !pinnedSet.has(m.machine_id));
-      result = [...pinned, ...rest];
-    }
+    // Composite ordering — applied as a single comparator so each priority
+    // is strictly higher than the next:
+    //   1. status severity (critical → warning → offline → stale → live)
+    //   2. pinned before unpinned within the same status bucket
+    //   3. user's chosen sort key within the same status+pin bucket
+    //
+    // Done as one sort to avoid the bug from the prior two-phase impl,
+    // where a healthy-pinned machine could outrank a critical-unpinned
+    // one — directly contradicting the PR's "problem-first" promise.
+    const pinnedSet = new Set(preferences.pinned_machines);
+    result = [...result].sort((a, b) => {
+      const statusDiff = STATUS_ORDER[getStatus(a)] - STATUS_ORDER[getStatus(b)];
+      if (statusDiff !== 0) return statusDiff;
+
+      const pinDiff = Number(pinnedSet.has(b.machine_id)) - Number(pinnedSet.has(a.machine_id));
+      if (pinDiff !== 0) return pinDiff;
+
+      return primaryCompare(a, b);
+    });
 
     return result;
   }, [machines, search, statusFilter, sortBy, tagFilter, preferences.pinned_machines]);
@@ -453,6 +454,9 @@ export default function Home() {
       {/* Fleet Pulse Strip — sits directly below the header */}
       <FleetPulse onAlertsClick={() => setAlertPanelOpen(true)} />
 
+      {/* Needs-Attention stripe — only renders when problems exist */}
+      <NeedsAttention machines={machines} />
+
       {/* Degraded connection banner — surfaces SSE disconnect inline so it isn't
           easy to miss behind the small wifi icon in the header. */}
       <AnimatePresence>
@@ -563,9 +567,11 @@ export default function Home() {
             />
             <DropdownMenuContent align="start" className="bg-blox-card border-blox-border">
               <DropdownMenuItem onClick={() => setStatusFilter("all")} className="text-xs text-blox-text">All Status</DropdownMenuItem>
-              <DropdownMenuItem onClick={() => setStatusFilter("online")} className="text-xs text-emerald-400">Online</DropdownMenuItem>
-              <DropdownMenuItem onClick={() => setStatusFilter("warning")} className="text-xs text-amber-400">Warning</DropdownMenuItem>
-              <DropdownMenuItem onClick={() => setStatusFilter("offline")} className="text-xs text-red-400">Offline</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setStatusFilter("live")} className="text-xs text-status-ok">Live</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setStatusFilter("warning")} className="text-xs text-status-warning">Warning</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setStatusFilter("critical")} className="text-xs text-status-critical">Critical</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setStatusFilter("offline")} className="text-xs text-status-offline">Offline</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setStatusFilter("stale")} className="text-xs text-status-stale">Stale</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
 
@@ -735,7 +741,12 @@ export default function Home() {
                   const ramPct = (m.ram_total_bytes ?? 0) > 0 ? ((m.ram_used_bytes ?? 0) / m.ram_total_bytes) * 100 : 0;
                   const diskPct = (m.disk_total_bytes ?? 0) > 0 ? ((m.disk_used_bytes ?? 0) / m.disk_total_bytes) * 100 : 0;
                   const tags = m.tags ? m.tags.split(",").filter((t) => t.trim()) : [];
-                  const dotColor = status === "online" ? "bg-emerald-500" : status === "warning" ? "bg-amber-500" : "bg-red-500/50";
+                  const dotColor =
+                    status === "live" ? "bg-status-ok" :
+                    status === "stale" ? "bg-status-stale" :
+                    status === "warning" ? "bg-status-warning" :
+                    status === "critical" ? "bg-status-critical" :
+                    "bg-status-offline";
                   const isSelected = selected.has(m.machine_id);
                   const adapterTag = tags.find((tag) => ["synology", "proxmox"].includes(tag.trim().toLowerCase()));
                   const isAPIMachine = !!adapterTag;
@@ -758,7 +769,7 @@ export default function Home() {
                       )}
                       <TableCell className="text-xs">
                         <Link href={`/machine/${m.machine_id}`}>
-                          <span className={`inline-block w-2 h-2 rounded-full ${dotColor} ${status === "online" ? "shadow-sm shadow-emerald-500/50" : ""}`} />
+                          <span className={`inline-block w-2 h-2 rounded-full ${dotColor} ${status === "live" ? "shadow-sm shadow-status-ok/50" : ""}`} />
                         </Link>
                       </TableCell>
                       <TableCell className="text-xs font-medium text-blox-text">
