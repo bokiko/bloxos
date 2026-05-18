@@ -9,7 +9,7 @@ import { SavedFiltersDropdown } from "@/components/SavedFiltersDropdown";
 import { demoMachines, MachineMetrics, AlertData } from "@/lib/demo-data";
 import { DEMO_MODE, HUB_URL } from "@/lib/session";
 import { MachineCard, MachineCardSkeleton } from "@/components/MachineCard";
-import { MachineStatus, classifyMachine, isProblem, STATUS_ORDER } from "@/components/StatusBadge";
+import { MachineStatus, classifyMachine, STATUS_ORDER } from "@/components/StatusBadge";
 import { Sparkline } from "@/components/Sparkline";
 import { AlertPanel } from "@/components/AlertPanel";
 import { AddMachineModal } from "@/components/AddMachineModal";
@@ -246,29 +246,25 @@ export default function Home() {
       }
     };
 
+    // Composite ordering — applied as a single comparator so each priority
+    // is strictly higher than the next:
+    //   1. status severity (critical → warning → offline → stale → live)
+    //   2. pinned before unpinned within the same status bucket
+    //   3. user's chosen sort key within the same status+pin bucket
+    //
+    // Done as one sort to avoid the bug from the prior two-phase impl,
+    // where a healthy-pinned machine could outrank a critical-unpinned
+    // one — directly contradicting the PR's "problem-first" promise.
+    const pinnedSet = new Set(preferences.pinned_machines);
     result = [...result].sort((a, b) => {
-      const statusA = getStatus(a);
-      const statusB = getStatus(b);
-      const problemA = isProblem(statusA);
-      const problemB = isProblem(statusB);
+      const statusDiff = STATUS_ORDER[getStatus(a)] - STATUS_ORDER[getStatus(b)];
+      if (statusDiff !== 0) return statusDiff;
 
-      if (problemA || problemB) {
-        const statusDiff = STATUS_ORDER[statusA] - STATUS_ORDER[statusB];
-        if (statusDiff !== 0) return statusDiff;
-      }
+      const pinDiff = Number(pinnedSet.has(b.machine_id)) - Number(pinnedSet.has(a.machine_id));
+      if (pinDiff !== 0) return pinDiff;
 
       return primaryCompare(a, b);
     });
-
-    // Phase 11 — pinned machines float to the top while preserving the
-    // primary sort order within each partition. Stable two-phase: pinned
-    // first (in their primary-sort order), then the rest.
-    if (preferences.pinned_machines.length > 0) {
-      const pinnedSet = new Set(preferences.pinned_machines);
-      const pinned = result.filter((m) => pinnedSet.has(m.machine_id));
-      const rest = result.filter((m) => !pinnedSet.has(m.machine_id));
-      result = [...pinned, ...rest];
-    }
 
     return result;
   }, [machines, search, statusFilter, sortBy, tagFilter, preferences.pinned_machines]);
