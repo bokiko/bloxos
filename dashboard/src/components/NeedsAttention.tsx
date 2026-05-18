@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useRouter } from "next/navigation";
 import { AlertTriangle } from "lucide-react";
@@ -51,6 +51,16 @@ function timeAgo(ms: number): string {
 export function NeedsAttention({ machines }: NeedsAttentionProps) {
   const router = useRouter();
 
+  // classifyMachine() reads Date.now() to decide stale/offline, so the memo
+  // must invalidate on time too — otherwise a silent fleet (no SSE updates,
+  // machines array reference unchanged) would leave the stripe stuck on its
+  // last classification. 5s tick is well below the 30s stale threshold.
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 5_000);
+    return () => clearInterval(id);
+  }, []);
+
   const problems = useMemo<ProblemEntry[]>(() => {
     const out: ProblemEntry[] = [];
     for (const m of machines) {
@@ -63,7 +73,9 @@ export function NeedsAttention({ machines }: NeedsAttentionProps) {
       return (a.machine.hostname ?? "").localeCompare(b.machine.hostname ?? "");
     });
     return out;
-  }, [machines]);
+    // tick is the deliberate time-trigger — eslint can't see Date.now() inside classifyMachine
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [machines, tick]);
 
   const counts = useMemo(() => {
     let critical = 0, warning = 0, offline = 0, stale = 0;

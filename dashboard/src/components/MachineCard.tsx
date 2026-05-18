@@ -188,7 +188,7 @@ export function MachineCard({ machine, onDelete, onEdit, onRefresh }: MachineCar
           {pinned && (
             <Star className="h-3 w-3 shrink-0 fill-status-warning text-status-warning" aria-label="Pinned" />
           )}
-          <div className="ml-auto flex items-center gap-0.5 opacity-0 transition-opacity duration-[var(--motion-fast)] group-hover:opacity-100 focus-within:opacity-100">
+          <div className="ml-auto flex items-center gap-0.5 opacity-0 pointer-events-none transition-opacity duration-[var(--motion-fast)] group-hover:opacity-100 group-hover:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto">
             <IconAction
               title={pinned ? "Unpin from top" : "Pin to top"}
               onClick={(e) => {
