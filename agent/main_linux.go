@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -194,13 +195,15 @@ func handleStartTerminal(cmd Command, rawMsg []byte) {
 		log.Printf("terminal: invalid hub URL: %v", err)
 		return
 	}
-	// Build terminal relay URL with terminal_token for auth (Finding #4).
-	// Derive scheme from hubURL so terminal connections go through Caddy too.
+	// Build terminal relay URL. The terminal token goes in a handshake header
+	// (below) rather than the query string so it doesn't leak into proxy access
+	// logs (Finding #4). Derive scheme from hubURL so terminal connections go
+	// through Caddy too.
 	wsScheme := "ws"
 	if u.Scheme == "wss" {
 		wsScheme = "wss"
 	}
-	termURL := fmt.Sprintf("%s://%s/ws/terminal/%s?role=agent&terminal_token=%s", wsScheme, u.Host, sessionID, url.QueryEscape(terminalToken))
+	termURL := fmt.Sprintf("%s://%s/ws/terminal/%s?role=agent", wsScheme, u.Host, sessionID)
 
 	// Spawn bash PTY as non-root user for security.
 	// Uses BLOXOS_TERMINAL_USER env var, or falls back to the owner of the
@@ -246,7 +249,9 @@ func handleStartTerminal(cmd Command, rawMsg []byte) {
 		log.Printf("terminal: build websocket dialer failed: %v", err)
 		return
 	}
-	ws, _, err := dialer.Dial(termURL, nil)
+	termHeader := http.Header{}
+	termHeader.Set("X-Bloxos-Terminal-Token", terminalToken)
+	ws, _, err := dialer.Dial(termURL, termHeader)
 	if err != nil {
 		log.Printf("terminal: dial hub failed: %v", err)
 		return

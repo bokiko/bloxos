@@ -450,6 +450,21 @@ func handleDownloadCACert(c echo.Context) error {
 // scales fine because each agent gets its own bucket.
 const wsAgentRateLimit = 30
 
+// agentEnrollTokenHeader carries the install token on the /ws/agent handshake.
+// Preferred over the deprecated ?token= query param, which leaks into
+// reverse-proxy access logs.
+const agentEnrollTokenHeader = "X-Bloxos-Enroll-Token"
+
+// bearerToken extracts the credential from an "Authorization: Bearer <x>"
+// header value. Returns "" when the header is absent or not a bearer scheme.
+func bearerToken(header string) string {
+	const prefix = "Bearer "
+	if len(header) >= len(prefix) && strings.EqualFold(header[:len(prefix)], prefix) {
+		return strings.TrimSpace(header[len(prefix):])
+	}
+	return ""
+}
+
 // agentAuthWindow bounds how long an upgraded agent socket may stay open before
 // it sends its first authenticating frame. Without it, a client that completes
 // the WebSocket upgrade but never speaks would hold the socket (and its file
@@ -469,8 +484,17 @@ func handleAgentWS(c echo.Context) error {
 		return c.JSON(http.StatusTooManyRequests, map[string]string{"error": "rate limit exceeded"})
 	}
 
-	token := c.QueryParam("token")
-	agentSecret := c.QueryParam("secret")
+	// Prefer credentials from handshake headers — unlike query strings, they
+	// are not written to reverse-proxy access logs. Fall back to the deprecated
+	// query params so agents predating this change keep working.
+	agentSecret := bearerToken(c.Request().Header.Get("Authorization"))
+	if agentSecret == "" {
+		agentSecret = c.QueryParam("secret") // deprecated: use Authorization: Bearer
+	}
+	token := c.Request().Header.Get(agentEnrollTokenHeader)
+	if token == "" {
+		token = c.QueryParam("token") // deprecated: use the X-Bloxos-Enroll-Token header
+	}
 
 	// Auth priority: secret > token. If neither, reject.
 	if token == "" && agentSecret == "" {

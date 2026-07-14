@@ -10,6 +10,7 @@ import (
 	"log"
 	"math/rand"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -384,27 +385,28 @@ func runAgent(machineID string) error {
 		return fmt.Errorf("invalid hub URL: %w", err)
 	}
 
-	q := u.Query()
-	// Send whichever credentials we have. The hub will try the secret first
-	// (if present) and fall back to the token (if also present) when the secret
-	// fails validation. This handles credential drift cleanly: stale agent-secret
-	// + fresh enrollment token re-enrolls instead of looping with an invalid
-	// secret. See hub/agentws.go::handleAgentWS for the fallback contract:
-	// secret error → agentSecret = "" → drop into the token-mode branch.
+	// Send whichever credentials we have via handshake headers rather than the
+	// URL query string, so they don't land in reverse-proxy access logs. The
+	// hub tries the secret first (if present) and falls back to the token (if
+	// also present) when the secret fails validation. This handles credential
+	// drift cleanly: a stale agent-secret + fresh enrollment token re-enrolls
+	// instead of looping with an invalid secret. See hub/agentws.go::
+	// handleAgentWS for the fallback contract: secret error → agentSecret = ""
+	// → drop into the token-mode branch.
+	header := http.Header{}
 	if agentSecret != "" {
-		q.Set("secret", agentSecret)
+		header.Set("Authorization", "Bearer "+agentSecret)
 	}
 	if token != "" {
-		q.Set("token", token)
+		header.Set("X-Bloxos-Enroll-Token", token)
 	}
-	u.RawQuery = q.Encode()
 
 	log.Printf("connecting to %s", hubURL)
 	dialer, err := websocketDialerFor(u.String())
 	if err != nil {
 		return fmt.Errorf("build websocket dialer: %w", err)
 	}
-	conn, _, err := dialer.Dial(u.String(), nil)
+	conn, _, err := dialer.Dial(u.String(), header)
 	if err != nil {
 		return fmt.Errorf("dial failed: %w", err)
 	}
