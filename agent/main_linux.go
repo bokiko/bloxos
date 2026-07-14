@@ -92,26 +92,19 @@ func applyTerminalCredentials(bashCmd *exec.Cmd, termUser *user.User) error {
 	return nil
 }
 
-// buildPlatformCommand returns the OS-specific *exec.Cmd for an incoming
-// hub command. Linux uses sudo+systemd+docker.
-func buildPlatformCommand(cmdType, target string) (*exec.Cmd, error) {
-	switch cmdType {
-	case "restart_service":
-		return exec.Command("sudo", "systemctl", "restart", target), nil
-	case "stop_service":
-		return exec.Command("sudo", "systemctl", "stop", target), nil
-	case "start_service":
-		return exec.Command("sudo", "systemctl", "start", target), nil
-	case "restart_container":
-		return exec.Command("sudo", "docker", "restart", target), nil
-	case "start_container":
-		return exec.Command("sudo", "docker", "start", target), nil
-	case "reboot":
-		return exec.Command("sudo", "reboot"), nil
-	case "shutdown":
-		return exec.Command("sudo", "shutdown", "-h", "now"), nil
-	default:
-		return nil, fmt.Errorf("unknown command type: %s", cmdType)
+// configureCommand prepares a to-be-run command for bounded execution on Linux.
+// It places the command in its own process group and installs a Cancel hook
+// that SIGKILLs the whole group when the context expires, so a command that
+// forks children (systemctl/docker) is fully torn down on timeout rather than
+// leaving orphans. The argv itself comes from commandPlanFor.
+func configureCommand(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		// Negative PID targets the whole process group.
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
 }
 

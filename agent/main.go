@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -712,7 +713,7 @@ func handleCommand(conn *websocket.Conn, mu *sync.Mutex, msg []byte) {
 		}
 	}
 
-	execCmd, err := buildPlatformCommand(cmd.Type, cmd.Target)
+	plan, err := commandPlan(cmd.Type, cmd.Target)
 	if err != nil {
 		resp := CommandResponse{
 			Type:  "command_response",
@@ -723,7 +724,13 @@ func handleCommand(conn *websocket.Conn, mu *sync.Mutex, msg []byte) {
 		return
 	}
 
-	output, err := execCmd.CombinedOutput()
+	// Bound execution so a wedged systemctl/docker call can't hang this
+	// goroutine forever; on timeout the command (and its process group, on
+	// Linux) is killed and we report a clear timeout error.
+	ctx, cancel := context.WithTimeout(context.Background(), agentCommandTimeout)
+	defer cancel()
+
+	output, err := runCommandPlan(ctx, plan)
 	resp := CommandResponse{
 		Type:    "command_response",
 		ID:      cmd.ID,
@@ -731,7 +738,11 @@ func handleCommand(conn *websocket.Conn, mu *sync.Mutex, msg []byte) {
 		Output:  string(output),
 	}
 	if err != nil {
-		resp.Error = err.Error()
+		if ctx.Err() == context.DeadlineExceeded {
+			resp.Error = fmt.Sprintf("command timed out after %s", agentCommandTimeout)
+		} else {
+			resp.Error = err.Error()
+		}
 	}
 
 	log.Printf("command %s (id=%s target=%s): success=%v", cmd.Type, cmd.ID, cmd.Target, resp.Success)
