@@ -810,8 +810,10 @@ Write-Host "Hub:    $HubHttp"
 Write-Host "WS hub: $Hub"
 
 # install.ps1 is invoked via 'powershell.exe -ExecutionPolicy Bypass -File'.
-# All HTTP downloads use curl.exe with -k for self-signed cert tolerance, so
-# no PowerShell-side cert callback or SecurityProtocol pinning is needed.
+# HTTP downloads use curl.exe rather than a PowerShell cert callback or
+# SecurityProtocol pinning. Only the initial CA bootstrap fetch uses -k; the
+# agent binary fetch verifies TLS against the bootstrapped CA (--cacert) and is
+# additionally SHA-256-pinned.
 
 # Stop + remove existing service if present.
 $svc = Get-Service -Name BloxOSAgent -ErrorAction SilentlyContinue
