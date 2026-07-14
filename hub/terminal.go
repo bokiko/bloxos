@@ -36,6 +36,11 @@ type TerminalSession struct {
 // TODO: make this per-user when multi-user support is added.
 const maxTerminalSessions = 3
 
+// terminalTokenHeader carries the agent-side terminal token on the
+// /ws/terminal handshake. Preferred over the deprecated ?terminal_token= query
+// param, which leaks into reverse-proxy access logs.
+const terminalTokenHeader = "X-Bloxos-Terminal-Token"
+
 func configuredAllowedOrigins() []string {
 	if ao := os.Getenv("ALLOWED_ORIGINS"); ao != "" {
 		parts := strings.Split(ao, ",")
@@ -220,7 +225,12 @@ func handleTerminalWS(c echo.Context) error {
 	// Auth check (Finding #4).
 	if role == "agent" {
 		// Agent must present a valid terminal_token matching the session.
-		termToken := c.QueryParam("terminal_token")
+		// Prefer the header (kept out of proxy access logs); fall back to the
+		// deprecated query param for agents predating this change.
+		termToken := c.Request().Header.Get(terminalTokenHeader)
+		if termToken == "" {
+			termToken = c.QueryParam("terminal_token") // deprecated
+		}
 		if termToken == "" {
 			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "terminal_token required for agent role"})
 		}
