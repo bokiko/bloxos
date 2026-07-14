@@ -5,6 +5,7 @@ import { Terminal as XTerm, ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { useTheme } from "@/contexts/ThemeContext";
+import { getHubWsBaseUrl } from "@/lib/session";
 import "@xterm/xterm/css/xterm.css";
 
 interface TerminalProps {
@@ -122,7 +123,10 @@ export function Terminal({ sessionId, browserToken, onDisconnect }: TerminalProp
 
     term.writeln("\x1b[36mConnecting to terminal session…\x1b[0m");
 
-    const baseUrl = window.location.origin.replace(/^http/, "ws");
+    // Use the hub base URL (HUB_URL when set), not the dashboard's own origin,
+    // so the terminal works in split-origin deployments where the dashboard
+    // and hub are served from different hosts.
+    const baseUrl = getHubWsBaseUrl();
     const wsUrl = `${baseUrl}/ws/terminal/${sessionId}?role=browser&browser_token=${encodeURIComponent(
       browserToken
     )}`;

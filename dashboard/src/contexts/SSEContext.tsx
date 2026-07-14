@@ -71,6 +71,8 @@ export function SSEProvider({ children }: { children: ReactNode }) {
   // Refresh SSE token before it expires (every 4 min for a 5-min token).
   const sseTokenRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const connectRef = useRef<() => void>(() => {});
+  // Generation counter to serialize overlapping async connect() calls.
+  const connectSeqRef = useRef(0);
 
   // Phase 7: localStorage-backed cache for instant rehydration on reload.
   const userIDRef = useRef<string | null>(null);
@@ -111,6 +113,13 @@ export function SSEProvider({ children }: { children: ReactNode }) {
   const connect = useCallback(async () => {
     if (!mountedRef.current) return;
 
+    // Serialize overlapping connects. Three triggers — the 4-min token refresh,
+    // the onerror backoff, and the auth/storage listeners — can call connect()
+    // concurrently. Each awaits fetchSSEToken(); without this generation guard
+    // two of them could both assign esRef.current, orphaning (never closing)
+    // the first EventSource and leaking a live connection.
+    const mySeq = ++connectSeqRef.current;
+
     disconnect();
     const token = getStoredToken();
 
@@ -119,6 +128,8 @@ export function SSEProvider({ children }: { children: ReactNode }) {
 
     // Get SSE-scoped token (Finding #8).
     const sseToken = await fetchSSEToken();
+    // A newer connect() superseded this one (or we unmounted) while awaiting.
+    if (mySeq !== connectSeqRef.current || !mountedRef.current) return;
     if (!sseToken) {
       reconnectTimer.current = setTimeout(() => {
         backoffRef.current = Math.min(backoffRef.current * 2, 30000);

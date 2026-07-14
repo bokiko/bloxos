@@ -190,29 +190,21 @@ func handleStartTerminal(c echo.Context) error {
 func handleCloseTerminal(c echo.Context) error {
 	sessionID := c.Param("session_id")
 
-	termSessionsMu.Lock()
-	session, ok := termSessions[sessionID]
-	if ok {
-		delete(termSessions, sessionID)
-	}
-	termSessionsMu.Unlock()
-
+	termSessionsMu.RLock()
+	_, ok := termSessions[sessionID]
+	termSessionsMu.RUnlock()
 	if !ok {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "session not found"})
 	}
 
-	session.mu.Lock()
-	if session.AgentWS != nil {
-		session.AgentWS.Close()
-	}
-	if session.BrowserWS != nil {
-		session.BrowserWS.Close()
-	}
-	session.mu.Unlock()
+	// Route through the single teardown path so session.Done is closed via
+	// closeOnce (releasing any parked handleTerminalWS goroutine), the sockets
+	// are closed, and the DB row is finalized. The old inline teardown deleted
+	// the map entry and closed the sockets but never closed Done, leaking the
+	// waiter goroutine on every close.
+	cleanupTerminalSession(sessionID)
 
-	_, _ = db.Exec(`UPDATE terminal_sessions SET ended_at = CURRENT_TIMESTAMP, status = 'closed' WHERE id = ?`, sessionID)
-
-	log.Printf("terminal session %s closed", sessionID)
+	log.Printf("terminal session %s closed via API", sessionID)
 	return c.JSON(http.StatusOK, map[string]string{"status": "closed"})
 }
 
