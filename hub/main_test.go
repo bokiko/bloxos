@@ -779,6 +779,9 @@ func TestCreateTokenWithValidJWT(t *testing.T) {
 	e := setupTestServer(t)
 	token := loginAndGetToken(t, e)
 	markCredentialsRotated(t)
+	// Install-command generation now requires PUBLIC_URL (Host-header fallback
+	// removed) — set it so the happy path still yields a command.
+	t.Setenv("PUBLIC_URL", "https://hub.example")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/tokens", nil)
 	req.Header.Set("Authorization", "Bearer "+token)

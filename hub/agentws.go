@@ -74,6 +74,16 @@ func handleCreateToken(c echo.Context) error {
 		return c.JSON(http.StatusTooManyRequests, map[string]string{"error": "rate limit exceeded"})
 	}
 
+	// The generated install one-liner points agents at the hub. Deriving that
+	// URL from the request Host header lets a crafted Host / DNS-rebind produce
+	// a command that installs the agent pointed at an attacker host. Refuse to
+	// mint a token+command unless the operator has set an explicit PUBLIC_URL.
+	if strings.TrimSpace(os.Getenv("PUBLIC_URL")) == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "PUBLIC_URL is not set on the hub; set PUBLIC_URL to the hub's public URL and restart before generating install tokens",
+		})
+	}
+
 	token := uuid.New().String()
 	h := sha256.Sum256([]byte(token))
 	tokenHash := hex.EncodeToString(h[:])
@@ -84,7 +94,7 @@ func handleCreateToken(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
-	httpBase, wsBase := publicAndWebsocketBase(c)
+	httpBase, wsBase := publicAndWebsocketBase()
 	command, caURL, caSHA256 := buildInstallCommand(httpBase, wsBase, token)
 
 	resp := map[string]interface{}{
@@ -176,6 +186,23 @@ fi
 echo "Downloading agent binary..."
 curl_fetch "${HUB_HTTP}/download/agent?arch=${ARCH}" "${CA_CURL_ARGS[@]}" -o /tmp/bloxos-agent
 chmod +x /tmp/bloxos-agent
+
+# Verify the downloaded binary against the SHA-256 the hub computed for the
+# binary it serves. Provides integrity even over a plain-HTTP LAN download.
+EXPECTED_AGENT_SHA256="__EXPECTED_AGENT_SHA256__"
+if [[ -n "$EXPECTED_AGENT_SHA256" ]]; then
+  ACTUAL_AGENT_SHA=$(sha256sum /tmp/bloxos-agent | awk '{print $1}')
+  if [[ "$ACTUAL_AGENT_SHA" != "$EXPECTED_AGENT_SHA256" ]]; then
+    echo "Agent binary fingerprint mismatch"
+    echo "Expected: $EXPECTED_AGENT_SHA256"
+    echo "Actual:   $ACTUAL_AGENT_SHA"
+    rm -f /tmp/bloxos-agent
+    exit 1
+  fi
+  echo "Agent binary verified ($EXPECTED_AGENT_SHA256)"
+else
+  echo "WARNING: hub did not provide an agent binary hash; skipping integrity check"
+fi
 
 # Create system user (if not exists).
 if ! id -u bloxos &>/dev/null; then
@@ -274,26 +301,26 @@ sudo systemctl restart bloxos-agent
 echo "=== BloxOS Agent installed and running ==="
 echo "Check status: systemctl status bloxos-agent"
 `
+	// Pin the hash of the binary the hub actually serves. recompute is
+	// mtime-cached, so this is cheap on the hot path.
+	recomputeAgentBinarySHA()
+	script = strings.ReplaceAll(script, "__EXPECTED_AGENT_SHA256__", announcedSHAFor("linux"))
 	return c.String(http.StatusOK, script)
 }
 
-func publicAndWebsocketBase(c echo.Context) (string, string) {
-	publicURL := os.Getenv("PUBLIC_URL")
-	if publicURL != "" {
-		httpBase := publicURL
-		wsBase := strings.Replace(publicURL, "https://", "wss://", 1)
-		wsBase = strings.Replace(wsBase, "http://", "ws://", 1)
-		return httpBase, wsBase
+// publicAndWebsocketBase derives the hub's HTTP and WebSocket base URLs from
+// PUBLIC_URL. It never falls back to the request Host header, which is
+// attacker-influenced — callers (handleCreateToken) guarantee PUBLIC_URL is set
+// before reaching here and return "" otherwise.
+func publicAndWebsocketBase() (string, string) {
+	publicURL := strings.TrimSpace(os.Getenv("PUBLIC_URL"))
+	if publicURL == "" {
+		return "", ""
 	}
-
-	host := c.Request().Host
-	proto := "ws"
-	httpProto := "http"
-	if c.Request().TLS != nil {
-		proto = "wss"
-		httpProto = "https"
-	}
-	return fmt.Sprintf("%s://%s", httpProto, host), fmt.Sprintf("%s://%s", proto, host)
+	httpBase := publicURL
+	wsBase := strings.Replace(publicURL, "https://", "wss://", 1)
+	wsBase = strings.Replace(wsBase, "http://", "ws://", 1)
+	return httpBase, wsBase
 }
 
 func bootstrapCACertCandidates() []string {
@@ -567,7 +594,7 @@ func handleAgentWS(c echo.Context) error {
 
 				if knownMachine && secretMachineID == machineID {
 					log.Printf("known agent reconnecting with durable credential: %s (%s)", m.Hostname, machineID)
-				} else if tokenValidated {
+				} else if tokenValidated && !hasCredential {
 					// New enrollment with valid token - consume it and issue durable secret.
 					rawSecret, secretHash, err := generateAgentSecret()
 					if err != nil {
@@ -586,7 +613,17 @@ func handleAgentWS(c echo.Context) error {
 					})
 					ws.WriteMessage(websocket.TextMessage, enrolledMsg)
 					log.Printf("new agent enrolled with durable secret: %s (%s)", m.Hostname, machineID)
-				} else if knownMachine || hasCredential {
+				} else if hasCredential {
+					// A durable credential already exists for this machine_id. A
+					// fresh install token must NOT silently replace it (that would
+					// let any valid token hijack an enrolled machine and lock out
+					// the legitimate agent). Require an explicit revoke first. The
+					// token is deliberately left unconsumed so a legitimate
+					// re-enroll can proceed after revocation.
+					log.Printf("rejecting enrollment for %s (%s): machine already has a durable credential; revoke before re-enrolling", m.Hostname, machineID)
+					ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","message":"machine already enrolled; revoke its credential before re-enrolling"}`))
+					return nil
+				} else if knownMachine {
 					log.Printf("rejecting known agent %s (%s): durable credential required", m.Hostname, machineID)
 					ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","message":"durable credential required"}`))
 					return nil
@@ -773,8 +810,10 @@ Write-Host "Hub:    $HubHttp"
 Write-Host "WS hub: $Hub"
 
 # install.ps1 is invoked via 'powershell.exe -ExecutionPolicy Bypass -File'.
-# All HTTP downloads use curl.exe with -k for self-signed cert tolerance, so
-# no PowerShell-side cert callback or SecurityProtocol pinning is needed.
+# HTTP downloads use curl.exe rather than a PowerShell cert callback or
+# SecurityProtocol pinning. Only the initial CA bootstrap fetch uses -k; the
+# agent binary fetch verifies TLS against the bootstrapped CA (--cacert) and is
+# additionally SHA-256-pinned.
 
 # Stop + remove existing service if present.
 $svc = Get-Service -Name BloxOSAgent -ErrorAction SilentlyContinue
@@ -830,10 +869,29 @@ $DownloadUrl = "$HubHttp/download/agent?os=windows"
 # (NewSessionTicket) and HTTP/2 ALPN against self-signed Caddy certs and bails
 # with "underlying connection was closed". curl.exe uses Schannel for TLS but
 # its own HTTP stack, which handles both cleanly.
-& curl.exe -ksfL -o $AgentExe $DownloadUrl
+#
+# The CA was bootstrapped above, so verify TLS against it (--cacert) instead of
+# using -k. Only the initial CA fetch remains insecure; the agent binary is
+# both TLS-verified here and SHA-256-pinned below.
+& curl.exe --cacert $CaPath -sfL -o $AgentExe $DownloadUrl
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Agent binary download failed (curl exit code $LASTEXITCODE)"
     exit 1
+}
+
+# Verify the downloaded binary against the SHA-256 the hub computed for the
+# binary it serves.
+$ExpectedSha = "__EXPECTED_AGENT_SHA256__"
+if ($ExpectedSha) {
+    $ActualSha = (Get-FileHash -Algorithm SHA256 -Path $AgentExe).Hash.ToLower()
+    if ($ActualSha -ne $ExpectedSha.ToLower()) {
+        Remove-Item -Path $AgentExe -Force -ErrorAction SilentlyContinue
+        Write-Error "Agent binary fingerprint mismatch. Expected $ExpectedSha, got $ActualSha"
+        exit 1
+    }
+    Write-Host "Agent binary verified ($ExpectedSha)"
+} else {
+    Write-Warning "Hub did not provide an agent binary hash; skipping integrity check"
 }
 
 # Persist HUB + TOKEN for the service to pick up at next start.
@@ -859,6 +917,8 @@ if ($svc -and $svc.Status -eq 'Running') {
     Write-Warning "BloxOSAgent service is not running. Check Event Viewer or services.msc."
 }
 `
+	recomputeAgentBinarySHA()
+	script = strings.ReplaceAll(script, "__EXPECTED_AGENT_SHA256__", announcedSHAFor("windows"))
 	return c.String(http.StatusOK, script)
 }
 
