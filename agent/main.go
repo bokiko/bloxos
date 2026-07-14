@@ -320,6 +320,32 @@ func main() {
 	runPlatformAgent()
 }
 
+// WebSocket liveness tuning. pingPeriod must be shorter than pongWait so a
+// missed pong is noticed within one interval; writeWait bounds every write so
+// a stuck send fails fast and triggers reconnect instead of blocking forever.
+const (
+	agentPongWait   = 70 * time.Second
+	agentPingPeriod = 30 * time.Second
+	agentWriteWait  = 10 * time.Second
+)
+
+// stableConnThreshold is how long a connection must stay up before the agent
+// treats it as healthy and resets its reconnect backoff to the base delay.
+const stableConnThreshold = 2 * time.Minute
+
+// backoffAfterConn returns the backoff to carry into the next reconnect sleep.
+// A connection that stayed up longer than stableConnThreshold is considered
+// healthy, so the backoff resets to base; otherwise the current backoff is
+// preserved for the caller's exponential progression. Without this reset an
+// agent that accumulated a long backoff early keeps a ~60s reconnect delay for
+// the rest of its life, even after hours of stable uptime.
+func backoffAfterConn(current, base, uptime time.Duration) time.Duration {
+	if uptime > stableConnThreshold {
+		return base
+	}
+	return current
+}
+
 func connectLoop(machineID string) {
 	backoff := time.Second
 	maxBackoff := 60 * time.Second
@@ -330,10 +356,15 @@ func connectLoop(machineID string) {
 			agentSecret = stored
 		}
 
+		start := time.Now()
 		err := runAgent(machineID)
 		if err != nil {
 			log.Printf("connection error: %v", err)
 		}
+
+		// A connection that stayed up long enough to be "stable" resets the
+		// backoff so a later brief blip doesn't inherit a long delay.
+		backoff = backoffAfterConn(backoff, time.Second, time.Since(start))
 
 		jitter := time.Duration(rand.Int63n(int64(backoff) / 2))
 		wait := backoff + jitter
@@ -383,6 +414,15 @@ func runAgent(machineID string) error {
 	// Mutex for concurrent writes to WebSocket.
 	var writeMu sync.Mutex
 
+	// Liveness: require a hub frame (data or pong) within pongWait, and refresh
+	// the deadline whenever one arrives. A silently dead TCP connection now
+	// surfaces within ~pongWait instead of hanging on the OS keepalive (~2h).
+	conn.SetReadDeadline(time.Now().Add(agentPongWait))
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(agentPongWait))
+		return nil
+	})
+
 	// Start a goroutine to read incoming commands from the hub.
 	errCh := make(chan error, 1)
 	go func() {
@@ -392,6 +432,7 @@ func runAgent(machineID string) error {
 				errCh <- fmt.Errorf("read error: %w", err)
 				return
 			}
+			conn.SetReadDeadline(time.Now().Add(agentPongWait))
 
 			// Decode the type field to dispatch.
 			var envelope struct {
@@ -439,6 +480,11 @@ func runAgent(machineID string) error {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
+	// Ping the hub on a fixed cadence so a half-open connection is detected via
+	// the pong deadline even during a lull in metrics traffic.
+	pingTicker := time.NewTicker(agentPingPeriod)
+	defer pingTicker.Stop()
+
 	// Send immediately on connect, then every 30s. Metrics MUST go first
 	// because the hub creates the machines row from the metric payload
 	// (hostname/IP/OS); any other persisted message that arrives before the
@@ -474,6 +520,14 @@ func runAgent(machineID string) error {
 			if err := sendAll(conn, &writeMu, machineID); err != nil {
 				return err
 			}
+		case <-pingTicker.C:
+			writeMu.Lock()
+			conn.SetWriteDeadline(time.Now().Add(agentWriteWait))
+			err := conn.WriteMessage(websocket.PingMessage, nil)
+			writeMu.Unlock()
+			if err != nil {
+				return fmt.Errorf("ping: %w", err)
+			}
 		}
 	}
 }
@@ -494,6 +548,7 @@ func writeJSON(conn *websocket.Conn, mu *sync.Mutex, v interface{}) error {
 	}
 	mu.Lock()
 	defer mu.Unlock()
+	conn.SetWriteDeadline(time.Now().Add(agentWriteWait))
 	return conn.WriteMessage(websocket.TextMessage, data)
 }
 

@@ -153,20 +153,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     const res = await fetch(url, { ...init, headers });
     if (res.status === 401) {
-      try {
-        const payload = JSON.parse(atob((currentToken || "").split(".")[1]));
-        if (payload.exp * 1000 < Date.now()) {
-          localStorage.removeItem("bloxos_token");
-          setToken(null);
-          dispatchAuthChanged();
-          router.push("/login");
-        }
-      } catch {
-        localStorage.removeItem("bloxos_token");
-        setToken(null);
-        dispatchAuthChanged();
-        router.push("/login");
-      }
+      // Any 401 is authoritative: the hub rejected this token. That covers
+      // server-side revocation (deleted user, role change, rotated secret) as
+      // well as expiry — cases the old local `exp` check missed, leaving the
+      // client "logged in" while every request silently failed.
+      localStorage.removeItem("bloxos_token");
+      setToken(null);
+      dispatchAuthChanged();
+      router.push("/login");
     }
     return res;
   }, [router]);

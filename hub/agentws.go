@@ -423,6 +423,18 @@ func handleDownloadCACert(c echo.Context) error {
 // scales fine because each agent gets its own bucket.
 const wsAgentRateLimit = 30
 
+// agentAuthWindow bounds how long an upgraded agent socket may stay open before
+// it sends its first authenticating frame. Without it, a client that completes
+// the WebSocket upgrade but never speaks would hold the socket (and its file
+// descriptor) open indefinitely. It is a var so tests can shorten it.
+var agentAuthWindow = 30 * time.Second
+
+// agentIdleTimeout bounds the gap between frames once an agent is established.
+// Agents push metrics every 30s and ping on the same cadence, so a silently
+// dead TCP connection is dropped within this window instead of lingering until
+// the OS keepalive notices (which can take ~2h).
+var agentIdleTimeout = 90 * time.Second
+
 func handleAgentWS(c echo.Context) error {
 	ip := getRealIP(c)
 	if !rateLimiter.Allow("ws_agent", ip, wsAgentRateLimit) {
@@ -468,11 +480,32 @@ func handleAgentWS(c echo.Context) error {
 		}
 	}
 
+	// Reject before upgrading when the caller has neither a valid durable
+	// secret nor a valid install token. Enrollment requires a VALID token; an
+	// invalid, expired, or already-used token must not obtain an upgraded
+	// socket. Valid-token enrollment still authenticates post-upgrade because
+	// machine_id is only learned from the first metrics frame — this guard only
+	// rejects the definitively-unauthenticated.
+	if secretMachineID == "" && !tokenValidated {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "valid agent secret or install token required"})
+	}
+
 	ws, wsErr := upgrader.Upgrade(c.Response(), c.Request(), nil)
 	if wsErr != nil {
 		return wsErr
 	}
 	defer ws.Close()
+
+	// Bound the socket lifetime. An upgraded client must send its first frame
+	// within the auth window; thereafter it must keep the connection live
+	// (metrics or a ping) within the idle timeout. A ping resets the deadline
+	// and is answered with a pong. This closes both the idle-hold DoS (upgrade
+	// then go silent) and the ~2h half-open detection gap.
+	ws.SetReadDeadline(time.Now().Add(agentAuthWindow))
+	ws.SetPingHandler(func(appData string) error {
+		ws.SetReadDeadline(time.Now().Add(agentIdleTimeout))
+		return ws.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(10*time.Second))
+	})
 
 	// If authenticated via secret, we already know the machine_id.
 	var machineID string
@@ -490,6 +523,8 @@ func handleAgentWS(c echo.Context) error {
 			unregisterAgentConnection(machineID, agent)
 			return nil
 		}
+		// A frame arrived — extend the deadline to the idle timeout.
+		ws.SetReadDeadline(time.Now().Add(agentIdleTimeout))
 
 		var envelope struct {
 			Type      string `json:"type"`
@@ -497,6 +532,16 @@ func handleAgentWS(c echo.Context) error {
 		}
 		if err := json.Unmarshal(msg, &envelope); err != nil {
 			log.Printf("invalid JSON from agent: %v", err)
+			continue
+		}
+
+		// Identity binding: once this socket is authenticated as machineID,
+		// reject any frame that claims a different machine_id. During token
+		// enrollment machineID is still "" until the first metrics frame
+		// establishes it, so this guard is a no-op on that first frame.
+		if machineID != "" && envelope.MachineID != "" && envelope.MachineID != machineID {
+			log.Printf("rejecting cross-machine frame: authed=%s claimed=%s type=%s",
+				machineID, envelope.MachineID, envelope.Type)
 			continue
 		}
 
@@ -555,6 +600,11 @@ func handleAgentWS(c echo.Context) error {
 				log.Printf("agent registered: %s (%s)", m.Hostname, machineID)
 			}
 
+			// The authenticated machineID is authoritative — bind this frame to
+			// it so all downstream writes (upsert, metrics, latency) use it
+			// regardless of what the payload claimed.
+			m.MachineID = machineID
+
 			// Calculate latency from sent_at.
 			if m.SentAt != "" {
 				sentTime, err := time.Parse(time.RFC3339Nano, m.SentAt)
@@ -599,9 +649,9 @@ func handleAgentWS(c echo.Context) error {
 				log.Printf("invalid services JSON: %v", err)
 				continue
 			}
-			mid := sm.MachineID
+			mid := machineID
 			if mid == "" {
-				mid = machineID
+				mid = sm.MachineID
 			}
 			upsertServices(mid, sm.Services)
 			framed := []byte(fmt.Sprintf("event: services\ndata: %s\n\n", msg))
@@ -613,9 +663,9 @@ func handleAgentWS(c echo.Context) error {
 				log.Printf("invalid containers JSON: %v", err)
 				continue
 			}
-			mid := cm.MachineID
+			mid := machineID
 			if mid == "" {
-				mid = machineID
+				mid = cm.MachineID
 			}
 			upsertContainers(mid, cm.Containers)
 			framed := []byte(fmt.Sprintf("event: containers\ndata: %s\n\n", msg))
@@ -638,9 +688,9 @@ func handleAgentWS(c echo.Context) error {
 				log.Printf("invalid hardware_info JSON: %v", err)
 				continue
 			}
-			mid := hw.MachineID
+			mid := machineID
 			if mid == "" {
-				mid = machineID
+				mid = hw.MachineID
 			}
 			if _, err := db.Exec(`
 				INSERT INTO machines (id, hostname, status, hardware_info)

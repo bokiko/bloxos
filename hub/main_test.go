@@ -1843,21 +1843,13 @@ func TestKnownMachineReconnectWithoutCredentialRejected(t *testing.T) {
 	server := httptest.NewServer(e)
 	defer server.Close()
 
+	// A known machine presenting an invalid token and no durable secret is now
+	// rejected before the WebSocket upgrade (no valid credential of any kind),
+	// rather than being upgraded to receive a post-upgrade rejection message.
 	conn, err := wsDialAgent(t, server, "token=definitely-invalid")
-	if err != nil {
-		t.Fatalf("dial failed: %v", err)
-	}
-	defer conn.Close()
-
-	sendMetricsMsg(t, conn, "known-machine-without-secret")
-
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	_, msg, err := conn.ReadMessage()
-	if err != nil {
-		t.Fatalf("expected rejection message, got read error: %v", err)
-	}
-	if !strings.Contains(string(msg), "durable credential required") {
-		t.Fatalf("expected durable credential rejection, got %s", string(msg))
+	if err == nil {
+		conn.Close()
+		t.Fatal("expected upgrade to be rejected for invalid token with no secret")
 	}
 }
 
