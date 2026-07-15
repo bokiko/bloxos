@@ -1639,7 +1639,10 @@ func redactAPITLSConfig(raw string) json.RawMessage {
 }
 
 func apiHTTPClient(baseURL string, tlsConfigRaw json.RawMessage) (*http.Client, error) {
-	transport := &http.Transport{}
+	// SSRF guard: resolve and validate the target IP before every connection
+	// (initial request and redirects), so a public hostname that resolves to an
+	// internal address — or a DNS rebind — cannot reach blocked ranges.
+	transport := &http.Transport{DialContext: safeDialContext}
 	tlsConfig := &tls.Config{}
 	cfg, err := parseAPITLSConfig(tlsConfigRaw)
 	if err != nil {
@@ -1663,8 +1666,9 @@ func apiHTTPClient(baseURL string, tlsConfigRaw json.RawMessage) (*http.Client, 
 
 	transport.TLSClientConfig = tlsConfig
 	return &http.Client{
-		Timeout:   30 * time.Second,
-		Transport: transport,
+		Timeout:       30 * time.Second,
+		Transport:     transport,
+		CheckRedirect: checkAPIRedirect,
 	}, nil
 }
 
@@ -1701,8 +1705,12 @@ func pollProxmox(baseURL string, authConfig json.RawMessage, tlsConfig json.RawM
 	}
 	defer nodesResp.Body.Close()
 	if nodesResp.StatusCode != 200 {
-		body, _ := io.ReadAll(nodesResp.Body)
-		return nil, fmt.Errorf("proxmox nodes: HTTP %d: %s", nodesResp.StatusCode, string(body))
+		// Log the upstream body server-side for debugging, but never fold it
+		// into the returned error — reflecting an upstream response body would
+		// leak the content of whatever endpoint an SSRF probe reached.
+		body, _ := io.ReadAll(io.LimitReader(nodesResp.Body, 4096))
+		log.Printf("proxmox nodes poll failed: HTTP %d, body=%q", nodesResp.StatusCode, string(body))
+		return nil, fmt.Errorf("proxmox nodes: HTTP %d", nodesResp.StatusCode)
 	}
 
 	var nodesData struct {
@@ -1965,6 +1973,95 @@ var rfc1918Networks = func() []*net.IPNet {
 	}
 	return out
 }()
+
+// lookupIPFunc resolves a host to its IP addresses. It is a package var so
+// tests can inject a fake resolver without external network access.
+var lookupIPFunc = net.DefaultResolver.LookupIPAddr
+
+// isBlockedIP reports whether an IP address must never be the target of an
+// API-machine poll. Loopback, unspecified, link-local, and multicast (which
+// covers the 169.254.169.254 cloud-metadata endpoint) are always blocked.
+// Private ranges (RFC 1918 + IPv6 ULA) are blocked unless the homelab opt-in
+// BLOXOS_ALLOW_PRIVATE_TARGETS=1 is set — preserving the existing behavior for
+// LAN fleets.
+func isBlockedIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	if ip.IsLoopback() || ip.IsUnspecified() ||
+		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsInterfaceLocalMulticast() || ip.IsMulticast() {
+		return true
+	}
+	if ip.IsPrivate() && os.Getenv("BLOXOS_ALLOW_PRIVATE_TARGETS") != "1" {
+		return true
+	}
+	return false
+}
+
+// resolveAndValidate resolves host and returns its IP addresses, failing closed
+// if the host cannot be resolved or ANY resolved address is blocked (so a DNS
+// answer mixing a public and an internal IP cannot be used to reach the
+// internal one).
+func resolveAndValidate(ctx context.Context, host string) ([]net.IP, error) {
+	// A bracketed IPv6 literal or plain IP still goes through the resolver,
+	// which returns it verbatim — so the block policy applies uniformly.
+	addrs, err := lookupIPFunc(ctx, host)
+	if err != nil {
+		return nil, fmt.Errorf("resolve host: %w", err)
+	}
+	if len(addrs) == 0 {
+		return nil, fmt.Errorf("no addresses resolved for host")
+	}
+	ips := make([]net.IP, 0, len(addrs))
+	for _, a := range addrs {
+		if isBlockedIP(a.IP) {
+			return nil, fmt.Errorf("refusing to connect to blocked address %s (resolved from %s)", a.IP, host)
+		}
+		ips = append(ips, a.IP)
+	}
+	return ips, nil
+}
+
+// safeDialContext resolves and validates the target host, then dials only a
+// validated IP (pinning it, so there is no second resolution a rebind could
+// race). It is installed on every API-poll HTTP client, so it guards the
+// initial request and every redirect the client follows.
+func safeDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+	ips, err := resolveAndValidate(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	d := &net.Dialer{Timeout: 10 * time.Second}
+	var dialErr error
+	for _, ip := range ips {
+		conn, err := d.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+		if err == nil {
+			return conn, nil
+		}
+		dialErr = err
+	}
+	return nil, dialErr
+}
+
+// checkAPIRedirect validates every redirect an API poll would follow with the
+// same base-URL policy (scheme + host), and caps the redirect chain. The
+// resolved-IP guard in safeDialContext still applies to the redirect's actual
+// connection, so a redirect to a hostname that resolves internally is also
+// blocked at dial time.
+func checkAPIRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 5 {
+		return fmt.Errorf("stopped after too many redirects")
+	}
+	if err := validateBaseURL(req.URL.String()); err != nil {
+		return fmt.Errorf("redirect blocked: %w", err)
+	}
+	return nil
+}
 
 // validateBaseURL checks that a base URL is safe to poll (prevents SSRF).
 func validateBaseURL(rawURL string) error {
@@ -2322,8 +2419,12 @@ func handleForceAPIPoll(c echo.Context) error {
 
 	result, pollErr := doPoll(m.AdapterType, m.BaseURL, json.RawMessage(m.AuthConfig), json.RawMessage(m.TLSConfig))
 	if pollErr != nil {
-		db.Exec("UPDATE api_machines SET last_error = ?, last_poll_at = CURRENT_TIMESTAMP WHERE id = ?", pollErr.Error(), id)
-		return c.JSON(http.StatusBadGateway, map[string]string{"error": pollErr.Error()})
+		// Log the detailed error server-side, but return a generic message to
+		// the dashboard so upstream/network detail from a poll target isn't
+		// reflected to the client.
+		log.Printf("api machine %s (%s) poll failed: %v", id, m.Name, pollErr)
+		db.Exec("UPDATE api_machines SET last_error = ?, last_poll_at = CURRENT_TIMESTAMP WHERE id = ?", "poll failed", id)
+		return c.JSON(http.StatusBadGateway, map[string]string{"error": "poll failed"})
 	}
 
 	storeAPIPollResult(id, m.Name, m.AdapterType, m.BaseURL, result)
