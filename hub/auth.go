@@ -193,6 +193,20 @@ func handleSetup(c echo.Context) error {
 	})
 }
 
+// dummyPasswordHash is a valid bcrypt hash at DefaultCost used to spend
+// roughly the same time on an unknown username as on a real one, reducing the
+// username-enumeration timing oracle. Computed once at startup.
+var dummyPasswordHash = mustDummyPasswordHash()
+
+func mustDummyPasswordHash() []byte {
+	h, err := bcrypt.GenerateFromPassword([]byte("bloxos-timing-equalizer"), bcrypt.DefaultCost)
+	if err != nil {
+		// bcrypt only errors on an invalid cost, which is impossible here.
+		log.Fatalf("failed to compute dummy password hash: %v", err)
+	}
+	return h
+}
+
 func handleLogin(c echo.Context) error {
 	ip := getRealIP(c)
 	if !rateLimiter.Allow("login", ip, 5) {
@@ -212,6 +226,10 @@ func handleLogin(c echo.Context) error {
 	err := db.QueryRow(`SELECT id, username, password_hash, COALESCE(role, 'admin') FROM users WHERE username = ?`, body.Username).
 		Scan(&userID, &storedUsername, &passwordHash, &rawRole)
 	if err == sql.ErrNoRows {
+		// Spend a comparable amount of time as the valid-username path so the
+		// response time doesn't reveal whether the username exists. Result is
+		// intentionally discarded.
+		_ = bcrypt.CompareHashAndPassword(dummyPasswordHash, []byte(body.Password))
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
 	}
 	if err != nil {
@@ -367,10 +385,17 @@ func extractUserIDFromRequest(c echo.Context) string {
 	if tokenStr == "" {
 		return ""
 	}
-	tkn, _ := jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
+	// Validate the token the same way jwtMiddleware does: honor the parse
+	// error, require a valid token, and assert the HMAC signing method (so an
+	// alg=none / algorithm-confusion token is rejected). Any invalid state
+	// yields an empty userID.
+	tkn, err := jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method")
+		}
 		return jwtSecret, nil
 	})
-	if tkn == nil {
+	if err != nil || tkn == nil || !tkn.Valid {
 		return ""
 	}
 	claims, ok := tkn.Claims.(jwt.MapClaims)
@@ -381,12 +406,30 @@ func extractUserIDFromRequest(c echo.Context) string {
 	return userID
 }
 
+// minJWTSecretLen is the minimum accepted length for a JWT signing secret,
+// applied to both the file-backed and env-provided secret.
+const minJWTSecretLen = 32
+
+// validateEnvJWTSecret enforces the minimum length on an env-provided JWT
+// secret, so a weak signing key can't be silently accepted (the file-backed
+// secret already requires >= 32 bytes).
+func validateEnvJWTSecret(envSecret string) ([]byte, error) {
+	if len(envSecret) < minJWTSecretLen {
+		return nil, fmt.Errorf("BLOXOS_JWT_SECRET must be at least %d bytes, got %d", minJWTSecretLen, len(envSecret))
+	}
+	return []byte(envSecret), nil
+}
+
 // loadOrGenerateJWTSecret loads from file or generates a new secret (Finding #2).
 func loadOrGenerateJWTSecret() []byte {
 	// Check env var first (explicit override).
 	if envSecret := os.Getenv("BLOXOS_JWT_SECRET"); envSecret != "" {
+		secret, err := validateEnvJWTSecret(envSecret)
+		if err != nil {
+			log.Fatalf("invalid BLOXOS_JWT_SECRET: %v", err)
+		}
 		log.Println("JWT secret loaded from BLOXOS_JWT_SECRET env var")
-		return []byte(envSecret)
+		return secret
 	}
 
 	homeDir, err := os.UserHomeDir()
@@ -400,7 +443,7 @@ func loadOrGenerateJWTSecret() []byte {
 
 	// Try to read existing secret.
 	data, err := os.ReadFile(secretFile)
-	if err == nil && len(data) >= 32 {
+	if err == nil && len(data) >= minJWTSecretLen {
 		log.Printf("JWT secret loaded from %s", secretFile)
 		return data
 	}
