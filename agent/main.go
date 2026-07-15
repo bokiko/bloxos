@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/xml"
@@ -237,26 +236,18 @@ func websocketDialerFor(rawURL string) (*websocket.Dialer, error) {
 	dialer := *websocket.DefaultDialer
 	// Phase 8 update flow reuses this for HTTPS downloads (`/download/agent`),
 	// not just the WS dial. Both wss:// and https:// need the same TLS config
-	// (custom CA, optional InsecureSkipVerify); without this, the auto-update
+	// (system roots + optional BLOXOS_CA_CERT); without this, the auto-update
 	// HTTP fetch failed with "x509: certificate signed by unknown authority"
-	// and the rollout circuit breaker tripped.
+	// and the rollout circuit breaker tripped. The config is built by
+	// buildAgentTLSConfig, whose release build always verifies (see
+	// tls_secure.go / tls_insecure.go).
 	if u.Scheme != "wss" && u.Scheme != "https" {
 		return &dialer, nil
 	}
 
-	tlsConfig := &tls.Config{}
-	if os.Getenv("BLOXOS_TLS_INSECURE") == "1" {
-		tlsConfig.InsecureSkipVerify = true
-		log.Printf("WARNING: BLOXOS_TLS_INSECURE=1 disables TLS verification for %s", u.Host)
-	} else {
-		rootCAs, caPath, err := loadRootCAs()
-		if err != nil {
-			return nil, err
-		}
-		tlsConfig.RootCAs = rootCAs
-		if caPath != "" {
-			log.Printf("agent TLS: trusting additional CA from %s", caPath)
-		}
+	tlsConfig, err := buildAgentTLSConfig(u.Host)
+	if err != nil {
+		return nil, err
 	}
 
 	dialer.TLSClientConfig = tlsConfig
