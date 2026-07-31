@@ -265,16 +265,9 @@ func agentBinaryPathFor(osName string) string {
 	return ""
 }
 
-// announceVersionToAgent sends an "agent_version" frame to a freshly
-//
-// (Note: the function is also invoked from registerAgentConnection at
-// WS-upgrade time, before the agent has sent agent_running_version. In
-// that path agentRunningVersions[machineID] is empty, so the early-return
-// gate below correctly does NOT skip the announce — we still need to
-// inform brand-new agents what SHA they should be on.)
-//
-// connected agent, unless rollout is paused. The SHA announced is
-// platform-specific: Windows agents get the Windows binary SHA,
+// announceVersionToAgent sends an "agent_version" frame to a connected agent,
+// unless rollout is paused or announceDecision withholds it. The SHA
+// announced is platform-specific: Windows agents get the Windows binary SHA,
 // Linux/unknown agents get the Linux SHA.
 func announceVersionToAgent(machineID string, agent *ConnectedAgent) {
 	rolloutPausedMu.RLock()
@@ -297,6 +290,9 @@ func announceVersionToAgent(machineID string, agent *ConnectedAgent) {
 	// announce (matching SHAs), so arming a 90s reconnect timer for a
 	// reconnect that will never come just trips the rollout circuit
 	// breaker on healthy fleets every time the hub restarts.
+	// One read of the map, reused for both the already-up-to-date check and
+	// the policy below. announceDecision takes no locks by design, so the
+	// caller is the only place that touches agentRunningVersionsMu.
 	agentRunningVersionsMu.RLock()
 	v, hadVersion := agentRunningVersions[machineID]
 	agentRunningVersionsMu.RUnlock()
@@ -304,7 +300,11 @@ func announceVersionToAgent(machineID string, agent *ConnectedAgent) {
 		return
 	}
 
-	sig, blocked := announceDecision(machineID, osName, sha)
+	var report *agentVersionInfo
+	if hadVersion {
+		report = &v
+	}
+	sig, blocked := announceDecision(report, osName, sha)
 	if blocked != "" {
 		log.Printf("rollout: not announcing to %s — %s", machineID, blocked)
 		return
@@ -343,7 +343,21 @@ func announceVersionToAgent(machineID string, agent *ConnectedAgent) {
 //
 // Rollout pause is deliberately not handled here — it is fleet-wide and
 // already reported as rollout_paused / pause_reason.
-func announceDecision(machineID, osName, sha string) (sig string, blockedBecause string) {
+//
+// It acquires NO locks and reads no shared maps: everything about the agent
+// arrives in `report`, which is nil when the hub has never heard from that
+// machine. Callers pass the record they already read.
+//
+// That is deliberate, not stylistic. The previous version looked the machine
+// up itself, so handleListVersions — which iterates agentRunningVersions
+// under RLock — re-entered the same RWMutex. sync.RWMutex does not permit
+// recursive read locking: a writer queueing between the outer and inner
+// acquisition blocks the reader, which never releases, which blocks the
+// writer. recordAgentRunningVersion runs on the agent WebSocket read path,
+// so the whole rollout subsystem wedges until the hub restarts, on nothing
+// more exotic than a dashboard poll racing an agent reconnect. Codex found
+// it; keeping this function lock-free is what makes it unrepeatable.
+func announceDecision(report *agentVersionInfo, osName, sha string) (sig string, blockedBecause string) {
 	if sha == "" {
 		if osName == "" {
 			return "", "the hub has not yet learned this agent's operating system"
@@ -359,7 +373,7 @@ func announceDecision(machineID, osName, sha string) (sig string, blockedBecause
 	// agent_running_version on connect, and recordAgentRunningVersion
 	// re-triggers the announce once it lands, so waiting costs one round
 	// trip and removes the guess.
-	if !haveAgentVersionReport(machineID) {
+	if report == nil {
 		return "", "the hub has not yet received agent_running_version from this agent"
 	}
 
@@ -380,8 +394,8 @@ func announceDecision(machineID, osName, sha string) (sig string, blockedBecause
 	// that one unverifiable migration hop must only happen where an off-host
 	// attacker cannot reach it. Nothing to ask the agent, so fall back to
 	// PUBLIC_URL — the hub's own declaration of how the fleet reaches it.
-	if agentIsSignatureCapable(machineID) {
-		if !agentTransportPermitsUpdate(machineID) {
+	if report.signatureCapable() {
+		if !report.transportPermitsUpdate() {
 			return "", "the agent reports that the hub URL it is connected to is plaintext, so it " +
 				"will refuse to self-update; point that agent's BLOXOS_HUB at a wss:// address"
 		}
@@ -649,20 +663,29 @@ func handleListVersions(c echo.Context) error {
 	hubWindowsMtime := hubWindowsAgentBinaryMtime
 	hubAgentBinaryMu.RUnlock()
 
+	// Snapshot under the lock and do all the work outside it. Two reasons:
+	// announceDecision must never be reached with agentRunningVersionsMu
+	// already held (see its doc comment), and lookupVersionHostname is a DB
+	// query — holding a lock the agent-WS path writes to across one is a
+	// latency hazard on its own.
 	agentRunningVersionsMu.RLock()
 	versions := make([]agentVersionInfo, 0, len(agentRunningVersions))
 	for _, v := range agentRunningVersions {
+		versions = append(versions, v)
+	}
+	agentRunningVersionsMu.RUnlock()
+
+	for i := range versions {
+		v := &versions[i]
 		v.Hostname = lookupVersionHostname(v.MachineID)
 		expected := announcedSHAFor(v.OS)
 		v.UpdatePending = expected != "" && v.RunningSHA != expected
 		if v.UpdatePending {
-			// Same function announceVersionToAgent uses, so what the API
+			// Same policy announceVersionToAgent applies, so what the API
 			// reports and what the hub actually does cannot drift.
-			_, v.UpdateBlockedReason = announceDecision(v.MachineID, v.OS, expected)
+			_, v.UpdateBlockedReason = announceDecision(v, v.OS, expected)
 		}
-		versions = append(versions, v)
 	}
-	agentRunningVersionsMu.RUnlock()
 
 	rolloutPausedMu.RLock()
 	paused := rolloutPaused

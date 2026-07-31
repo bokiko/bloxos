@@ -385,36 +385,32 @@ func isLoopbackURLHost(hostport string) bool {
 	return false
 }
 
-// agentIsSignatureCapable reports whether the agent on machineID has told us
-// it verifies signed announcements. Unknown counts as not capable: at
-// WS-upgrade time we have not seen agent_running_version yet, and guessing
-// "probably fine" is the exact assumption this policy exists to remove.
+// signatureCapable reports whether this agent told us it verifies signed
+// announcements. Defined on the record rather than looked up by machineID so
+// there is exactly one definition of the predicate — announceDecisionFor runs
+// lock-free over a caller-held copy and must not re-read the map.
+func (v agentVersionInfo) signatureCapable() bool {
+	return v.UpdateProtocol >= minSignatureCapableProtocol
+}
+
+// transportPermitsUpdate reports whether the agent said its own hub URL
+// permits self-update. Only meaningful alongside signatureCapable.
+func (v agentVersionInfo) transportPermitsUpdate() bool {
+	return v.UpdateTransportOK
+}
+
+// agentIsSignatureCapable looks the agent up and applies signatureCapable.
+// Unknown counts as not capable: at WS-upgrade time we have not seen
+// agent_running_version yet, and announcing on an assumption is what arms a
+// reconnect timer for an update that never happens.
+//
+// Callers already holding agentRunningVersionsMu must use the method on the
+// record instead — recursive read locking deadlocks.
 func agentIsSignatureCapable(machineID string) bool {
 	agentRunningVersionsMu.RLock()
 	v, ok := agentRunningVersions[machineID]
 	agentRunningVersionsMu.RUnlock()
-	return ok && v.UpdateProtocol >= minSignatureCapableProtocol
-}
-
-// haveAgentVersionReport reports whether the agent has ever told us its
-// running version on this hub process.
-func haveAgentVersionReport(machineID string) bool {
-	agentRunningVersionsMu.RLock()
-	_, ok := agentRunningVersions[machineID]
-	agentRunningVersionsMu.RUnlock()
-	return ok
-}
-
-// agentTransportPermitsUpdate reports whether the agent said its own hub URL
-// permits self-update. Unknown counts as no, for the same reason unknown
-// capability counts as not capable: at WS-upgrade time we have not seen the
-// frame yet, and announcing on an assumption is what arms a reconnect timer
-// for an update that never happens.
-func agentTransportPermitsUpdate(machineID string) bool {
-	agentRunningVersionsMu.RLock()
-	v, ok := agentRunningVersions[machineID]
-	agentRunningVersionsMu.RUnlock()
-	return ok && v.UpdateTransportOK
+	return ok && v.signatureCapable()
 }
 
 // announcedSignatureFor returns the signature the hub will send alongside the

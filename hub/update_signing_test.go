@@ -7,11 +7,13 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -820,5 +822,119 @@ func TestVersionsAPIReportsWhyUpdatesAreWithheld(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("api-machine missing from response: %s", rec.Body.String())
+	}
+}
+
+// TestVersionsAPIDoesNotDeadlockWithConcurrentAgentReports hammers
+// GET /api/versions against the write path that lands on every agent
+// reconnect.
+//
+// The regression: handleListVersions used to hold agentRunningVersionsMu
+// across a call to announceDecision, which re-entered the same RWMutex.
+// sync.RWMutex does not permit recursive read locking — a writer queueing
+// between the outer and inner acquisition blocks the reader, which never
+// releases, which blocks the writer. recordAgentRunningVersion runs on the
+// agent WebSocket read path, so the whole rollout subsystem wedged until a
+// hub restart, triggered by nothing more exotic than a dashboard poll racing
+// an agent reconnect.
+//
+// On the broken code this hangs rather than failing an assertion, so the
+// work runs in a goroutine and the test fails on a deadline instead of
+// stalling the suite silently. Run under -race for the full signal.
+func TestVersionsAPIDoesNotDeadlockWithConcurrentAgentReports(t *testing.T) {
+	e := setupTestServer(t)
+	markCredentialsRotated(t)
+	token := loginAndGetToken(t, e)
+	stagePendingUpdate(t)
+
+	const machines = 8
+	for i := 0; i < machines; i++ {
+		id := fmt.Sprintf("deadlock-probe-%d", i)
+		agentRunningVersionsMu.Lock()
+		agentRunningVersions[id] = agentVersionInfo{
+			MachineID: id, OS: "linux", RunningSHA: strings.Repeat("33", 32),
+			UpdateProtocol: 1, UpdateTransportOK: true,
+		}
+		agentRunningVersionsMu.Unlock()
+	}
+	t.Cleanup(func() {
+		// TryLock, not Lock. If the regression is present the mutex is
+		// permanently wedged, and a blocking cleanup runs *after* t.Fatal —
+		// swallowing the diagnostic and letting Go's test timeout panic
+		// instead. Verified: with the nested RLock reintroduced this test
+		// reported nothing at all until cleanup stopped blocking.
+		if !agentRunningVersionsMu.TryLock() {
+			return
+		}
+		defer agentRunningVersionsMu.Unlock()
+		for i := 0; i < machines; i++ {
+			delete(agentRunningVersions, fmt.Sprintf("deadlock-probe-%d", i))
+		}
+	})
+
+	stop := make(chan struct{})
+	finished := make(chan struct{})
+
+	go func() {
+		defer close(finished)
+		var wg sync.WaitGroup
+
+		// Writers: the agent_running_version path, which is what queues a
+		// Lock() behind the handler's outer RLock.
+		for w := 0; w < 4; w++ {
+			wg.Add(1)
+			go func(w int) {
+				defer wg.Done()
+				for i := 0; ; i++ {
+					select {
+					case <-stop:
+						return
+					default:
+					}
+					recordAgentRunningVersion(fmt.Sprintf("deadlock-probe-%d", i%machines),
+						agentVersionReport{
+							RunningSHA:     strings.Repeat("44", 32),
+							OS:             "linux",
+							UpdateProtocol: 1,
+							TransportOK:    true,
+						})
+				}
+			}(w)
+		}
+
+		// Readers: the dashboard poll.
+		for r := 0; r < 4; r++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for {
+					select {
+					case <-stop:
+						return
+					default:
+					}
+					req := httptest.NewRequest(http.MethodGet, "/api/versions", nil)
+					req.Header.Set("Authorization", "Bearer "+token)
+					rec := httptest.NewRecorder()
+					e.ServeHTTP(rec, req)
+					if rec.Code != http.StatusOK {
+						t.Errorf("GET /api/versions returned %d", rec.Code)
+						return
+					}
+				}
+			}()
+		}
+
+		time.Sleep(300 * time.Millisecond)
+		close(stop)
+		wg.Wait()
+	}()
+
+	select {
+	case <-finished:
+	case <-time.After(20 * time.Second):
+		t.Fatal("GET /api/versions deadlocked against concurrent agent_running_version writes — " +
+			"announceDecision or something it reaches is taking agentRunningVersionsMu while a " +
+			"caller already holds it")
 	}
 }
