@@ -28,8 +28,40 @@ jobs:
           go-version: "1.25.9"
           cache-dependency-path: hub/go.sum
 
+      - name: Vet hub
+        run: go vet ./...
+
       - name: Run hub tests
         run: go test -count=1 ./...
+
+  # Reports only; does not block merges yet. The hub keeps its DB handle and ten
+  # other pieces of state in package globals (hub/main.go), so main_test.go
+  # reassigns them between tests while leaked agent-WS goroutines still write
+  # through them -- that is issue #60, and it is an architecture fix, not a test
+  # fix. Flip continue-on-error off once #60 lands so this becomes a real gate.
+  hub-race:
+    name: Hub Tests (race, non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    # continue-on-error only applies once the process exits, so a hung race run
+    # would sit pending indefinitely without these. The Go timeout is the lower
+    # of the two on purpose -- it dumps goroutine stacks, the Actions kill does not.
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: hub
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.9"
+          cache-dependency-path: hub/go.sum
+
+      - name: Run hub tests with the race detector
+        run: go test -race -count=1 -timeout=10m ./...
 
   agent:
     name: Agent Tests
@@ -46,6 +78,43 @@ jobs:
         with:
           go-version: "1.25.9"
           cache-dependency-path: agent/go.sum
+
+      - name: Vet agent
+        run: go vet ./...
+
+      # tls_insecure.go and tls_insecure_test.go are both behind //go:build
+      # insecure, so a bare `go test ./...` never builds either one. Vet gets
+      # the compile coverage; the test run is what actually exercises
+      # tls_insecure_test.go, which has never executed in CI.
+      - name: Vet agent with the insecure build tag
+        run: go vet -tags insecure ./...
+
+      - name: Run agent tests with the insecure build tag
+        run: go test -tags insecure -count=1 ./...
+
+      - name: Run agent tests
+        run: go test -count=1 ./...
+
+  # ~1,600 lines of *_windows.go were never compiled by CI. A windows-latest
+  # runner costs the same as a GOOS=windows cross-build and also runs the tests.
+  agent-windows:
+    name: Agent Tests (windows)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.9"
+          cache-dependency-path: agent/go.sum
+
+      - name: Vet agent
+        run: go vet ./...
 
       - name: Run agent tests
         run: go test -count=1 ./...
