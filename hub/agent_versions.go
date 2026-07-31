@@ -270,9 +270,24 @@ func announceVersionToAgent(machineID string, agent *ConnectedAgent) {
 		return
 	}
 
+	// The agent refuses any announcement it cannot authenticate against the
+	// key its installer pinned. If we cannot produce a signature there is no
+	// update to be had — announcing anyway would only arm the 90s
+	// reconnect-expectation timer below for a reconnect that never comes,
+	// and trip the rollout circuit breaker on a healthy fleet.
+	sig := announcedSignatureFor(osName, sha)
+	if sig == "" {
+		log.Printf("rollout: no update signature available for %s, not announcing to %s "+
+			"(set BLOXOS_UPDATE_SIGNING_KEY, or place a signed <binary>.sig next to the agent binary)",
+			osName, machineID)
+		return
+	}
+
 	msg := map[string]string{
-		"type":   "agent_version",
-		"sha256": sha,
+		"type":      "agent_version",
+		"sha256":    sha,
+		"signature": sig,
+		"sig_alg":   "ed25519",
 	}
 	data, _ := json.Marshal(msg)
 

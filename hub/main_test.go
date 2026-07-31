@@ -117,6 +117,11 @@ func setupTestServer(t *testing.T) *echo.Echo {
 	// when it specifically tests the default-block path.
 	t.Setenv("BLOXOS_ALLOW_PRIVATE_TARGETS", "1")
 
+	// Agent version announcements are signed; without signing material the
+	// hub correctly refuses to announce anything. main() sets this up via
+	// initUpdateSigning(); tests get a process-lifetime in-memory key.
+	ensureTestUpdateSigningKey(t)
+
 	// Drain stale goroutines from prior tests that may still reference
 	// the old db via the global agents map or markOffline calls.
 	agentsMu.Lock()
