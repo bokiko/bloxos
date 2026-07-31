@@ -43,6 +43,10 @@ jobs:
     name: Hub Tests (race, non-blocking)
     runs-on: ubuntu-latest
     continue-on-error: true
+    # continue-on-error only applies once the process exits, so a hung race run
+    # would sit pending indefinitely without these. The Go timeout is the lower
+    # of the two on purpose -- it dumps goroutine stacks, the Actions kill does not.
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: hub
@@ -57,7 +61,7 @@ jobs:
           cache-dependency-path: hub/go.sum
 
       - name: Run hub tests with the race detector
-        run: go test -race -count=1 ./...
+        run: go test -race -count=1 -timeout=10m ./...
 
   agent:
     name: Agent Tests
@@ -79,10 +83,14 @@ jobs:
         run: go vet ./...
 
       # tls_insecure.go and tls_insecure_test.go are both behind //go:build
-      # insecure, so a bare `go test ./...` never builds either one. Without
-      # this step that file compiles nowhere in CI.
+      # insecure, so a bare `go test ./...` never builds either one. Vet gets
+      # the compile coverage; the test run is what actually exercises
+      # tls_insecure_test.go, which has never executed in CI.
       - name: Vet agent with the insecure build tag
         run: go vet -tags insecure ./...
+
+      - name: Run agent tests with the insecure build tag
+        run: go test -tags insecure -count=1 ./...
 
       - name: Run agent tests
         run: go test -count=1 ./...
