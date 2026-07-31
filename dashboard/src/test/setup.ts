@@ -1,4 +1,5 @@
 import "@testing-library/jest-dom";
+import { vi } from "vitest";
 
 // xterm.js requires matchMedia for DPR detection. jsdom doesn't provide it.
 Object.defineProperty(window, "matchMedia", {
