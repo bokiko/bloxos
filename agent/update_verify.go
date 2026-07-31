@@ -38,6 +38,18 @@ import (
 // repurposed to sign anything else meaningful.
 const updateSigContext = "bloxos-agent-update:v1"
 
+// agentUpdateProtocol is reported to the hub in every agent_running_version
+// frame. Version 1 means "this binary verifies signed announcements."
+//
+// Agents built before signature verification existed send no such field, and
+// their AgentVersionMessage struct has only type/sha256/version — encoding/json
+// silently discards the signature the hub now sends, so they would take an
+// update with no authenticity check at all. Verification cannot be retrofitted
+// into a binary that is already deployed; the hub uses the absence of this
+// field to decide whether announcing to that agent is safe at all. See
+// legacyBootstrapAllowed in hub/update_signing.go.
+const agentUpdateProtocol = 1
+
 // defaultUpdatePublicKeyPathLinux is where the hub-generated install.sh pins
 // the key. Windows pins it next to the agent executable instead.
 const defaultUpdatePublicKeyPathLinux = "/etc/bloxos/agent-update.pub"
@@ -62,8 +74,14 @@ func selfExePath() (string, error) {
 // the agent's own resolved binary path; on Windows the key sits beside it in
 // the install directory (admin-writable only), on Linux it lives in the
 // agent's config directory.
+//
+// The override is BLOXOS_UPDATE_PUBKEY_PATH, not BLOXOS_UPDATE_PUBKEY: the
+// hub uses the latter for the base64 key *value*, and a single-box
+// deployment shares one environment between hub and agent. Naming them the
+// same would mean setting it once silently disables the hub's signing and
+// the agent's verification at the same time.
 func updatePublicKeyPath(exePath string) string {
-	if p := strings.TrimSpace(os.Getenv("BLOXOS_UPDATE_PUBKEY")); p != "" {
+	if p := strings.TrimSpace(os.Getenv("BLOXOS_UPDATE_PUBKEY_PATH")); p != "" {
 		return p
 	}
 	if runtime.GOOS == "windows" {

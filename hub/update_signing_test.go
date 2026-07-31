@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +14,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
+	"github.com/labstack/echo/v4"
 )
 
 // ensureTestUpdateSigningKey gives the test binary a process-lifetime signing
@@ -298,21 +302,17 @@ func splitUnitSections(t *testing.T, unit string) (string, string) {
 	return unitSection, rest
 }
 
-// A hub with no signing material must not announce a version at all: the
-// agent would refuse it, but the announce arms a 90s reconnect-expectation
-// timer whose expiry counts toward the rollout circuit breaker.
-func TestNoSignatureMeansNoAnnounce(t *testing.T) {
+// A hub with no signing material must not produce a signature at all: the
+// agent would refuse an unsigned announcement, and announcing anyway arms a
+// 90s reconnect-expectation timer whose expiry counts toward the rollout
+// circuit breaker.
+//
+// This asserts announcedSignatureFor only. The end-to-end "hub sends nothing
+// on the wire" claim is TestNoSignatureMeansNoAnnounceOnTheWire below, which
+// drives a real agent WebSocket.
+func TestNoSignatureAvailableWithoutSigningKey(t *testing.T) {
 	setupTestServer(t)
-
-	updateSigningMu.Lock()
-	prevKey, prevPub, prevB64 := updateSigningKey, updateSigningPub, updateSigningPubB64
-	updateSigningKey, updateSigningPub, updateSigningPubB64 = nil, nil, ""
-	updateSigningMu.Unlock()
-	t.Cleanup(func() {
-		updateSigningMu.Lock()
-		updateSigningKey, updateSigningPub, updateSigningPubB64 = prevKey, prevPub, prevB64
-		updateSigningMu.Unlock()
-	})
+	withoutSigningKey(t)
 
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "bloxos-agent")
@@ -322,6 +322,36 @@ func TestNoSignatureMeansNoAnnounce(t *testing.T) {
 	}
 	t.Setenv("BLOXOS_AGENT_BINARY", bin)
 
+	stageLinuxBinarySHA(t)
+
+	sum := sha256.Sum256(content)
+	sha := hex.EncodeToString(sum[:])
+	if announcedSHAFor("linux") != sha {
+		t.Fatalf("test setup: announcedSHAFor(linux) = %q, want %q", announcedSHAFor("linux"), sha)
+	}
+	if got := announcedSignatureFor("linux", sha); got != "" {
+		t.Fatalf("announcedSignatureFor returned %q with no signing key", got)
+	}
+}
+
+// withoutSigningKey strips the hub's signing material for the duration of a test.
+func withoutSigningKey(t *testing.T) {
+	t.Helper()
+	updateSigningMu.Lock()
+	prevKey, prevPub, prevB64 := updateSigningKey, updateSigningPub, updateSigningPubB64
+	updateSigningKey, updateSigningPub, updateSigningPubB64 = nil, nil, ""
+	updateSigningMu.Unlock()
+	t.Cleanup(func() {
+		updateSigningMu.Lock()
+		updateSigningKey, updateSigningPub, updateSigningPubB64 = prevKey, prevPub, prevB64
+		updateSigningMu.Unlock()
+	})
+}
+
+// stageLinuxBinarySHA clears the cached linux SHA so the next recompute picks
+// up whatever BLOXOS_AGENT_BINARY currently points at, and restores it after.
+func stageLinuxBinarySHA(t *testing.T) {
+	t.Helper()
 	hubAgentBinaryMu.Lock()
 	prevSHA, prevMtime := hubAgentBinarySHA, hubAgentBinaryMtime
 	hubAgentBinarySHA, hubAgentBinaryMtime = "", time.Time{}
@@ -332,13 +362,325 @@ func TestNoSignatureMeansNoAnnounce(t *testing.T) {
 		hubAgentBinaryMu.Unlock()
 	})
 	recomputeAgentBinarySHA()
+}
 
-	sum := sha256.Sum256(content)
-	sha := hex.EncodeToString(sum[:])
-	if announcedSHAFor("linux") != sha {
-		t.Fatalf("test setup: announcedSHAFor(linux) = %q, want %q", announcedSHAFor("linux"), sha)
+/* ----------------------------------------------------------------------------
+ * Availability: a file the hub wrote itself must not be able to brick the
+ * fleet or the hub.
+ * -------------------------------------------------------------------------- */
+
+// An unreadable-but-present key must NOT produce a replacement. Every agent in
+// the fleet is pinned to the existing key; minting a new one here is how a
+// fleet goes dark with no recovery short of re-running the installer on every
+// host. This is the test Master asked for: a non-ENOENT read error produces no
+// new key.
+func TestSigningKeyNotRegeneratedOnNonENOENTReadError(t *testing.T) {
+	dir := t.TempDir()
+	// A directory where the key file should be: os.ReadFile returns EISDIR,
+	// which is emphatically not "no key has ever existed here".
+	keyPath := filepath.Join(dir, "update-signing.key")
+	if err := os.Mkdir(keyPath, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
 	}
-	if got := announcedSignatureFor("linux", sha); got != "" {
-		t.Fatalf("announcedSignatureFor returned %q with no signing key", got)
+	t.Setenv("BLOXOS_UPDATE_SIGNING_KEY", "")
+	t.Setenv("HOME", dir)
+	// os.UserHomeDir on the default path resolves $HOME, so point the default
+	// straight at the trap.
+	t.Setenv("BLOXOS_UPDATE_SIGNING_KEY", keyPath)
+
+	priv, source := loadOrGenerateUpdateSigningKey()
+	if priv != nil {
+		t.Fatalf("minted a new signing key after a non-ENOENT read error (source=%q) — "+
+			"every pinned agent in the fleet would start rejecting updates", source)
+	}
+	// And nothing was written over the path.
+	info, err := os.Stat(keyPath)
+	if err != nil || !info.IsDir() {
+		t.Fatalf("key path was modified: stat err=%v", err)
+	}
+}
+
+// A corrupt key file disables signing. It must not take the hub down with it —
+// the hub does far more than sign agent updates.
+func TestCorruptSigningKeyDisablesSigningWithoutKillingHub(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), "update-signing.key")
+	if err := os.WriteFile(keyPath, []byte("not a key at all\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	t.Setenv("BLOXOS_UPDATE_SIGNING_KEY", keyPath)
+
+	priv, _ := loadOrGenerateUpdateSigningKey()
+	if priv != nil {
+		t.Fatal("a corrupt key file yielded a usable key")
+	}
+	// Reaching this line at all is the assertion that matters: the previous
+	// implementation called log.Fatalf here, which would have taken the test
+	// binary — and in production the whole hub — down.
+}
+
+// An explicitly named key file that does not exist is a misconfiguration, not
+// an invitation to invent one at the operator's chosen path.
+func TestExplicitSigningKeyPathMissingDoesNotGenerate(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), "nope", "update-signing.key")
+	t.Setenv("BLOXOS_UPDATE_SIGNING_KEY", keyPath)
+
+	priv, _ := loadOrGenerateUpdateSigningKey()
+	if priv != nil {
+		t.Fatal("generated a key at an explicitly configured path that did not exist")
+	}
+	if _, err := os.Stat(keyPath); !os.IsNotExist(err) {
+		t.Fatalf("something was written to %s: %v", keyPath, err)
+	}
+}
+
+// Genuine first boot — no key has ever existed — is the one case that mints
+// one, and only if it can be persisted.
+func TestSigningKeyGeneratedOnFirstBoot(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), "sub", "update-signing.key")
+	t.Setenv("BLOXOS_UPDATE_SIGNING_KEY", "")
+	t.Setenv("HOME", filepath.Dir(filepath.Dir(keyPath)))
+
+	priv, source := loadOrGenerateUpdateSigningKey()
+	if priv == nil {
+		t.Fatalf("first boot did not generate a key (source=%q)", source)
+	}
+	// It must be on disk, or the next restart mints a different one and every
+	// agent installed against the first is orphaned.
+	data, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatalf("generated key was not persisted at %s: %v", source, err)
+	}
+	reloaded, err := decodeUpdatePrivateKey(data)
+	if err != nil {
+		t.Fatalf("persisted key does not decode: %v", err)
+	}
+	if !reloaded.Equal(priv) {
+		t.Fatal("persisted key differs from the one returned")
+	}
+
+	// Second call must load the same key, not mint another.
+	again, _ := loadOrGenerateUpdateSigningKey()
+	if again == nil || !again.Equal(priv) {
+		t.Fatal("a second load produced a different key")
+	}
+}
+
+// The env var name collision: the hub reads BLOXOS_UPDATE_PUBKEY as a base64
+// key VALUE, the agent reads BLOXOS_UPDATE_PUBKEY_PATH as a filesystem PATH.
+// On a single-box deployment both binaries share one environment, so the two
+// meanings must not share one name.
+func TestUpdatePubkeyEnvNamesDoNotCollide(t *testing.T) {
+	src, err := os.ReadFile("update_signing.go")
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	if strings.Contains(string(src), "BLOXOS_UPDATE_PUBKEY_PATH") {
+		t.Fatal("hub reads BLOXOS_UPDATE_PUBKEY_PATH; that name belongs to the agent's key file path")
+	}
+	if !strings.Contains(string(src), `os.Getenv("BLOXOS_UPDATE_PUBKEY")`) {
+		t.Fatal("hub no longer reads BLOXOS_UPDATE_PUBKEY as the key value")
+	}
+}
+
+/* ----------------------------------------------------------------------------
+ * Legacy-fleet policy
+ * -------------------------------------------------------------------------- */
+
+func TestLegacyBootstrapAllowed(t *testing.T) {
+	allowed := []string{
+		"https://hub.example.com",
+		"https://hub.example.com:4000",
+		"HTTPS://Hub.Example.com",
+		"http://localhost:4000",
+		"http://127.0.0.1:4000",
+		"http://[::1]:4000",
+	}
+	for _, u := range allowed {
+		t.Setenv("PUBLIC_URL", u)
+		if ok, why := legacyBootstrapAllowed(); !ok {
+			t.Errorf("PUBLIC_URL=%q should permit legacy bootstrap, refused: %s", u, why)
+		}
+	}
+
+	refused := []string{
+		"",
+		"http://hub.example.com",
+		"http://192.168.16.234:4000",
+		"http://localhost.attacker.example:4000",
+		"ftp://hub.example.com",
+		"not a url at all",
+	}
+	for _, u := range refused {
+		t.Setenv("PUBLIC_URL", u)
+		if ok, _ := legacyBootstrapAllowed(); ok {
+			t.Errorf("PUBLIC_URL=%q should refuse legacy bootstrap", u)
+		}
+	}
+}
+
+func TestAgentIsSignatureCapable(t *testing.T) {
+	setupTestServer(t)
+
+	agentRunningVersionsMu.Lock()
+	agentRunningVersions["cap-none"] = agentVersionInfo{MachineID: "cap-none"}
+	agentRunningVersions["cap-legacy"] = agentVersionInfo{MachineID: "cap-legacy", UpdateProtocol: 0}
+	agentRunningVersions["cap-new"] = agentVersionInfo{MachineID: "cap-new", UpdateProtocol: 1}
+	agentRunningVersionsMu.Unlock()
+	t.Cleanup(func() {
+		agentRunningVersionsMu.Lock()
+		delete(agentRunningVersions, "cap-none")
+		delete(agentRunningVersions, "cap-legacy")
+		delete(agentRunningVersions, "cap-new")
+		agentRunningVersionsMu.Unlock()
+	})
+
+	// Never seen at all — the WS-upgrade-time case. Unknown is not capable.
+	if agentIsSignatureCapable("cap-unseen") {
+		t.Error("an agent we have never heard from was treated as signature-capable")
+	}
+	if agentIsSignatureCapable("cap-legacy") {
+		t.Error("update_protocol=0 was treated as signature-capable")
+	}
+	if !agentIsSignatureCapable("cap-new") {
+		t.Error("update_protocol=1 was not treated as signature-capable")
+	}
+}
+
+/* ----------------------------------------------------------------------------
+ * End-to-end: what actually goes out on the agent WebSocket.
+ * -------------------------------------------------------------------------- */
+
+// legacyPolicyDialer enrols an agent, sends metrics (so the hub learns the
+// OS), optionally reports a signature-capable agent_running_version, and
+// returns every frame the hub sent within the window.
+func collectAnnounceFrames(t *testing.T, e *echo.Echo, machineID string, proto int) []string {
+	t.Helper()
+
+	server := httptest.NewServer(e)
+	t.Cleanup(server.Close)
+
+	token := seedValidToken(t)
+	conn, err := wsDialAgent(t, server, "token="+token)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() {
+		conn.Close()
+		waitAgentDrain(t, machineID, 2*time.Second)
+	})
+
+	sendMetricsMsg(t, conn, machineID)
+
+	// proto 0 models a pre-signature agent: it still reports its running SHA
+	// (Phase 8 did), it just has no update_protocol field.
+	running := map[string]interface{}{
+		"type":   "agent_running_version",
+		"sha256": strings.Repeat("11", 32),
+		"os":     "linux",
+	}
+	if proto > 0 {
+		running["update_protocol"] = proto
+	}
+	data, _ := json.Marshal(running)
+	if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+		t.Fatalf("write agent_running_version: %v", err)
+	}
+
+	var frames []string
+	deadline := time.Now().Add(1500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			break
+		}
+		var probe struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(msg, &probe) == nil && probe.Type == "agent_version" {
+			frames = append(frames, string(msg))
+		}
+	}
+	return frames
+}
+
+// stagePendingUpdate makes the hub believe it is serving a binary the agent
+// is not running, so an announce is actually warranted.
+func stagePendingUpdate(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bloxos-agent")
+	if err := os.WriteFile(bin, []byte("staged-linux-agent-binary"), 0o755); err != nil {
+		t.Fatalf("write agent binary: %v", err)
+	}
+	t.Setenv("BLOXOS_AGENT_BINARY", bin)
+	stageLinuxBinarySHA(t)
+}
+
+// A pre-signature agent on a plaintext, non-loopback hub must get nothing.
+// That agent's AgentVersionMessage has no signature field, so it would take
+// the update unverified — the exact hop an on-path attacker owns.
+func TestLegacyAgentGetsNoAnnounceOverPlaintext(t *testing.T) {
+	e := setupTestServer(t)
+	t.Setenv("PUBLIC_URL", "http://hub.example.com")
+	stagePendingUpdate(t)
+
+	frames := collectAnnounceFrames(t, e, "legacy-plaintext-machine", 0)
+	if len(frames) != 0 {
+		t.Fatalf("hub announced an update to a pre-signature agent over plaintext: %q", frames)
+	}
+}
+
+// Same agent, TLS deployment: the one migration hop is allowed, because an
+// off-host attacker cannot reach it.
+func TestLegacyAgentGetsAnnounceOverTLS(t *testing.T) {
+	e := setupTestServer(t)
+	t.Setenv("PUBLIC_URL", "https://hub.example.com")
+	stagePendingUpdate(t)
+
+	frames := collectAnnounceFrames(t, e, "legacy-tls-machine", 0)
+	if len(frames) == 0 {
+		t.Fatal("hub withheld the migration announce from a legacy agent on a TLS deployment")
+	}
+}
+
+// A signature-capable agent is announced to regardless of PUBLIC_URL scheme —
+// it verifies what it receives, and its own transport gate refuses to
+// download over plaintext anyway.
+func TestSignatureCapableAgentGetsAnnounceOverPlaintext(t *testing.T) {
+	e := setupTestServer(t)
+	t.Setenv("PUBLIC_URL", "http://hub.example.com")
+	stagePendingUpdate(t)
+
+	frames := collectAnnounceFrames(t, e, "capable-plaintext-machine", 1)
+	if len(frames) == 0 {
+		t.Fatal("hub withheld an announce from a signature-capable agent")
+	}
+	var msg struct {
+		Type      string `json:"type"`
+		SHA256    string `json:"sha256"`
+		Signature string `json:"signature"`
+		SigAlg    string `json:"sig_alg"`
+	}
+	if err := json.Unmarshal([]byte(frames[0]), &msg); err != nil {
+		t.Fatalf("parse announce: %v", err)
+	}
+	if msg.Signature == "" || msg.SigAlg != "ed25519" {
+		t.Fatalf("announce carried no usable signature: %+v", msg)
+	}
+}
+
+// TestNoSignatureMeansNoAnnounceOnTheWire is the end-to-end form of the claim
+// the old TestNoSignatureMeansNoAnnounce made in its name but never tested:
+// with no signing key, nothing goes out on the socket at all.
+func TestNoSignatureMeansNoAnnounceOnTheWire(t *testing.T) {
+	e := setupTestServer(t)
+	t.Setenv("PUBLIC_URL", "https://hub.example.com")
+	withoutSigningKey(t)
+	stagePendingUpdate(t)
+
+	frames := collectAnnounceFrames(t, e, "unsigned-hub-machine", 1)
+	if len(frames) != 0 {
+		t.Fatalf("hub announced an update it could not sign: %q", frames)
 	}
 }

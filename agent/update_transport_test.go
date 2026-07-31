@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -117,5 +119,31 @@ func TestIsLoopbackHost(t *testing.T) {
 		if isLoopbackHost(h) {
 			t.Errorf("isLoopbackHost(%q) = true, want false", h)
 		}
+	}
+}
+
+// TestDownloadRefusalWritesNothing closes the ordering gap: the transport
+// refusal has to happen before any bytes are fetched or any file is created,
+// not after. downloadAgentBinary is the second line of the gate (the first is
+// authorizeUpdate in handleAgentVersion), so a refusal here must leave the
+// destination path untouched — no truncated .new sitting next to the running
+// binary for a later stage to pick up.
+//
+// This also proves no network call is attempted: the host does not resolve.
+func TestDownloadRefusalWritesNothing(t *testing.T) {
+	prev := hubURL
+	t.Cleanup(func() { hubURL = prev })
+	hubURL = "ws://hub.invalid.example:4000/ws/agent"
+
+	dest := filepath.Join(t.TempDir(), "bloxos-agent.new")
+	err := downloadAgentBinary(dest)
+	if err == nil {
+		t.Fatal("downloadAgentBinary accepted a plaintext hub")
+	}
+	if !strings.Contains(err.Error(), "refusing to self-update") {
+		t.Fatalf("error = %v, want the transport refusal", err)
+	}
+	if _, statErr := os.Stat(dest); !os.IsNotExist(statErr) {
+		t.Fatalf("refused download still created %s (stat err=%v)", dest, statErr)
 	}
 }

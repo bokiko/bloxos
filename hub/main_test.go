@@ -1546,6 +1546,15 @@ func TestAgentVersionAnnouncedOnReconnect(t *testing.T) {
 	e := setupTestServer(t)
 	token := seedValidToken(t)
 
+	// This test's simulated agent never sends agent_running_version, so the
+	// hub cannot tell it apart from a pre-signature binary. The legacy-fleet
+	// policy (legacyBootstrapAllowed) then withholds the announce on a
+	// plaintext deployment — deliberately. Declare a TLS deployment so this
+	// test keeps asserting what it is about, which is that reconnecting via
+	// durable secret triggers an announce at all. The plaintext-refusal half
+	// is TestLegacyAgentGetsNoAnnounceOverPlaintext.
+	t.Setenv("PUBLIC_URL", "https://hub.example.com")
+
 	const stagedSHA = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 	hubAgentBinaryMu.Lock()
 	prevSHA := hubAgentBinarySHA
@@ -1697,7 +1706,7 @@ func TestRecordAgentRunningVersionTracksOS(t *testing.T) {
 	})
 
 	// A Windows agent reporting the Windows SHA is up-to-date.
-	recordAgentRunningVersion("test-machine-windows", windowsSHA, "windows")
+	recordAgentRunningVersion("test-machine-windows", windowsSHA, "windows", minSignatureCapableProtocol)
 	agentRunningVersionsMu.RLock()
 	winInfo := agentRunningVersions["test-machine-windows"]
 	agentRunningVersionsMu.RUnlock()
@@ -1710,7 +1719,7 @@ func TestRecordAgentRunningVersionTracksOS(t *testing.T) {
 
 	// A Windows agent reporting the LINUX SHA must be flagged as pending —
 	// otherwise the symptom (perpetual update loop) cannot be detected.
-	recordAgentRunningVersion("test-machine-windows", linuxSHA, "windows")
+	recordAgentRunningVersion("test-machine-windows", linuxSHA, "windows", minSignatureCapableProtocol)
 	agentRunningVersionsMu.RLock()
 	winInfo = agentRunningVersions["test-machine-windows"]
 	agentRunningVersionsMu.RUnlock()
@@ -1719,7 +1728,7 @@ func TestRecordAgentRunningVersionTracksOS(t *testing.T) {
 	}
 
 	// And vice versa for a Linux agent on the linux SHA.
-	recordAgentRunningVersion("test-machine-linux", linuxSHA, "linux")
+	recordAgentRunningVersion("test-machine-linux", linuxSHA, "linux", minSignatureCapableProtocol)
 	agentRunningVersionsMu.RLock()
 	linInfo := agentRunningVersions["test-machine-linux"]
 	agentRunningVersionsMu.RUnlock()

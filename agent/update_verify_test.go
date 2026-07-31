@@ -50,7 +50,7 @@ func pinKey(t *testing.T, pub ed25519.PublicKey) string {
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatalf("write pinned key: %v", err)
 	}
-	t.Setenv("BLOXOS_UPDATE_PUBKEY", path)
+	t.Setenv("BLOXOS_UPDATE_PUBKEY_PATH", path)
 	return path
 }
 
@@ -159,7 +159,7 @@ func TestAuthorizeUpdateRejectsPlaintextTransport(t *testing.T) {
 // the wire, so it must not update — even over TLS with a well-formed frame.
 func TestAuthorizeUpdateRequiresPinnedKey(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "absent.pub")
-	t.Setenv("BLOXOS_UPDATE_PUBKEY", missing)
+	t.Setenv("BLOXOS_UPDATE_PUBKEY_PATH", missing)
 
 	err := authorizeUpdate("wss://hub.example.com:4000/ws/agent", "/usr/local/bin/bloxos-agent",
 		"linux", testSHA, "")
@@ -199,7 +199,7 @@ func TestAuthorizeUpdateHappyPath(t *testing.T) {
 }
 
 func TestUpdatePublicKeyPathHonoursEnvOverride(t *testing.T) {
-	t.Setenv("BLOXOS_UPDATE_PUBKEY", "/custom/path.pub")
+	t.Setenv("BLOXOS_UPDATE_PUBKEY_PATH", "/custom/path.pub")
 	if got := updatePublicKeyPath("/usr/local/bin/bloxos-agent"); got != "/custom/path.pub" {
 		t.Fatalf("updatePublicKeyPath = %q, want the env override", got)
 	}

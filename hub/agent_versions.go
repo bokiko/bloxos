@@ -50,6 +50,10 @@ type agentVersionInfo struct {
 	// ("linux", "windows"). Empty for legacy agents that predate
 	// per-platform tracking — those fall back to the linux SHA.
 	OS string `json:"os,omitempty"`
+	// UpdateProtocol is the agent's self-update capability level. 0 means
+	// the agent never reported one, i.e. a binary built before signature
+	// verification existed, which cannot check what the hub announces.
+	UpdateProtocol int `json:"update_protocol"`
 }
 
 type rolloutFailure struct {
@@ -270,6 +274,19 @@ func announceVersionToAgent(machineID string, agent *ConnectedAgent) {
 		return
 	}
 
+	// Legacy fleet: an agent that has not reported update_protocol >= 1
+	// cannot verify what we send it, and no change on this side can make it
+	// able to. Only offer that one unverifiable migration hop where an
+	// off-host attacker cannot reach it.
+	if !agentIsSignatureCapable(machineID) {
+		if ok, why := legacyBootstrapAllowed(); !ok {
+			log.Printf("rollout: %s has not reported a signature-capable agent and %s; "+
+				"not announcing an update it could not verify. Re-run the hub installer on "+
+				"that host to enroll it with a pinned update key.", machineID, why)
+			return
+		}
+	}
+
 	// The agent refuses any announcement it cannot authenticate against the
 	// key its installer pinned. If we cannot produce a signature there is no
 	// update to be had — announcing anyway would only arm the 90s
@@ -416,7 +433,10 @@ func clearReconnectExpectation(machineID string) {
 // osName is the agent's reported OS ("linux" / "windows" / ""). For pre-Phase-9
 // agents that don't include the os field, an empty string is fine — the OS is
 // inferred lazily from the machine's metrics OS string.
-func recordAgentRunningVersion(machineID, runningSHA, osName string) {
+//
+// updateProtocol is the agent's self-update capability level; 0 for any agent
+// built before signature verification existed. See legacyBootstrapAllowed.
+func recordAgentRunningVersion(machineID, runningSHA, osName string, updateProtocol int) {
 	// Resolve the per-OS expected SHA. If we don't yet know the agent's
 	// OS, lookupAgentOS will check the DB metrics for it. New-on-this-hub
 	// agents return "" here and that's fine — we'll announce after we
@@ -431,16 +451,17 @@ func recordAgentRunningVersion(machineID, runningSHA, osName string) {
 	agentRunningVersionsMu.Lock()
 	prev, hadPrev := agentRunningVersions[machineID]
 	agentRunningVersions[machineID] = agentVersionInfo{
-		MachineID:     machineID,
-		Hostname:      hostname,
-		RunningSHA:    runningSHA,
-		ReportedAt:    time.Now(),
-		UpdatePending: expectedSHA != "" && runningSHA != expectedSHA,
-		OS:            osName,
+		MachineID:      machineID,
+		Hostname:       hostname,
+		RunningSHA:     runningSHA,
+		ReportedAt:     time.Now(),
+		UpdatePending:  expectedSHA != "" && runningSHA != expectedSHA,
+		OS:             osName,
+		UpdateProtocol: updateProtocol,
 	}
 	agentRunningVersionsMu.Unlock()
-	log.Printf("rollout: agent reported running=%s expected=%s os=%s pending=%v machine=%s",
-		versionShortSHA(runningSHA), versionShortSHA(expectedSHA), osName,
+	log.Printf("rollout: agent reported running=%s expected=%s os=%s proto=%d pending=%v machine=%s",
+		versionShortSHA(runningSHA), versionShortSHA(expectedSHA), osName, updateProtocol,
 		expectedSHA != "" && runningSHA != expectedSHA, machineID)
 
 	if expectedSHA != "" && runningSHA == expectedSHA {
@@ -457,7 +478,13 @@ func recordAgentRunningVersion(machineID, runningSHA, osName string) {
 	// timer that then fires a false-positive "rollout failure" log and
 	// counts toward the circuit breaker. Skip the announce when the agent
 	// is already on the announced SHA.
-	if osName != "" && (!hadPrev || prev.OS != osName) &&
+	//
+	// The capability check is part of the same story: at WS-upgrade time we
+	// had not seen this frame yet, so agentIsSignatureCapable was false and
+	// the legacy gate may have suppressed the announce. Learning the
+	// protocol level is exactly as much a reason to re-announce as learning
+	// the OS is.
+	if osName != "" && (!hadPrev || prev.OS != osName || prev.UpdateProtocol != updateProtocol) &&
 		expectedSHA != "" && runningSHA != expectedSHA {
 		agentsMu.RLock()
 		agent, online := agents[machineID]

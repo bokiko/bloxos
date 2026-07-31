@@ -300,13 +300,18 @@ func reportAgentVersion(conn *websocket.Conn, mu *sync.Mutex) {
 		log.Printf("update: failed to compute self SHA for reporting: %v", err)
 		return
 	}
-	msg := map[string]string{
+	msg := map[string]interface{}{
 		"type":   "agent_running_version",
 		"sha256": sha,
+		"os":     runtime.GOOS,
+		// Tells the hub this binary verifies signed announcements. Its
+		// absence is how the hub recognises a pre-signature agent.
+		"update_protocol": agentUpdateProtocol,
 	}
 	if err := writeJSON(conn, mu, msg); err != nil {
 		log.Printf("update: failed to report version: %v", err)
 		return
 	}
-	log.Printf("update: reported running version %s to hub", shortSHA(sha))
+	log.Printf("update: reported running version %s to hub (os=%s, update_protocol=%d)",
+		shortSHA(sha), runtime.GOOS, agentUpdateProtocol)
 }

@@ -6,6 +6,8 @@ import (
 	"encoding/base64"
 	"fmt"
 	"log"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -62,12 +64,20 @@ func updateSigningMessage(osName, sha256hex string) []byte {
 }
 
 // initUpdateSigning resolves the hub's update signing material at startup.
+//
+// Nothing in here is fatal. The hub does far more than sign agent updates,
+// and taking the whole fleet-management server offline because a key file is
+// unreadable trades a self-update outage for a total one. Every failure path
+// warns loudly and leaves signing disabled — which the operator then sees as
+// "hub provided no update signing key" in the installer output and
+// "no update signature available" in the rollout log.
 func initUpdateSigning() {
 	// Offline mode: operator declares the public key, hub holds no private key.
 	if pubB64 := strings.TrimSpace(os.Getenv("BLOXOS_UPDATE_PUBKEY")); pubB64 != "" {
 		pub, err := decodeUpdatePublicKey(pubB64)
 		if err != nil {
-			log.Fatalf("invalid BLOXOS_UPDATE_PUBKEY: %v", err)
+			log.Printf("WARNING: invalid BLOXOS_UPDATE_PUBKEY (%v); update signing disabled", err)
+			return
 		}
 		updateSigningMu.Lock()
 		updateSigningPub = pub
@@ -94,8 +104,18 @@ func initUpdateSigning() {
 		source, base64.StdEncoding.EncodeToString(pub))
 }
 
-// loadOrGenerateUpdateSigningKey mirrors loadOrGenerateJWTSecret: explicit
-// env path wins, otherwise persist under ~/.bloxos.
+// loadOrGenerateUpdateSigningKey resolves the hub's private key: explicit env
+// path wins, otherwise persist under ~/.bloxos.
+//
+// Unlike loadOrGenerateJWTSecret, this must NOT fall back to minting a fresh
+// key when the existing one merely cannot be read. A JWT secret is only
+// shared with the hub's own tokens, so regenerating it logs everyone out and
+// they log back in. This key is pinned on every agent in the fleet at install
+// time: a new key means every agent rejects every future update, silently,
+// with no recovery short of re-running the installer on each host. So a
+// generate only happens on genuine first boot — the key file is absent — and
+// only if it can actually be persisted. Any other outcome disables signing
+// and says so.
 func loadOrGenerateUpdateSigningKey() (ed25519.PrivateKey, string) {
 	keyPath := strings.TrimSpace(os.Getenv("BLOXOS_UPDATE_SIGNING_KEY"))
 	explicit := keyPath != ""
@@ -108,17 +128,34 @@ func loadOrGenerateUpdateSigningKey() (ed25519.PrivateKey, string) {
 		keyPath = filepath.Join(homeDir, ".bloxos", "update-signing.key")
 	}
 
-	if data, err := os.ReadFile(keyPath); err == nil {
-		priv, err := decodeUpdatePrivateKey(data)
-		if err != nil {
-			log.Fatalf("update signing key at %s is unusable: %v", keyPath, err)
+	data, err := os.ReadFile(keyPath)
+	switch {
+	case err == nil:
+		priv, decErr := decodeUpdatePrivateKey(data)
+		if decErr != nil {
+			log.Printf("WARNING: update signing key at %s is unusable (%v); update signing disabled. "+
+				"Restore the key or remove the file to mint a new one — note that a new key "+
+				"requires re-running the installer on every agent.", keyPath, decErr)
+			return nil, ""
 		}
 		return priv, keyPath
-	} else if explicit {
+
+	case !os.IsNotExist(err):
+		// EACCES, EISDIR, a remounted volume, a different HOME under systemd.
+		// The key probably still exists and every agent is still pinned to it.
+		// Minting a replacement here is how a fleet goes dark.
+		log.Printf("WARNING: cannot read update signing key at %s (%v); update signing disabled. "+
+			"Not generating a replacement — agents are pinned to the existing key.", keyPath, err)
+		return nil, ""
+
+	case explicit:
 		// An operator who named a key file did not mean "generate one for me".
-		log.Fatalf("cannot read BLOXOS_UPDATE_SIGNING_KEY at %s: %v", keyPath, err)
+		log.Printf("WARNING: BLOXOS_UPDATE_SIGNING_KEY points at %s, which does not exist; "+
+			"update signing disabled.", keyPath)
+		return nil, ""
 	}
 
+	// Genuine first boot on the default path: no key has ever existed here.
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		log.Printf("WARNING: cannot generate update signing key: %v", err)
@@ -126,12 +163,16 @@ func loadOrGenerateUpdateSigningKey() (ed25519.PrivateKey, string) {
 	}
 	encoded := []byte(base64.StdEncoding.EncodeToString(priv) + "\n")
 	if err := os.MkdirAll(filepath.Dir(keyPath), 0700); err != nil {
-		log.Printf("WARNING: cannot create %s: %v", filepath.Dir(keyPath), err)
-		return priv, "(in-memory, not persisted)"
+		log.Printf("WARNING: cannot create %s (%v); update signing disabled — "+
+			"an unpersisted key would change on every restart and orphan every agent "+
+			"installed against it.", filepath.Dir(keyPath), err)
+		return nil, ""
 	}
 	if err := os.WriteFile(keyPath, encoded, 0600); err != nil {
-		log.Printf("WARNING: cannot write %s: %v", keyPath, err)
-		return priv, "(in-memory, not persisted)"
+		log.Printf("WARNING: cannot write %s (%v); update signing disabled — "+
+			"an unpersisted key would change on every restart and orphan every agent "+
+			"installed against it.", keyPath, err)
+		return nil, ""
 	}
 	log.Printf("update signing: generated new key at %s", keyPath)
 	return priv, keyPath
@@ -225,6 +266,89 @@ func detachedSignatureFor(binaryPath, osName, sha string) string {
 		return ""
 	}
 	return sigB64
+}
+
+/* ----------------------------------------------------------------------------
+ * Legacy-fleet policy
+ *
+ * Signature verification lives in the agent binary, so it cannot be
+ * retrofitted into one that is already deployed. An agent built before this
+ * change has only type/sha256/version in its AgentVersionMessage —
+ * encoding/json silently discards the signature we now send — and it goes
+ * straight to performUpdate. That one migration hop is unverifiable by
+ * construction, on both sides.
+ *
+ * What the hub can still control is whether that hop is allowed to happen
+ * somewhere an attacker can reach it. So: never announce to an agent that has
+ * not reported update_protocol >= 1 unless the fleet reaches this hub over
+ * TLS, or the hub is on loopback. On a plaintext non-loopback deployment the
+ * documented path becomes re-running the installer on the host, which pins a
+ * key and enrolls the agent properly — instead of an unauthenticated
+ * over-the-wire bootstrap nobody chose.
+ * -------------------------------------------------------------------------- */
+
+// minSignatureCapableProtocol is the update_protocol an agent must report
+// before the hub will treat it as able to verify a signed announcement.
+const minSignatureCapableProtocol = 1
+
+// legacyBootstrapAllowed reports whether it is safe to announce an update to
+// an agent that cannot verify signatures, and if not, why.
+//
+// PUBLIC_URL is the signal because it is the hub operator's own declaration
+// of how the fleet reaches this hub — it is what buildInstallCommand bakes
+// into BLOXOS_HUB, so an http:// PUBLIC_URL is exactly what produces the
+// ws:// agents this policy is protecting. The hub's own listener scheme would
+// be the wrong signal: the standard deployment terminates TLS at Caddy and
+// forwards plaintext to 127.0.0.1:4000.
+func legacyBootstrapAllowed() (bool, string) {
+	publicURL := strings.TrimSpace(os.Getenv("PUBLIC_URL"))
+	if publicURL == "" {
+		return false, "PUBLIC_URL is not set, so the hub cannot establish that agents reach it over TLS"
+	}
+	u, err := url.Parse(publicURL)
+	if err != nil || u.Host == "" {
+		return false, fmt.Sprintf("PUBLIC_URL %q is not a usable URL", publicURL)
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https", "wss":
+		return true, ""
+	case "http", "ws":
+		if isLoopbackURLHost(u.Host) {
+			return true, ""
+		}
+		return false, fmt.Sprintf("PUBLIC_URL %q is plaintext and not loopback", publicURL)
+	default:
+		return false, fmt.Sprintf("PUBLIC_URL %q has scheme %q, which is not a transport agents can use", publicURL, u.Scheme)
+	}
+}
+
+// isLoopbackURLHost reports whether a URL host (with or without a port, IPv6
+// literals included) refers to the local machine. Mirrors isLoopbackHost in
+// agent/update_transport.go.
+func isLoopbackURLHost(hostport string) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
+
+// agentIsSignatureCapable reports whether the agent on machineID has told us
+// it verifies signed announcements. Unknown counts as not capable: at
+// WS-upgrade time we have not seen agent_running_version yet, and guessing
+// "probably fine" is the exact assumption this policy exists to remove.
+func agentIsSignatureCapable(machineID string) bool {
+	agentRunningVersionsMu.RLock()
+	v, ok := agentRunningVersions[machineID]
+	agentRunningVersionsMu.RUnlock()
+	return ok && v.UpdateProtocol >= minSignatureCapableProtocol
 }
 
 // announcedSignatureFor returns the signature the hub will send alongside the

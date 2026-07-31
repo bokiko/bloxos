@@ -791,13 +791,17 @@ func handleAgentWS(c echo.Context) error {
 				Type   string `json:"type"`
 				SHA256 string `json:"sha256"`
 				OS     string `json:"os"`
+				// UpdateProtocol is absent (0) on every agent built before
+				// signature verification existed. The hub uses that to decide
+				// whether announcing an update to it is safe at all.
+				UpdateProtocol int `json:"update_protocol"`
 			}
 			if err := json.Unmarshal(msg, &versionMsg); err != nil {
 				log.Printf("invalid agent_running_version JSON: %v", err)
 				continue
 			}
 			if versionMsg.SHA256 != "" && machineID != "" {
-				recordAgentRunningVersion(machineID, versionMsg.SHA256, versionMsg.OS)
+				recordAgentRunningVersion(machineID, versionMsg.SHA256, versionMsg.OS, versionMsg.UpdateProtocol)
 			}
 
 		case "command_response":
