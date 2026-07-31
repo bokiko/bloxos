@@ -302,6 +302,13 @@ export function SSEProvider({ children }: { children: ReactNode }) {
       es.close();
       esRef.current = null;
 
+      // Clear the token-refresh timer so it doesn't fire mid-backoff and race
+      // with the pending reconnect (finding: SSEContext.tsx:299-308).
+      if (sseTokenRefreshTimer.current) {
+        clearTimeout(sseTokenRefreshTimer.current);
+        sseTokenRefreshTimer.current = null;
+      }
+
       const delay = backoffRef.current;
       backoffRef.current = Math.min(backoffRef.current * 2, 30000);
       reconnectTimer.current = setTimeout(() => connectRef.current(), delay);
