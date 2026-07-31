@@ -52,7 +52,13 @@ var (
 	updateSigningKey    ed25519.PrivateKey
 	updateSigningPub    ed25519.PublicKey
 	updateSigningPubB64 string
-	updateSigningMu     sync.RWMutex
+	// updateSigningDisabledReason explains, in operator-facing terms, why the
+	// hub cannot authorise updates. Every failure path here is non-fatal and
+	// silent apart from a log line, and a hub that cannot sign looks exactly
+	// like a rollout in progress on the dashboard — so the reason has to be
+	// retrievable, not just printed to stdout once at boot.
+	updateSigningDisabledReason string
+	updateSigningMu             sync.RWMutex
 )
 
 // updateSigningMessage builds the exact byte string that gets signed.
@@ -77,6 +83,7 @@ func initUpdateSigning() {
 		pub, err := decodeUpdatePublicKey(pubB64)
 		if err != nil {
 			log.Printf("WARNING: invalid BLOXOS_UPDATE_PUBKEY (%v); update signing disabled", err)
+			setUpdateSigningDisabled(fmt.Sprintf("BLOXOS_UPDATE_PUBKEY is not a usable ed25519 public key (%v)", err))
 			return
 		}
 		updateSigningMu.Lock()
@@ -87,9 +94,10 @@ func initUpdateSigning() {
 		return
 	}
 
-	priv, source := loadOrGenerateUpdateSigningKey()
+	priv, source, disabledReason := loadOrGenerateUpdateSigningKey()
 	if priv == nil {
 		log.Println("WARNING: update signing unavailable — agents will refuse to self-update")
+		setUpdateSigningDisabled(disabledReason)
 		return
 	}
 	pub := priv.Public().(ed25519.PublicKey)
@@ -98,6 +106,7 @@ func initUpdateSigning() {
 	updateSigningKey = priv
 	updateSigningPub = pub
 	updateSigningPubB64 = base64.StdEncoding.EncodeToString(pub)
+	updateSigningDisabledReason = ""
 	updateSigningMu.Unlock()
 
 	log.Printf("update signing: key loaded from %s (public %s)",
@@ -116,14 +125,14 @@ func initUpdateSigning() {
 // generate only happens on genuine first boot — the key file is absent — and
 // only if it can actually be persisted. Any other outcome disables signing
 // and says so.
-func loadOrGenerateUpdateSigningKey() (ed25519.PrivateKey, string) {
+func loadOrGenerateUpdateSigningKey() (key ed25519.PrivateKey, source string, disabledReason string) {
 	keyPath := strings.TrimSpace(os.Getenv("BLOXOS_UPDATE_SIGNING_KEY"))
 	explicit := keyPath != ""
 	if !explicit {
 		homeDir, err := os.UserHomeDir()
 		if err != nil {
 			log.Printf("WARNING: cannot determine home dir for update signing key: %v", err)
-			return nil, ""
+			return nil, "", fmt.Sprintf("the hub cannot determine its home directory to locate the signing key (%v)", err)
 		}
 		keyPath = filepath.Join(homeDir, ".bloxos", "update-signing.key")
 	}
@@ -136,9 +145,9 @@ func loadOrGenerateUpdateSigningKey() (ed25519.PrivateKey, string) {
 			log.Printf("WARNING: update signing key at %s is unusable (%v); update signing disabled. "+
 				"Restore the key or remove the file to mint a new one — note that a new key "+
 				"requires re-running the installer on every agent.", keyPath, decErr)
-			return nil, ""
+			return nil, "", fmt.Sprintf("the signing key at %s is corrupt (%v)", keyPath, decErr)
 		}
-		return priv, keyPath
+		return priv, keyPath, ""
 
 	case !os.IsNotExist(err):
 		// EACCES, EISDIR, a remounted volume, a different HOME under systemd.
@@ -146,36 +155,61 @@ func loadOrGenerateUpdateSigningKey() (ed25519.PrivateKey, string) {
 		// Minting a replacement here is how a fleet goes dark.
 		log.Printf("WARNING: cannot read update signing key at %s (%v); update signing disabled. "+
 			"Not generating a replacement — agents are pinned to the existing key.", keyPath, err)
-		return nil, ""
+		return nil, "", fmt.Sprintf("the signing key at %s cannot be read (%v); no replacement was generated because agents are pinned to the existing key", keyPath, err)
 
 	case explicit:
 		// An operator who named a key file did not mean "generate one for me".
 		log.Printf("WARNING: BLOXOS_UPDATE_SIGNING_KEY points at %s, which does not exist; "+
 			"update signing disabled.", keyPath)
-		return nil, ""
+		return nil, "", fmt.Sprintf("BLOXOS_UPDATE_SIGNING_KEY points at %s, which does not exist", keyPath)
 	}
 
 	// Genuine first boot on the default path: no key has ever existed here.
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		log.Printf("WARNING: cannot generate update signing key: %v", err)
-		return nil, ""
+		return nil, "", fmt.Sprintf("the hub could not generate a signing key (%v)", err)
 	}
 	encoded := []byte(base64.StdEncoding.EncodeToString(priv) + "\n")
 	if err := os.MkdirAll(filepath.Dir(keyPath), 0700); err != nil {
 		log.Printf("WARNING: cannot create %s (%v); update signing disabled — "+
 			"an unpersisted key would change on every restart and orphan every agent "+
 			"installed against it.", filepath.Dir(keyPath), err)
-		return nil, ""
+		return nil, "", fmt.Sprintf("the signing key directory %s cannot be created (%v), so a generated key could not be persisted", filepath.Dir(keyPath), err)
 	}
 	if err := os.WriteFile(keyPath, encoded, 0600); err != nil {
 		log.Printf("WARNING: cannot write %s (%v); update signing disabled — "+
 			"an unpersisted key would change on every restart and orphan every agent "+
 			"installed against it.", keyPath, err)
-		return nil, ""
+		return nil, "", fmt.Sprintf("the signing key at %s could not be written (%v), so a generated key could not be persisted", keyPath, err)
 	}
 	log.Printf("update signing: generated new key at %s", keyPath)
-	return priv, keyPath
+	return priv, keyPath, ""
+}
+
+// setUpdateSigningDisabled records why the hub cannot authorise updates.
+func setUpdateSigningDisabled(reason string) {
+	if reason == "" {
+		reason = "update signing is not configured"
+	}
+	updateSigningMu.Lock()
+	updateSigningDisabledReason = reason
+	updateSigningMu.Unlock()
+}
+
+// updateSigningStatus reports whether the hub has any means of authorising an
+// update, and if not, why. Offline mode counts as enabled: the hub holds no
+// private key but can still announce detached <binary>.sig signatures.
+func updateSigningStatus() (enabled bool, reason string) {
+	updateSigningMu.RLock()
+	defer updateSigningMu.RUnlock()
+	if updateSigningKey != nil || updateSigningPub != nil {
+		return true, ""
+	}
+	if updateSigningDisabledReason != "" {
+		return false, updateSigningDisabledReason
+	}
+	return false, "update signing is not configured"
 }
 
 func decodeUpdatePublicKey(b64 string) (ed25519.PublicKey, error) {
@@ -269,7 +303,7 @@ func detachedSignatureFor(binaryPath, osName, sha string) string {
 }
 
 /* ----------------------------------------------------------------------------
- * Legacy-fleet policy
+ * Transport policy for announcements
  *
  * Signature verification lives in the agent binary, so it cannot be
  * retrofitted into one that is already deployed. An agent built before this
@@ -291,8 +325,19 @@ func detachedSignatureFor(binaryPath, osName, sha string) string {
 // before the hub will treat it as able to verify a signed announcement.
 const minSignatureCapableProtocol = 1
 
-// legacyBootstrapAllowed reports whether it is safe to announce an update to
-// an agent that cannot verify signatures, and if not, why.
+// updateTransportUsable reports whether the transport the fleet uses to reach
+// this hub can carry a self-update at all, and if not, why.
+//
+// It gates announcements to EVERY agent, not just pre-signature ones. For a
+// legacy agent the reason is security: that binary cannot verify what it
+// receives, so the unverifiable migration hop must not happen anywhere an
+// off-host attacker can reach it. For a signature-capable agent the reason is
+// that it will refuse the download itself (agent/update_transport.go), so
+// announcing achieves nothing except arming a 90s reconnect-expectation timer
+// for a reconnect that will never come — which expires into a rollout failure
+// and, at two machines, trips the circuit breaker and pauses the whole fleet.
+// Announcing an update the recipient is designed to decline is not a
+// no-op; it is a self-inflicted outage. Credit to Codex for catching it.
 //
 // PUBLIC_URL is the signal because it is the hub operator's own declaration
 // of how the fleet reaches this hub — it is what buildInstallCommand bakes
@@ -300,10 +345,10 @@ const minSignatureCapableProtocol = 1
 // ws:// agents this policy is protecting. The hub's own listener scheme would
 // be the wrong signal: the standard deployment terminates TLS at Caddy and
 // forwards plaintext to 127.0.0.1:4000.
-func legacyBootstrapAllowed() (bool, string) {
+func updateTransportUsable() (bool, string) {
 	publicURL := strings.TrimSpace(os.Getenv("PUBLIC_URL"))
 	if publicURL == "" {
-		return false, "PUBLIC_URL is not set, so the hub cannot establish that agents reach it over TLS"
+		return false, "PUBLIC_URL is not set, so the hub cannot establish that agents reach it over a transport that permits self-update"
 	}
 	u, err := url.Parse(publicURL)
 	if err != nil || u.Host == "" {
@@ -349,6 +394,27 @@ func agentIsSignatureCapable(machineID string) bool {
 	v, ok := agentRunningVersions[machineID]
 	agentRunningVersionsMu.RUnlock()
 	return ok && v.UpdateProtocol >= minSignatureCapableProtocol
+}
+
+// haveAgentVersionReport reports whether the agent has ever told us its
+// running version on this hub process.
+func haveAgentVersionReport(machineID string) bool {
+	agentRunningVersionsMu.RLock()
+	_, ok := agentRunningVersions[machineID]
+	agentRunningVersionsMu.RUnlock()
+	return ok
+}
+
+// agentTransportPermitsUpdate reports whether the agent said its own hub URL
+// permits self-update. Unknown counts as no, for the same reason unknown
+// capability counts as not capable: at WS-upgrade time we have not seen the
+// frame yet, and announcing on an assumption is what arms a reconnect timer
+// for an update that never happens.
+func agentTransportPermitsUpdate(machineID string) bool {
+	agentRunningVersionsMu.RLock()
+	v, ok := agentRunningVersions[machineID]
+	agentRunningVersionsMu.RUnlock()
+	return ok && v.UpdateTransportOK
 }
 
 // announcedSignatureFor returns the signature the hub will send alongside the

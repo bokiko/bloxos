@@ -307,11 +307,15 @@ func reportAgentVersion(conn *websocket.Conn, mu *sync.Mutex) {
 		// Tells the hub this binary verifies signed announcements. Its
 		// absence is how the hub recognises a pre-signature agent.
 		"update_protocol": agentUpdateProtocol,
+		// Whether this agent's own hub URL permits self-update. Saves the
+		// hub from inferring it from PUBLIC_URL, which is wrong for any
+		// agent configured differently from the fleet default.
+		"update_transport_ok": selfUpdateTransportOK(),
 	}
 	if err := writeJSON(conn, mu, msg); err != nil {
 		log.Printf("update: failed to report version: %v", err)
 		return
 	}
-	log.Printf("update: reported running version %s to hub (os=%s, update_protocol=%d)",
-		shortSHA(sha), runtime.GOOS, agentUpdateProtocol)
+	log.Printf("update: reported running version %s to hub (os=%s, update_protocol=%d, transport_ok=%v)",
+		shortSHA(sha), runtime.GOOS, agentUpdateProtocol, selfUpdateTransportOK())
 }

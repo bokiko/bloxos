@@ -388,10 +388,13 @@ func TestSigningKeyNotRegeneratedOnNonENOENTReadError(t *testing.T) {
 	// straight at the trap.
 	t.Setenv("BLOXOS_UPDATE_SIGNING_KEY", keyPath)
 
-	priv, source := loadOrGenerateUpdateSigningKey()
+	priv, source, reason := loadOrGenerateUpdateSigningKey()
 	if priv != nil {
 		t.Fatalf("minted a new signing key after a non-ENOENT read error (source=%q) — "+
 			"every pinned agent in the fleet would start rejecting updates", source)
+	}
+	if !strings.Contains(reason, "no replacement was generated") {
+		t.Fatalf("disabled reason = %q, want it to say no replacement was generated", reason)
 	}
 	// And nothing was written over the path.
 	info, err := os.Stat(keyPath)
@@ -409,9 +412,14 @@ func TestCorruptSigningKeyDisablesSigningWithoutKillingHub(t *testing.T) {
 	}
 	t.Setenv("BLOXOS_UPDATE_SIGNING_KEY", keyPath)
 
-	priv, _ := loadOrGenerateUpdateSigningKey()
+	priv, _, reason := loadOrGenerateUpdateSigningKey()
 	if priv != nil {
 		t.Fatal("a corrupt key file yielded a usable key")
+	}
+	// The reason has to be retrievable, not just logged: a hub that cannot
+	// sign looks exactly like a rollout in progress on the dashboard.
+	if !strings.Contains(reason, "corrupt") {
+		t.Fatalf("disabled reason = %q, want it to name the corrupt key", reason)
 	}
 	// Reaching this line at all is the assertion that matters: the previous
 	// implementation called log.Fatalf here, which would have taken the test
@@ -424,9 +432,12 @@ func TestExplicitSigningKeyPathMissingDoesNotGenerate(t *testing.T) {
 	keyPath := filepath.Join(t.TempDir(), "nope", "update-signing.key")
 	t.Setenv("BLOXOS_UPDATE_SIGNING_KEY", keyPath)
 
-	priv, _ := loadOrGenerateUpdateSigningKey()
+	priv, _, reason := loadOrGenerateUpdateSigningKey()
 	if priv != nil {
 		t.Fatal("generated a key at an explicitly configured path that did not exist")
+	}
+	if !strings.Contains(reason, keyPath) {
+		t.Fatalf("disabled reason = %q, want it to name %s", reason, keyPath)
 	}
 	if _, err := os.Stat(keyPath); !os.IsNotExist(err) {
 		t.Fatalf("something was written to %s: %v", keyPath, err)
@@ -440,7 +451,7 @@ func TestSigningKeyGeneratedOnFirstBoot(t *testing.T) {
 	t.Setenv("BLOXOS_UPDATE_SIGNING_KEY", "")
 	t.Setenv("HOME", filepath.Dir(filepath.Dir(keyPath)))
 
-	priv, source := loadOrGenerateUpdateSigningKey()
+	priv, source, _ := loadOrGenerateUpdateSigningKey()
 	if priv == nil {
 		t.Fatalf("first boot did not generate a key (source=%q)", source)
 	}
@@ -459,7 +470,7 @@ func TestSigningKeyGeneratedOnFirstBoot(t *testing.T) {
 	}
 
 	// Second call must load the same key, not mint another.
-	again, _ := loadOrGenerateUpdateSigningKey()
+	again, _, _ := loadOrGenerateUpdateSigningKey()
 	if again == nil || !again.Equal(priv) {
 		t.Fatal("a second load produced a different key")
 	}
@@ -486,7 +497,7 @@ func TestUpdatePubkeyEnvNamesDoNotCollide(t *testing.T) {
  * Legacy-fleet policy
  * -------------------------------------------------------------------------- */
 
-func TestLegacyBootstrapAllowed(t *testing.T) {
+func TestUpdateTransportUsable(t *testing.T) {
 	allowed := []string{
 		"https://hub.example.com",
 		"https://hub.example.com:4000",
@@ -497,7 +508,7 @@ func TestLegacyBootstrapAllowed(t *testing.T) {
 	}
 	for _, u := range allowed {
 		t.Setenv("PUBLIC_URL", u)
-		if ok, why := legacyBootstrapAllowed(); !ok {
+		if ok, why := updateTransportUsable(); !ok {
 			t.Errorf("PUBLIC_URL=%q should permit legacy bootstrap, refused: %s", u, why)
 		}
 	}
@@ -512,7 +523,7 @@ func TestLegacyBootstrapAllowed(t *testing.T) {
 	}
 	for _, u := range refused {
 		t.Setenv("PUBLIC_URL", u)
-		if ok, _ := legacyBootstrapAllowed(); ok {
+		if ok, _ := updateTransportUsable(); ok {
 			t.Errorf("PUBLIC_URL=%q should refuse legacy bootstrap", u)
 		}
 	}
@@ -550,10 +561,21 @@ func TestAgentIsSignatureCapable(t *testing.T) {
  * End-to-end: what actually goes out on the agent WebSocket.
  * -------------------------------------------------------------------------- */
 
-// legacyPolicyDialer enrols an agent, sends metrics (so the hub learns the
-// OS), optionally reports a signature-capable agent_running_version, and
-// returns every frame the hub sent within the window.
-func collectAnnounceFrames(t *testing.T, e *echo.Echo, machineID string, proto int) []string {
+// announceProbe describes the agent collectAnnounceFrames simulates.
+type announceProbe struct {
+	machineID string
+	// proto 0 models a pre-signature agent: it reports its running SHA
+	// (Phase 8 did) but has no update_protocol field at all.
+	proto int
+	// transportOK is what a signature-capable agent reports about its own
+	// BLOXOS_HUB. Ignored when proto is 0.
+	transportOK bool
+}
+
+// collectAnnounceFrames enrols an agent, sends metrics so the hub learns the
+// OS, reports agent_running_version, and returns every agent_version frame
+// the hub sent within the window.
+func collectAnnounceFrames(t *testing.T, e *echo.Echo, p announceProbe) []string {
 	t.Helper()
 
 	server := httptest.NewServer(e)
@@ -566,20 +588,19 @@ func collectAnnounceFrames(t *testing.T, e *echo.Echo, machineID string, proto i
 	}
 	t.Cleanup(func() {
 		conn.Close()
-		waitAgentDrain(t, machineID, 2*time.Second)
+		waitAgentDrain(t, p.machineID, 2*time.Second)
 	})
 
-	sendMetricsMsg(t, conn, machineID)
+	sendMetricsMsg(t, conn, p.machineID)
 
-	// proto 0 models a pre-signature agent: it still reports its running SHA
-	// (Phase 8 did), it just has no update_protocol field.
 	running := map[string]interface{}{
 		"type":   "agent_running_version",
 		"sha256": strings.Repeat("11", 32),
 		"os":     "linux",
 	}
-	if proto > 0 {
-		running["update_protocol"] = proto
+	if p.proto > 0 {
+		running["update_protocol"] = p.proto
+		running["update_transport_ok"] = p.transportOK
 	}
 	data, _ := json.Marshal(running)
 	if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
@@ -604,6 +625,28 @@ func collectAnnounceFrames(t *testing.T, e *echo.Echo, machineID string, proto i
 	return frames
 }
 
+// assertNoReconnectExpectation is the assertion that actually matters when an
+// announce is withheld. An armed reconnect expectation for an update the agent
+// will never take expires into a rollout failure; two of those trip the
+// process-wide circuit breaker and pause updates for the whole fleet, with
+// rolloutPauseReason blaming agent health for a refusal the hub provoked.
+func assertNoReconnectExpectation(t *testing.T, machineID string) {
+	t.Helper()
+	pendingReconnectsMu.Lock()
+	_, armed := pendingReconnects[machineID]
+	pendingReconnectsMu.Unlock()
+	if armed {
+		t.Fatalf("a reconnect expectation was armed for %s despite no announce being sent — "+
+			"it will expire into a false rollout failure and can trip the circuit breaker", machineID)
+	}
+	rolloutPausedMu.RLock()
+	paused, reason := rolloutPaused, rolloutPauseReason
+	rolloutPausedMu.RUnlock()
+	if paused {
+		t.Fatalf("rollout is paused: %s", reason)
+	}
+}
+
 // stagePendingUpdate makes the hub believe it is serving a binary the agent
 // is not running, so an announce is actually warranted.
 func stagePendingUpdate(t *testing.T) {
@@ -625,36 +668,58 @@ func TestLegacyAgentGetsNoAnnounceOverPlaintext(t *testing.T) {
 	t.Setenv("PUBLIC_URL", "http://hub.example.com")
 	stagePendingUpdate(t)
 
-	frames := collectAnnounceFrames(t, e, "legacy-plaintext-machine", 0)
+	const machineID = "legacy-plaintext-machine"
+	frames := collectAnnounceFrames(t, e, announceProbe{machineID: machineID, proto: 0})
 	if len(frames) != 0 {
 		t.Fatalf("hub announced an update to a pre-signature agent over plaintext: %q", frames)
 	}
+	assertNoReconnectExpectation(t, machineID)
 }
 
 // Same agent, TLS deployment: the one migration hop is allowed, because an
-// off-host attacker cannot reach it.
+// off-host attacker cannot reach it. This is the control for the test above —
+// same helper, same proto — so the plaintext case cannot pass vacuously.
 func TestLegacyAgentGetsAnnounceOverTLS(t *testing.T) {
 	e := setupTestServer(t)
 	t.Setenv("PUBLIC_URL", "https://hub.example.com")
 	stagePendingUpdate(t)
 
-	frames := collectAnnounceFrames(t, e, "legacy-tls-machine", 0)
+	frames := collectAnnounceFrames(t, e, announceProbe{machineID: "legacy-tls-machine", proto: 0})
 	if len(frames) == 0 {
 		t.Fatal("hub withheld the migration announce from a legacy agent on a TLS deployment")
 	}
 }
 
-// A signature-capable agent is announced to regardless of PUBLIC_URL scheme —
-// it verifies what it receives, and its own transport gate refuses to
-// download over plaintext anyway.
-func TestSignatureCapableAgentGetsAnnounceOverPlaintext(t *testing.T) {
+// A signature-capable agent that reports its own transport cannot self-update
+// must get nothing — it would refuse the download, and announcing only arms a
+// reconnect expectation that expires into a false rollout failure. This test
+// previously asserted the opposite and locked in that bug; Codex caught it.
+func TestNoAnnounceWhenAgentReportsPlaintextTransport(t *testing.T) {
 	e := setupTestServer(t)
-	t.Setenv("PUBLIC_URL", "http://hub.example.com")
+	// PUBLIC_URL says TLS. The agent says otherwise about its own hub URL,
+	// and the agent is the one that has to perform the download — this is
+	// the mixed deployment PUBLIC_URL alone cannot see.
+	t.Setenv("PUBLIC_URL", "https://hub.example.com")
 	stagePendingUpdate(t)
 
-	frames := collectAnnounceFrames(t, e, "capable-plaintext-machine", 1)
+	const machineID = "capable-plaintext-machine"
+	frames := collectAnnounceFrames(t, e, announceProbe{machineID: machineID, proto: 1, transportOK: false})
+	if len(frames) != 0 {
+		t.Fatalf("hub announced an update the agent had already said it would refuse: %q", frames)
+	}
+	assertNoReconnectExpectation(t, machineID)
+}
+
+// And the same agent reporting a usable transport is announced to normally,
+// with a signature it can actually verify.
+func TestSignatureCapableAgentWithUsableTransportGetsSignedAnnounce(t *testing.T) {
+	e := setupTestServer(t)
+	t.Setenv("PUBLIC_URL", "https://hub.example.com")
+	stagePendingUpdate(t)
+
+	frames := collectAnnounceFrames(t, e, announceProbe{machineID: "capable-tls-machine", proto: 1, transportOK: true})
 	if len(frames) == 0 {
-		t.Fatal("hub withheld an announce from a signature-capable agent")
+		t.Fatal("hub withheld an announce from a signature-capable agent on a usable transport")
 	}
 	var msg struct {
 		Type      string `json:"type"`
@@ -679,8 +744,81 @@ func TestNoSignatureMeansNoAnnounceOnTheWire(t *testing.T) {
 	withoutSigningKey(t)
 	stagePendingUpdate(t)
 
-	frames := collectAnnounceFrames(t, e, "unsigned-hub-machine", 1)
+	const machineID = "unsigned-hub-machine"
+	frames := collectAnnounceFrames(t, e, announceProbe{machineID: machineID, proto: 1, transportOK: true})
 	if len(frames) != 0 {
 		t.Fatalf("hub announced an update it could not sign: %q", frames)
+	}
+	assertNoReconnectExpectation(t, machineID)
+}
+
+// Whatever the hub withholds, GET /api/versions must say why. Otherwise a
+// fleet that has permanently stopped updating is indistinguishable from a
+// rollout in progress: update_pending true on every agent, forever.
+func TestVersionsAPIReportsWhyUpdatesAreWithheld(t *testing.T) {
+	e := setupTestServer(t)
+	t.Setenv("PUBLIC_URL", "https://hub.example.com")
+	withoutSigningKey(t)
+	setUpdateSigningDisabled("the signing key at /etc/bloxos/x.key is corrupt")
+	stagePendingUpdate(t)
+
+	sha := announcedSHAFor("linux")
+	if sha == "" {
+		t.Fatal("test setup: no linux SHA staged")
+	}
+	agentRunningVersionsMu.Lock()
+	agentRunningVersions["api-machine"] = agentVersionInfo{
+		MachineID: "api-machine", OS: "linux", RunningSHA: strings.Repeat("22", 32),
+		UpdateProtocol: 1, UpdateTransportOK: true,
+	}
+	agentRunningVersionsMu.Unlock()
+	t.Cleanup(func() {
+		agentRunningVersionsMu.Lock()
+		delete(agentRunningVersions, "api-machine")
+		agentRunningVersionsMu.Unlock()
+	})
+
+	markCredentialsRotated(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/versions", nil)
+	req.Header.Set("Authorization", "Bearer "+loginAndGetToken(t, e))
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		SigningEnabled        bool   `json:"signing_enabled"`
+		SigningDisabledReason string `json:"signing_disabled_reason"`
+		Agents                []struct {
+			MachineID           string `json:"machine_id"`
+			UpdatePending       bool   `json:"update_pending"`
+			UpdateBlockedReason string `json:"update_blocked_reason"`
+		} `json:"agents"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse: %v (body=%s)", err, rec.Body.String())
+	}
+	if resp.SigningEnabled {
+		t.Fatal("signing_enabled is true with no signing material")
+	}
+	if !strings.Contains(resp.SigningDisabledReason, "corrupt") {
+		t.Fatalf("signing_disabled_reason = %q, want the corrupt-key reason", resp.SigningDisabledReason)
+	}
+	var found bool
+	for _, a := range resp.Agents {
+		if a.MachineID != "api-machine" {
+			continue
+		}
+		found = true
+		if !a.UpdatePending {
+			t.Fatal("test setup: expected a pending update")
+		}
+		if !strings.Contains(a.UpdateBlockedReason, "cannot sign") {
+			t.Fatalf("update_blocked_reason = %q, want it to name the signing failure", a.UpdateBlockedReason)
+		}
+	}
+	if !found {
+		t.Fatalf("api-machine missing from response: %s", rec.Body.String())
 	}
 }

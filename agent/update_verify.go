@@ -61,6 +61,17 @@ func updateSigningMessage(osName, sha256hex string) []byte {
 		strings.ToLower(strings.TrimSpace(sha256hex)))
 }
 
+// selfUpdateTransportOK reports whether this agent's actual hub URL permits a
+// self-update at all. Reported to the hub in every agent_running_version
+// frame so it does not have to guess from PUBLIC_URL: in a mixed deployment
+// the guess is wrong for exactly the machines that will refuse, and a hub
+// that announces to a refusing agent arms a reconnect expectation that
+// expires into a false rollout failure.
+func selfUpdateTransportOK() bool {
+	_, err := agentDownloadURL(hubURL, "")
+	return err == nil
+}
+
 // selfExePath resolves this process's own binary, following symlinks.
 func selfExePath() (string, error) {
 	exe, err := os.Executable()

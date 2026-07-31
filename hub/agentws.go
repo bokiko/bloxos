@@ -795,13 +795,22 @@ func handleAgentWS(c echo.Context) error {
 				// signature verification existed. The hub uses that to decide
 				// whether announcing an update to it is safe at all.
 				UpdateProtocol int `json:"update_protocol"`
+				// UpdateTransportOK is the agent's own answer to whether its
+				// BLOXOS_HUB permits self-update, computed from the URL it is
+				// actually connected to rather than guessed from PUBLIC_URL.
+				UpdateTransportOK bool `json:"update_transport_ok"`
 			}
 			if err := json.Unmarshal(msg, &versionMsg); err != nil {
 				log.Printf("invalid agent_running_version JSON: %v", err)
 				continue
 			}
 			if versionMsg.SHA256 != "" && machineID != "" {
-				recordAgentRunningVersion(machineID, versionMsg.SHA256, versionMsg.OS, versionMsg.UpdateProtocol)
+				recordAgentRunningVersion(machineID, agentVersionReport{
+					RunningSHA:     versionMsg.SHA256,
+					OS:             versionMsg.OS,
+					UpdateProtocol: versionMsg.UpdateProtocol,
+					TransportOK:    versionMsg.UpdateTransportOK,
+				})
 			}
 
 		case "command_response":

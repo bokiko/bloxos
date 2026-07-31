@@ -1546,13 +1546,12 @@ func TestAgentVersionAnnouncedOnReconnect(t *testing.T) {
 	e := setupTestServer(t)
 	token := seedValidToken(t)
 
-	// This test's simulated agent never sends agent_running_version, so the
-	// hub cannot tell it apart from a pre-signature binary. The legacy-fleet
-	// policy (legacyBootstrapAllowed) then withholds the announce on a
-	// plaintext deployment — deliberately. Declare a TLS deployment so this
-	// test keeps asserting what it is about, which is that reconnecting via
-	// durable secret triggers an announce at all. The plaintext-refusal half
-	// is TestLegacyAgentGetsNoAnnounceOverPlaintext.
+	// The hub no longer announces to an agent it has heard nothing from —
+	// at WS-upgrade time it knows neither the agent's capability nor its
+	// transport, and guessing is what arms reconnect timers for updates
+	// that get refused. Real agents always send agent_running_version on
+	// connect (reportAgentVersion), so this test does too; without it the
+	// simulated agent is less faithful than the thing it stands in for.
 	t.Setenv("PUBLIC_URL", "https://hub.example.com")
 
 	const stagedSHA = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
@@ -1610,7 +1609,18 @@ func TestAgentVersionAnnouncedOnReconnect(t *testing.T) {
 	}
 	defer conn2.Close()
 
-	conn2.SetReadDeadline(time.Now().Add(2 * time.Second))
+	running, _ := json.Marshal(map[string]interface{}{
+		"type":                "agent_running_version",
+		"sha256":              "0000000000000000000000000000000000000000000000000000000000000000",
+		"os":                  "linux",
+		"update_protocol":     1,
+		"update_transport_ok": true,
+	})
+	if err := conn2.WriteMessage(websocket.TextMessage, running); err != nil {
+		t.Fatalf("write agent_running_version: %v", err)
+	}
+
+	conn2.SetReadDeadline(time.Now().Add(3 * time.Second))
 	_, msg, err := conn2.ReadMessage()
 	if err != nil {
 		t.Fatalf("expected agent_version frame on reconnect, read err: %v", err)
@@ -1706,7 +1716,7 @@ func TestRecordAgentRunningVersionTracksOS(t *testing.T) {
 	})
 
 	// A Windows agent reporting the Windows SHA is up-to-date.
-	recordAgentRunningVersion("test-machine-windows", windowsSHA, "windows", minSignatureCapableProtocol)
+	recordAgentRunningVersion("test-machine-windows", agentVersionReport{RunningSHA: windowsSHA, OS: "windows", UpdateProtocol: minSignatureCapableProtocol, TransportOK: true})
 	agentRunningVersionsMu.RLock()
 	winInfo := agentRunningVersions["test-machine-windows"]
 	agentRunningVersionsMu.RUnlock()
@@ -1719,7 +1729,7 @@ func TestRecordAgentRunningVersionTracksOS(t *testing.T) {
 
 	// A Windows agent reporting the LINUX SHA must be flagged as pending —
 	// otherwise the symptom (perpetual update loop) cannot be detected.
-	recordAgentRunningVersion("test-machine-windows", linuxSHA, "windows", minSignatureCapableProtocol)
+	recordAgentRunningVersion("test-machine-windows", agentVersionReport{RunningSHA: linuxSHA, OS: "windows", UpdateProtocol: minSignatureCapableProtocol, TransportOK: true})
 	agentRunningVersionsMu.RLock()
 	winInfo = agentRunningVersions["test-machine-windows"]
 	agentRunningVersionsMu.RUnlock()
@@ -1728,7 +1738,7 @@ func TestRecordAgentRunningVersionTracksOS(t *testing.T) {
 	}
 
 	// And vice versa for a Linux agent on the linux SHA.
-	recordAgentRunningVersion("test-machine-linux", linuxSHA, "linux", minSignatureCapableProtocol)
+	recordAgentRunningVersion("test-machine-linux", agentVersionReport{RunningSHA: linuxSHA, OS: "linux", UpdateProtocol: minSignatureCapableProtocol, TransportOK: true})
 	agentRunningVersionsMu.RLock()
 	linInfo := agentRunningVersions["test-machine-linux"]
 	agentRunningVersionsMu.RUnlock()

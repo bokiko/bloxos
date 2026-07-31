@@ -54,6 +54,36 @@ type agentVersionInfo struct {
 	// the agent never reported one, i.e. a binary built before signature
 	// verification existed, which cannot check what the hub announces.
 	UpdateProtocol int `json:"update_protocol"`
+	// UpdateTransportOK is what the agent itself said about whether its
+	// BLOXOS_HUB permits self-update. Only meaningful when UpdateProtocol
+	// >= 1; older agents have no transport gate and never report it.
+	//
+	// This exists because PUBLIC_URL is the hub *guessing* at the agent's
+	// transport. In a mixed deployment — PUBLIC_URL https, some agents
+	// hand-configured with ws:// — the guess is wrong for exactly the
+	// machines that will refuse, and nothing else distinguishes them.
+	UpdateTransportOK bool `json:"update_transport_ok"`
+	// UpdateBlockedReason explains, when UpdatePending is true, why the hub
+	// is not announcing the update. Empty means nothing is blocking it.
+	// Without this an operator cannot tell a rollout in progress from a
+	// rollout that will never happen — both show update_pending on every
+	// agent, indefinitely.
+	UpdateBlockedReason string `json:"update_blocked_reason,omitempty"`
+}
+
+// agentVersionReport is what an agent tells the hub about itself in an
+// agent_running_version frame. A struct rather than positional parameters:
+// the fields are two strings, an int and a bool, which is precisely the
+// shape that goes wrong silently at a call site.
+type agentVersionReport struct {
+	RunningSHA string
+	OS         string
+	// UpdateProtocol is 0 for any agent built before signature verification.
+	UpdateProtocol int
+	// TransportOK is the agent's own answer to "can I self-update over the
+	// hub URL I am actually connected to". Meaningless when UpdateProtocol
+	// is 0 — those agents have no transport gate.
+	TransportOK bool
 }
 
 type rolloutFailure struct {
@@ -274,29 +304,9 @@ func announceVersionToAgent(machineID string, agent *ConnectedAgent) {
 		return
 	}
 
-	// Legacy fleet: an agent that has not reported update_protocol >= 1
-	// cannot verify what we send it, and no change on this side can make it
-	// able to. Only offer that one unverifiable migration hop where an
-	// off-host attacker cannot reach it.
-	if !agentIsSignatureCapable(machineID) {
-		if ok, why := legacyBootstrapAllowed(); !ok {
-			log.Printf("rollout: %s has not reported a signature-capable agent and %s; "+
-				"not announcing an update it could not verify. Re-run the hub installer on "+
-				"that host to enroll it with a pinned update key.", machineID, why)
-			return
-		}
-	}
-
-	// The agent refuses any announcement it cannot authenticate against the
-	// key its installer pinned. If we cannot produce a signature there is no
-	// update to be had — announcing anyway would only arm the 90s
-	// reconnect-expectation timer below for a reconnect that never comes,
-	// and trip the rollout circuit breaker on a healthy fleet.
-	sig := announcedSignatureFor(osName, sha)
-	if sig == "" {
-		log.Printf("rollout: no update signature available for %s, not announcing to %s "+
-			"(set BLOXOS_UPDATE_SIGNING_KEY, or place a signed <binary>.sig next to the agent binary)",
-			osName, machineID)
+	sig, blocked := announceDecision(machineID, osName, sha)
+	if blocked != "" {
+		log.Printf("rollout: not announcing to %s — %s", machineID, blocked)
 		return
 	}
 
@@ -317,6 +327,83 @@ func announceVersionToAgent(machineID string, agent *ConnectedAgent) {
 	}
 
 	expectReconnect(machineID)
+}
+
+// announceDecision is the single place that decides whether an update may be
+// announced to a machine. It returns the signature to send, or a
+// human-readable reason it is being withheld.
+//
+// Both announceVersionToAgent and handleListVersions go through here. Every
+// withholding path in this PR is fail-closed and silent apart from a log
+// line, and on the dashboard a fleet that has stopped updating because the
+// hub cannot sign looks exactly like a rollout in progress: update_pending
+// true on every agent, forever. Sharing this function is what keeps "why the
+// API says nothing is happening" and "why nothing is actually happening" from
+// drifting apart.
+//
+// Rollout pause is deliberately not handled here — it is fleet-wide and
+// already reported as rollout_paused / pause_reason.
+func announceDecision(machineID, osName, sha string) (sig string, blockedBecause string) {
+	if sha == "" {
+		if osName == "" {
+			return "", "the hub has not yet learned this agent's operating system"
+		}
+		return "", fmt.Sprintf("the hub is not serving a %s agent binary", osName)
+	}
+
+	// Nothing has been heard from this agent yet. announceVersionToAgent is
+	// called at WS-upgrade time, before agent_running_version arrives, so on
+	// a machine we have never seen we know neither its capability nor its
+	// transport. Falling back to PUBLIC_URL here would announce to exactly
+	// the mixed-deployment agent that is going to refuse. Every agent sends
+	// agent_running_version on connect, and recordAgentRunningVersion
+	// re-triggers the announce once it lands, so waiting costs one round
+	// trip and removes the guess.
+	if !haveAgentVersionReport(machineID) {
+		return "", "the hub has not yet received agent_running_version from this agent"
+	}
+
+	// Transport. This gates every agent, for two different reasons, and the
+	// signal differs by what the agent is able to tell us.
+	//
+	// A signature-capable agent computed the answer itself at connect time
+	// from its actual BLOXOS_HUB and reported it. Announcing to one that
+	// says no achieves nothing except arming a reconnect expectation for a
+	// reconnect that never comes — which expires into a rollout failure and,
+	// at two machines, pauses the whole fleet, with rolloutPauseReason
+	// blaming agent health for a refusal the hub provoked. The rule is
+	// already stated twenty lines up for the matching-SHA case: never arm
+	// the timer for an update you can predict won't produce a reconnect.
+	//
+	// A pre-signature agent has no transport gate and cannot verify what we
+	// send it either, so the reason there is security rather than futility:
+	// that one unverifiable migration hop must only happen where an off-host
+	// attacker cannot reach it. Nothing to ask the agent, so fall back to
+	// PUBLIC_URL — the hub's own declaration of how the fleet reaches it.
+	if agentIsSignatureCapable(machineID) {
+		if !agentTransportPermitsUpdate(machineID) {
+			return "", "the agent reports that the hub URL it is connected to is plaintext, so it " +
+				"will refuse to self-update; point that agent's BLOXOS_HUB at a wss:// address"
+		}
+	} else if ok, why := updateTransportUsable(); !ok {
+		return "", fmt.Sprintf("agent has not reported a signature-capable version and %s; "+
+			"re-run the hub installer on this host to enroll it with a pinned update key", why)
+	}
+
+	// The agent refuses any announcement it cannot authenticate against the
+	// key its installer pinned. If we cannot produce a signature there is no
+	// update to be had — announcing anyway would only arm the 90s
+	// reconnect-expectation timer for a reconnect that never comes, and trip
+	// the rollout circuit breaker on a healthy fleet.
+	sig = announcedSignatureFor(osName, sha)
+	if sig == "" {
+		if enabled, reason := updateSigningStatus(); !enabled {
+			return "", "the hub cannot sign updates: " + reason
+		}
+		return "", fmt.Sprintf("no valid signature is available for the %s agent binary the hub "+
+			"is serving — re-sign it, or check <binary>.sig is current", osName)
+	}
+	return sig, ""
 }
 
 // announcedSHAFor returns the SHA the hub will announce to an agent of
@@ -434,9 +521,10 @@ func clearReconnectExpectation(machineID string) {
 // agents that don't include the os field, an empty string is fine — the OS is
 // inferred lazily from the machine's metrics OS string.
 //
-// updateProtocol is the agent's self-update capability level; 0 for any agent
-// built before signature verification existed. See legacyBootstrapAllowed.
-func recordAgentRunningVersion(machineID, runningSHA, osName string, updateProtocol int) {
+// The report carries the agent's capability level and its own answer on
+// whether its transport permits self-update. See announceDecision.
+func recordAgentRunningVersion(machineID string, report agentVersionReport) {
+	runningSHA, osName := report.RunningSHA, report.OS
 	// Resolve the per-OS expected SHA. If we don't yet know the agent's
 	// OS, lookupAgentOS will check the DB metrics for it. New-on-this-hub
 	// agents return "" here and that's fine — we'll announce after we
@@ -451,17 +539,18 @@ func recordAgentRunningVersion(machineID, runningSHA, osName string, updateProto
 	agentRunningVersionsMu.Lock()
 	prev, hadPrev := agentRunningVersions[machineID]
 	agentRunningVersions[machineID] = agentVersionInfo{
-		MachineID:      machineID,
-		Hostname:       hostname,
-		RunningSHA:     runningSHA,
-		ReportedAt:     time.Now(),
-		UpdatePending:  expectedSHA != "" && runningSHA != expectedSHA,
-		OS:             osName,
-		UpdateProtocol: updateProtocol,
+		MachineID:         machineID,
+		Hostname:          hostname,
+		RunningSHA:        runningSHA,
+		ReportedAt:        time.Now(),
+		UpdatePending:     expectedSHA != "" && runningSHA != expectedSHA,
+		OS:                osName,
+		UpdateProtocol:    report.UpdateProtocol,
+		UpdateTransportOK: report.TransportOK,
 	}
 	agentRunningVersionsMu.Unlock()
 	log.Printf("rollout: agent reported running=%s expected=%s os=%s proto=%d pending=%v machine=%s",
-		versionShortSHA(runningSHA), versionShortSHA(expectedSHA), osName, updateProtocol,
+		versionShortSHA(runningSHA), versionShortSHA(expectedSHA), osName, report.UpdateProtocol,
 		expectedSHA != "" && runningSHA != expectedSHA, machineID)
 
 	if expectedSHA != "" && runningSHA == expectedSHA {
@@ -484,7 +573,9 @@ func recordAgentRunningVersion(machineID, runningSHA, osName string, updateProto
 	// the legacy gate may have suppressed the announce. Learning the
 	// protocol level is exactly as much a reason to re-announce as learning
 	// the OS is.
-	if osName != "" && (!hadPrev || prev.OS != osName || prev.UpdateProtocol != updateProtocol) &&
+	if osName != "" && (!hadPrev || prev.OS != osName ||
+		prev.UpdateProtocol != report.UpdateProtocol ||
+		prev.UpdateTransportOK != report.TransportOK) &&
 		expectedSHA != "" && runningSHA != expectedSHA {
 		agentsMu.RLock()
 		agent, online := agents[machineID]
@@ -564,6 +655,11 @@ func handleListVersions(c echo.Context) error {
 		v.Hostname = lookupVersionHostname(v.MachineID)
 		expected := announcedSHAFor(v.OS)
 		v.UpdatePending = expected != "" && v.RunningSHA != expected
+		if v.UpdatePending {
+			// Same function announceVersionToAgent uses, so what the API
+			// reports and what the hub actually does cannot drift.
+			_, v.UpdateBlockedReason = announceDecision(v.MachineID, v.OS, expected)
+		}
 		versions = append(versions, v)
 	}
 	agentRunningVersionsMu.RUnlock()
@@ -573,16 +669,20 @@ func handleListVersions(c echo.Context) error {
 	pauseReason := rolloutPauseReason
 	rolloutPausedMu.RUnlock()
 
+	signingEnabled, signingDisabledReason := updateSigningStatus()
+
 	return c.JSON(http.StatusOK, map[string]interface{}{
-		"hub_sha":               hubSHA,
-		"hub_short_sha":         versionShortSHA(hubSHA),
-		"hub_mtime":             hubMtime.Format(time.RFC3339),
-		"hub_windows_sha":       hubWindowsSHA,
-		"hub_windows_short_sha": versionShortSHA(hubWindowsSHA),
-		"hub_windows_mtime":     hubWindowsMtime.Format(time.RFC3339),
-		"agents":                versions,
-		"rollout_paused":        paused,
-		"pause_reason":          pauseReason,
+		"signing_enabled":         signingEnabled,
+		"signing_disabled_reason": signingDisabledReason,
+		"hub_sha":                 hubSHA,
+		"hub_short_sha":           versionShortSHA(hubSHA),
+		"hub_mtime":               hubMtime.Format(time.RFC3339),
+		"hub_windows_sha":         hubWindowsSHA,
+		"hub_windows_short_sha":   versionShortSHA(hubWindowsSHA),
+		"hub_windows_mtime":       hubWindowsMtime.Format(time.RFC3339),
+		"agents":                  versions,
+		"rollout_paused":          paused,
+		"pause_reason":            pauseReason,
 	})
 }
 
