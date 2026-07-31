@@ -11,6 +11,15 @@ name: Dependabot auto-merge
 #
 # Runtime minors and any majors stay manual — they can ship subtle visual or
 # API changes that CI cannot catch.
+#
+# Every run re-evaluates from scratch: the disarm step below clears any
+# auto-merge armed by a previous revision before the enable steps re-arm it.
+# Without that, arming is sticky in a way the scope above does not survive.
+# GitHub keeps an armed auto-merge across a force-push, and Dependabot force-
+# pushes the same branch when it rebases — so a PR armed while it was a patch
+# stays armed after a rebase turns it into a major, and merges on the next
+# approval under a classification that no longer holds. That is how
+# @types/node 25.9.0 -> 25.9.1 landed on main as 25.9.0 -> 26.1.2 (#107).
 
 on:
   pull_request_target:
@@ -30,6 +39,16 @@ jobs:
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98  # v2.2.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Unconditional, and ahead of both enable steps: this is what makes each
+      # revision stand on its own metadata rather than inheriting the previous
+      # revision's verdict. `|| true` because disarming a PR that was never
+      # armed exits non-zero, which is the common case and not a failure.
+      - name: Disarm auto-merge before re-evaluating
+        run: gh pr merge --disable-auto "$PR_URL" || true
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Enable auto-merge for patch updates
         if: steps.meta.outputs.update-type == 'version-update:semver-patch'
