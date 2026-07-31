@@ -399,20 +399,6 @@ func (v agentVersionInfo) transportPermitsUpdate() bool {
 	return v.UpdateTransportOK
 }
 
-// agentIsSignatureCapable looks the agent up and applies signatureCapable.
-// Unknown counts as not capable: at WS-upgrade time we have not seen
-// agent_running_version yet, and announcing on an assumption is what arms a
-// reconnect timer for an update that never happens.
-//
-// Callers already holding agentRunningVersionsMu must use the method on the
-// record instead — recursive read locking deadlocks.
-func agentIsSignatureCapable(machineID string) bool {
-	agentRunningVersionsMu.RLock()
-	v, ok := agentRunningVersions[machineID]
-	agentRunningVersionsMu.RUnlock()
-	return ok && v.signatureCapable()
-}
-
 // announcedSignatureFor returns the signature the hub will send alongside the
 // announced SHA for the given OS. Empty means the hub cannot authorise an
 // update for that platform and should not announce one.

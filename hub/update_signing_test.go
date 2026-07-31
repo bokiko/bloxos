@@ -531,31 +531,29 @@ func TestUpdateTransportUsable(t *testing.T) {
 	}
 }
 
-func TestAgentIsSignatureCapable(t *testing.T) {
-	setupTestServer(t)
-
-	agentRunningVersionsMu.Lock()
-	agentRunningVersions["cap-none"] = agentVersionInfo{MachineID: "cap-none"}
-	agentRunningVersions["cap-legacy"] = agentVersionInfo{MachineID: "cap-legacy", UpdateProtocol: 0}
-	agentRunningVersions["cap-new"] = agentVersionInfo{MachineID: "cap-new", UpdateProtocol: 1}
-	agentRunningVersionsMu.Unlock()
-	t.Cleanup(func() {
-		agentRunningVersionsMu.Lock()
-		delete(agentRunningVersions, "cap-none")
-		delete(agentRunningVersions, "cap-legacy")
-		delete(agentRunningVersions, "cap-new")
-		agentRunningVersionsMu.Unlock()
-	})
-
-	// Never seen at all — the WS-upgrade-time case. Unknown is not capable.
-	if agentIsSignatureCapable("cap-unseen") {
-		t.Error("an agent we have never heard from was treated as signature-capable")
-	}
-	if agentIsSignatureCapable("cap-legacy") {
+func TestSignatureCapable(t *testing.T) {
+	if (agentVersionInfo{UpdateProtocol: 0}).signatureCapable() {
 		t.Error("update_protocol=0 was treated as signature-capable")
 	}
-	if !agentIsSignatureCapable("cap-new") {
-		t.Error("update_protocol=1 was not treated as signature-capable")
+	if !(agentVersionInfo{UpdateProtocol: minSignatureCapableProtocol}).signatureCapable() {
+		t.Errorf("update_protocol=%d was not treated as signature-capable", minSignatureCapableProtocol)
+	}
+	if !(agentVersionInfo{UpdateTransportOK: true}).transportPermitsUpdate() {
+		t.Error("update_transport_ok=true was not treated as permitting update")
+	}
+	if (agentVersionInfo{UpdateTransportOK: false}).transportPermitsUpdate() {
+		t.Error("update_transport_ok=false was treated as permitting update")
+	}
+}
+
+// The never-heard-from case is not a property of a record — there is no
+// record. It lives in announceDecision's nil branch, which is where this
+// asserts it, rather than in a map lookup helper that would have to take the
+// lock its callers already hold.
+func TestAnnounceDecisionWithholdsFromUnreportedAgent(t *testing.T) {
+	_, blocked := announceDecision(nil, "linux", strings.Repeat("55", 32))
+	if !strings.Contains(blocked, "has not yet received agent_running_version") {
+		t.Fatalf("blocked reason = %q, want the not-yet-reported refusal", blocked)
 	}
 }
 

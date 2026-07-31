@@ -582,11 +582,10 @@ func recordAgentRunningVersion(machineID string, report agentVersionReport) {
 	// counts toward the circuit breaker. Skip the announce when the agent
 	// is already on the announced SHA.
 	//
-	// The capability check is part of the same story: at WS-upgrade time we
-	// had not seen this frame yet, so agentIsSignatureCapable was false and
-	// the legacy gate may have suppressed the announce. Learning the
-	// protocol level is exactly as much a reason to re-announce as learning
-	// the OS is.
+	// The capability and transport fields are part of the same story: at
+	// WS-upgrade time this frame had not arrived, so announceDecision saw no
+	// report at all and withheld. Learning either field is exactly as much a
+	// reason to re-announce as learning the OS is.
 	if osName != "" && (!hadPrev || prev.OS != osName ||
 		prev.UpdateProtocol != report.UpdateProtocol ||
 		prev.UpdateTransportOK != report.TransportOK) &&
