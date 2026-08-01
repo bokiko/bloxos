@@ -20,7 +20,7 @@
     "framer-motion": "^12.43.0",
     "geist": "^1.7.2",
     "lucide-react": "^1.27.0",
-    "next": "16.2.6",
+    "next": "16.2.12",
     "react": "19.2.6",
     "react-dom": "19.2.6",
     "recharts": "^3.8.1",
@@ -34,8 +34,13 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
-    "eslint-config-next": "16.2.6",
+    "eslint-config-next": "16.2.12",
     "tailwindcss": "^4",
     "typescript": "^6"
+  },
+  "pnpm": {
+    "overrides": {
+      "postcss": "8.5.25"
+    }
   }
 }
