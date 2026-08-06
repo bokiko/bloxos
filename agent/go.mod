@@ -8,8 +8,8 @@ require (
 	github.com/StackExchange/wmi v1.2.1
 	github.com/creack/pty v1.1.24
 	github.com/gorilla/websocket v1.5.3
-	github.com/shirou/gopsutil/v4 v4.26.4
-	golang.org/x/sys v0.44.0
+	github.com/shirou/gopsutil/v4 v4.26.6
+	golang.org/x/sys v0.47.0
 )
 
 require (
