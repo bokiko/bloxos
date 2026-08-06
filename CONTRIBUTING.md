@@ -45,6 +45,25 @@ For agent changes that affect the Windows build, also run:
 ( cd agent && GOOS=windows go vet ./... )
 ```
 
+## Merge policy
+
+`main` requires green CI, linear history (squash merges only — no merge
+commits), and 1 approving review. Two lanes, depending on who authored the
+PR:
+
+- **Dependabot PRs** — approve the diff, then let `dependabot-auto-merge.yml`
+  complete the merge once required checks pass. The workflow never bypasses
+  protection; it only arms `gh pr merge --auto`.
+- **Self-authored PRs** — GitHub blocks approving your own PR, so the review
+  requirement has no valid path here. Merge with `gh pr merge --admin
+  --squash`. Each use is a deliberate, explicit exception — call it out in the
+  PR or session notes, never merge silently past it.
+
+If self-authored PRs start needing `--admin` more than a couple of times a
+month, that's the signal to revisit the rule itself (a bot/GitHub App as a
+second approver is the fix — not dropping the review requirement, which is
+still doing real work gating the Dependabot lane).
+
 ## Commit messages
 
 This repo uses Conventional Commits with a multi-target scope when changes
