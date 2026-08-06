@@ -10,7 +10,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -58,6 +57,10 @@ type AgentVersionMessage struct {
 	Type    string `json:"type"`
 	SHA256  string `json:"sha256"`
 	Version string `json:"version,omitempty"`
+	// Signature is base64 ed25519 over updateSigningMessage(os, sha256),
+	// produced by the hub's update signing key.
+	Signature string `json:"signature,omitempty"`
+	SigAlg    string `json:"sig_alg,omitempty"`
 }
 
 // handleAgentVersion — Windows version. Same flow as Linux's
@@ -86,6 +89,18 @@ func handleAgentVersion(msg []byte) {
 
 	log.Printf("update: hub announced %s (running %s), starting update",
 		shortSHA(version.SHA256), shortSHA(currentSHA))
+
+	// Gate before anything is downloaded or snapshotted. A refusal here
+	// leaves the agent untouched and running.
+	exe, err := selfExePath()
+	if err != nil {
+		log.Printf("update: cannot resolve own path: %v", err)
+		return
+	}
+	if err := authorizeUpdate(hubURL, exe, runtime.GOOS, version.SHA256, version.Signature); err != nil {
+		log.Printf("update: REFUSED — %v", err)
+		return
+	}
 
 	updateMuWindows.Lock()
 	if updateInFlightWindows {
@@ -241,17 +256,14 @@ func buildHelperBatch(target, newBin, marker string) string {
 
 // downloadAgentBinary fetches /download/agent?os=windows from the hub and
 // writes it to destPath. Reuses the agent's TLS configuration so the
-// download inherits CA pinning.
+// download inherits CA pinning. agentDownloadURL refuses plaintext
+// transports, so this is also the second line of the transport gate applied
+// in handleAgentVersion.
 func downloadAgentBinary(destPath string) error {
-	wsURL, err := url.Parse(hubURL)
+	downloadURL, err := agentDownloadURL(hubURL, "windows")
 	if err != nil {
-		return fmt.Errorf("parse hub URL: %w", err)
+		return err
 	}
-	httpScheme := "http"
-	if wsURL.Scheme == "wss" {
-		httpScheme = "https"
-	}
-	downloadURL := fmt.Sprintf("%s://%s/download/agent?os=windows", httpScheme, wsURL.Host)
 
 	dialer, err := websocketDialerFor(downloadURL)
 	if err != nil {
@@ -261,8 +273,9 @@ func downloadAgentBinary(destPath string) error {
 		TLSClientConfig: dialer.TLSClientConfig,
 	}
 	client := &http.Client{
-		Transport: transport,
-		Timeout:   2 * time.Minute,
+		Transport:     transport,
+		Timeout:       2 * time.Minute,
+		CheckRedirect: refuseRedirects,
 	}
 
 	req, err := http.NewRequest("GET", downloadURL, nil)
@@ -373,14 +386,27 @@ func reportAgentVersion(conn *websocket.Conn, mu *sync.Mutex) {
 		log.Printf("update: failed to compute self SHA for reporting: %v", err)
 		return
 	}
-	msg := map[string]string{
+	msg := map[string]interface{}{
 		"type":   "agent_running_version",
 		"sha256": sha,
 		"os":     runtime.GOOS,
+		// Tells the hub this binary verifies signed announcements. Its
+		// absence is how the hub recognises a pre-signature agent.
+		"update_protocol": agentUpdateProtocol,
+		// Whether this agent's own hub URL permits self-update. Saves the
+		// hub from inferring it from PUBLIC_URL, which is wrong for any
+		// agent configured differently from the fleet default.
+		"update_transport_ok": selfUpdateTransportOK(),
+		// Whether this agent actually has a usable pinned key on disk.
+		// Signature-capable and transport-OK are not enough on their own —
+		// see updateKeyPinned's doc comment for why the hub needs this to
+		// avoid announcing to an agent that is certain to refuse.
+		"update_key_pinned": updateKeyPinned(),
 	}
 	if err := writeJSON(conn, mu, msg); err != nil {
 		log.Printf("update: failed to report version: %v", err)
 		return
 	}
-	log.Printf("update: reported running version %s to hub (os=%s)", shortSHA(sha), runtime.GOOS)
+	log.Printf("update: reported running version %s to hub (os=%s, update_protocol=%d, transport_ok=%v, key_pinned=%v)",
+		shortSHA(sha), runtime.GOOS, agentUpdateProtocol, selfUpdateTransportOK(), updateKeyPinned())
 }
