@@ -72,6 +72,30 @@ func selfUpdateTransportOK() bool {
 	return err == nil
 }
 
+// updateKeyPinned reports whether this agent has a usable pinned update key
+// on disk. Reported to the hub in every agent_running_version frame for the
+// same reason as selfUpdateTransportOK: an agent can be signature-capable
+// (agentUpdateProtocol >= 1) and report a usable transport yet still have no
+// pinned key at all — it reached this binary over the one unverifiable
+// migration hop and its installer has not been re-run yet. Without this
+// signal the hub cannot tell that agent apart from one that is actually
+// ready, announces anyway, arms a 90s reconnect expectation for a reconnect
+// that will never come, and at two such machines trips the fleet-wide
+// rollout circuit breaker — blaming agent health for a refusal the hub
+// itself provoked.
+func updateKeyPinned() bool {
+	exe, err := selfExePath()
+	if err != nil {
+		return false
+	}
+	data, err := os.ReadFile(updatePublicKeyPath(exe))
+	if err != nil {
+		return false
+	}
+	_, err = parseUpdatePublicKey(data)
+	return err == nil
+}
+
 // selfExePath resolves this process's own binary, following symlinks.
 func selfExePath() (string, error) {
 	exe, err := os.Executable()

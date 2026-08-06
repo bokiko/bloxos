@@ -204,3 +204,36 @@ func TestUpdatePublicKeyPathHonoursEnvOverride(t *testing.T) {
 		t.Fatalf("updatePublicKeyPath = %q, want the env override", got)
 	}
 }
+
+// updateKeyPinned is what the hub relies on to tell "this agent is ready"
+// apart from "this agent is signature-capable but its installer hasn't run
+// yet" — see the gate in hub/agent_versions.go's announceDecision. It must
+// track exactly what authorizeUpdate would itself accept: a missing or
+// unparseable key must report false so it can never claim readiness the
+// verification path would then refuse.
+func TestUpdateKeyPinnedReflectsKeyPresence(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "absent.pub")
+	t.Setenv("BLOXOS_UPDATE_PUBKEY_PATH", missing)
+	if updateKeyPinned() {
+		t.Fatal("updateKeyPinned true with no key file on disk")
+	}
+}
+
+func TestUpdateKeyPinnedFalseOnCorruptKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent-update.pub")
+	if err := os.WriteFile(path, []byte("not a valid base64 key\n"), 0o644); err != nil {
+		t.Fatalf("write corrupt key: %v", err)
+	}
+	t.Setenv("BLOXOS_UPDATE_PUBKEY_PATH", path)
+	if updateKeyPinned() {
+		t.Fatal("updateKeyPinned true with an unparseable key file")
+	}
+}
+
+func TestUpdateKeyPinnedTrueOnUsableKey(t *testing.T) {
+	pub, _ := newTestKey(t)
+	pinKey(t, pub)
+	if !updateKeyPinned() {
+		t.Fatal("updateKeyPinned false with a valid pinned key on disk")
+	}
+}

@@ -570,6 +570,16 @@ type announceProbe struct {
 	// transportOK is what a signature-capable agent reports about its own
 	// BLOXOS_HUB. Ignored when proto is 0.
 	transportOK bool
+	// keyPinned is what a signature-capable agent reports about having a
+	// usable pinned update key on disk. Ignored when proto is 0. Sent as
+	// update_key_pinned unless omitKeyPinned is set.
+	keyPinned bool
+	// omitKeyPinned models an agent built before update_key_pinned existed:
+	// proto >= 1 and transport_ok are sent, but the key field is left out of
+	// the frame entirely, exactly as encoding/json would leave a struct
+	// field unset. Proves the fail-closed default comes from the zero
+	// value, not from special-casing "field present and false".
+	omitKeyPinned bool
 }
 
 // collectAnnounceFrames enrols an agent, sends metrics so the hub learns the
@@ -601,6 +611,9 @@ func collectAnnounceFrames(t *testing.T, e *echo.Echo, p announceProbe) []string
 	if p.proto > 0 {
 		running["update_protocol"] = p.proto
 		running["update_transport_ok"] = p.transportOK
+		if !p.omitKeyPinned {
+			running["update_key_pinned"] = p.keyPinned
+		}
 	}
 	data, _ := json.Marshal(running)
 	if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
@@ -710,14 +723,14 @@ func TestNoAnnounceWhenAgentReportsPlaintextTransport(t *testing.T) {
 	assertNoReconnectExpectation(t, machineID)
 }
 
-// And the same agent reporting a usable transport is announced to normally,
-// with a signature it can actually verify.
+// And the same agent reporting a usable transport and a pinned key is
+// announced to normally, with a signature it can actually verify.
 func TestSignatureCapableAgentWithUsableTransportGetsSignedAnnounce(t *testing.T) {
 	e := setupTestServer(t)
 	t.Setenv("PUBLIC_URL", "https://hub.example.com")
 	stagePendingUpdate(t)
 
-	frames := collectAnnounceFrames(t, e, announceProbe{machineID: "capable-tls-machine", proto: 1, transportOK: true})
+	frames := collectAnnounceFrames(t, e, announceProbe{machineID: "capable-tls-machine", proto: 1, transportOK: true, keyPinned: true})
 	if len(frames) == 0 {
 		t.Fatal("hub withheld an announce from a signature-capable agent on a usable transport")
 	}
@@ -735,6 +748,61 @@ func TestSignatureCapableAgentWithUsableTransportGetsSignedAnnounce(t *testing.T
 	}
 }
 
+// A signature-capable agent that reports a usable transport but no pinned
+// key on disk must get nothing. This is the default state of every agent in
+// a fleet that predates this gate, immediately after the hub starts serving
+// a signature-capable build: the agent reaches the new binary over the one
+// unverifiable migration hop and reports update_protocol >= 1 on its very
+// next connect, but its installer has not been re-run yet — nothing has
+// pinned a key for it. Without this gate the hub announces anyway, arms a
+// reconnect expectation the refusal can never satisfy, and at two such
+// machines trips the fleet-wide circuit breaker — blaming agent health for
+// a refusal the hub itself provoked.
+func TestNoAnnounceWhenAgentKeyNotPinned(t *testing.T) {
+	e := setupTestServer(t)
+	t.Setenv("PUBLIC_URL", "https://hub.example.com")
+	stagePendingUpdate(t)
+
+	const machineID = "capable-unpinned-machine"
+	frames := collectAnnounceFrames(t, e, announceProbe{machineID: machineID, proto: 1, transportOK: true, keyPinned: false})
+	if len(frames) != 0 {
+		t.Fatalf("hub announced an update to an agent with no pinned key: %q", frames)
+	}
+	assertNoReconnectExpectation(t, machineID)
+
+	agentRunningVersionsMu.RLock()
+	info, ok := agentRunningVersions[machineID]
+	agentRunningVersionsMu.RUnlock()
+	if !ok {
+		t.Fatalf("test setup: %s never recorded", machineID)
+	}
+	_, reason := announceDecision(&info, "linux", announcedSHAFor("linux"))
+	if !strings.Contains(reason, "agent_key_not_pinned") {
+		t.Fatalf("withhold reason = %q, want it to name the unpinned-key gate distinctly "+
+			"from agent-health noise an operator would otherwise have to guess at", reason)
+	}
+}
+
+// An agent that reports update_protocol >= 1 and a usable transport but
+// omits update_key_pinned entirely — the shape of a signature-capable
+// binary built before this field existed — must be withheld identically to
+// one that explicitly reported false. There is no third state where
+// "didn't say" means "assume yes": encoding/json already leaves an absent
+// bool field at its zero value, and this test is what pins that behavior in
+// place rather than trusting it not to change out from under the gate.
+func TestNoAnnounceWhenAgentOmitsKeyPinnedField(t *testing.T) {
+	e := setupTestServer(t)
+	t.Setenv("PUBLIC_URL", "https://hub.example.com")
+	stagePendingUpdate(t)
+
+	const machineID = "capable-legacy-field-machine"
+	frames := collectAnnounceFrames(t, e, announceProbe{machineID: machineID, proto: 1, transportOK: true, omitKeyPinned: true})
+	if len(frames) != 0 {
+		t.Fatalf("hub announced an update to an agent that never reported update_key_pinned: %q", frames)
+	}
+	assertNoReconnectExpectation(t, machineID)
+}
+
 // TestNoSignatureMeansNoAnnounceOnTheWire is the end-to-end form of the claim
 // the old TestNoSignatureMeansNoAnnounce made in its name but never tested:
 // with no signing key, nothing goes out on the socket at all.
@@ -745,7 +813,9 @@ func TestNoSignatureMeansNoAnnounceOnTheWire(t *testing.T) {
 	stagePendingUpdate(t)
 
 	const machineID = "unsigned-hub-machine"
-	frames := collectAnnounceFrames(t, e, announceProbe{machineID: machineID, proto: 1, transportOK: true})
+	// keyPinned: true isolates the variable this test is about — the hub
+	// cannot sign — from the key-pinned gate, which has its own tests below.
+	frames := collectAnnounceFrames(t, e, announceProbe{machineID: machineID, proto: 1, transportOK: true, keyPinned: true})
 	if len(frames) != 0 {
 		t.Fatalf("hub announced an update it could not sign: %q", frames)
 	}
@@ -769,7 +839,9 @@ func TestVersionsAPIReportsWhyUpdatesAreWithheld(t *testing.T) {
 	agentRunningVersionsMu.Lock()
 	agentRunningVersions["api-machine"] = agentVersionInfo{
 		MachineID: "api-machine", OS: "linux", RunningSHA: strings.Repeat("22", 32),
-		UpdateProtocol: 1, UpdateTransportOK: true,
+		// KeyPinned: true isolates the variable this test is about — the hub
+		// cannot sign — from the key-pinned gate, which has its own tests.
+		UpdateProtocol: 1, UpdateTransportOK: true, UpdateKeyPinned: true,
 	}
 	agentRunningVersionsMu.Unlock()
 	t.Cleanup(func() {

@@ -799,6 +799,12 @@ func handleAgentWS(c echo.Context) error {
 				// BLOXOS_HUB permits self-update, computed from the URL it is
 				// actually connected to rather than guessed from PUBLIC_URL.
 				UpdateTransportOK bool `json:"update_transport_ok"`
+				// UpdateKeyPinned is the agent's own answer to whether it has
+				// a usable pinned update key on disk. Absent (false) on any
+				// agent built before this field existed — encoding/json
+				// leaves it at the zero value, which is the fail-closed
+				// answer: no reported key means withhold, never "assume yes".
+				UpdateKeyPinned bool `json:"update_key_pinned"`
 			}
 			if err := json.Unmarshal(msg, &versionMsg); err != nil {
 				log.Printf("invalid agent_running_version JSON: %v", err)
@@ -810,6 +816,7 @@ func handleAgentWS(c echo.Context) error {
 					OS:             versionMsg.OS,
 					UpdateProtocol: versionMsg.UpdateProtocol,
 					TransportOK:    versionMsg.UpdateTransportOK,
+					KeyPinned:      versionMsg.UpdateKeyPinned,
 				})
 			}
 

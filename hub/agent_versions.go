@@ -63,6 +63,15 @@ type agentVersionInfo struct {
 	// hand-configured with ws:// — the guess is wrong for exactly the
 	// machines that will refuse, and nothing else distinguishes them.
 	UpdateTransportOK bool `json:"update_transport_ok"`
+	// UpdateKeyPinned is whether the agent reported that it has a usable
+	// pinned update key on disk. Only meaningful alongside UpdateProtocol
+	// and UpdateTransportOK: an agent can be signature-capable and report a
+	// usable transport yet still have no pinned key at all — it reached
+	// this binary over the one unverifiable migration hop and its
+	// installer has not been re-run yet. An agent built before this field
+	// existed never reports it, and the zero value (false) is what makes
+	// that safe: absent must mean "not pinned", never "assume yes".
+	UpdateKeyPinned bool `json:"update_key_pinned"`
 	// UpdateBlockedReason explains, when UpdatePending is true, why the hub
 	// is not announcing the update. Empty means nothing is blocking it.
 	// Without this an operator cannot tell a rollout in progress from a
@@ -84,6 +93,10 @@ type agentVersionReport struct {
 	// hub URL I am actually connected to". Meaningless when UpdateProtocol
 	// is 0 — those agents have no transport gate.
 	TransportOK bool
+	// KeyPinned is the agent's own answer to "do I have a usable pinned
+	// update key on disk". Meaningless when UpdateProtocol is 0. Absent
+	// (zero value false) on any agent that predates this field.
+	KeyPinned bool
 }
 
 type rolloutFailure struct {
@@ -399,6 +412,22 @@ func announceDecision(report *agentVersionInfo, osName, sha string) (sig string,
 			return "", "the agent reports that the hub URL it is connected to is plaintext, so it " +
 				"will refuse to self-update; point that agent's BLOXOS_HUB at a wss:// address"
 		}
+		// Signature-capable and transport-OK are not the same as ready. An
+		// agent reaches this binary over the one unverifiable migration hop
+		// (the branch below, for pre-signature agents) before its installer
+		// has ever pinned a key — so on every fleet that existed before this
+		// gate, this is the *default* state immediately after the hub picks
+		// up a signature-capable build, not an edge case. Announcing to it
+		// anyway arms the same 90s reconnect expectation for the same
+		// reconnect that will never come. agent_key_not_pinned is a
+		// distinct reason (not folded into the plaintext-transport message
+		// above) so an operator watching the rollout can tell "waiting on
+		// an installer re-run" apart from "agent is unhealthy" — the two
+		// look identical in update_pending alone.
+		if !report.UpdateKeyPinned {
+			return "", "agent_key_not_pinned: the agent has not reported a usable pinned update key; " +
+				"re-run the hub installer on this host to enroll it"
+		}
 	} else if ok, why := updateTransportUsable(); !ok {
 		return "", fmt.Sprintf("agent has not reported a signature-capable version and %s; "+
 			"re-run the hub installer on this host to enroll it with a pinned update key", why)
@@ -561,6 +590,7 @@ func recordAgentRunningVersion(machineID string, report agentVersionReport) {
 		OS:                osName,
 		UpdateProtocol:    report.UpdateProtocol,
 		UpdateTransportOK: report.TransportOK,
+		UpdateKeyPinned:   report.KeyPinned,
 	}
 	agentRunningVersionsMu.Unlock()
 	log.Printf("rollout: agent reported running=%s expected=%s os=%s proto=%d pending=%v machine=%s",
@@ -582,13 +612,16 @@ func recordAgentRunningVersion(machineID string, report agentVersionReport) {
 	// counts toward the circuit breaker. Skip the announce when the agent
 	// is already on the announced SHA.
 	//
-	// The capability and transport fields are part of the same story: at
-	// WS-upgrade time this frame had not arrived, so announceDecision saw no
-	// report at all and withheld. Learning either field is exactly as much a
-	// reason to re-announce as learning the OS is.
+	// The capability, transport, and key-pinned fields are part of the same
+	// story: at WS-upgrade time this frame had not arrived, so
+	// announceDecision saw no report at all and withheld. Learning any of
+	// them — including an agent's installer finally getting re-run, which
+	// only changes UpdateKeyPinned — is exactly as much a reason to
+	// re-announce as learning the OS is.
 	if osName != "" && (!hadPrev || prev.OS != osName ||
 		prev.UpdateProtocol != report.UpdateProtocol ||
-		prev.UpdateTransportOK != report.TransportOK) &&
+		prev.UpdateTransportOK != report.TransportOK ||
+		prev.UpdateKeyPinned != report.KeyPinned) &&
 		expectedSHA != "" && runningSHA != expectedSHA {
 		agentsMu.RLock()
 		agent, online := agents[machineID]

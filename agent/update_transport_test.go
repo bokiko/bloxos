@@ -1,6 +1,9 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -145,5 +148,51 @@ func TestDownloadRefusalWritesNothing(t *testing.T) {
 	}
 	if _, statErr := os.Stat(dest); !os.IsNotExist(statErr) {
 		t.Fatalf("refused download still created %s (stat err=%v)", dest, statErr)
+	}
+}
+
+// TestDownloadAgentBinaryRefusesRedirect closes the gap CheckRedirect fixes:
+// Go's default http.Client follows up to 10 redirects, including an
+// https->http downgrade, and only the first hop passes through
+// agentDownloadURL's scheme check. The download content is still SHA- and
+// signature-verified regardless, so a followed redirect could not smuggle a
+// different binary in — but a hub response that redirects a download through
+// plaintext has no business being followed by a client whose entire purpose
+// is refusing plaintext transports.
+func TestDownloadAgentBinaryRefusesRedirect(t *testing.T) {
+	var redirectTargetHit bool
+	redirectTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirectTargetHit = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer redirectTarget.Close()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, redirectTarget.URL, http.StatusFound)
+	}))
+	defer server.Close()
+
+	u, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse test server URL: %v", err)
+	}
+
+	prev := hubURL
+	t.Cleanup(func() { hubURL = prev })
+	hubURL = "ws://" + u.Host + "/ws/agent"
+
+	dest := filepath.Join(t.TempDir(), "bloxos-agent.new")
+	err = downloadAgentBinary(dest)
+	if err == nil {
+		t.Fatal("downloadAgentBinary followed a redirect instead of refusing it")
+	}
+	if !strings.Contains(err.Error(), "refusing to follow redirect") {
+		t.Fatalf("error = %v, want the redirect refusal", err)
+	}
+	if redirectTargetHit {
+		t.Fatal("the redirect target was actually fetched")
+	}
+	if _, statErr := os.Stat(dest); !os.IsNotExist(statErr) {
+		t.Fatalf("refused redirect still created %s (stat err=%v)", dest, statErr)
 	}
 }

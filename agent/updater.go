@@ -203,8 +203,9 @@ func downloadAgentBinary(destPath string) error {
 		TLSClientConfig: dialer.TLSClientConfig,
 	}
 	client := &http.Client{
-		Transport: transport,
-		Timeout:   2 * time.Minute,
+		Transport:     transport,
+		Timeout:       2 * time.Minute,
+		CheckRedirect: refuseRedirects,
 	}
 
 	req, err := http.NewRequest("GET", downloadURL, nil)
@@ -311,11 +312,16 @@ func reportAgentVersion(conn *websocket.Conn, mu *sync.Mutex) {
 		// hub from inferring it from PUBLIC_URL, which is wrong for any
 		// agent configured differently from the fleet default.
 		"update_transport_ok": selfUpdateTransportOK(),
+		// Whether this agent actually has a usable pinned key on disk.
+		// Signature-capable and transport-OK are not enough on their own —
+		// see updateKeyPinned's doc comment for why the hub needs this to
+		// avoid announcing to an agent that is certain to refuse.
+		"update_key_pinned": updateKeyPinned(),
 	}
 	if err := writeJSON(conn, mu, msg); err != nil {
 		log.Printf("update: failed to report version: %v", err)
 		return
 	}
-	log.Printf("update: reported running version %s to hub (os=%s, update_protocol=%d, transport_ok=%v)",
-		shortSHA(sha), runtime.GOOS, agentUpdateProtocol, selfUpdateTransportOK())
+	log.Printf("update: reported running version %s to hub (os=%s, update_protocol=%d, transport_ok=%v, key_pinned=%v)",
+		shortSHA(sha), runtime.GOOS, agentUpdateProtocol, selfUpdateTransportOK(), updateKeyPinned())
 }

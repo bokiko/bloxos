@@ -1615,6 +1615,7 @@ func TestAgentVersionAnnouncedOnReconnect(t *testing.T) {
 		"os":                  "linux",
 		"update_protocol":     1,
 		"update_transport_ok": true,
+		"update_key_pinned":   true,
 	})
 	if err := conn2.WriteMessage(websocket.TextMessage, running); err != nil {
 		t.Fatalf("write agent_running_version: %v", err)

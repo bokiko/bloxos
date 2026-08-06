@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"strings"
 )
@@ -62,6 +63,18 @@ func agentDownloadURL(rawHubURL, osQuery string) (string, error) {
 		downloadURL += "?os=" + url.QueryEscape(osQuery)
 	}
 	return downloadURL, nil
+}
+
+// refuseRedirects is an http.Client.CheckRedirect that follows none. Without
+// it, Go's default client follows up to 10 redirects — including an
+// https→http downgrade — and only the first hop passes through
+// agentDownloadURL's scheme check. The download is still SHA- and
+// signature-verified regardless, so a followed redirect could not smuggle a
+// different binary in; but a hub that redirects a signed-transport download
+// through plaintext is a downgrade/DoS surface that has no business existing
+// next to a gate whose entire point is refusing plaintext transports.
+func refuseRedirects(req *http.Request, via []*http.Request) error {
+	return fmt.Errorf("refusing to follow redirect to %s", req.URL)
 }
 
 // isLoopbackHost reports whether a URL host (with or without a port, IPv6

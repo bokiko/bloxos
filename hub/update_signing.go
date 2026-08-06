@@ -38,7 +38,11 @@ import (
  * hub can. What both modes buy is that /download/agent (a public,
  * unauthenticated route) can no longer be substituted by anything that is
  * not the hub, which together with the agent's transport gate closes the
- * network-path attack. Mode 1 additionally survives hub compromise.
+ * network-path attack. Mode 1 additionally means a compromised hub cannot
+ * forge a signature for a new, malicious binary — but it can still replay a
+ * previously-signed release, vulnerable ones included, since neither mode
+ * has downgrade/monotonicity protection yet. That is a separate gap, not
+ * closed by either signing mode.
  *
  * updateSigContext and updateSigningMessage are duplicated in
  * agent/update_verify.go. Both sides assert the exact literal format in
