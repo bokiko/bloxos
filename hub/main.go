@@ -172,6 +172,11 @@ func main() {
 	// Seed default alert rules.
 	seedAlertRules()
 
+	// Load or generate the agent-update signing key. Must run before
+	// initAgentVersionTracking so the first announce can be signed, and
+	// before any installer script is served so it can pin the public key.
+	initUpdateSigning()
+
 	// Phase 8 — initialize agent version tracking. Computes the SHA of the
 	// agent binary the hub is serving, and starts the reconnect-monitor loop.
 	initAgentVersionTracking()
