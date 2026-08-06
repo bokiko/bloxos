@@ -204,6 +204,21 @@ else
   echo "WARNING: hub did not provide an agent binary hash; skipping integrity check"
 fi
 
+# Pin the hub's agent-update signing key. The agent refuses to self-update
+# unless the SHA the hub announces carries a signature from this key — the
+# announced SHA on its own is a corruption check, not proof of who announced
+# it. See agent/update_verify.go.
+UPDATE_PUBKEY="__UPDATE_PUBKEY__"
+sudo mkdir -p /etc/bloxos
+sudo chmod 755 /etc/bloxos
+if [[ -n "$UPDATE_PUBKEY" ]]; then
+  printf '%s\n' "$UPDATE_PUBKEY" | sudo tee /etc/bloxos/agent-update.pub > /dev/null
+  sudo chmod 0644 /etc/bloxos/agent-update.pub
+  echo "Pinned agent update signing key to /etc/bloxos/agent-update.pub"
+else
+  echo "WARNING: hub provided no update signing key; agent self-update will stay disabled"
+fi
+
 # Create system user (if not exists).
 if ! id -u bloxos &>/dev/null; then
   sudo useradd -r -s /usr/sbin/nologin bloxos || true
@@ -226,6 +241,14 @@ Description=BloxOS Agent
 After=network.target
 # Phase 8: if the agent crash-loops 3 times within 60s after a self-update,
 # OnFailure triggers the recovery unit which rolls back to the .prev binary.
+#
+# StartLimit* belongs in [Unit] as StartLimitIntervalSec= — that is where
+# systemd has documented it since v229. The old [Service] StartLimitInterval=
+# spelling still works (systemd keeps it as a compat alias; verified on
+# systemd 255 that both shapes reach "failed" and fire OnFailure=), but it is
+# deprecated, so use the documented location.
+StartLimitIntervalSec=60
+StartLimitBurst=3
 OnFailure=bloxos-agent-recover.service
 
 [Service]
@@ -237,8 +260,6 @@ ${AGENT_CA_ENV}
 ExecStart=/usr/local/bin/bloxos-agent
 Restart=always
 RestartSec=5
-StartLimitInterval=60
-StartLimitBurst=3
 
 [Install]
 WantedBy=multi-user.target
@@ -305,6 +326,7 @@ echo "Check status: systemctl status bloxos-agent"
 	// mtime-cached, so this is cheap on the hot path.
 	recomputeAgentBinarySHA()
 	script = strings.ReplaceAll(script, "__EXPECTED_AGENT_SHA256__", announcedSHAFor("linux"))
+	script = strings.ReplaceAll(script, "__UPDATE_PUBKEY__", updateSigningPublicKeyBase64())
 	return c.String(http.StatusOK, script)
 }
 
@@ -769,13 +791,33 @@ func handleAgentWS(c echo.Context) error {
 				Type   string `json:"type"`
 				SHA256 string `json:"sha256"`
 				OS     string `json:"os"`
+				// UpdateProtocol is absent (0) on every agent built before
+				// signature verification existed. The hub uses that to decide
+				// whether announcing an update to it is safe at all.
+				UpdateProtocol int `json:"update_protocol"`
+				// UpdateTransportOK is the agent's own answer to whether its
+				// BLOXOS_HUB permits self-update, computed from the URL it is
+				// actually connected to rather than guessed from PUBLIC_URL.
+				UpdateTransportOK bool `json:"update_transport_ok"`
+				// UpdateKeyPinned is the agent's own answer to whether it has
+				// a usable pinned update key on disk. Absent (false) on any
+				// agent built before this field existed — encoding/json
+				// leaves it at the zero value, which is the fail-closed
+				// answer: no reported key means withhold, never "assume yes".
+				UpdateKeyPinned bool `json:"update_key_pinned"`
 			}
 			if err := json.Unmarshal(msg, &versionMsg); err != nil {
 				log.Printf("invalid agent_running_version JSON: %v", err)
 				continue
 			}
 			if versionMsg.SHA256 != "" && machineID != "" {
-				recordAgentRunningVersion(machineID, versionMsg.SHA256, versionMsg.OS)
+				recordAgentRunningVersion(machineID, agentVersionReport{
+					RunningSHA:     versionMsg.SHA256,
+					OS:             versionMsg.OS,
+					UpdateProtocol: versionMsg.UpdateProtocol,
+					TransportOK:    versionMsg.UpdateTransportOK,
+					KeyPinned:      versionMsg.UpdateKeyPinned,
+				})
 			}
 
 		case "command_response":
@@ -804,7 +846,9 @@ func handleAgentWS(c echo.Context) error {
 // install.sh: download the agent, register a Windows service, start it.
 //
 // The script is intentionally returned as plain text so a one-liner like
-//   iex (irm https://hub.example/install.ps1)
+//
+//	iex (irm https://hub.example/install.ps1)
+//
 // works as expected. It honours the BLOXOS_HUB / BLOXOS_TOKEN environment
 // variables set by `gh api .../install-script` callers, and it requests
 // admin via WindowsBuiltInRole before doing anything destructive.
@@ -918,6 +962,19 @@ if ($ExpectedSha) {
     Write-Warning "Hub did not provide an agent binary hash; skipping integrity check"
 }
 
+# Pin the hub's agent-update signing key beside the executable. The agent
+# refuses to self-update unless the announced SHA carries a signature from
+# this key. C:\Program Files is admin-writable only, which is what keeps an
+# unprivileged process from swapping the key out. See agent/update_verify.go.
+$UpdatePubKey = "__UPDATE_PUBKEY__"
+if ($UpdatePubKey) {
+    $PubKeyPath = Join-Path $InstallDir "agent-update.pub"
+    Set-Content -Path $PubKeyPath -Value $UpdatePubKey -Encoding ASCII
+    Write-Host "Pinned agent update signing key to $PubKeyPath"
+} else {
+    Write-Warning "Hub provided no update signing key; agent self-update will stay disabled"
+}
+
 # Persist HUB + TOKEN for the service to pick up at next start.
 [Environment]::SetEnvironmentVariable("BLOXOS_HUB", $Hub, "Machine")
 [Environment]::SetEnvironmentVariable("BLOXOS_TOKEN", $Token, "Machine")
@@ -943,6 +1000,7 @@ if ($svc -and $svc.Status -eq 'Running') {
 `
 	recomputeAgentBinarySHA()
 	script = strings.ReplaceAll(script, "__EXPECTED_AGENT_SHA256__", announcedSHAFor("windows"))
+	script = strings.ReplaceAll(script, "__UPDATE_PUBKEY__", updateSigningPublicKeyBase64())
 	return c.String(http.StatusOK, script)
 }
 
@@ -1121,4 +1179,3 @@ func generateFirstRunToken() {
 	}
 	log.Printf("First-run token written to %s (expires in 1 hour)", tokenFile)
 }
-
