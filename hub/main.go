@@ -112,14 +112,9 @@ type CommandResponse struct {
 
 // TerminalSession tracks an active terminal relay session.
 var (
-	db       *sql.DB
 	upgrader = websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool { return true },
 	}
-
-	// Connected agents keyed by machine ID.
-	agents   = make(map[string]*ConnectedAgent)
-	agentsMu sync.RWMutex
 
 	// SSE subscribers.
 	sseClients   = make(map[chan []byte]struct{})
@@ -153,24 +148,25 @@ func main() {
 	// Phase 11 — `foreign_keys=on` is load-bearing: ON DELETE CASCADE on
 	// user_pinned_machines / user_saved_filters relies on it being set per
 	// connection. Without this pragma SQLite silently ignores cascade clauses.
-	db, err = sql.Open("sqlite", "bloxos.db?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
+	db, err := sql.Open("sqlite", "bloxos.db?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
 	if err != nil {
 		log.Fatalf("failed to open database: %v", err)
 	}
 	defer db.Close()
+	s := newServer(db)
 
 	// Set DB file permissions to 0600 (owner read/write only).
 	if err := os.Chmod("bloxos.db", 0600); err != nil && !os.IsNotExist(err) {
 		log.Printf("WARNING: failed to set DB permissions: %v", err)
 	}
 
-	if err := initDB(); err != nil {
+	if err := s.initDB(); err != nil {
 		log.Fatalf("failed to init database: %v", err)
 	}
 	log.Println("database initialized")
 
 	// Seed default alert rules.
-	seedAlertRules()
+	s.seedAlertRules()
 
 	// Load or generate the agent-update signing key. Must run before
 	// initAgentVersionTracking so the first announce can be signed, and
@@ -182,10 +178,10 @@ func main() {
 	initAgentVersionTracking()
 
 	// Generate setup token if no users exist (Finding #11 — first-boot setup).
-	generateSetupToken()
+	s.generateSetupToken()
 
 	// Generate first-run token if needed (Finding #1).
-	generateFirstRunToken()
+	s.generateFirstRunToken()
 
 	// Load or generate JWT secret (Finding #2).
 	jwtSecret = loadOrGenerateJWTSecret()
@@ -204,11 +200,11 @@ func main() {
 	}
 
 	// Start alert evaluation loop.
-	goSafelyForever("alertEvalLoop", alertEvalLoop)
+	goSafelyForever("alertEvalLoop", s.alertEvalLoop)
 
 	// Start cleanup goroutine.
-	goSafelyForever("cleanupLoop", cleanupLoop)
-	startAPIPollers()
+	goSafelyForever("cleanupLoop", s.cleanupLoop)
+	s.startAPIPollers()
 
 	e := echo.New()
 	e.HideBanner = true
@@ -232,7 +228,7 @@ func main() {
 		AllowHeaders: []string{"Accept", "Content-Type", "Cache-Control", "Authorization"},
 	}))
 
-	registerRoutes(e)
+	s.registerRoutes(e)
 
 	if err := auditRBACRouteCoverage(e, routeScopeRequirements); err != nil {
 		log.Fatalf("RBAC route audit failed: %v", err)
@@ -251,94 +247,94 @@ func main() {
 // registerRoutes wires every public and RBAC-protected handler onto e.
 // Shared between main() and tests so the production route set and the audit
 // can never drift.
-func registerRoutes(e *echo.Echo) {
+func (s *Server) registerRoutes(e *echo.Echo) {
 	// Public endpoints (no auth).
 	e.GET("/health", handleHealth)
-	e.GET("/ws/agent", handleAgentWS)
-	e.POST("/api/auth/login", handleLogin)
+	e.GET("/ws/agent", s.handleAgentWS)
+	e.POST("/api/auth/login", s.handleLogin)
 	e.GET("/install.sh", handleInstallScript)
 	e.GET("/install.ps1", handleWindowsInstallScript)
 	e.GET("/download/agent", handleDownloadAgent)
 	e.GET("/download/ca.crt", handleDownloadCACert)
-	e.GET("/api/setup/status", handleSetupStatus)
-	e.POST("/api/setup", handleSetup)
+	e.GET("/api/setup/status", s.handleSetupStatus)
+	e.POST("/api/setup", s.handleSetup)
 
 	// Phase 10 — branding reads are public (dashboard fetches before auth).
-	e.GET("/api/branding", handleGetBranding)
-	e.GET("/api/branding/logo", handleGetLogo)
-	e.GET("/api/branding/favicon", handleGetFavicon)
+	e.GET("/api/branding", s.handleGetBranding)
+	e.GET("/api/branding/logo", s.handleGetLogo)
+	e.GET("/api/branding/favicon", s.handleGetFavicon)
 
 	// Protected endpoints.
-	api := e.Group("", jwtMiddleware, credentialRotationMiddleware, permissionMiddleware)
-	api.GET("/api/events", handleSSE)
-	api.GET("/api/machines", handleListMachines)
-	api.GET("/api/machines/:id", handleGetMachine)
-	api.GET("/api/machines/:id/services", handleGetServices)
-	api.GET("/api/machines/:id/containers", handleGetContainers)
-	api.POST("/api/machines/:id/command", handleCommand)
-	api.POST("/api/machines/:id/refresh", handleMachineRefresh)
-	api.POST("/api/refresh", handleFleetRefresh)
+	api := e.Group("", jwtMiddleware, s.credentialRotationMiddleware, s.permissionMiddleware)
+	api.GET("/api/events", s.handleSSE)
+	api.GET("/api/machines", s.handleListMachines)
+	api.GET("/api/machines/:id", s.handleGetMachine)
+	api.GET("/api/machines/:id/services", s.handleGetServices)
+	api.GET("/api/machines/:id/containers", s.handleGetContainers)
+	api.POST("/api/machines/:id/command", s.handleCommand)
+	api.POST("/api/machines/:id/refresh", s.handleMachineRefresh)
+	api.POST("/api/refresh", s.handleFleetRefresh)
 
 	// Phase 8 — agent version tracking and rollout control
-	api.GET("/api/versions", handleListVersions)
+	api.GET("/api/versions", s.handleListVersions)
 	api.POST("/api/versions/pause", handlePauseRollout)
-	api.POST("/api/versions/resume", handleResumeRollout)
-	api.PUT("/api/machines/:id/tags", handleSetTags)
-	api.GET("/api/machines/:id/notes", handleGetMachineNotes)
-	api.PUT("/api/machines/:id/notes", handleSetMachineNotes)
-	api.GET("/api/machines/:id/metrics/history", handleMetricsHistory)
-	api.DELETE("/api/machines/:id", handleDeleteMachine)
+	api.POST("/api/versions/resume", s.handleResumeRollout)
+	api.PUT("/api/machines/:id/tags", s.handleSetTags)
+	api.GET("/api/machines/:id/notes", s.handleGetMachineNotes)
+	api.PUT("/api/machines/:id/notes", s.handleSetMachineNotes)
+	api.GET("/api/machines/:id/metrics/history", s.handleMetricsHistory)
+	api.DELETE("/api/machines/:id", s.handleDeleteMachine)
 
-	api.POST("/api/machines/:id/terminal", handleStartTerminal)
-	api.DELETE("/api/machines/:id/terminal/:session_id", handleCloseTerminal)
-	e.GET("/ws/terminal/:session_id", handleTerminalWS)
+	api.POST("/api/machines/:id/terminal", s.handleStartTerminal)
+	api.DELETE("/api/machines/:id/terminal/:session_id", s.handleCloseTerminal)
+	e.GET("/ws/terminal/:session_id", s.handleTerminalWS)
 
-	api.GET("/api/alerts", handleListAlerts)
-	api.GET("/api/alerts/active/count", handleAlertCount)
-	api.POST("/api/alerts/:id/acknowledge", handleAcknowledgeAlert)
-	api.GET("/api/alert-rules", handleListAlertRules)
-	api.PUT("/api/alert-rules/:id", handleUpdateAlertRule)
+	api.GET("/api/alerts", s.handleListAlerts)
+	api.GET("/api/alerts/active/count", s.handleAlertCount)
+	api.POST("/api/alerts/:id/acknowledge", s.handleAcknowledgeAlert)
+	api.GET("/api/alert-rules", s.handleListAlertRules)
+	api.PUT("/api/alert-rules/:id", s.handleUpdateAlertRule)
 
-	api.POST("/api/auth/change-password", handleChangePassword)
-	api.POST("/api/auth/change-pin", handleChangePIN)
+	api.POST("/api/auth/change-password", s.handleChangePassword)
+	api.POST("/api/auth/change-pin", s.handleChangePIN)
 	api.POST("/api/auth/sse-token", handleSSEToken)
 
-	api.POST("/api/tokens", handleCreateToken)
+	api.POST("/api/tokens", s.handleCreateToken)
 
-	api.POST("/api/bulk/command", handleBulkCommand)
+	api.POST("/api/bulk/command", s.handleBulkCommand)
 
-	api.GET("/api/inventory", handleInventory)
+	api.GET("/api/inventory", s.handleInventory)
 
-	api.GET("/api/api-machines", handleListAPIMachines)
-	api.POST("/api/api-machines", handleCreateAPIMachine)
-	api.PATCH("/api/api-machines/:id", handleUpdateAPIMachine)
-	api.DELETE("/api/api-machines/:id", handleDeleteAPIMachine)
-	api.POST("/api/api-machines/:id/poll", handleForceAPIPoll)
+	api.GET("/api/api-machines", s.handleListAPIMachines)
+	api.POST("/api/api-machines", s.handleCreateAPIMachine)
+	api.PATCH("/api/api-machines/:id", s.handleUpdateAPIMachine)
+	api.DELETE("/api/api-machines/:id", s.handleDeleteAPIMachine)
+	api.POST("/api/api-machines/:id/poll", s.handleForceAPIPoll)
 
-	api.GET("/api/users", handleListUsers)
-	api.POST("/api/users", handleCreateUser)
-	api.PATCH("/api/users/:id", handleUpdateUser)
-	api.DELETE("/api/users/:id", handleDeleteUser)
+	api.GET("/api/users", s.handleListUsers)
+	api.POST("/api/users", s.handleCreateUser)
+	api.PATCH("/api/users/:id", s.handleUpdateUser)
+	api.DELETE("/api/users/:id", s.handleDeleteUser)
 
 	// Phase 10 — per-user theme prefs and admin branding writes.
-	api.GET("/api/me/theme", handleGetMyThemePrefs)
-	api.PATCH("/api/me/theme", handleUpdateMyThemePrefs)
-	api.PATCH("/api/branding", handleUpdateBrandingText)
-	api.POST("/api/branding/logo", handleUploadLogo)
-	api.POST("/api/branding/favicon", handleUploadFavicon)
-	api.DELETE("/api/branding/:kind", handleClearBrandingImage)
+	api.GET("/api/me/theme", s.handleGetMyThemePrefs)
+	api.PATCH("/api/me/theme", s.handleUpdateMyThemePrefs)
+	api.PATCH("/api/branding", s.handleUpdateBrandingText)
+	api.POST("/api/branding/logo", s.handleUploadLogo)
+	api.POST("/api/branding/favicon", s.handleUploadFavicon)
+	api.DELETE("/api/branding/:kind", s.handleClearBrandingImage)
 
 	// Phase 11 — per-user workflow personalization.
-	api.GET("/api/me/preferences", handleGetMyPreferences)
-	api.PATCH("/api/me/preferences", handlePatchMyPreferences)
-	api.POST("/api/me/avatar", handleUploadAvatar)
-	api.DELETE("/api/me/avatar", handleDeleteAvatar)
-	api.GET("/api/users/:user_id/avatar", handleGetAvatar)
-	api.POST("/api/me/pinned/:machine_id", handlePinMachine)
-	api.DELETE("/api/me/pinned/:machine_id", handleUnpinMachine)
-	api.GET("/api/me/filters", handleListSavedFilters)
-	api.POST("/api/me/filters", handleCreateSavedFilter)
-	api.DELETE("/api/me/filters/:id", handleDeleteSavedFilter)
+	api.GET("/api/me/preferences", s.handleGetMyPreferences)
+	api.PATCH("/api/me/preferences", s.handlePatchMyPreferences)
+	api.POST("/api/me/avatar", s.handleUploadAvatar)
+	api.DELETE("/api/me/avatar", s.handleDeleteAvatar)
+	api.GET("/api/users/:user_id/avatar", s.handleGetAvatar)
+	api.POST("/api/me/pinned/:machine_id", s.handlePinMachine)
+	api.DELETE("/api/me/pinned/:machine_id", s.handleUnpinMachine)
+	api.GET("/api/me/filters", s.handleListSavedFilters)
+	api.POST("/api/me/filters", s.handleCreateSavedFilter)
+	api.DELETE("/api/me/filters/:id", s.handleDeleteSavedFilter)
 }
 
 func getEnvOrDefault(key, def string) string {
@@ -349,31 +345,31 @@ func getEnvOrDefault(key, def string) string {
 	return v
 }
 
-func initDB() error {
-	return runMigrations(db)
+func (s *Server) initDB() error {
+	return runMigrations(s.db)
 }
 
 // --- Auth ---
 
 // --- Cleanup ---
 
-func cleanupLoop() {
+func (s *Server) cleanupLoop() {
 	log.Println("cleanup goroutine started (runs hourly)")
 	// Run once on startup after a short delay.
 	time.Sleep(10 * time.Second)
-	runCleanup()
+	s.runCleanup()
 	for {
 		time.Sleep(1 * time.Hour)
-		runCleanup()
+		s.runCleanup()
 	}
 }
 
-func runCleanup() {
+func (s *Server) runCleanup() {
 	log.Println("running cleanup...")
 	total := int64(0)
 
 	// Delete metrics older than 7 days.
-	res, err := db.Exec(`DELETE FROM metrics WHERE timestamp < datetime('now', '-7 days')`)
+	res, err := s.db.Exec(`DELETE FROM metrics WHERE timestamp < datetime('now', '-7 days')`)
 	if err == nil {
 		n, _ := res.RowsAffected()
 		total += n
@@ -383,7 +379,7 @@ func runCleanup() {
 	}
 
 	// Delete GPU metrics older than 7 days.
-	res, err = db.Exec(`DELETE FROM gpu_metrics WHERE timestamp < datetime('now', '-7 days')`)
+	res, err = s.db.Exec(`DELETE FROM gpu_metrics WHERE timestamp < datetime('now', '-7 days')`)
 	if err == nil {
 		n, _ := res.RowsAffected()
 		total += n
@@ -393,7 +389,7 @@ func runCleanup() {
 	}
 
 	// Delete resolved alerts older than 30 days.
-	res, err = db.Exec(`DELETE FROM alerts WHERE status != 'active' AND triggered_at < datetime('now', '-30 days')`)
+	res, err = s.db.Exec(`DELETE FROM alerts WHERE status != 'active' AND triggered_at < datetime('now', '-30 days')`)
 	if err == nil {
 		n, _ := res.RowsAffected()
 		total += n
@@ -403,7 +399,7 @@ func runCleanup() {
 	}
 
 	// Delete expired tokens.
-	res, err = db.Exec(`DELETE FROM tokens WHERE expires_at < datetime('now')`)
+	res, err = s.db.Exec(`DELETE FROM tokens WHERE expires_at < datetime('now')`)
 	if err == nil {
 		n, _ := res.RowsAffected()
 		total += n
@@ -413,7 +409,7 @@ func runCleanup() {
 	}
 
 	// Delete closed terminal sessions older than 30 days.
-	res, err = db.Exec(`DELETE FROM terminal_sessions WHERE status = 'closed' AND ended_at < datetime('now', '-30 days')`)
+	res, err = s.db.Exec(`DELETE FROM terminal_sessions WHERE status = 'closed' AND ended_at < datetime('now', '-30 days')`)
 	if err == nil {
 		n, _ := res.RowsAffected()
 		total += n
@@ -427,7 +423,7 @@ func runCleanup() {
 
 // --- Metrics History ---
 
-func handleMetricsHistory(c echo.Context) error {
+func (s *Server) handleMetricsHistory(c echo.Context) error {
 	machineID := c.Param("id")
 	period := c.QueryParam("period")
 	if period == "" {
@@ -457,7 +453,7 @@ func handleMetricsHistory(c echo.Context) error {
 		limit = 120
 	}
 
-	rows, err := db.Query(`
+	rows, err := s.db.Query(`
 		SELECT timestamp,
 			COALESCE(cpu_percent, 0),
 			COALESCE(ram_used_bytes, 0),
@@ -525,7 +521,7 @@ const maxBulkCommandTargets = 100
 // throughput on the common case (most targets reply in <1s).
 const bulkCommandConcurrency = 20
 
-func handleBulkCommand(c echo.Context) error {
+func (s *Server) handleBulkCommand(c echo.Context) error {
 	var body struct {
 		MachineIDs []string `json:"machine_ids"`
 		Type       string   `json:"type"`
@@ -563,9 +559,9 @@ func handleBulkCommand(c echo.Context) error {
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			agentsMu.RLock()
-			agent, ok := agents[machineID]
-			agentsMu.RUnlock()
+			s.agentsMu.RLock()
+			agent, ok := s.agents[machineID]
+			s.agentsMu.RUnlock()
 
 			result := BulkResult{MachineID: machineID}
 			if !ok {
@@ -636,10 +632,10 @@ func handleBulkCommand(c echo.Context) error {
 // the SQLite row.
 const notesMaxLen = 10000
 
-func handleGetMachineNotes(c echo.Context) error {
+func (s *Server) handleGetMachineNotes(c echo.Context) error {
 	id := c.Param("id")
 	var notes string
-	err := db.QueryRow(`SELECT COALESCE(notes, '') FROM machines WHERE id = ?`, id).Scan(&notes)
+	err := s.db.QueryRow(`SELECT COALESCE(notes, '') FROM machines WHERE id = ?`, id).Scan(&notes)
 	if err == sql.ErrNoRows {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "machine not found"})
 	}
@@ -649,7 +645,7 @@ func handleGetMachineNotes(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]string{"notes": notes})
 }
 
-func handleSetMachineNotes(c echo.Context) error {
+func (s *Server) handleSetMachineNotes(c echo.Context) error {
 	id := c.Param("id")
 	var body struct {
 		Notes string `json:"notes"`
@@ -663,7 +659,7 @@ func handleSetMachineNotes(c echo.Context) error {
 		})
 	}
 
-	res, err := db.Exec(`UPDATE machines SET notes = ? WHERE id = ?`, body.Notes, id)
+	res, err := s.db.Exec(`UPDATE machines SET notes = ? WHERE id = ?`, body.Notes, id)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
@@ -679,7 +675,7 @@ func handleSetMachineNotes(c echo.Context) error {
 
 // --- Tags ---
 
-func handleSetTags(c echo.Context) error {
+func (s *Server) handleSetTags(c echo.Context) error {
 	id := c.Param("id")
 	var body struct {
 		Tags []string `json:"tags"`
@@ -688,7 +684,7 @@ func handleSetTags(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid body"})
 	}
 	tagsStr := strings.Join(body.Tags, ",")
-	_, err := db.Exec(`UPDATE machines SET tags = ? WHERE id = ?`, tagsStr, id)
+	_, err := s.db.Exec(`UPDATE machines SET tags = ? WHERE id = ?`, tagsStr, id)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
@@ -699,18 +695,18 @@ func handleSetTags(c echo.Context) error {
 
 // --- Existing Handlers ---
 
-func handleDeleteMachine(c echo.Context) error {
+func (s *Server) handleDeleteMachine(c echo.Context) error {
 	id := c.Param("id")
 
 	// Check machine exists and get hostname
 	var hostname string
-	err := db.QueryRow("SELECT hostname FROM machines WHERE id = ?", id).Scan(&hostname)
+	err := s.db.QueryRow("SELECT hostname FROM machines WHERE id = ?", id).Scan(&hostname)
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "machine not found"})
 	}
 
 	// Delete all related data in a transaction
-	tx, err := db.Begin()
+	tx, err := s.db.Begin()
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to start transaction"})
 	}
@@ -730,9 +726,9 @@ func handleDeleteMachine(c echo.Context) error {
 	}
 
 	// Remove from live cache
-	agentsMu.Lock()
-	delete(agents, id)
-	agentsMu.Unlock()
+	s.agentsMu.Lock()
+	delete(s.agents, id)
+	s.agentsMu.Unlock()
 	machineLatencyMu.Lock()
 	delete(machineLatency, id)
 	machineLatencyMu.Unlock()
@@ -745,8 +741,8 @@ func handleHealth(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 }
 
-func upsertServices(machineID string, services []ServiceInfo) {
-	tx, err := db.Begin()
+func (s *Server) upsertServices(machineID string, services []ServiceInfo) {
+	tx, err := s.db.Begin()
 	if err != nil {
 		log.Printf("begin tx error: %v", err)
 		return
@@ -775,8 +771,8 @@ func upsertServices(machineID string, services []ServiceInfo) {
 	log.Printf("stored %d services for %s", len(services), machineID)
 }
 
-func upsertContainers(machineID string, containers []ContainerInfo) {
-	tx, err := db.Begin()
+func (s *Server) upsertContainers(machineID string, containers []ContainerInfo) {
+	tx, err := s.db.Begin()
 	if err != nil {
 		log.Printf("begin tx error: %v", err)
 		return
@@ -805,8 +801,8 @@ func upsertContainers(machineID string, containers []ContainerInfo) {
 	log.Printf("stored %d containers for %s", len(containers), machineID)
 }
 
-func upsertMachine(m AgentMetrics) {
-	_, err := db.Exec(`
+func (s *Server) upsertMachine(m AgentMetrics) {
+	_, err := s.db.Exec(`
 		INSERT INTO machines (id, hostname, ip, os, status, last_seen)
 		VALUES (?, ?, ?, ?, 'online', ?)
 		ON CONFLICT(id) DO UPDATE SET
@@ -832,7 +828,7 @@ func nullableFloat(v float64) sql.NullFloat64 {
 	return sql.NullFloat64{Float64: v, Valid: true}
 }
 
-func storeMetrics(m AgentMetrics) {
+func (s *Server) storeMetrics(m AgentMetrics) {
 	var gpuTemp, gpuUtil float64
 	var gpuVRAMUsed, gpuVRAMTotal int64
 	if len(m.GPUs) > 0 {
@@ -842,7 +838,7 @@ func storeMetrics(m AgentMetrics) {
 		gpuVRAMTotal = m.GPUs[0].MemTotalBytes
 	}
 
-	tx, err := db.Begin()
+	tx, err := s.db.Begin()
 	if err != nil {
 		log.Printf("store metrics tx error: %v", err)
 		return
@@ -892,16 +888,16 @@ func storeMetrics(m AgentMetrics) {
 // (if any) so the caller can log it — the prior call site swallowed errors,
 // which masked a SQL syntax bug for the entire lifetime of the API-machines
 // feature.
-func markAPIMachineError(machineID, hostname, adapterType string) error {
-	_, err := db.Exec(`INSERT INTO machines (id, hostname, status, tags, last_seen)
+func (s *Server) markAPIMachineError(machineID, hostname, adapterType string) error {
+	_, err := s.db.Exec(`INSERT INTO machines (id, hostname, status, tags, last_seen)
 		VALUES (?, ?, 'error', ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(id) DO UPDATE SET status = 'error', last_seen = CURRENT_TIMESTAMP`,
 		machineID, hostname, adapterType)
 	return err
 }
 
-func markOffline(machineID string) {
-	_, err := db.Exec(`UPDATE machines SET status = 'offline' WHERE id = ?`, machineID)
+func (s *Server) markOffline(machineID string) {
+	_, err := s.db.Exec(`UPDATE machines SET status = 'offline' WHERE id = ?`, machineID)
 	if err != nil {
 		log.Printf("mark offline error: %v", err)
 	}
@@ -919,7 +915,7 @@ func broadcastSSE(data []byte) {
 	}
 }
 
-func handleSSE(c echo.Context) error {
+func (s *Server) handleSSE(c echo.Context) error {
 	c.Response().Header().Set("Content-Type", "text/event-stream")
 	c.Response().Header().Set("Cache-Control", "no-cache")
 	c.Response().Header().Set("Connection", "keep-alive")
@@ -942,13 +938,13 @@ func handleSSE(c echo.Context) error {
 	}
 
 	// Send snapshot with alert count.
-	snapshot, _ := getEnrichedMachinesJSON()
+	snapshot, _ := s.getEnrichedMachinesJSON()
 	fmt.Fprintf(c.Response(), "event: snapshot\ndata: %s\n\n", snapshot)
 	flusher.Flush()
 
 	// Send initial alert count.
 	var alertCount int
-	db.QueryRow(`SELECT COUNT(*) FROM alerts WHERE status = 'active'`).Scan(&alertCount)
+	s.db.QueryRow(`SELECT COUNT(*) FROM alerts WHERE status = 'active'`).Scan(&alertCount)
 	alertCountJSON, _ := json.Marshal(map[string]int{"count": alertCount})
 	fmt.Fprintf(c.Response(), "event: alert_count\ndata: %s\n\n", alertCountJSON)
 	flusher.Flush()
@@ -975,15 +971,15 @@ func handleSSE(c echo.Context) error {
 
 }
 
-func handleListMachines(c echo.Context) error {
-	data, err := getMachinesJSON()
+func (s *Server) handleListMachines(c echo.Context) error {
+	data, err := s.getMachinesJSON()
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 	return c.JSONBlob(http.StatusOK, data)
 }
 
-func handleGetMachine(c echo.Context) error {
+func (s *Server) handleGetMachine(c echo.Context) error {
 	id := c.Param("id")
 
 	var m struct {
@@ -997,7 +993,7 @@ func handleGetMachine(c echo.Context) error {
 		Notes        string  `json:"notes"`
 		HardwareInfo *string `json:"-"`
 	}
-	err := db.QueryRow(`SELECT id, hostname, ip, os, status, tags, last_seen, COALESCE(notes, ''), hardware_info FROM machines WHERE id = ?`, id).
+	err := s.db.QueryRow(`SELECT id, hostname, ip, os, status, tags, last_seen, COALESCE(notes, ''), hardware_info FROM machines WHERE id = ?`, id).
 		Scan(&m.ID, &m.Hostname, &m.IP, &m.OS, &m.Status, &m.Tags, &m.LastSeen, &m.Notes, &m.HardwareInfo)
 	if err == sql.ErrNoRows {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "machine not found"})
@@ -1029,7 +1025,7 @@ func handleGetMachine(c echo.Context) error {
 	// COALESCE every column because API-polled machines (and agents that
 	// haven't reported GPU yet) store NULLs here, and Scan of NULL into
 	// float64/int64 fails with a 500.
-	err = db.QueryRow(`
+	err = s.db.QueryRow(`
 		SELECT
 			COALESCE(cpu_percent, 0),
 			COALESCE(ram_used_bytes, 0),
@@ -1049,7 +1045,7 @@ func handleGetMachine(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
-	gpus := getLatestGPUMetrics(id)
+	gpus := s.getLatestGPUMetrics(id)
 
 	// Get latency.
 	machineLatencyMu.RLock()
@@ -1065,8 +1061,8 @@ func handleGetMachine(c echo.Context) error {
 	})
 }
 
-func getLatestGPUMetrics(machineID string) []GPUInfo {
-	rows, err := db.Query(`
+func (s *Server) getLatestGPUMetrics(machineID string) []GPUInfo {
+	rows, err := s.db.Query(`
 		SELECT gpu_index, gpu_name, temp_c, util_percent, mem_used_bytes, mem_total_bytes, power_watts, fan_percent
 		FROM gpu_metrics
 		WHERE machine_id = ? AND timestamp = (
@@ -1098,9 +1094,9 @@ func getLatestGPUMetrics(machineID string) []GPUInfo {
 	return gpus
 }
 
-func handleGetServices(c echo.Context) error {
+func (s *Server) handleGetServices(c echo.Context) error {
 	id := c.Param("id")
-	rows, err := db.Query(`SELECT name, status, description FROM services WHERE machine_id = ? ORDER BY name`, id)
+	rows, err := s.db.Query(`SELECT name, status, description FROM services WHERE machine_id = ? ORDER BY name`, id)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
@@ -1120,9 +1116,9 @@ func handleGetServices(c echo.Context) error {
 	return c.JSON(http.StatusOK, services)
 }
 
-func handleGetContainers(c echo.Context) error {
+func (s *Server) handleGetContainers(c echo.Context) error {
 	id := c.Param("id")
-	rows, err := db.Query(`SELECT container_id, name, status, image FROM containers WHERE machine_id = ? ORDER BY name`, id)
+	rows, err := s.db.Query(`SELECT container_id, name, status, image FROM containers WHERE machine_id = ? ORDER BY name`, id)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
@@ -1142,12 +1138,12 @@ func handleGetContainers(c echo.Context) error {
 	return c.JSON(http.StatusOK, containers)
 }
 
-func handleCommand(c echo.Context) error {
+func (s *Server) handleCommand(c echo.Context) error {
 	machineID := c.Param("id")
 
-	agentsMu.RLock()
-	agent, ok := agents[machineID]
-	agentsMu.RUnlock()
+	s.agentsMu.RLock()
+	agent, ok := s.agents[machineID]
+	s.agentsMu.RUnlock()
 	if !ok {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "agent not connected"})
 	}
@@ -1194,11 +1190,11 @@ func handleCommand(c echo.Context) error {
 	}
 }
 
-func getEnrichedMachinesJSON() ([]byte, error) {
+func (s *Server) getEnrichedMachinesJSON() ([]byte, error) {
 	// Bulk-fetch services for all machines (avoids 1+N per-machine queries).
 	servicesByMachine := map[string][]ServiceInfo{}
 	{
-		svcRows, err := db.Query(`SELECT machine_id, name, status, description FROM services ORDER BY machine_id, name`)
+		svcRows, err := s.db.Query(`SELECT machine_id, name, status, description FROM services ORDER BY machine_id, name`)
 		if err == nil {
 			for svcRows.Next() {
 				var machineID string
@@ -1214,7 +1210,7 @@ func getEnrichedMachinesJSON() ([]byte, error) {
 	// Bulk-fetch containers for all machines (avoids 1+N per-machine queries).
 	containersByMachine := map[string][]ContainerInfo{}
 	{
-		ctRows, err := db.Query(`SELECT machine_id, container_id, name, status, image FROM containers ORDER BY machine_id, name`)
+		ctRows, err := s.db.Query(`SELECT machine_id, container_id, name, status, image FROM containers ORDER BY machine_id, name`)
 		if err == nil {
 			for ctRows.Next() {
 				var machineID string
@@ -1231,7 +1227,7 @@ func getEnrichedMachinesJSON() ([]byte, error) {
 	// pattern as the metrics JOIN above (avoids 1+N per-machine queries).
 	gpusByMachine := map[string][]GPUInfo{}
 	{
-		gpuRows, err := db.Query(`
+		gpuRows, err := s.db.Query(`
 			SELECT machine_id, gpu_index, gpu_name, temp_c, util_percent,
 				mem_used_bytes, mem_total_bytes, power_watts, fan_percent
 			FROM (
@@ -1259,7 +1255,7 @@ func getEnrichedMachinesJSON() ([]byte, error) {
 		}
 	}
 
-	rows, err := db.Query(`
+	rows, err := s.db.Query(`
 		SELECT m.id, m.hostname, m.ip, m.os, m.status, m.last_seen, COALESCE(m.tags, ''),
 			COALESCE(met.cpu_percent, 0),
 			COALESCE(met.ram_used_bytes, 0), COALESCE(met.ram_total_bytes, 0),
@@ -1345,8 +1341,8 @@ func getEnrichedMachinesJSON() ([]byte, error) {
 	return json.Marshal(machines)
 }
 
-func getServicesForMachine(machineID string) []ServiceInfo {
-	rows, err := db.Query(`SELECT name, status, description FROM services WHERE machine_id = ? ORDER BY name`, machineID)
+func (s *Server) getServicesForMachine(machineID string) []ServiceInfo {
+	rows, err := s.db.Query(`SELECT name, status, description FROM services WHERE machine_id = ? ORDER BY name`, machineID)
 	if err != nil {
 		return []ServiceInfo{}
 	}
@@ -1365,8 +1361,8 @@ func getServicesForMachine(machineID string) []ServiceInfo {
 	return services
 }
 
-func getContainersForMachine(machineID string) []ContainerInfo {
-	rows, err := db.Query(`SELECT container_id, name, status, image FROM containers WHERE machine_id = ? ORDER BY name`, machineID)
+func (s *Server) getContainersForMachine(machineID string) []ContainerInfo {
+	rows, err := s.db.Query(`SELECT container_id, name, status, image FROM containers WHERE machine_id = ? ORDER BY name`, machineID)
 	if err != nil {
 		return []ContainerInfo{}
 	}
@@ -1385,8 +1381,8 @@ func getContainersForMachine(machineID string) []ContainerInfo {
 	return containers
 }
 
-func getMachinesJSON() ([]byte, error) {
-	rows, err := db.Query(`SELECT id, hostname, ip, os, status, COALESCE(tags, ''), last_seen, created_at FROM machines ORDER BY hostname`)
+func (s *Server) getMachinesJSON() ([]byte, error) {
+	rows, err := s.db.Query(`SELECT id, hostname, ip, os, status, COALESCE(tags, ''), last_seen, created_at FROM machines ORDER BY hostname`)
 	if err != nil {
 		return nil, err
 	}
@@ -2147,8 +2143,8 @@ func validateAPIAuthConfig(adapterType string, authConfig json.RawMessage) error
 
 // --- API Machine Handlers ---
 
-func handleListAPIMachines(c echo.Context) error {
-	rows, err := db.Query(`SELECT id, name, adapter_type, base_url, auth_config, tls_config, poll_interval_secs, enabled, last_poll_at, last_error, created_at FROM api_machines ORDER BY name`)
+func (s *Server) handleListAPIMachines(c echo.Context) error {
+	rows, err := s.db.Query(`SELECT id, name, adapter_type, base_url, auth_config, tls_config, poll_interval_secs, enabled, last_poll_at, last_error, created_at FROM api_machines ORDER BY name`)
 	if err != nil {
 		log.Printf("api machines: list query error: %v", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal error"})
@@ -2174,7 +2170,7 @@ func handleListAPIMachines(c echo.Context) error {
 	return c.JSON(http.StatusOK, machines)
 }
 
-func handleCreateAPIMachine(c echo.Context) error {
+func (s *Server) handleCreateAPIMachine(c echo.Context) error {
 	ip := getRealIP(c)
 	if !rateLimiter.Allow("api-machines-create", ip, 3) {
 		return c.JSON(http.StatusTooManyRequests, map[string]string{"error": "rate limit exceeded"})
@@ -2220,7 +2216,7 @@ func handleCreateAPIMachine(c echo.Context) error {
 
 	// Enforce max API machines limit
 	var machineCount int
-	if err := db.QueryRow("SELECT COUNT(*) FROM api_machines").Scan(&machineCount); err != nil {
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM api_machines").Scan(&machineCount); err != nil {
 		log.Printf("api machines: count query error: %v", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal error"})
 	}
@@ -2234,7 +2230,7 @@ func handleCreateAPIMachine(c echo.Context) error {
 		log.Printf("api machines: tls config marshal error: %v", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal error"})
 	}
-	_, err = db.Exec(`INSERT INTO api_machines (id, name, adapter_type, base_url, auth_config, tls_config, poll_interval_secs) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+	_, err = s.db.Exec(`INSERT INTO api_machines (id, name, adapter_type, base_url, auth_config, tls_config, poll_interval_secs) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		id, body.Name, body.AdapterType, body.BaseURL, string(body.AuthConfig), storedTLSCfg, body.PollIntervalSecs)
 	if err != nil {
 		log.Printf("api machines: create insert error: %v", err)
@@ -2244,7 +2240,7 @@ func handleCreateAPIMachine(c echo.Context) error {
 	log.Printf("api machine created: %s (%s, %s)", body.Name, body.AdapterType, id)
 
 	// Start poller for the new machine.
-	startAPIPoller(id, body.Name, body.AdapterType, body.BaseURL, body.AuthConfig, json.RawMessage(storedTLSCfg), body.PollIntervalSecs)
+	s.startAPIPoller(id, body.Name, body.AdapterType, body.BaseURL, body.AuthConfig, json.RawMessage(storedTLSCfg), body.PollIntervalSecs)
 
 	return c.JSON(http.StatusCreated, map[string]interface{}{
 		"id":                 id,
@@ -2256,7 +2252,7 @@ func handleCreateAPIMachine(c echo.Context) error {
 	})
 }
 
-func handleUpdateAPIMachine(c echo.Context) error {
+func (s *Server) handleUpdateAPIMachine(c echo.Context) error {
 	id := c.Param("id")
 
 	var current struct {
@@ -2267,7 +2263,7 @@ func handleUpdateAPIMachine(c echo.Context) error {
 		TLSConfig        string
 		PollIntervalSecs int
 	}
-	err := db.QueryRow(`SELECT name, adapter_type, base_url, auth_config, tls_config, poll_interval_secs
+	err := s.db.QueryRow(`SELECT name, adapter_type, base_url, auth_config, tls_config, poll_interval_secs
 		FROM api_machines WHERE id = ?`, id).
 		Scan(&current.Name, &current.AdapterType, &current.BaseURL, &current.AuthConfig, &current.TLSConfig, &current.PollIntervalSecs)
 	if err != nil {
@@ -2350,7 +2346,7 @@ func handleUpdateAPIMachine(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal error"})
 	}
 
-	_, err = db.Exec(`UPDATE api_machines
+	_, err = s.db.Exec(`UPDATE api_machines
 		SET name = ?, adapter_type = ?, base_url = ?, auth_config = ?, tls_config = ?, poll_interval_secs = ?
 		WHERE id = ?`,
 		name, adapterType, baseURL, string(authConfig), storedTLSCfg, pollIntervalSecs, id)
@@ -2359,7 +2355,7 @@ func handleUpdateAPIMachine(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal error"})
 	}
 
-	startAPIPoller(id, name, adapterType, baseURL, authConfig, json.RawMessage(storedTLSCfg), pollIntervalSecs)
+	s.startAPIPoller(id, name, adapterType, baseURL, authConfig, json.RawMessage(storedTLSCfg), pollIntervalSecs)
 
 	log.Printf("api machine updated: %s (%s, %s)", name, adapterType, id)
 	return c.JSON(http.StatusOK, map[string]interface{}{
@@ -2372,11 +2368,11 @@ func handleUpdateAPIMachine(c echo.Context) error {
 	})
 }
 
-func handleDeleteAPIMachine(c echo.Context) error {
+func (s *Server) handleDeleteAPIMachine(c echo.Context) error {
 	id := c.Param("id")
 
 	var name string
-	err := db.QueryRow("SELECT name FROM api_machines WHERE id = ?", id).Scan(&name)
+	err := s.db.QueryRow("SELECT name FROM api_machines WHERE id = ?", id).Scan(&name)
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "api machine not found"})
 	}
@@ -2385,14 +2381,14 @@ func handleDeleteAPIMachine(c echo.Context) error {
 	stopAPIPoller(id)
 
 	// Delete api_machine row.
-	if _, err := db.Exec("DELETE FROM api_machines WHERE id = ?", id); err != nil {
+	if _, err := s.db.Exec("DELETE FROM api_machines WHERE id = ?", id); err != nil {
 		log.Printf("api machines: delete error: %v", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "internal error"})
 	}
 
 	// Delete associated machine and metrics.
 	machineID := "api-" + id
-	tx, err := db.Begin()
+	tx, err := s.db.Begin()
 	if err == nil {
 		// Note: table names are hardcoded constants, not user input — safe from SQL injection
 		for _, table := range []string{"metrics", "gpu_metrics", "services", "containers", "alerts"} {
@@ -2406,7 +2402,7 @@ func handleDeleteAPIMachine(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]string{"status": "deleted", "name": name})
 }
 
-func handleForceAPIPoll(c echo.Context) error {
+func (s *Server) handleForceAPIPoll(c echo.Context) error {
 	id := c.Param("id")
 
 	var m struct {
@@ -2416,7 +2412,7 @@ func handleForceAPIPoll(c echo.Context) error {
 		AuthConfig  string `json:"auth_config"`
 		TLSConfig   string `json:"tls_config"`
 	}
-	err := db.QueryRow("SELECT name, adapter_type, base_url, auth_config, tls_config FROM api_machines WHERE id = ?", id).
+	err := s.db.QueryRow("SELECT name, adapter_type, base_url, auth_config, tls_config FROM api_machines WHERE id = ?", id).
 		Scan(&m.Name, &m.AdapterType, &m.BaseURL, &m.AuthConfig, &m.TLSConfig)
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "api machine not found"})
@@ -2428,12 +2424,12 @@ func handleForceAPIPoll(c echo.Context) error {
 		// the dashboard so upstream/network detail from a poll target isn't
 		// reflected to the client.
 		log.Printf("api machine %s (%s) poll failed: %v", id, m.Name, pollErr)
-		db.Exec("UPDATE api_machines SET last_error = ?, last_poll_at = CURRENT_TIMESTAMP WHERE id = ?", "poll failed", id)
+		s.db.Exec("UPDATE api_machines SET last_error = ?, last_poll_at = CURRENT_TIMESTAMP WHERE id = ?", "poll failed", id)
 		return c.JSON(http.StatusBadGateway, map[string]string{"error": "poll failed"})
 	}
 
-	storeAPIPollResult(id, m.Name, m.AdapterType, m.BaseURL, result)
-	db.Exec("UPDATE api_machines SET last_poll_at = CURRENT_TIMESTAMP, last_error = NULL WHERE id = ?", id)
+	s.storeAPIPollResult(id, m.Name, m.AdapterType, m.BaseURL, result)
+	s.db.Exec("UPDATE api_machines SET last_poll_at = CURRENT_TIMESTAMP, last_error = NULL WHERE id = ?", id)
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"hostname":    result.Hostname,
@@ -2490,7 +2486,7 @@ func extractAPIMachineIP(baseURL, resultIP string) string {
 }
 
 // storeAPIPollResult upserts the machine and inserts metrics.
-func storeAPIPollResult(apiMachineID, name, adapterType, baseURL string, result *APIPollResult) {
+func (s *Server) storeAPIPollResult(apiMachineID, name, adapterType, baseURL string, result *APIPollResult) {
 	machineID := "api-" + apiMachineID
 	hostname := result.Hostname
 	if hostname == "" {
@@ -2500,7 +2496,7 @@ func storeAPIPollResult(apiMachineID, name, adapterType, baseURL string, result 
 	ip := extractAPIMachineIP(baseURL, result.IP)
 
 	// Upsert machine.
-	_, err := db.Exec(`INSERT INTO machines (id, hostname, ip, os, status, tags, last_seen)
+	_, err := s.db.Exec(`INSERT INTO machines (id, hostname, ip, os, status, tags, last_seen)
 		VALUES (?, ?, ?, ?, 'online', ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(id) DO UPDATE SET
 			hostname = excluded.hostname,
@@ -2515,7 +2511,7 @@ func storeAPIPollResult(apiMachineID, name, adapterType, baseURL string, result 
 	}
 
 	// Insert metrics.
-	_, err = db.Exec(`INSERT INTO metrics (machine_id, cpu_percent, ram_used_bytes, ram_total_bytes, disk_used_bytes, disk_total_bytes)
+	_, err = s.db.Exec(`INSERT INTO metrics (machine_id, cpu_percent, ram_used_bytes, ram_total_bytes, disk_used_bytes, disk_total_bytes)
 		VALUES (?, ?, ?, ?, ?, ?)`,
 		machineID, result.CPUPercent, result.RAMUsed, result.RAMTotal, result.DiskUsed, result.DiskTotal)
 	if err != nil {
@@ -2525,14 +2521,14 @@ func storeAPIPollResult(apiMachineID, name, adapterType, baseURL string, result 
 	// Update services.
 	if len(result.Services) > 0 {
 		for _, svc := range result.Services {
-			db.Exec(`INSERT OR REPLACE INTO services (machine_id, name, status, description, updated_at)
+			s.db.Exec(`INSERT OR REPLACE INTO services (machine_id, name, status, description, updated_at)
 				VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)`, machineID, svc.Name, svc.Status, svc.Description)
 		}
 	}
 
 	// Update containers atomically via the shared upsertContainers helper.
 	if len(result.Containers) > 0 {
-		upsertContainers(machineID, result.Containers)
+		s.upsertContainers(machineID, result.Containers)
 	}
 
 	log.Printf("api poll: %s (%s) cpu=%.1f%% ram=%d/%dMB",
@@ -2541,7 +2537,7 @@ func storeAPIPollResult(apiMachineID, name, adapterType, baseURL string, result 
 		result.RAMUsed/1024/1024, result.RAMTotal/1024/1024)
 
 	// Broadcast SSE update.
-	data, _ := getMachinesJSON()
+	data, _ := s.getMachinesJSON()
 	sseMsg, _ := json.Marshal(map[string]interface{}{
 		"type": "machines",
 		"data": json.RawMessage(data),
@@ -2551,8 +2547,8 @@ func storeAPIPollResult(apiMachineID, name, adapterType, baseURL string, result 
 
 // --- Background Poller ---
 
-func startAPIPollers() {
-	rows, err := db.Query("SELECT id, name, adapter_type, base_url, auth_config, tls_config, poll_interval_secs FROM api_machines WHERE enabled = TRUE")
+func (s *Server) startAPIPollers() {
+	rows, err := s.db.Query("SELECT id, name, adapter_type, base_url, auth_config, tls_config, poll_interval_secs FROM api_machines WHERE enabled = TRUE")
 	if err != nil {
 		log.Printf("failed to load api_machines: %v", err)
 		return
@@ -2567,7 +2563,7 @@ func startAPIPollers() {
 			log.Printf("failed to scan api_machine: %v", err)
 			continue
 		}
-		startAPIPoller(id, name, adapterType, baseURL, json.RawMessage(authConfig), json.RawMessage(tlsConfig), pollInterval)
+		s.startAPIPoller(id, name, adapterType, baseURL, json.RawMessage(authConfig), json.RawMessage(tlsConfig), pollInterval)
 		count++
 	}
 	if count > 0 {
@@ -2575,7 +2571,7 @@ func startAPIPollers() {
 	}
 }
 
-func startAPIPoller(id, name, adapterType, baseURL string, authConfig json.RawMessage, tlsConfig json.RawMessage, intervalSecs int) {
+func (s *Server) startAPIPoller(id, name, adapterType, baseURL string, authConfig json.RawMessage, tlsConfig json.RawMessage, intervalSecs int) {
 	apiPollersMu.Lock()
 	defer apiPollersMu.Unlock()
 
@@ -2601,13 +2597,13 @@ func startAPIPoller(id, name, adapterType, baseURL string, authConfig json.RawMe
 			result, err := doPoll(adapterType, baseURL, authConfig, tlsConfig)
 			if err != nil {
 				log.Printf("api poll error: %s (%s): %v", name, adapterType, err)
-				db.Exec("UPDATE api_machines SET last_error = ?, last_poll_at = CURRENT_TIMESTAMP WHERE id = ?", err.Error(), id)
-				if mErr := markAPIMachineError("api-"+id, name, adapterType); mErr != nil {
+				s.db.Exec("UPDATE api_machines SET last_error = ?, last_poll_at = CURRENT_TIMESTAMP WHERE id = ?", err.Error(), id)
+				if mErr := s.markAPIMachineError("api-"+id, name, adapterType); mErr != nil {
 					log.Printf("api poll: error-status upsert failed for %s: %v", name, mErr)
 				}
 			} else {
-				storeAPIPollResult(id, name, adapterType, baseURL, result)
-				db.Exec("UPDATE api_machines SET last_poll_at = CURRENT_TIMESTAMP, last_error = NULL WHERE id = ?", id)
+				s.storeAPIPollResult(id, name, adapterType, baseURL, result)
+				s.db.Exec("UPDATE api_machines SET last_poll_at = CURRENT_TIMESTAMP, last_error = NULL WHERE id = ?", id)
 			}
 
 			select {

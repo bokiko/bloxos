@@ -31,9 +31,9 @@ var (
 
 // generateSetupToken creates a one-time setup token if no users exist.
 // Token source priority: BLOXOS_SETUP_TOKEN env var > file > auto-generate.
-func generateSetupToken() {
+func (s *Server) generateSetupToken() {
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count); err != nil {
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count); err != nil {
 		log.Printf("setup: error checking user count: %v", err)
 		return
 	}
@@ -99,9 +99,9 @@ func generateSetupToken() {
 }
 
 // handleSetupStatus returns whether the system needs first-boot setup.
-func handleSetupStatus(c echo.Context) error {
+func (s *Server) handleSetupStatus(c echo.Context) error {
 	var count int
-	err := db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count)
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database error"})
 	}
@@ -109,10 +109,10 @@ func handleSetupStatus(c echo.Context) error {
 }
 
 // handleSetup processes the first-boot setup request.
-func handleSetup(c echo.Context) error {
+func (s *Server) handleSetup(c echo.Context) error {
 	// Check if setup is still needed.
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count); err != nil {
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database error"})
 	}
 	if count > 0 {
@@ -173,7 +173,7 @@ func handleSetup(c echo.Context) error {
 
 	// Create admin user with credentials already rotated.
 	id := uuid.New().String()
-	_, err = db.Exec(`INSERT INTO users (id, username, password_hash, terminal_pin_hash, password_changed, pin_changed, role) VALUES (?, ?, ?, ?, TRUE, TRUE, ?)`,
+	_, err = s.db.Exec(`INSERT INTO users (id, username, password_hash, terminal_pin_hash, password_changed, pin_changed, role) VALUES (?, ?, ?, ?, TRUE, TRUE, ?)`,
 		id, body.Username, string(passwordHash), string(pinHash), RoleAdmin)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to create user"})
@@ -207,7 +207,7 @@ func mustDummyPasswordHash() []byte {
 	return h
 }
 
-func handleLogin(c echo.Context) error {
+func (s *Server) handleLogin(c echo.Context) error {
 	ip := getRealIP(c)
 	if !rateLimiter.Allow("login", ip, 5) {
 		log.Printf("rate limit exceeded: login from %s", ip)
@@ -223,7 +223,7 @@ func handleLogin(c echo.Context) error {
 	}
 
 	var userID, storedUsername, passwordHash, rawRole string
-	err := db.QueryRow(`SELECT id, username, password_hash, COALESCE(role, 'admin') FROM users WHERE username = ?`, body.Username).
+	err := s.db.QueryRow(`SELECT id, username, password_hash, COALESCE(role, 'admin') FROM users WHERE username = ?`, body.Username).
 		Scan(&userID, &storedUsername, &passwordHash, &rawRole)
 	if err == sql.ErrNoRows {
 		// Spend a comparable amount of time as the valid-username path so the
@@ -258,12 +258,12 @@ func handleLogin(c echo.Context) error {
 
 	// Check if password change is required (Finding #2).
 	var passwordChanged sql.NullBool
-	db.QueryRow(`SELECT password_changed FROM users WHERE username = ?`, storedUsername).Scan(&passwordChanged)
+	s.db.QueryRow(`SELECT password_changed FROM users WHERE username = ?`, storedUsername).Scan(&passwordChanged)
 	pwChangeRequired := !passwordChanged.Valid || !passwordChanged.Bool
 
 	// Check if PIN change is required (Finding #2).
 	var pinChanged sql.NullBool
-	db.QueryRow(`SELECT pin_changed FROM users WHERE username = ?`, storedUsername).Scan(&pinChanged)
+	s.db.QueryRow(`SELECT pin_changed FROM users WHERE username = ?`, storedUsername).Scan(&pinChanged)
 	pinChangeRequired := !pinChanged.Valid || !pinChanged.Bool
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
@@ -330,7 +330,7 @@ var rotationAllowlist = map[string]bool{
 
 // credentialRotationMiddleware blocks access to protected endpoints until the user
 // has changed both the default password and PIN (Finding #10).
-func credentialRotationMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
+func (s *Server) credentialRotationMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		// Skip allowlisted paths.
 		path := c.Request().URL.Path
@@ -348,7 +348,7 @@ func credentialRotationMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 		}
 
 		var passwordChanged, pinChanged sql.NullBool
-		err := db.QueryRow(`SELECT password_changed, pin_changed FROM users WHERE id = ?`, userID).Scan(&passwordChanged, &pinChanged)
+		err := s.db.QueryRow(`SELECT password_changed, pin_changed FROM users WHERE id = ?`, userID).Scan(&passwordChanged, &pinChanged)
 		if err != nil {
 			// User not found or DB error — let the request proceed (handler will fail on its own).
 			return next(c)
@@ -471,7 +471,7 @@ func generateRandomSecret() []byte {
 }
 
 // handleChangePassword allows authenticated users to change their password (Finding #2).
-func handleChangePassword(c echo.Context) error {
+func (s *Server) handleChangePassword(c echo.Context) error {
 	var body struct {
 		CurrentPassword string `json:"current_password"`
 		NewPassword     string `json:"new_password"`
@@ -490,7 +490,7 @@ func handleChangePassword(c echo.Context) error {
 	}
 
 	var passwordHash string
-	err := db.QueryRow(`SELECT password_hash FROM users WHERE id = ?`, userID).Scan(&passwordHash)
+	err := s.db.QueryRow(`SELECT password_hash FROM users WHERE id = ?`, userID).Scan(&passwordHash)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "user not found"})
 	}
@@ -502,7 +502,7 @@ func handleChangePassword(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to hash password"})
 	}
-	_, err = db.Exec(`UPDATE users SET password_hash = ?, password_changed = TRUE WHERE id = ?`, string(newHash), userID)
+	_, err = s.db.Exec(`UPDATE users SET password_hash = ?, password_changed = TRUE WHERE id = ?`, string(newHash), userID)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to update password"})
 	}
@@ -512,12 +512,12 @@ func handleChangePassword(c echo.Context) error {
 }
 
 // verifyTerminalPIN checks a PIN against the stored hash (Finding #3).
-func verifyTerminalPIN(userID, pin string) error {
+func (s *Server) verifyTerminalPIN(userID, pin string) error {
 	if userID == "" {
 		return fmt.Errorf("missing user context")
 	}
 	var pinHash sql.NullString
-	err := db.QueryRow(`SELECT terminal_pin_hash FROM users WHERE id = ?`, userID).Scan(&pinHash)
+	err := s.db.QueryRow(`SELECT terminal_pin_hash FROM users WHERE id = ?`, userID).Scan(&pinHash)
 	if err != nil || !pinHash.Valid || pinHash.String == "" {
 		return fmt.Errorf("invalid PIN")
 	}
@@ -528,7 +528,7 @@ func verifyTerminalPIN(userID, pin string) error {
 }
 
 // handleChangePIN allows authenticated users to change the terminal PIN (Finding #3).
-func handleChangePIN(c echo.Context) error {
+func (s *Server) handleChangePIN(c echo.Context) error {
 	var body struct {
 		CurrentPIN string `json:"current_pin"`
 		NewPIN     string `json:"new_pin"`
@@ -544,7 +544,7 @@ func handleChangePIN(c echo.Context) error {
 	if userID == "" {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "missing user context"})
 	}
-	if err := verifyTerminalPIN(userID, body.CurrentPIN); err != nil {
+	if err := s.verifyTerminalPIN(userID, body.CurrentPIN); err != nil {
 		return c.JSON(http.StatusForbidden, map[string]string{"error": "current PIN is incorrect"})
 	}
 
@@ -552,7 +552,7 @@ func handleChangePIN(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to hash PIN"})
 	}
-	_, err = db.Exec(`UPDATE users SET terminal_pin_hash = ?, pin_changed = TRUE WHERE id = ?`, string(newHash), userID)
+	_, err = s.db.Exec(`UPDATE users SET terminal_pin_hash = ?, pin_changed = TRUE WHERE id = ?`, string(newHash), userID)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to update PIN"})
 	}

@@ -31,14 +31,14 @@ type themePrefs struct {
 	ThemeMode string `json:"theme_mode"`
 }
 
-func handleGetMyThemePrefs(c echo.Context) error {
+func (s *Server) handleGetMyThemePrefs(c echo.Context) error {
 	claims, ok := authClaimsFromContext(c)
 	if !ok || claims.UserID == "" {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "missing user context"})
 	}
 
 	var prefs themePrefs
-	err := db.QueryRow(
+	err := s.db.QueryRow(
 		`SELECT COALESCE(theme_name, 'bloxos'), COALESCE(theme_mode, 'system') FROM users WHERE id = ?`,
 		claims.UserID,
 	).Scan(&prefs.ThemeName, &prefs.ThemeMode)
@@ -60,7 +60,7 @@ func handleGetMyThemePrefs(c echo.Context) error {
 	return c.JSON(http.StatusOK, prefs)
 }
 
-func handleUpdateMyThemePrefs(c echo.Context) error {
+func (s *Server) handleUpdateMyThemePrefs(c echo.Context) error {
 	claims, ok := authClaimsFromContext(c)
 	if !ok || claims.UserID == "" {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "missing user context"})
@@ -108,8 +108,8 @@ func handleUpdateMyThemePrefs(c echo.Context) error {
 	query += ` WHERE id = ?`
 	args = append(args, claims.UserID)
 
-	if _, err := db.Exec(query, args...); err != nil {
+	if _, err := s.db.Exec(query, args...); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database error"})
 	}
-	return handleGetMyThemePrefs(c)
+	return s.handleGetMyThemePrefs(c)
 }

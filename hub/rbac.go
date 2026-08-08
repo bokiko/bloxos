@@ -140,7 +140,7 @@ var routeScopeRequirements = map[string]string{
 	routeScopeKey(http.MethodDelete, "/api/me/filters/:id"):                    scopeAuthSelf,
 }
 
-func permissionMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
+func (s *Server) permissionMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		path := c.Path()
 		if path == "" {
@@ -157,7 +157,7 @@ func permissionMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "missing user context"})
 		}
 
-		role, err := lookupUserRole(claims.UserID)
+		role, err := s.lookupUserRole(claims.UserID)
 		if err == sql.ErrNoRows {
 			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "user not found"})
 		}
@@ -192,9 +192,9 @@ func routeScopeKey(method, path string) string {
 	return method + " " + path
 }
 
-func lookupUserRole(userID string) (UserRole, error) {
+func (s *Server) lookupUserRole(userID string) (UserRole, error) {
 	var rawRole string
-	err := db.QueryRow(`SELECT COALESCE(role, 'admin') FROM users WHERE id = ?`, userID).Scan(&rawRole)
+	err := s.db.QueryRow(`SELECT COALESCE(role, 'admin') FROM users WHERE id = ?`, userID).Scan(&rawRole)
 	if err != nil {
 		return "", err
 	}

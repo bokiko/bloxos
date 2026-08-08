@@ -180,8 +180,8 @@ type agentSnapshotNIC struct {
 	SpeedMbps int64  `json:"speed_mbps"`
 }
 
-func handleInventory(c echo.Context) error {
-	rows, err := db.Query(`
+func (s *Server) handleInventory(c echo.Context) error {
+	rows, err := s.db.Query(`
 		SELECT id, hostname, ip, os, status, COALESCE(hardware_info, '')
 		FROM machines
 		ORDER BY hostname

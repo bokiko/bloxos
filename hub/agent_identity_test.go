@@ -14,7 +14,7 @@ import (
 // enrollAndCaptureSecret enrolls a fresh agent for machineID via a valid token
 // and returns the durable secret. It drains any agent_version frames the hub
 // sends on registration until it sees the "enrolled" frame.
-func enrollAndCaptureSecret(t *testing.T, server *httptest.Server, token, machineID string) string {
+func (s *Server) enrollAndCaptureSecret(t *testing.T, server *httptest.Server, token, machineID string) string {
 	t.Helper()
 	conn, err := wsDialAgent(t, server, "token="+token)
 	if err != nil {
@@ -41,7 +41,7 @@ func enrollAndCaptureSecret(t *testing.T, server *httptest.Server, token, machin
 		}
 	}
 	conn.Close()
-	waitAgentDrain(t, machineID, 2*time.Second)
+	s.waitAgentDrain(t, machineID, 2*time.Second)
 	return secret
 }
 
@@ -51,12 +51,12 @@ func enrollAndCaptureSecret(t *testing.T, server *httptest.Server, token, machin
 // message type. Without the guard, one compromised fleet member can overwrite
 // another machine's row/metrics/inventory and suppress its alerts.
 func TestAuthedAgentCannotWriteForeignMachineID(t *testing.T) {
-	e := setupTestServer(t)
-	token := seedValidToken(t)
+	e, s := setupTestServer(t)
+	token := s.seedValidToken(t)
 	server := httptest.NewServer(e)
 	defer server.Close()
 
-	secret := enrollAndCaptureSecret(t, server, token, "machine-A")
+	secret := s.enrollAndCaptureSecret(t, server, token, "machine-A")
 
 	// Reconnect authenticated as machine-A.
 	conn, err := wsDialAgent(t, server, "secret="+secret)
@@ -111,7 +111,7 @@ func TestAuthedAgentCannotWriteForeignMachineID(t *testing.T) {
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		var hostname string
-		_ = db.QueryRow(`SELECT hostname FROM machines WHERE id = ?`, "machine-A").Scan(&hostname)
+		_ = s.db.QueryRow(`SELECT hostname FROM machines WHERE id = ?`, "machine-A").Scan(&hostname)
 		if hostname == "sentinel-host" {
 			break
 		}
@@ -123,14 +123,14 @@ func TestAuthedAgentCannotWriteForeignMachineID(t *testing.T) {
 
 	// machine-B must not exist and must have no metrics.
 	var machineCount int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM machines WHERE id = ?`, "machine-B").Scan(&machineCount); err != nil {
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM machines WHERE id = ?`, "machine-B").Scan(&machineCount); err != nil {
 		t.Fatalf("count machine-B: %v", err)
 	}
 	if machineCount != 0 {
 		t.Fatalf("machine-B row was created by a foreign-id frame (count=%d)", machineCount)
 	}
 	var metricCount int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM metrics WHERE machine_id = ?`, "machine-B").Scan(&metricCount); err != nil {
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM metrics WHERE machine_id = ?`, "machine-B").Scan(&metricCount); err != nil {
 		t.Fatalf("count machine-B metrics: %v", err)
 	}
 	if metricCount != 0 {
@@ -140,7 +140,7 @@ func TestAuthedAgentCannotWriteForeignMachineID(t *testing.T) {
 	// Every sink we changed must be locked down, not just metrics.
 	for _, tbl := range []string{"services", "containers"} {
 		var n int
-		if err := db.QueryRow(`SELECT COUNT(*) FROM `+tbl+` WHERE machine_id = ?`, "machine-B").Scan(&n); err != nil {
+		if err := s.db.QueryRow(`SELECT COUNT(*) FROM `+tbl+` WHERE machine_id = ?`, "machine-B").Scan(&n); err != nil {
 			t.Fatalf("count machine-B %s: %v", tbl, err)
 		}
 		if n != 0 {
@@ -154,7 +154,7 @@ func TestAuthedAgentCannotWriteForeignMachineID(t *testing.T) {
 // must be refused at the HTTP layer (401) rather than being upgraded and then
 // held for the auth window. No token is seeded, so any token is invalid.
 func TestAgentWSInvalidTokenRejectedBeforeUpgrade(t *testing.T) {
-	e := setupTestServer(t)
+	e, _ := setupTestServer(t)
 	server := httptest.NewServer(e)
 	defer server.Close()
 
@@ -177,8 +177,8 @@ func TestAgentWSInvalidTokenRejectedBeforeUpgrade(t *testing.T) {
 // authenticating frame must be dropped after the auth window rather than
 // holding a socket open indefinitely.
 func TestAgentWSIdleUpgradeIsDropped(t *testing.T) {
-	e := setupTestServer(t)
-	token := seedValidToken(t)
+	e, s := setupTestServer(t)
+	token := s.seedValidToken(t)
 
 	prev := agentAuthWindow
 	agentAuthWindow = 300 * time.Millisecond
@@ -216,7 +216,7 @@ func TestAgentWSIdleUpgradeIsDropped(t *testing.T) {
 // channel is released. The old handler deleted the map entry and closed the
 // sockets but never closed Done, leaking the parked handleTerminalWS goroutine.
 func TestHandleCloseTerminalReleasesWaiter(t *testing.T) {
-	e := setupTestServer(t)
+	e, s := setupTestServer(t)
 
 	sid := "term-close-release"
 	session := &TerminalSession{
@@ -244,7 +244,7 @@ func TestHandleCloseTerminalReleasesWaiter(t *testing.T) {
 	c := e.NewContext(req, rec)
 	c.SetParamNames("session_id")
 	c.SetParamValues(sid)
-	if err := handleCloseTerminal(c); err != nil {
+	if err := s.handleCloseTerminal(c); err != nil {
 		t.Fatalf("handleCloseTerminal: %v", err)
 	}
 	if rec.Code != http.StatusOK {

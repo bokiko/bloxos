@@ -31,7 +31,7 @@ import (
 
 // seedTestAdmin creates a test admin user directly in the DB (bypasses setup flow).
 // Uses the legacy default credentials (admin/bloxos, PIN 1234) for test compatibility.
-func seedTestAdmin(t *testing.T) {
+func (s *Server) seedTestAdmin(t *testing.T) {
 	t.Helper()
 	hash, err := bcrypt.GenerateFromPassword([]byte("bloxos"), bcrypt.DefaultCost)
 	if err != nil {
@@ -42,14 +42,14 @@ func seedTestAdmin(t *testing.T) {
 		t.Fatalf("hash pin: %v", err)
 	}
 	id := "test-admin-id"
-	_, err = db.Exec(`INSERT INTO users (id, username, password_hash, terminal_pin_hash) VALUES (?, ?, ?, ?)`,
+	_, err = s.db.Exec(`INSERT INTO users (id, username, password_hash, terminal_pin_hash) VALUES (?, ?, ?, ?)`,
 		id, "admin", string(hash), string(pinHash))
 	if err != nil {
 		t.Fatalf("seed test admin: %v", err)
 	}
 }
 
-func seedTestUser(t *testing.T, username, password, pin string, role UserRole, passwordChanged, pinChanged bool) string {
+func (s *Server) seedTestUser(t *testing.T, username, password, pin string, role UserRole, passwordChanged, pinChanged bool) string {
 	t.Helper()
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
@@ -60,7 +60,7 @@ func seedTestUser(t *testing.T, username, password, pin string, role UserRole, p
 		t.Fatalf("hash pin: %v", err)
 	}
 	id := "test-user-" + username
-	_, err = db.Exec(
+	_, err = s.db.Exec(
 		`INSERT INTO users (id, username, password_hash, terminal_pin_hash, password_changed, pin_changed, role) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		id, username, string(hash), string(pinHash), passwordChanged, pinChanged, role,
 	)
@@ -70,9 +70,9 @@ func seedTestUser(t *testing.T, username, password, pin string, role UserRole, p
 	return id
 }
 
-func seedTestMachine(t *testing.T, id string) {
+func (s *Server) seedTestMachine(t *testing.T, id string) {
 	t.Helper()
-	_, err := db.Exec(`INSERT INTO machines (id, hostname, status) VALUES (?, ?, 'online')`, id, "machine-"+id)
+	_, err := s.db.Exec(`INSERT INTO machines (id, hostname, status) VALUES (?, ?, 'online')`, id, "machine-"+id)
 	if err != nil {
 		t.Fatalf("seed test machine: %v", err)
 	}
@@ -105,8 +105,9 @@ func generateTestCertPEM(t *testing.T) string {
 
 // setupTestServer creates a fresh in-memory DB, seeds a test admin user,
 // sets a deterministic JWT secret, resets the rate limiter, and returns
-// an Echo instance with all routes registered.
-func setupTestServer(t *testing.T) *echo.Echo {
+// an Echo instance with all routes registered plus the isolated *Server
+// backing it.
+func setupTestServer(t *testing.T) (*echo.Echo, *Server) {
 	t.Helper()
 
 	// Default the homelab opt-in to ON for the test suite. Bloxos is a
@@ -123,17 +124,13 @@ func setupTestServer(t *testing.T) *echo.Echo {
 	ensureTestUpdateSigningKey(t)
 
 	// Drain stale goroutines from prior tests that may still reference
-	// the old db via the global agents map or markOffline calls.
-	agentsMu.Lock()
-	agents = make(map[string]*ConnectedAgent)
-	agentsMu.Unlock()
+	// the global terminal session map.
 	termSessionsMu.Lock()
 	termSessions = make(map[string]*TerminalSession)
 	termSessionsMu.Unlock()
 	time.Sleep(100 * time.Millisecond)
 
-	var err error
-	db, err = sql.Open("sqlite", ":memory:")
+	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("open in-memory db: %v", err)
 	}
@@ -156,31 +153,32 @@ func setupTestServer(t *testing.T) *echo.Echo {
 		t.Fatalf("run migrations: %v", err)
 	}
 
-	seedTestAdmin(t)
+	s := newServer(db)
+	// Registered after the db.Close() cleanup above so it runs BEFORE it:
+	// t.Cleanup is LIFO, and background work must drain while the database
+	// it queries is still open.
+	t.Cleanup(func() { s.Shutdown(2 * time.Second) })
+	s.seedTestAdmin(t)
 	jwtSecret = []byte("test-secret-key-for-smoke-tests")
 	rateLimiter = NewRateLimiter()
 
 	e := echo.New()
 	e.HideBanner = true
-	registerRoutes(e)
+	s.registerRoutes(e)
 
-	return e
+	return e, s
 }
 
 // setupEmptyTestServer creates a server with NO users (for testing setup flow).
-func setupEmptyTestServer(t *testing.T) *echo.Echo {
+func setupEmptyTestServer(t *testing.T) (*echo.Echo, *Server) {
 	t.Helper()
 
-	agentsMu.Lock()
-	agents = make(map[string]*ConnectedAgent)
-	agentsMu.Unlock()
 	termSessionsMu.Lock()
 	termSessions = make(map[string]*TerminalSession)
 	termSessionsMu.Unlock()
 	time.Sleep(100 * time.Millisecond)
 
-	var err error
-	db, err = sql.Open("sqlite", ":memory:")
+	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("open in-memory db: %v", err)
 	}
@@ -207,11 +205,17 @@ func setupEmptyTestServer(t *testing.T) *echo.Echo {
 	rateLimiter = NewRateLimiter()
 	setupTokenValue = "test-setup-token-abc123"
 
+	s := newServer(db)
+	// Registered after the db.Close() cleanup above so it runs BEFORE it:
+	// t.Cleanup is LIFO, and background work must drain while the database
+	// it queries is still open.
+	t.Cleanup(func() { s.Shutdown(2 * time.Second) })
+
 	e := echo.New()
 	e.HideBanner = true
-	registerRoutes(e)
+	s.registerRoutes(e)
 
-	return e
+	return e, s
 }
 
 // loginAndGetToken performs a login with the default admin credentials and
@@ -248,17 +252,17 @@ func loginAndGetTokenForCredentials(t *testing.T, e *echo.Echo, username, passwo
 
 // markCredentialsRotated sets password_changed and pin_changed to TRUE for the
 // default admin so that existing tests pass through the rotation middleware.
-func markCredentialsRotated(t *testing.T) {
+func (s *Server) markCredentialsRotated(t *testing.T) {
 	t.Helper()
-	_, err := db.Exec(`UPDATE users SET password_changed = TRUE, pin_changed = TRUE WHERE username = 'admin'`)
+	_, err := s.db.Exec(`UPDATE users SET password_changed = TRUE, pin_changed = TRUE WHERE username = 'admin'`)
 	if err != nil {
 		t.Fatalf("mark credentials rotated: %v", err)
 	}
 }
 
 func TestAdminCanCreateAndListUsers(t *testing.T) {
-	e := setupTestServer(t)
-	markCredentialsRotated(t)
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
 	adminToken := loginAndGetToken(t, e)
 
 	createBody := `{"username":"alice","password":"alicepass123","pin":"1234","role":"operator"}`
@@ -300,8 +304,8 @@ func TestAdminCanCreateAndListUsers(t *testing.T) {
 }
 
 func TestCreateUserRejectsDuplicateUsername(t *testing.T) {
-	e := setupTestServer(t)
-	markCredentialsRotated(t)
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
 	adminToken := loginAndGetToken(t, e)
 
 	body := `{"username":"admin","password":"anotherpass123","pin":"1234","role":"viewer"}`
@@ -317,8 +321,8 @@ func TestCreateUserRejectsDuplicateUsername(t *testing.T) {
 }
 
 func TestCreateUserRejectsInvalidRole(t *testing.T) {
-	e := setupTestServer(t)
-	markCredentialsRotated(t)
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
 	adminToken := loginAndGetToken(t, e)
 
 	body := `{"username":"bob","password":"bobpass123","pin":"1234","role":"superuser"}`
@@ -334,9 +338,9 @@ func TestCreateUserRejectsInvalidRole(t *testing.T) {
 }
 
 func TestOperatorCannotManageUsers(t *testing.T) {
-	e := setupTestServer(t)
-	markCredentialsRotated(t)
-	seedTestUser(t, "op1", "operatorpass123", "1234", RoleOperator, true, true)
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
+	s.seedTestUser(t, "op1", "operatorpass123", "1234", RoleOperator, true, true)
 	opToken := loginAndGetTokenForCredentials(t, e, "op1", "operatorpass123")
 
 	body := `{"username":"charlie","password":"charliepass123","pin":"1234","role":"viewer"}`
@@ -352,10 +356,10 @@ func TestOperatorCannotManageUsers(t *testing.T) {
 }
 
 func TestAdminCanPromoteAndDemoteOthers(t *testing.T) {
-	e := setupTestServer(t)
-	markCredentialsRotated(t)
-	seedTestUser(t, "admin2", "admin2pass123", "1234", RoleAdmin, true, true)
-	targetID := seedTestUser(t, "target", "targetpass123", "1234", RoleViewer, true, true)
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
+	s.seedTestUser(t, "admin2", "admin2pass123", "1234", RoleAdmin, true, true)
+	targetID := s.seedTestUser(t, "target", "targetpass123", "1234", RoleViewer, true, true)
 	adminToken := loginAndGetToken(t, e)
 
 	body := `{"role":"operator"}`
@@ -369,7 +373,7 @@ func TestAdminCanPromoteAndDemoteOthers(t *testing.T) {
 		t.Fatalf("expected 200 on role patch, got %d: %s", rec.Code, rec.Body.String())
 	}
 	var role string
-	if err := db.QueryRow(`SELECT role FROM users WHERE id = ?`, targetID).Scan(&role); err != nil {
+	if err := s.db.QueryRow(`SELECT role FROM users WHERE id = ?`, targetID).Scan(&role); err != nil {
 		t.Fatalf("fetch target role: %v", err)
 	}
 	if role != string(RoleOperator) {
@@ -378,9 +382,9 @@ func TestAdminCanPromoteAndDemoteOthers(t *testing.T) {
 }
 
 func TestAdminCannotChangeOwnRole(t *testing.T) {
-	e := setupTestServer(t)
-	markCredentialsRotated(t)
-	seedTestUser(t, "admin2", "admin2pass123", "1234", RoleAdmin, true, true)
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
+	s.seedTestUser(t, "admin2", "admin2pass123", "1234", RoleAdmin, true, true)
 	adminToken := loginAndGetToken(t, e)
 
 	body := `{"role":"operator"}`
@@ -396,9 +400,9 @@ func TestAdminCannotChangeOwnRole(t *testing.T) {
 }
 
 func TestAdminCanDemoteAnotherAdmin(t *testing.T) {
-	e := setupTestServer(t)
-	markCredentialsRotated(t)
-	otherID := seedTestUser(t, "other", "otherpass123", "1234", RoleAdmin, true, true)
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
+	otherID := s.seedTestUser(t, "other", "otherpass123", "1234", RoleAdmin, true, true)
 	adminToken := loginAndGetToken(t, e)
 
 	body := `{"role":"operator"}`
@@ -411,7 +415,7 @@ func TestAdminCanDemoteAnotherAdmin(t *testing.T) {
 		t.Fatalf("expected demote of other admin to succeed, got %d: %s", rec.Code, rec.Body.String())
 	}
 	var role string
-	if err := db.QueryRow(`SELECT role FROM users WHERE id = ?`, otherID).Scan(&role); err != nil {
+	if err := s.db.QueryRow(`SELECT role FROM users WHERE id = ?`, otherID).Scan(&role); err != nil {
 		t.Fatalf("fetch role: %v", err)
 	}
 	if role != string(RoleOperator) {
@@ -420,9 +424,9 @@ func TestAdminCanDemoteAnotherAdmin(t *testing.T) {
 }
 
 func TestAdminCanDeleteOtherUser(t *testing.T) {
-	e := setupTestServer(t)
-	markCredentialsRotated(t)
-	targetID := seedTestUser(t, "victim", "victimpass123", "1234", RoleViewer, true, true)
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
+	targetID := s.seedTestUser(t, "victim", "victimpass123", "1234", RoleViewer, true, true)
 	adminToken := loginAndGetToken(t, e)
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/users/"+targetID, nil)
@@ -434,7 +438,7 @@ func TestAdminCanDeleteOtherUser(t *testing.T) {
 		t.Fatalf("expected 200 on delete, got %d: %s", rec.Code, rec.Body.String())
 	}
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM users WHERE id = ?`, targetID).Scan(&count); err != nil {
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM users WHERE id = ?`, targetID).Scan(&count); err != nil {
 		t.Fatalf("count: %v", err)
 	}
 	if count != 0 {
@@ -443,8 +447,8 @@ func TestAdminCanDeleteOtherUser(t *testing.T) {
 }
 
 func TestAdminCannotDeleteSelf(t *testing.T) {
-	e := setupTestServer(t)
-	markCredentialsRotated(t)
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
 	adminToken := loginAndGetToken(t, e)
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/users/test-admin-id", nil)
@@ -458,9 +462,9 @@ func TestAdminCannotDeleteSelf(t *testing.T) {
 }
 
 func TestAdminCanDeleteAnotherAdmin(t *testing.T) {
-	e := setupTestServer(t)
-	markCredentialsRotated(t)
-	otherID := seedTestUser(t, "other", "otherpass123", "1234", RoleAdmin, true, true)
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
+	otherID := s.seedTestUser(t, "other", "otherpass123", "1234", RoleAdmin, true, true)
 	adminToken := loginAndGetToken(t, e)
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/users/"+otherID, nil)
@@ -473,9 +477,10 @@ func TestAdminCanDeleteAnotherAdmin(t *testing.T) {
 }
 
 func TestRBACRouteAuditPassesForProductionRoutes(t *testing.T) {
+	s := newServer(nil)
 	e := echo.New()
 	e.HideBanner = true
-	registerRoutes(e)
+	s.registerRoutes(e)
 
 	if err := auditRBACRouteCoverage(e, routeScopeRequirements); err != nil {
 		t.Fatalf("production route set failed RBAC audit: %v", err)
@@ -483,11 +488,12 @@ func TestRBACRouteAuditPassesForProductionRoutes(t *testing.T) {
 }
 
 func TestRBACRouteAuditDetectsMissingMapping(t *testing.T) {
+	s := newServer(nil)
 	e := echo.New()
 	e.HideBanner = true
-	registerRoutes(e)
+	s.registerRoutes(e)
 	// Add an extra protected route that has no scope mapping.
-	api := e.Group("", jwtMiddleware, credentialRotationMiddleware, permissionMiddleware)
+	api := e.Group("", jwtMiddleware, s.credentialRotationMiddleware, s.permissionMiddleware)
 	api.GET("/api/ghost", func(c echo.Context) error { return nil })
 
 	err := auditRBACRouteCoverage(e, routeScopeRequirements)
@@ -500,9 +506,10 @@ func TestRBACRouteAuditDetectsMissingMapping(t *testing.T) {
 }
 
 func TestRBACRouteAuditDetectsOrphanMapping(t *testing.T) {
+	s := newServer(nil)
 	e := echo.New()
 	e.HideBanner = true
-	registerRoutes(e)
+	s.registerRoutes(e)
 
 	// Clone production requirements and add an entry for a route that isn't registered.
 	requirements := make(map[string]string, len(routeScopeRequirements)+1)
@@ -521,9 +528,9 @@ func TestRBACRouteAuditDetectsOrphanMapping(t *testing.T) {
 }
 
 func TestLoginIncludesRoleAndScopes(t *testing.T) {
-	e := setupTestServer(t)
-	markCredentialsRotated(t)
-	seedTestUser(t, "viewer1", "viewerpass123", "1234", RoleViewer, true, true)
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
+	s.seedTestUser(t, "viewer1", "viewerpass123", "1234", RoleViewer, true, true)
 
 	body := `{"username":"viewer1","password":"viewerpass123"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(body))
@@ -554,9 +561,9 @@ func TestLoginIncludesRoleAndScopes(t *testing.T) {
 }
 
 func TestViewerCanReadMachinesButCannotCreateInstallToken(t *testing.T) {
-	e := setupTestServer(t)
-	markCredentialsRotated(t)
-	seedTestUser(t, "viewer2", "viewerpass123", "1234", RoleViewer, true, true)
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
+	s.seedTestUser(t, "viewer2", "viewerpass123", "1234", RoleViewer, true, true)
 	viewerToken := loginAndGetTokenForCredentials(t, e, "viewer2", "viewerpass123")
 
 	readReq := httptest.NewRequest(http.MethodGet, "/api/machines", nil)
@@ -582,10 +589,10 @@ func TestViewerCanReadMachinesButCannotCreateInstallToken(t *testing.T) {
 }
 
 func TestOperatorCanUpdateTagsButCannotDeleteMachine(t *testing.T) {
-	e := setupTestServer(t)
-	markCredentialsRotated(t)
-	seedTestUser(t, "operator1", "operatorpass123", "1234", RoleOperator, true, true)
-	seedTestMachine(t, "machine-1")
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
+	s.seedTestUser(t, "operator1", "operatorpass123", "1234", RoleOperator, true, true)
+	s.seedTestMachine(t, "machine-1")
 	operatorToken := loginAndGetTokenForCredentials(t, e, "operator1", "operatorpass123")
 
 	updateReq := httptest.NewRequest(http.MethodPut, "/api/machines/machine-1/tags", strings.NewReader(`{"tags":["gpu","lab"]}`))
@@ -612,12 +619,12 @@ func TestOperatorCanUpdateTagsButCannotDeleteMachine(t *testing.T) {
 }
 
 func TestDeleteMachineRemovesAgentCredential(t *testing.T) {
-	e := setupTestServer(t)
-	markCredentialsRotated(t)
-	seedTestMachine(t, "machine-delete-credential")
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
+	s.seedTestMachine(t, "machine-delete-credential")
 	adminToken := loginAndGetToken(t, e)
 
-	if _, err := db.Exec(`INSERT INTO agent_credentials (machine_id, secret_hash) VALUES (?, ?)`,
+	if _, err := s.db.Exec(`INSERT INTO agent_credentials (machine_id, secret_hash) VALUES (?, ?)`,
 		"machine-delete-credential", "test-secret-hash"); err != nil {
 		t.Fatalf("seed agent credential: %v", err)
 	}
@@ -632,7 +639,7 @@ func TestDeleteMachineRemovesAgentCredential(t *testing.T) {
 	}
 
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM agent_credentials WHERE machine_id = ?`, "machine-delete-credential").Scan(&count); err != nil {
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM agent_credentials WHERE machine_id = ?`, "machine-delete-credential").Scan(&count); err != nil {
 		t.Fatalf("query agent credential count: %v", err)
 	}
 	if count != 0 {
@@ -644,7 +651,7 @@ func TestDeleteMachineRemovesAgentCredential(t *testing.T) {
 
 // 1. Login with valid credentials -> 200 + JWT
 func TestLoginValidCredentials(t *testing.T) {
-	e := setupTestServer(t)
+	e, _ := setupTestServer(t)
 
 	body := `{"username":"admin","password":"bloxos"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(body))
@@ -673,7 +680,7 @@ func TestLoginValidCredentials(t *testing.T) {
 
 // 2. Login with invalid credentials -> 401
 func TestLoginInvalidCredentials(t *testing.T) {
-	e := setupTestServer(t)
+	e, _ := setupTestServer(t)
 
 	body := `{"username":"admin","password":"wrongpassword"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(body))
@@ -688,7 +695,7 @@ func TestLoginInvalidCredentials(t *testing.T) {
 
 // 2b. Login with nonexistent username -> 401
 func TestLoginInvalidUsername(t *testing.T) {
-	e := setupTestServer(t)
+	e, _ := setupTestServer(t)
 
 	body := `{"username":"nonexistent","password":"bloxos"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(body))
@@ -703,7 +710,7 @@ func TestLoginInvalidUsername(t *testing.T) {
 
 // 3. Login rate limiting -> 6th attempt -> 429
 func TestLoginRateLimiting(t *testing.T) {
-	e := setupTestServer(t)
+	e, _ := setupTestServer(t)
 
 	body := `{"username":"admin","password":"wrongpassword"}`
 
@@ -726,7 +733,7 @@ func TestLoginRateLimiting(t *testing.T) {
 
 // 4. Password change with valid JWT -> 200
 func TestChangePasswordWithValidJWT(t *testing.T) {
-	e := setupTestServer(t)
+	e, _ := setupTestServer(t)
 	token := loginAndGetToken(t, e)
 
 	body := `{"current_password":"bloxos","new_password":"newpassword123"}`
@@ -763,7 +770,7 @@ func TestChangePasswordWithValidJWT(t *testing.T) {
 
 // 5. PIN change with valid JWT -> 200
 func TestChangePINWithValidJWT(t *testing.T) {
-	e := setupTestServer(t)
+	e, _ := setupTestServer(t)
 	token := loginAndGetToken(t, e)
 
 	// Default PIN is "1234" - change it.
@@ -781,9 +788,9 @@ func TestChangePINWithValidJWT(t *testing.T) {
 
 // 6. Token creation (install token) with valid JWT -> 200 + token returned
 func TestCreateTokenWithValidJWT(t *testing.T) {
-	e := setupTestServer(t)
+	e, s := setupTestServer(t)
 	token := loginAndGetToken(t, e)
-	markCredentialsRotated(t)
+	s.markCredentialsRotated(t)
 	// Install-command generation now requires PUBLIC_URL (Host-header fallback
 	// removed) — set it so the happy path still yields a command.
 	t.Setenv("PUBLIC_URL", "https://hub.example")
@@ -813,9 +820,9 @@ func TestCreateTokenWithValidJWT(t *testing.T) {
 }
 
 func TestCreateTokenIncludesCABootstrapForHTTPS(t *testing.T) {
-	e := setupTestServer(t)
+	e, s := setupTestServer(t)
 	token := loginAndGetToken(t, e)
-	markCredentialsRotated(t)
+	s.markCredentialsRotated(t)
 
 	caDir := t.TempDir()
 	caPath := filepath.Join(caDir, "root.crt")
@@ -860,7 +867,7 @@ func TestCreateTokenIncludesCABootstrapForHTTPS(t *testing.T) {
 }
 
 func TestDownloadCACert(t *testing.T) {
-	e := setupTestServer(t)
+	e, _ := setupTestServer(t)
 
 	caDir := t.TempDir()
 	caPath := filepath.Join(caDir, "root.crt")
@@ -884,20 +891,20 @@ func TestDownloadCACert(t *testing.T) {
 
 // 7. Agent enrollment with valid token - tested via validateAgentToken
 func TestValidateAgentTokenValid(t *testing.T) {
-	_ = setupTestServer(t)
+	_, s := setupTestServer(t)
 
 	rawToken := "test-token-valid-enrollment"
 	h := sha256.Sum256([]byte(rawToken))
 	tokenHash := hex.EncodeToString(h[:])
 	expiresAt := time.Now().Add(15 * time.Minute).Format(time.RFC3339)
 
-	_, err := db.Exec(`INSERT INTO tokens (token_hash, expires_at, used) VALUES (?, ?, FALSE)`,
+	_, err := s.db.Exec(`INSERT INTO tokens (token_hash, expires_at, used) VALUES (?, ?, FALSE)`,
 		tokenHash, expiresAt)
 	if err != nil {
 		t.Fatalf("insert token: %v", err)
 	}
 
-	gotHash, valErr := validateAgentToken(rawToken)
+	gotHash, valErr := s.validateAgentToken(rawToken)
 	if valErr != nil {
 		t.Fatalf("expected valid token, got error: %v", valErr)
 	}
@@ -908,20 +915,20 @@ func TestValidateAgentTokenValid(t *testing.T) {
 
 // 8. Agent enrollment with used token -> rejected
 func TestValidateAgentTokenUsed(t *testing.T) {
-	_ = setupTestServer(t)
+	_, s := setupTestServer(t)
 
 	rawToken := "test-token-used-12345"
 	h := sha256.Sum256([]byte(rawToken))
 	tokenHash := hex.EncodeToString(h[:])
 	expiresAt := time.Now().Add(15 * time.Minute).Format(time.RFC3339)
 
-	_, err := db.Exec(`INSERT INTO tokens (token_hash, expires_at, used) VALUES (?, ?, TRUE)`,
+	_, err := s.db.Exec(`INSERT INTO tokens (token_hash, expires_at, used) VALUES (?, ?, TRUE)`,
 		tokenHash, expiresAt)
 	if err != nil {
 		t.Fatalf("insert token: %v", err)
 	}
 
-	_, valErr := validateAgentToken(rawToken)
+	_, valErr := s.validateAgentToken(rawToken)
 	if valErr == nil {
 		t.Fatal("expected error for used token, got nil")
 	}
@@ -932,20 +939,20 @@ func TestValidateAgentTokenUsed(t *testing.T) {
 
 // 9. Agent enrollment with expired token -> rejected
 func TestValidateAgentTokenExpired(t *testing.T) {
-	_ = setupTestServer(t)
+	_, s := setupTestServer(t)
 
 	rawToken := "test-token-expired-12345"
 	h := sha256.Sum256([]byte(rawToken))
 	tokenHash := hex.EncodeToString(h[:])
 	expiresAt := time.Now().Add(-1 * time.Hour).Format(time.RFC3339)
 
-	_, err := db.Exec(`INSERT INTO tokens (token_hash, expires_at, used) VALUES (?, ?, FALSE)`,
+	_, err := s.db.Exec(`INSERT INTO tokens (token_hash, expires_at, used) VALUES (?, ?, FALSE)`,
 		tokenHash, expiresAt)
 	if err != nil {
 		t.Fatalf("insert token: %v", err)
 	}
 
-	_, valErr := validateAgentToken(rawToken)
+	_, valErr := s.validateAgentToken(rawToken)
 	if valErr == nil {
 		t.Fatal("expected error for expired token, got nil")
 	}
@@ -958,9 +965,9 @@ func TestValidateAgentTokenExpired(t *testing.T) {
 // (Without a real WebSocket agent, the handler returns 404 "agent not connected"
 // after PIN validation succeeds. We verify it does NOT return 403.)
 func TestTerminalSessionValidPIN(t *testing.T) {
-	e := setupTestServer(t)
+	e, s := setupTestServer(t)
 	token := loginAndGetToken(t, e)
-	markCredentialsRotated(t)
+	s.markCredentialsRotated(t)
 
 	body := fmt.Sprintf(`{"pin":"1234"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/machines/nonexistent-machine/terminal", strings.NewReader(body))
@@ -981,9 +988,9 @@ func TestTerminalSessionValidPIN(t *testing.T) {
 
 // 11. Terminal session with invalid PIN -> 403
 func TestTerminalSessionInvalidPIN(t *testing.T) {
-	e := setupTestServer(t)
+	e, s := setupTestServer(t)
 	token := loginAndGetToken(t, e)
-	markCredentialsRotated(t)
+	s.markCredentialsRotated(t)
 
 	body := `{"pin":"0000"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/machines/some-machine/terminal", strings.NewReader(body))
@@ -999,7 +1006,7 @@ func TestTerminalSessionInvalidPIN(t *testing.T) {
 
 // 12. Unauthenticated request to protected endpoint -> 401
 func TestUnauthenticatedProtectedEndpoint(t *testing.T) {
-	e := setupTestServer(t)
+	e, _ := setupTestServer(t)
 
 	endpoints := []struct {
 		method string
@@ -1027,7 +1034,7 @@ func TestUnauthenticatedProtectedEndpoint(t *testing.T) {
 
 // Bonus: Health endpoint is public (no auth required)
 func TestHealthEndpointPublic(t *testing.T) {
-	e := setupTestServer(t)
+	e, _ := setupTestServer(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rec := httptest.NewRecorder()
@@ -1042,7 +1049,7 @@ func TestHealthEndpointPublic(t *testing.T) {
 
 // 13. Default admin (password_changed=false, pin_changed=false) gets 403 on protected endpoint
 func TestRotationEnforcement_DefaultAdminBlocked(t *testing.T) {
-	e := setupTestServer(t)
+	e, _ := setupTestServer(t)
 	token := loginAndGetToken(t, e)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/machines", nil)
@@ -1071,9 +1078,9 @@ func TestRotationEnforcement_DefaultAdminBlocked(t *testing.T) {
 
 // 14. After changing password AND pin, protected endpoints return 200
 func TestRotationEnforcement_FullyRotatedAllowed(t *testing.T) {
-	e := setupTestServer(t)
+	e, s := setupTestServer(t)
 	token := loginAndGetToken(t, e)
-	markCredentialsRotated(t)
+	s.markCredentialsRotated(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/machines", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -1087,7 +1094,7 @@ func TestRotationEnforcement_FullyRotatedAllowed(t *testing.T) {
 
 // 15. Allowlisted endpoints work even when rotation is incomplete
 func TestRotationEnforcement_AllowlistBypass(t *testing.T) {
-	e := setupTestServer(t)
+	e, _ := setupTestServer(t)
 	token := loginAndGetToken(t, e)
 
 	// change-password should work (allowlisted)
@@ -1120,11 +1127,11 @@ func TestRotationEnforcement_AllowlistBypass(t *testing.T) {
 
 // 16. Partial rotation (only password changed, not PIN) still blocks
 func TestRotationEnforcement_PartialRotationBlocked(t *testing.T) {
-	e := setupTestServer(t)
+	e, s := setupTestServer(t)
 	token := loginAndGetToken(t, e)
 
 	// Only mark password as changed
-	_, err := db.Exec(`UPDATE users SET password_changed = TRUE WHERE username = 'admin'`)
+	_, err := s.db.Exec(`UPDATE users SET password_changed = TRUE WHERE username = 'admin'`)
 	if err != nil {
 		t.Fatalf("update password_changed: %v", err)
 	}
@@ -1154,7 +1161,7 @@ func TestRotationEnforcement_PartialRotationBlocked(t *testing.T) {
 
 // 17. Setup status returns needs_setup=true when no users exist
 func TestSetupStatusNeedsSetup(t *testing.T) {
-	e := setupEmptyTestServer(t)
+	e, _ := setupEmptyTestServer(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/setup/status", nil)
 	rec := httptest.NewRecorder()
@@ -1175,7 +1182,7 @@ func TestSetupStatusNeedsSetup(t *testing.T) {
 
 // 18. Setup status returns needs_setup=false when users exist
 func TestSetupStatusAlreadySetup(t *testing.T) {
-	e := setupTestServer(t)
+	e, _ := setupTestServer(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/setup/status", nil)
 	rec := httptest.NewRecorder()
@@ -1196,7 +1203,7 @@ func TestSetupStatusAlreadySetup(t *testing.T) {
 
 // 19. Setup with valid token creates admin user
 func TestSetupWithValidToken(t *testing.T) {
-	e := setupEmptyTestServer(t)
+	e, s := setupEmptyTestServer(t)
 
 	body := `{"setup_token":"test-setup-token-abc123","username":"myadmin","password":"securepass123","pin":"5678"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/setup", strings.NewReader(body))
@@ -1221,7 +1228,7 @@ func TestSetupWithValidToken(t *testing.T) {
 
 	// Verify the user was created with correct flags.
 	var passwordChanged, pinChanged bool
-	err := db.QueryRow(`SELECT password_changed, pin_changed FROM users WHERE username = 'myadmin'`).Scan(&passwordChanged, &pinChanged)
+	err := s.db.QueryRow(`SELECT password_changed, pin_changed FROM users WHERE username = 'myadmin'`).Scan(&passwordChanged, &pinChanged)
 	if err != nil {
 		t.Fatalf("query user: %v", err)
 	}
@@ -1255,7 +1262,7 @@ func TestSetupWithValidToken(t *testing.T) {
 
 // 20. Setup with invalid token returns 403
 func TestSetupWithInvalidToken(t *testing.T) {
-	e := setupEmptyTestServer(t)
+	e, _ := setupEmptyTestServer(t)
 
 	body := `{"setup_token":"wrong-token","username":"admin","password":"securepass123","pin":"5678"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/setup", strings.NewReader(body))
@@ -1270,7 +1277,7 @@ func TestSetupWithInvalidToken(t *testing.T) {
 
 // 21. Setup after admin already exists returns 404
 func TestSetupAfterAlreadySetup(t *testing.T) {
-	e := setupTestServer(t)
+	e, _ := setupTestServer(t)
 
 	body := `{"setup_token":"anything","username":"admin2","password":"securepass123","pin":"5678"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/setup", strings.NewReader(body))
@@ -1285,7 +1292,7 @@ func TestSetupAfterAlreadySetup(t *testing.T) {
 
 // 22. Setup rate limiting - 6th attempt returns 429
 func TestSetupRateLimiting(t *testing.T) {
-	e := setupEmptyTestServer(t)
+	e, _ := setupEmptyTestServer(t)
 
 	body := `{"setup_token":"wrong-token","username":"admin","password":"securepass123","pin":"5678"}`
 
@@ -1306,7 +1313,7 @@ func TestSetupRateLimiting(t *testing.T) {
 
 // 23. Setup validation - password too short
 func TestSetupValidation_ShortPassword(t *testing.T) {
-	e := setupEmptyTestServer(t)
+	e, _ := setupEmptyTestServer(t)
 
 	body := `{"setup_token":"test-setup-token-abc123","username":"admin","password":"short","pin":"5678"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/setup", strings.NewReader(body))
@@ -1321,7 +1328,7 @@ func TestSetupValidation_ShortPassword(t *testing.T) {
 
 // 24. Setup validation - invalid PIN (non-numeric)
 func TestSetupValidation_InvalidPIN(t *testing.T) {
-	e := setupEmptyTestServer(t)
+	e, _ := setupEmptyTestServer(t)
 
 	body := `{"setup_token":"test-setup-token-abc123","username":"admin","password":"securepass123","pin":"abcd"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/setup", strings.NewReader(body))
@@ -1336,7 +1343,7 @@ func TestSetupValidation_InvalidPIN(t *testing.T) {
 
 // 25. Setup validation - empty username
 func TestSetupValidation_EmptyUsername(t *testing.T) {
-	e := setupEmptyTestServer(t)
+	e, _ := setupEmptyTestServer(t)
 
 	body := `{"setup_token":"test-setup-token-abc123","username":"","password":"securepass123","pin":"5678"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/setup", strings.NewReader(body))
@@ -1365,13 +1372,13 @@ func wsDialAgent(t *testing.T, server *httptest.Server, queryParams string) (*we
 // waitAgentDrain waits until the handleAgentWS goroutine has fully exited for
 // the given machine_id. This prevents race conditions where the background
 // goroutine calls markOffline on a stale or closed db.
-func waitAgentDrain(t *testing.T, machineID string, timeout time.Duration) {
+func (s *Server) waitAgentDrain(t *testing.T, machineID string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		agentsMu.RLock()
-		_, exists := agents[machineID]
-		agentsMu.RUnlock()
+		s.agentsMu.RLock()
+		_, exists := s.agents[machineID]
+		s.agentsMu.RUnlock()
 		if !exists {
 			return
 		}
@@ -1381,13 +1388,13 @@ func waitAgentDrain(t *testing.T, machineID string, timeout time.Duration) {
 	t.Logf("waitAgentDrain: %s still in agents map after %v (may not have registered)", machineID, timeout)
 }
 
-func seedValidToken(t *testing.T) string {
+func (s *Server) seedValidToken(t *testing.T) string {
 	t.Helper()
 	rawToken := "test-enrollment-token-abc123"
 	h := sha256.Sum256([]byte(rawToken))
 	tokenHash := hex.EncodeToString(h[:])
 	expiresAt := time.Now().Add(1 * time.Hour).Format("2006-01-02 15:04:05")
-	_, err := db.Exec(`INSERT INTO tokens (token_hash, expires_at, used) VALUES (?, ?, FALSE)`, tokenHash, expiresAt)
+	_, err := s.db.Exec(`INSERT INTO tokens (token_hash, expires_at, used) VALUES (?, ?, FALSE)`, tokenHash, expiresAt)
 	if err != nil {
 		t.Fatalf("seed valid token: %v", err)
 	}
@@ -1417,8 +1424,8 @@ func sendMetricsMsg(t *testing.T, conn *websocket.Conn, machineID string) {
 }
 
 func TestAgentEnrollmentWithToken(t *testing.T) {
-	e := setupTestServer(t)
-	token := seedValidToken(t)
+	e, s := setupTestServer(t)
+	token := s.seedValidToken(t)
 
 	// Start real HTTP server for WebSocket upgrade.
 	server := httptest.NewServer(e)
@@ -1458,14 +1465,14 @@ func TestAgentEnrollmentWithToken(t *testing.T) {
 
 	// Close connection and wait for handler goroutine to finish.
 	conn.Close()
-	waitAgentDrain(t, "test-machine-enroll-001", 2*time.Second)
+	s.waitAgentDrain(t, "test-machine-enroll-001", 2*time.Second)
 	server.Close()
 
 	// Verify token was consumed.
 	h := sha256.Sum256([]byte(token))
 	tokenHash := hex.EncodeToString(h[:])
 	var used bool
-	err = db.QueryRow(`SELECT used FROM tokens WHERE token_hash = ?`, tokenHash).Scan(&used)
+	err = s.db.QueryRow(`SELECT used FROM tokens WHERE token_hash = ?`, tokenHash).Scan(&used)
 	if err != nil {
 		t.Fatalf("query token: %v", err)
 	}
@@ -1475,7 +1482,7 @@ func TestAgentEnrollmentWithToken(t *testing.T) {
 
 	// Verify credential was stored in DB.
 	var storedMachineID string
-	err = db.QueryRow(`SELECT machine_id FROM agent_credentials LIMIT 1`).Scan(&storedMachineID)
+	err = s.db.QueryRow(`SELECT machine_id FROM agent_credentials LIMIT 1`).Scan(&storedMachineID)
 	if err != nil {
 		t.Fatalf("query agent_credentials: %v", err)
 	}
@@ -1487,8 +1494,8 @@ func TestAgentEnrollmentWithToken(t *testing.T) {
 }
 
 func TestAgentReconnectWithSecret(t *testing.T) {
-	e := setupTestServer(t)
-	token := seedValidToken(t)
+	e, s := setupTestServer(t)
+	token := s.seedValidToken(t)
 
 	server := httptest.NewServer(e)
 
@@ -1533,7 +1540,7 @@ func TestAgentReconnectWithSecret(t *testing.T) {
 	t.Log("reconnection with secret successful")
 
 	conn2.Close()
-	waitAgentDrain(t, "test-machine-reconnect-001", 2*time.Second)
+	s.waitAgentDrain(t, "test-machine-reconnect-001", 2*time.Second)
 	server.Close()
 }
 
@@ -1543,8 +1550,8 @@ func TestAgentReconnectWithSecret(t *testing.T) {
 // Phase 8 wired the announce only into the new-enrolment branch, leaving
 // every existing fleet member stuck on the old binary across hub redeploys.
 func TestAgentVersionAnnouncedOnReconnect(t *testing.T) {
-	e := setupTestServer(t)
-	token := seedValidToken(t)
+	e, s := setupTestServer(t)
+	token := s.seedValidToken(t)
 
 	// The hub no longer announces to an agent it has heard nothing from —
 	// at WS-upgrade time it knows neither the agent's capability nor its
@@ -1599,7 +1606,7 @@ func TestAgentVersionAnnouncedOnReconnect(t *testing.T) {
 		t.Fatal("enrolment did not yield a secret")
 	}
 	conn1.Close()
-	waitAgentDrain(t, "test-machine-version-announce", 2*time.Second)
+	s.waitAgentDrain(t, "test-machine-version-announce", 2*time.Second)
 
 	// Step 2: reconnect via secret. The fix under test: the hub MUST send
 	// an agent_version frame off the back of registerAgentConnection.
@@ -1690,7 +1697,7 @@ func TestAnnouncedSHAIsPerPlatform(t *testing.T) {
 // right binary.
 func TestRecordAgentRunningVersionTracksOS(t *testing.T) {
 	// Use the test setup so the in-memory DB exists for lookupVersionHostname.
-	_ = setupTestServer(t)
+	_, s := setupTestServer(t)
 
 	const linuxSHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	const windowsSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
@@ -1717,7 +1724,7 @@ func TestRecordAgentRunningVersionTracksOS(t *testing.T) {
 	})
 
 	// A Windows agent reporting the Windows SHA is up-to-date.
-	recordAgentRunningVersion("test-machine-windows", agentVersionReport{RunningSHA: windowsSHA, OS: "windows", UpdateProtocol: minSignatureCapableProtocol, TransportOK: true})
+	s.recordAgentRunningVersion("test-machine-windows", agentVersionReport{RunningSHA: windowsSHA, OS: "windows", UpdateProtocol: minSignatureCapableProtocol, TransportOK: true})
 	agentRunningVersionsMu.RLock()
 	winInfo := agentRunningVersions["test-machine-windows"]
 	agentRunningVersionsMu.RUnlock()
@@ -1730,7 +1737,7 @@ func TestRecordAgentRunningVersionTracksOS(t *testing.T) {
 
 	// A Windows agent reporting the LINUX SHA must be flagged as pending —
 	// otherwise the symptom (perpetual update loop) cannot be detected.
-	recordAgentRunningVersion("test-machine-windows", agentVersionReport{RunningSHA: linuxSHA, OS: "windows", UpdateProtocol: minSignatureCapableProtocol, TransportOK: true})
+	s.recordAgentRunningVersion("test-machine-windows", agentVersionReport{RunningSHA: linuxSHA, OS: "windows", UpdateProtocol: minSignatureCapableProtocol, TransportOK: true})
 	agentRunningVersionsMu.RLock()
 	winInfo = agentRunningVersions["test-machine-windows"]
 	agentRunningVersionsMu.RUnlock()
@@ -1739,7 +1746,7 @@ func TestRecordAgentRunningVersionTracksOS(t *testing.T) {
 	}
 
 	// And vice versa for a Linux agent on the linux SHA.
-	recordAgentRunningVersion("test-machine-linux", agentVersionReport{RunningSHA: linuxSHA, OS: "linux", UpdateProtocol: minSignatureCapableProtocol, TransportOK: true})
+	s.recordAgentRunningVersion("test-machine-linux", agentVersionReport{RunningSHA: linuxSHA, OS: "linux", UpdateProtocol: minSignatureCapableProtocol, TransportOK: true})
 	agentRunningVersionsMu.RLock()
 	linInfo := agentRunningVersions["test-machine-linux"]
 	agentRunningVersionsMu.RUnlock()
@@ -1756,10 +1763,10 @@ func TestRecordAgentRunningVersionTracksOS(t *testing.T) {
 // post-Phase-9 unknown-OS protection silently suppresses every
 // announce and the entire fleet stops auto-updating.
 func TestLookupAgentOSNormalisesHardwareStrings(t *testing.T) {
-	_ = setupTestServer(t)
+	_, s := setupTestServer(t)
 
 	t.Cleanup(func() {
-		_, _ = db.Exec(`DELETE FROM machines WHERE id LIKE 'lookup-os-test-%'`)
+		_, _ = s.db.Exec(`DELETE FROM machines WHERE id LIKE 'lookup-os-test-%'`)
 	})
 
 	cases := []struct {
@@ -1780,14 +1787,14 @@ func TestLookupAgentOSNormalisesHardwareStrings(t *testing.T) {
 		{"lookup-os-test-empty", "", ""},
 	}
 	for _, tc := range cases {
-		_, err := db.Exec(
+		_, err := s.db.Exec(
 			`INSERT OR REPLACE INTO machines (id, hostname, os, status) VALUES (?, ?, ?, 'offline')`,
 			tc.id, tc.id, tc.stored,
 		)
 		if err != nil {
 			t.Fatalf("seed %s: %v", tc.id, err)
 		}
-		got := lookupAgentOS(tc.id)
+		got := s.lookupAgentOS(tc.id)
 		if got != tc.want {
 			t.Errorf("lookupAgentOS(stored=%q) = %q, want %q", tc.stored, got, tc.want)
 		}
@@ -1795,7 +1802,7 @@ func TestLookupAgentOSNormalisesHardwareStrings(t *testing.T) {
 }
 
 func TestAgentReconnectWithInvalidSecret(t *testing.T) {
-	e := setupTestServer(t)
+	e, _ := setupTestServer(t)
 
 	server := httptest.NewServer(e)
 
@@ -1811,8 +1818,8 @@ func TestAgentReconnectWithInvalidSecret(t *testing.T) {
 }
 
 func TestAgentSecretRevocation(t *testing.T) {
-	e := setupTestServer(t)
-	token := seedValidToken(t)
+	e, s := setupTestServer(t)
+	token := s.seedValidToken(t)
 
 	server := httptest.NewServer(e)
 
@@ -1836,16 +1843,16 @@ func TestAgentSecretRevocation(t *testing.T) {
 	}
 	json.Unmarshal(msg, &enrolled)
 	conn1.Close()
-	waitAgentDrain(t, "test-machine-revoke-001", 2*time.Second)
+	s.waitAgentDrain(t, "test-machine-revoke-001", 2*time.Second)
 
 	// Step 2: Revoke the credential.
-	if err := revokeAgentCredential("test-machine-revoke-001"); err != nil {
+	if err := s.revokeAgentCredential("test-machine-revoke-001"); err != nil {
 		t.Fatalf("revoke credential: %v", err)
 	}
 
 	// Verify it was deleted.
 	var count int
-	db.QueryRow(`SELECT COUNT(*) FROM agent_credentials WHERE machine_id = ?`, "test-machine-revoke-001").Scan(&count)
+	s.db.QueryRow(`SELECT COUNT(*) FROM agent_credentials WHERE machine_id = ?`, "test-machine-revoke-001").Scan(&count)
 	if count != 0 {
 		t.Fatal("credential should be deleted after revocation")
 	}
@@ -1861,9 +1868,9 @@ func TestAgentSecretRevocation(t *testing.T) {
 }
 
 func TestKnownMachineReconnectWithoutCredentialRejected(t *testing.T) {
-	e := setupTestServer(t)
+	e, s := setupTestServer(t)
 
-	if _, err := db.Exec(`INSERT INTO machines (id, hostname, status) VALUES (?, ?, ?)`,
+	if _, err := s.db.Exec(`INSERT INTO machines (id, hostname, status) VALUES (?, ?, ?)`,
 		"known-machine-without-secret", "known-host", "online"); err != nil {
 		t.Fatalf("seed known machine: %v", err)
 	}
@@ -1882,7 +1889,7 @@ func TestKnownMachineReconnectWithoutCredentialRejected(t *testing.T) {
 }
 
 func TestTerminalSessionValidPINForSetupUser(t *testing.T) {
-	e := setupEmptyTestServer(t)
+	e, _ := setupEmptyTestServer(t)
 
 	setupBody := `{"setup_token":"test-setup-token-abc123","username":"myadmin","password":"securepass123","pin":"5678"}`
 	setupReq := httptest.NewRequest(http.MethodPost, "/api/setup", strings.NewReader(setupBody))
@@ -1927,20 +1934,20 @@ func TestTerminalSessionValidPINForSetupUser(t *testing.T) {
 
 // TestTerminalMaxConcurrentSessions verifies that the 4th terminal session is rejected.
 func TestTerminalMaxConcurrentSessions(t *testing.T) {
-	e := setupTestServer(t)
+	e, s := setupTestServer(t)
 	token := loginAndGetToken(t, e)
-	markCredentialsRotated(t)
+	s.markCredentialsRotated(t)
 
 	// Seed a fake agent so handleStartTerminal doesn't return 404.
 	machineID := "test-machine-max-sessions"
-	db.Exec(`INSERT INTO machines (id, hostname, status) VALUES (?, ?, ?)`, machineID, "test-host", "online")
-	agentsMu.Lock()
-	agents[machineID] = &ConnectedAgent{MachineID: machineID}
-	agentsMu.Unlock()
+	s.db.Exec(`INSERT INTO machines (id, hostname, status) VALUES (?, ?, ?)`, machineID, "test-host", "online")
+	s.agentsMu.Lock()
+	s.agents[machineID] = &ConnectedAgent{MachineID: machineID}
+	s.agentsMu.Unlock()
 	defer func() {
-		agentsMu.Lock()
-		delete(agents, machineID)
-		agentsMu.Unlock()
+		s.agentsMu.Lock()
+		delete(s.agents, machineID)
+		s.agentsMu.Unlock()
 	}()
 
 	// Pre-populate 3 terminal sessions in the in-memory map.
@@ -1985,12 +1992,12 @@ func TestTerminalMaxConcurrentSessions(t *testing.T) {
 
 // TestTerminalAuditFields verifies source_ip and user_id are stored in the terminal_sessions table.
 func TestTerminalAuditFields(t *testing.T) {
-	e := setupTestServer(t)
+	e, s := setupTestServer(t)
 	token := loginAndGetToken(t, e)
-	markCredentialsRotated(t)
+	s.markCredentialsRotated(t)
 
 	machineID := "test-machine-audit"
-	db.Exec(`INSERT INTO machines (id, hostname, status) VALUES (?, ?, ?)`, machineID, "audit-host", "online")
+	s.db.Exec(`INSERT INTO machines (id, hostname, status) VALUES (?, ?, ?)`, machineID, "audit-host", "online")
 
 	// Create a dummy WebSocket server so the agent has a real Conn.
 	dummyWS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2014,13 +2021,13 @@ func TestTerminalAuditFields(t *testing.T) {
 	}
 	defer agentConn.Close()
 
-	agentsMu.Lock()
-	agents[machineID] = &ConnectedAgent{MachineID: machineID, Conn: agentConn}
-	agentsMu.Unlock()
+	s.agentsMu.Lock()
+	s.agents[machineID] = &ConnectedAgent{MachineID: machineID, Conn: agentConn}
+	s.agentsMu.Unlock()
 	defer func() {
-		agentsMu.Lock()
-		delete(agents, machineID)
-		agentsMu.Unlock()
+		s.agentsMu.Lock()
+		delete(s.agents, machineID)
+		s.agentsMu.Unlock()
 	}()
 
 	body := `{"pin":"1234"}`
@@ -2036,7 +2043,7 @@ func TestTerminalAuditFields(t *testing.T) {
 	}
 
 	var sourceIP, userID sql.NullString
-	err = db.QueryRow(`SELECT source_ip, user_id FROM terminal_sessions WHERE machine_id = ?`, machineID).Scan(&sourceIP, &userID)
+	err = s.db.QueryRow(`SELECT source_ip, user_id FROM terminal_sessions WHERE machine_id = ?`, machineID).Scan(&sourceIP, &userID)
 	if err != nil {
 		t.Fatalf("query terminal_sessions: %v", err)
 	}
@@ -2063,17 +2070,17 @@ func TestTerminalAuditFields(t *testing.T) {
 // --- API Machine Tests ---
 
 func TestCreateAPIMachine(t *testing.T) {
-	e := setupTestServer(t)
-	markCredentialsRotated(t)
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
 	token := loginAndGetToken(t, e)
 
 	// Register API machine routes.
-	api := e.Group("", jwtMiddleware, credentialRotationMiddleware)
-	api.GET("/api/api-machines", handleListAPIMachines)
-	api.POST("/api/api-machines", handleCreateAPIMachine)
-	api.PATCH("/api/api-machines/:id", handleUpdateAPIMachine)
-	api.DELETE("/api/api-machines/:id", handleDeleteAPIMachine)
-	api.POST("/api/api-machines/:id/poll", handleForceAPIPoll)
+	api := e.Group("", jwtMiddleware, s.credentialRotationMiddleware)
+	api.GET("/api/api-machines", s.handleListAPIMachines)
+	api.POST("/api/api-machines", s.handleCreateAPIMachine)
+	api.PATCH("/api/api-machines/:id", s.handleUpdateAPIMachine)
+	api.DELETE("/api/api-machines/:id", s.handleDeleteAPIMachine)
+	api.POST("/api/api-machines/:id/poll", s.handleForceAPIPoll)
 
 	body := `{"name":"Test Proxmox","adapter_type":"proxmox","base_url":"https://192.168.3.2:8006","auth_config":{"token_id":"root@pam!monitor","token_secret":"xxx"},"poll_interval_secs":120}`
 	req := httptest.NewRequest(http.MethodPost, "/api/api-machines", strings.NewReader(body))
@@ -2120,12 +2127,12 @@ func TestCreateAPIMachine(t *testing.T) {
 }
 
 func TestCreateAPIMachineWithCustomCATrust(t *testing.T) {
-	e := setupTestServer(t)
-	markCredentialsRotated(t)
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
 	token := loginAndGetToken(t, e)
 
-	api := e.Group("", jwtMiddleware, credentialRotationMiddleware)
-	api.POST("/api/api-machines", handleCreateAPIMachine)
+	api := e.Group("", jwtMiddleware, s.credentialRotationMiddleware)
+	api.POST("/api/api-machines", s.handleCreateAPIMachine)
 
 	body := fmt.Sprintf(`{"name":"Secure Synology","adapter_type":"synology","base_url":"https://192.168.1.52:5001","auth_config":{"username":"u","password":"p"},"tls_config":{"mode":"custom_ca","ca_cert_pem":%q},"poll_interval_secs":60}`, generateTestCertPEM(t))
 	req := httptest.NewRequest(http.MethodPost, "/api/api-machines", strings.NewReader(body))
@@ -2157,12 +2164,12 @@ func TestCreateAPIMachineWithCustomCATrust(t *testing.T) {
 }
 
 func TestCreateAPIMachineInvalidAdapter(t *testing.T) {
-	e := setupTestServer(t)
-	markCredentialsRotated(t)
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
 	token := loginAndGetToken(t, e)
 
-	api := e.Group("", jwtMiddleware, credentialRotationMiddleware)
-	api.POST("/api/api-machines", handleCreateAPIMachine)
+	api := e.Group("", jwtMiddleware, s.credentialRotationMiddleware)
+	api.POST("/api/api-machines", s.handleCreateAPIMachine)
 
 	body := `{"name":"Bad","adapter_type":"unknown","base_url":"http://x","auth_config":{}}`
 	req := httptest.NewRequest(http.MethodPost, "/api/api-machines", strings.NewReader(body))
@@ -2178,12 +2185,12 @@ func TestCreateAPIMachineInvalidAdapter(t *testing.T) {
 }
 
 func TestCreateAPIMachineInvalidTLSConfig(t *testing.T) {
-	e := setupTestServer(t)
-	markCredentialsRotated(t)
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
 	token := loginAndGetToken(t, e)
 
-	api := e.Group("", jwtMiddleware, credentialRotationMiddleware)
-	api.POST("/api/api-machines", handleCreateAPIMachine)
+	api := e.Group("", jwtMiddleware, s.credentialRotationMiddleware)
+	api.POST("/api/api-machines", s.handleCreateAPIMachine)
 
 	body := `{"name":"Bad TLS","adapter_type":"synology","base_url":"https://192.168.1.1:5001","auth_config":{"username":"u","password":"p"},"tls_config":{"mode":"custom_ca","ca_cert_pem":"not a cert"}}`
 	req := httptest.NewRequest(http.MethodPost, "/api/api-machines", strings.NewReader(body))
@@ -2201,13 +2208,13 @@ func TestCreateAPIMachineInvalidTLSConfig(t *testing.T) {
 }
 
 func TestListAPIMachines(t *testing.T) {
-	e := setupTestServer(t)
-	markCredentialsRotated(t)
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
 	token := loginAndGetToken(t, e)
 
-	api := e.Group("", jwtMiddleware, credentialRotationMiddleware)
-	api.GET("/api/api-machines", handleListAPIMachines)
-	api.POST("/api/api-machines", handleCreateAPIMachine)
+	api := e.Group("", jwtMiddleware, s.credentialRotationMiddleware)
+	api.GET("/api/api-machines", s.handleListAPIMachines)
+	api.POST("/api/api-machines", s.handleCreateAPIMachine)
 
 	// Create two machines.
 	for _, name := range []string{"Machine A", "Machine B"} {
@@ -2254,14 +2261,14 @@ func TestListAPIMachines(t *testing.T) {
 }
 
 func TestDeleteAPIMachine(t *testing.T) {
-	e := setupTestServer(t)
-	markCredentialsRotated(t)
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
 	token := loginAndGetToken(t, e)
 
-	api := e.Group("", jwtMiddleware, credentialRotationMiddleware)
-	api.GET("/api/api-machines", handleListAPIMachines)
-	api.POST("/api/api-machines", handleCreateAPIMachine)
-	api.DELETE("/api/api-machines/:id", handleDeleteAPIMachine)
+	api := e.Group("", jwtMiddleware, s.credentialRotationMiddleware)
+	api.GET("/api/api-machines", s.handleListAPIMachines)
+	api.POST("/api/api-machines", s.handleCreateAPIMachine)
+	api.DELETE("/api/api-machines/:id", s.handleDeleteAPIMachine)
 
 	// Create a machine.
 	body := `{"name":"ToDelete","adapter_type":"proxmox","base_url":"https://x:8006","auth_config":{"token_id":"a","token_secret":"b"}}`
@@ -2305,13 +2312,13 @@ func TestDeleteAPIMachine(t *testing.T) {
 }
 
 func TestUpdateAPIMachine(t *testing.T) {
-	e := setupTestServer(t)
-	markCredentialsRotated(t)
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
 	token := loginAndGetToken(t, e)
 
-	api := e.Group("", jwtMiddleware, credentialRotationMiddleware)
-	api.POST("/api/api-machines", handleCreateAPIMachine)
-	api.PATCH("/api/api-machines/:id", handleUpdateAPIMachine)
+	api := e.Group("", jwtMiddleware, s.credentialRotationMiddleware)
+	api.POST("/api/api-machines", s.handleCreateAPIMachine)
+	api.PATCH("/api/api-machines/:id", s.handleUpdateAPIMachine)
 
 	createBody := `{"name":"Main","adapter_type":"proxmox","base_url":"https://192.168.3.2:8006","auth_config":{"token_id":"root@pam!monitor","token_secret":"xxx"},"tls_config":{"mode":"insecure"},"poll_interval_secs":120}`
 	req := httptest.NewRequest(http.MethodPost, "/api/api-machines", strings.NewReader(createBody))
@@ -2357,7 +2364,7 @@ func TestUpdateAPIMachine(t *testing.T) {
 
 	var storedName, storedTLS string
 	var storedInterval int
-	if err := db.QueryRow("SELECT name, tls_config, poll_interval_secs FROM api_machines WHERE id = ?", id).Scan(&storedName, &storedTLS, &storedInterval); err != nil {
+	if err := s.db.QueryRow("SELECT name, tls_config, poll_interval_secs FROM api_machines WHERE id = ?", id).Scan(&storedName, &storedTLS, &storedInterval); err != nil {
 		t.Fatalf("query updated machine: %v", err)
 	}
 	if storedName != "Main Updated" {
@@ -2374,13 +2381,13 @@ func TestUpdateAPIMachine(t *testing.T) {
 }
 
 func TestUpdateAPIMachineRequiresAuthConfigOnAdapterChange(t *testing.T) {
-	e := setupTestServer(t)
-	markCredentialsRotated(t)
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
 	token := loginAndGetToken(t, e)
 
-	api := e.Group("", jwtMiddleware, credentialRotationMiddleware)
-	api.POST("/api/api-machines", handleCreateAPIMachine)
-	api.PATCH("/api/api-machines/:id", handleUpdateAPIMachine)
+	api := e.Group("", jwtMiddleware, s.credentialRotationMiddleware)
+	api.POST("/api/api-machines", s.handleCreateAPIMachine)
+	api.PATCH("/api/api-machines/:id", s.handleUpdateAPIMachine)
 
 	createBody := `{"name":"MyNAS","adapter_type":"synology","base_url":"http://192.168.1.50:5000","auth_config":{"username":"u","password":"p"}}`
 	req := httptest.NewRequest(http.MethodPost, "/api/api-machines", strings.NewReader(createBody))
@@ -2416,12 +2423,12 @@ func TestUpdateAPIMachineRequiresAuthConfigOnAdapterChange(t *testing.T) {
 }
 
 func TestDeleteAPIMachineNotFound(t *testing.T) {
-	e := setupTestServer(t)
-	markCredentialsRotated(t)
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
 	token := loginAndGetToken(t, e)
 
-	api := e.Group("", jwtMiddleware, credentialRotationMiddleware)
-	api.DELETE("/api/api-machines/:id", handleDeleteAPIMachine)
+	api := e.Group("", jwtMiddleware, s.credentialRotationMiddleware)
+	api.DELETE("/api/api-machines/:id", s.handleDeleteAPIMachine)
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/api-machines/nonexistent-id", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -2508,14 +2515,14 @@ func TestValidateBaseURL(t *testing.T) {
 // enrollment because the agent could send hardware_info before the
 // metric that creates the machines row.
 func TestHardwareInfoUpsertPreCreatesRow(t *testing.T) {
-	setupTestServer(t)
+	_, s := setupTestServer(t)
 
 	machineID := "test-hw-race-machine-id"
 	hardwareJSON := `{"type":"hardware_info","machine_id":"` + machineID + `","cpu_model":"Test CPU","cpu_cores":4,"ram_total_bytes":8589934592}`
 
 	// Step 1: simulate hardware_info arriving BEFORE any metric.
 	// This is the exact UPSERT used in hub/agentws.go.
-	if _, err := db.Exec(`
+	if _, err := s.db.Exec(`
 		INSERT INTO machines (id, hostname, status, hardware_info)
 		VALUES (?, '', 'offline', ?)
 		ON CONFLICT(id) DO UPDATE SET hardware_info = excluded.hardware_info
@@ -2526,7 +2533,7 @@ func TestHardwareInfoUpsertPreCreatesRow(t *testing.T) {
 	// Assert the row exists with hardware_info populated and hostname=''.
 	var hostname string
 	var stored sql.NullString
-	if err := db.QueryRow(`SELECT hostname, hardware_info FROM machines WHERE id = ?`, machineID).Scan(&hostname, &stored); err != nil {
+	if err := s.db.QueryRow(`SELECT hostname, hardware_info FROM machines WHERE id = ?`, machineID).Scan(&hostname, &stored); err != nil {
 		t.Fatalf("row not present after pre-metric hardware_info: %v", err)
 	}
 	if !stored.Valid || stored.String != hardwareJSON {
@@ -2537,7 +2544,7 @@ func TestHardwareInfoUpsertPreCreatesRow(t *testing.T) {
 	}
 
 	// Step 2: simulate the first metric arriving (upsertMachine semantics).
-	upsertMachine(AgentMetrics{
+	s.upsertMachine(AgentMetrics{
 		MachineID: machineID,
 		Hostname:  "test-host",
 		IP:        "10.0.0.42",
@@ -2547,7 +2554,7 @@ func TestHardwareInfoUpsertPreCreatesRow(t *testing.T) {
 	// Assert hostname/ip/os are populated AND hardware_info survived.
 	var hostname2, ip, osStr string
 	var hwAfter sql.NullString
-	if err := db.QueryRow(`SELECT hostname, COALESCE(ip,''), COALESCE(os,''), hardware_info FROM machines WHERE id = ?`, machineID).Scan(&hostname2, &ip, &osStr, &hwAfter); err != nil {
+	if err := s.db.QueryRow(`SELECT hostname, COALESCE(ip,''), COALESCE(os,''), hardware_info FROM machines WHERE id = ?`, machineID).Scan(&hostname2, &ip, &osStr, &hwAfter); err != nil {
 		t.Fatalf("query after metric failed: %v", err)
 	}
 	if hostname2 != "test-host" || ip != "10.0.0.42" || osStr != "ubuntu 24.04 (x86_64)" {
@@ -2677,8 +2684,8 @@ func TestBuildTelegramPayloadIsPlainText(t *testing.T) {
 // operator. The fix caps the request size at maxBulkCommandTargets
 // and returns 400 above that.
 func TestBulkCommandRejectsOversize(t *testing.T) {
-	e := setupTestServer(t)
-	markCredentialsRotated(t)
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
 	adminToken := loginAndGetToken(t, e)
 
 	ids := make([]string, maxBulkCommandTargets+1)
@@ -2711,8 +2718,8 @@ func TestBulkCommandRejectsOversize(t *testing.T) {
 // per-machine error is fine here, we only assert the request itself
 // wasn't bounced at the size check.)
 func TestBulkCommandAcceptsAtLimit(t *testing.T) {
-	e := setupTestServer(t)
-	markCredentialsRotated(t)
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
 	adminToken := loginAndGetToken(t, e)
 
 	ids := make([]string, maxBulkCommandTargets)
@@ -2748,7 +2755,7 @@ func TestBulkCommandAcceptsAtLimit(t *testing.T) {
 // few times per minute even on flaky networks, so wsAgentRateLimit=30
 // per minute leaves significant headroom while shutting down a flood.
 func TestAgentWSRateLimited(t *testing.T) {
-	e := setupTestServer(t)
+	e, _ := setupTestServer(t)
 
 	const ip = "10.99.0.1:55555"
 	var lastCode int
@@ -2769,7 +2776,7 @@ func TestAgentWSRateLimited(t *testing.T) {
 // global. Fleet-wide reconnect after a hub restart must not be blocked
 // — each agent has its own IP so each gets its own bucket.
 func TestAgentWSRateLimitPerIP(t *testing.T) {
-	e := setupTestServer(t)
+	e, _ := setupTestServer(t)
 
 	for i := 0; i < wsAgentRateLimit+1; i++ {
 		req := httptest.NewRequest(http.MethodGet, "/ws/agent?secret=test", nil)
@@ -2923,26 +2930,26 @@ func TestExtractAPIMachineIP(t *testing.T) {
 // unregisterAgentConnection removes the entry. Without this baseline,
 // the identity-check logic in the next test could be vacuous.
 func TestUnregisterAgentConnectionDeletesOwn(t *testing.T) {
-	_ = setupTestServer(t)
+	_, s := setupTestServer(t)
 
 	mid := "test-c2-clean-exit"
 	conn := &ConnectedAgent{}
 
 	t.Cleanup(func() {
-		agentsMu.Lock()
-		delete(agents, mid)
-		agentsMu.Unlock()
+		s.agentsMu.Lock()
+		delete(s.agents, mid)
+		s.agentsMu.Unlock()
 	})
 
-	agentsMu.Lock()
-	agents[mid] = conn
-	agentsMu.Unlock()
+	s.agentsMu.Lock()
+	s.agents[mid] = conn
+	s.agentsMu.Unlock()
 
-	unregisterAgentConnection(mid, conn)
+	s.unregisterAgentConnection(mid, conn)
 
-	agentsMu.RLock()
-	_, exists := agents[mid]
-	agentsMu.RUnlock()
+	s.agentsMu.RLock()
+	_, exists := s.agents[mid]
+	s.agentsMu.RUnlock()
 	if exists {
 		t.Errorf("agents[%q] should have been deleted by its owning connection", mid)
 	}
@@ -2959,33 +2966,33 @@ func TestUnregisterAgentConnectionDeletesOwn(t *testing.T) {
 // sequentially registering A → registering B (overwrite) → running
 // A's cleanup → asserting B is still there.
 func TestUnregisterAgentConnectionLeavesNewerEntry(t *testing.T) {
-	_ = setupTestServer(t)
+	_, s := setupTestServer(t)
 
 	mid := "test-c2-reconnect-race"
 	connA := &ConnectedAgent{}
 	connB := &ConnectedAgent{}
 
 	t.Cleanup(func() {
-		agentsMu.Lock()
-		delete(agents, mid)
-		agentsMu.Unlock()
+		s.agentsMu.Lock()
+		delete(s.agents, mid)
+		s.agentsMu.Unlock()
 	})
 
-	agentsMu.Lock()
-	agents[mid] = connA
-	agentsMu.Unlock()
+	s.agentsMu.Lock()
+	s.agents[mid] = connA
+	s.agentsMu.Unlock()
 
 	// Simulate fast reconnect — B installs itself before A's cleanup runs.
-	agentsMu.Lock()
-	agents[mid] = connB
-	agentsMu.Unlock()
+	s.agentsMu.Lock()
+	s.agents[mid] = connB
+	s.agentsMu.Unlock()
 
 	// A's defer fires. Must not touch B.
-	unregisterAgentConnection(mid, connA)
+	s.unregisterAgentConnection(mid, connA)
 
-	agentsMu.RLock()
-	got, exists := agents[mid]
-	agentsMu.RUnlock()
+	s.agentsMu.RLock()
+	got, exists := s.agents[mid]
+	s.agentsMu.RUnlock()
 	if !exists {
 		t.Fatalf("agents[%q] was deleted; expected B's entry to remain", mid)
 	}
@@ -2998,23 +3005,23 @@ func TestUnregisterAgentConnectionLeavesNewerEntry(t *testing.T) {
 // handleAgentWS may call cleanup with machineID="" if auth never
 // succeeded. Helper must no-op rather than delete the "" key.
 func TestUnregisterAgentConnectionEmptyMachineIDNoOp(t *testing.T) {
-	_ = setupTestServer(t)
+	_, s := setupTestServer(t)
 
 	sentinel := &ConnectedAgent{}
-	agentsMu.Lock()
-	agents[""] = sentinel
-	agentsMu.Unlock()
+	s.agentsMu.Lock()
+	s.agents[""] = sentinel
+	s.agentsMu.Unlock()
 	t.Cleanup(func() {
-		agentsMu.Lock()
-		delete(agents, "")
-		agentsMu.Unlock()
+		s.agentsMu.Lock()
+		delete(s.agents, "")
+		s.agentsMu.Unlock()
 	})
 
-	unregisterAgentConnection("", &ConnectedAgent{})
+	s.unregisterAgentConnection("", &ConnectedAgent{})
 
-	agentsMu.RLock()
-	got, exists := agents[""]
-	agentsMu.RUnlock()
+	s.agentsMu.RLock()
+	got, exists := s.agents[""]
+	s.agentsMu.RUnlock()
 	if !exists || got != sentinel {
 		t.Errorf("empty-machineID call must be a no-op; got=%p exists=%v want=%p", got, exists, sentinel)
 	}
@@ -3025,20 +3032,20 @@ func TestUnregisterAgentConnectionEmptyMachineIDNoOp(t *testing.T) {
 // check. Without it, a fast-reconnect briefly flips the dashboard to
 // offline before B's metrics flip it back — visible flicker on the UI.
 func TestUnregisterAgentConnectionMarksOfflineOnlyForOwn(t *testing.T) {
-	_ = setupTestServer(t)
+	_, s := setupTestServer(t)
 
 	mid := "test-c2-offline-gating"
 	connA := &ConnectedAgent{}
 	connB := &ConnectedAgent{}
 
 	t.Cleanup(func() {
-		_, _ = db.Exec(`DELETE FROM machines WHERE id = ?`, mid)
-		agentsMu.Lock()
-		delete(agents, mid)
-		agentsMu.Unlock()
+		_, _ = s.db.Exec(`DELETE FROM machines WHERE id = ?`, mid)
+		s.agentsMu.Lock()
+		delete(s.agents, mid)
+		s.agentsMu.Unlock()
 	})
 
-	if _, err := db.Exec(
+	if _, err := s.db.Exec(
 		`INSERT INTO machines (id, hostname, status) VALUES (?, ?, 'online')`,
 		mid, "c2-offline-host",
 	); err != nil {
@@ -3046,15 +3053,15 @@ func TestUnregisterAgentConnectionMarksOfflineOnlyForOwn(t *testing.T) {
 	}
 
 	// B has reconnected after A's drop.
-	agentsMu.Lock()
-	agents[mid] = connB
-	agentsMu.Unlock()
+	s.agentsMu.Lock()
+	s.agents[mid] = connB
+	s.agentsMu.Unlock()
 
 	// A's cleanup runs. Must NOT flip status to offline because B is alive.
-	unregisterAgentConnection(mid, connA)
+	s.unregisterAgentConnection(mid, connA)
 
 	var status string
-	if err := db.QueryRow(
+	if err := s.db.QueryRow(
 		`SELECT status FROM machines WHERE id = ?`, mid,
 	).Scan(&status); err != nil {
 		t.Fatalf("read status: %v", err)
@@ -3076,23 +3083,23 @@ func TestUnregisterAgentConnectionMarksOfflineOnlyForOwn(t *testing.T) {
 // This test calls the extracted markAPIMachineError helper directly so
 // failure propagates as a return value, not a swallowed log line.
 func TestAPIMachineErrorUpsert(t *testing.T) {
-	_ = setupTestServer(t)
+	_, s := setupTestServer(t)
 
 	machineID := "api-c1-test"
 	displayName := "test-synology"
 	adapter := "synology"
 
 	t.Cleanup(func() {
-		_, _ = db.Exec(`DELETE FROM machines WHERE id = ?`, machineID)
+		_, _ = s.db.Exec(`DELETE FROM machines WHERE id = ?`, machineID)
 	})
 
 	// First call: INSERT path. Must not error and must write status='error'.
-	if err := markAPIMachineError(machineID, displayName, adapter); err != nil {
+	if err := s.markAPIMachineError(machineID, displayName, adapter); err != nil {
 		t.Fatalf("markAPIMachineError (insert): %v", err)
 	}
 
 	var hostname, status, tags string
-	if err := db.QueryRow(
+	if err := s.db.QueryRow(
 		`SELECT hostname, status, COALESCE(tags, '') FROM machines WHERE id = ?`,
 		machineID,
 	).Scan(&hostname, &status, &tags); err != nil {
@@ -3110,12 +3117,12 @@ func TestAPIMachineErrorUpsert(t *testing.T) {
 
 	// Second call: ON CONFLICT UPDATE path. Must not error and must keep
 	// status='error'. (Also validates the ON CONFLICT branch itself.)
-	if err := markAPIMachineError(machineID, displayName, adapter); err != nil {
+	if err := s.markAPIMachineError(machineID, displayName, adapter); err != nil {
 		t.Fatalf("markAPIMachineError (upsert): %v", err)
 	}
 
 	var statusAfterUpsert string
-	if err := db.QueryRow(
+	if err := s.db.QueryRow(
 		`SELECT status FROM machines WHERE id = ?`, machineID,
 	).Scan(&statusAfterUpsert); err != nil {
 		t.Fatalf("read after upsert: %v", err)

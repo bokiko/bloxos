@@ -282,7 +282,7 @@ func agentBinaryPathFor(osName string) string {
 // unless rollout is paused or announceDecision withholds it. The SHA
 // announced is platform-specific: Windows agents get the Windows binary SHA,
 // Linux/unknown agents get the Linux SHA.
-func announceVersionToAgent(machineID string, agent *ConnectedAgent) {
+func (s *Server) announceVersionToAgent(machineID string, agent *ConnectedAgent) {
 	rolloutPausedMu.RLock()
 	paused := rolloutPaused
 	rolloutPausedMu.RUnlock()
@@ -291,7 +291,7 @@ func announceVersionToAgent(machineID string, agent *ConnectedAgent) {
 		return
 	}
 
-	osName := lookupAgentOS(machineID)
+	osName := s.lookupAgentOS(machineID)
 	sha := announcedSHAFor(osName)
 	if sha == "" {
 		return
@@ -483,7 +483,7 @@ func announcedSHAFor(osName string) string {
 
 // lookupAgentOS returns the recorded OS for a machine ("linux",
 // "windows", or "" if unknown / pre-Phase-9 agent).
-func lookupAgentOS(machineID string) string {
+func (s *Server) lookupAgentOS(machineID string) string {
 	agentRunningVersionsMu.RLock()
 	v, ok := agentRunningVersions[machineID]
 	agentRunningVersionsMu.RUnlock()
@@ -500,7 +500,7 @@ func lookupAgentOS(machineID string) string {
 	// expects. Returning the un-normalised string would cause the default
 	// switch arm to fire and suppress the announce — exactly the
 	// regression that surfaced after the Phase-9 unknown-OS protection.
-	osStr := lookupMetricsOS(machineID)
+	osStr := s.lookupMetricsOS(machineID)
 	if osStr == "" {
 		return ""
 	}
@@ -539,9 +539,9 @@ func indexByte(s string, c byte) int {
 // lookupMetricsOS returns the most recently reported `os` string from
 // the metrics table for a given machine, e.g. "linux/amd64". Returns
 // empty if not found.
-func lookupMetricsOS(machineID string) string {
+func (s *Server) lookupMetricsOS(machineID string) string {
 	var osStr string
-	if err := db.QueryRow(`SELECT COALESCE(os, '') FROM machines WHERE id = ?`, machineID).Scan(&osStr); err != nil {
+	if err := s.db.QueryRow(`SELECT COALESCE(os, '') FROM machines WHERE id = ?`, machineID).Scan(&osStr); err != nil {
 		return ""
 	}
 	return osStr
@@ -566,18 +566,18 @@ func clearReconnectExpectation(machineID string) {
 //
 // The report carries the agent's capability level and its own answer on
 // whether its transport permits self-update. See announceDecision.
-func recordAgentRunningVersion(machineID string, report agentVersionReport) {
+func (s *Server) recordAgentRunningVersion(machineID string, report agentVersionReport) {
 	runningSHA, osName := report.RunningSHA, report.OS
 	// Resolve the per-OS expected SHA. If we don't yet know the agent's
 	// OS, lookupAgentOS will check the DB metrics for it. New-on-this-hub
 	// agents return "" here and that's fine — we'll announce after we
 	// learn the OS below.
 	if osName == "" {
-		osName = lookupAgentOS(machineID)
+		osName = s.lookupAgentOS(machineID)
 	}
 	expectedSHA := announcedSHAFor(osName)
 
-	hostname := lookupVersionHostname(machineID)
+	hostname := s.lookupVersionHostname(machineID)
 
 	agentRunningVersionsMu.Lock()
 	prev, hadPrev := agentRunningVersions[machineID]
@@ -623,11 +623,11 @@ func recordAgentRunningVersion(machineID string, report agentVersionReport) {
 		prev.UpdateTransportOK != report.TransportOK ||
 		prev.UpdateKeyPinned != report.KeyPinned) &&
 		expectedSHA != "" && runningSHA != expectedSHA {
-		agentsMu.RLock()
-		agent, online := agents[machineID]
-		agentsMu.RUnlock()
+		s.agentsMu.RLock()
+		agent, online := s.agents[machineID]
+		s.agentsMu.RUnlock()
 		if online {
-			go announceVersionToAgent(machineID, agent)
+			s.goTracked(func() { s.announceVersionToAgent(machineID, agent) })
 		}
 	}
 }
@@ -675,9 +675,9 @@ func recordRolloutSuccess(machineID string) {
 	rolloutFailures = fresh
 }
 
-func lookupVersionHostname(machineID string) string {
+func (s *Server) lookupVersionHostname(machineID string) string {
 	var hostname string
-	if err := db.QueryRow(`SELECT hostname FROM machines WHERE id = ?`, machineID).Scan(&hostname); err != nil {
+	if err := s.db.QueryRow(`SELECT hostname FROM machines WHERE id = ?`, machineID).Scan(&hostname); err != nil {
 		return machineID
 	}
 	return hostname
@@ -687,7 +687,7 @@ func lookupVersionHostname(machineID string) string {
  * REST endpoints
  * ============================================================================ */
 
-func handleListVersions(c echo.Context) error {
+func (s *Server) handleListVersions(c echo.Context) error {
 	hubAgentBinaryMu.RLock()
 	hubSHA := hubAgentBinarySHA
 	hubMtime := hubAgentBinaryMtime
@@ -709,7 +709,7 @@ func handleListVersions(c echo.Context) error {
 
 	for i := range versions {
 		v := &versions[i]
-		v.Hostname = lookupVersionHostname(v.MachineID)
+		v.Hostname = s.lookupVersionHostname(v.MachineID)
 		expected := announcedSHAFor(v.OS)
 		v.UpdatePending = expected != "" && v.RunningSHA != expected
 		if v.UpdatePending {
@@ -750,7 +750,7 @@ func handlePauseRollout(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]string{"status": "paused"})
 }
 
-func handleResumeRollout(c echo.Context) error {
+func (s *Server) handleResumeRollout(c echo.Context) error {
 	rolloutPausedMu.Lock()
 	rolloutPaused = false
 	rolloutPauseReason = ""
@@ -763,17 +763,18 @@ func handleResumeRollout(c echo.Context) error {
 	log.Printf("rollout: RESUMED by operator")
 
 	// Re-announce to all currently connected agents.
-	agentsMu.RLock()
-	conns := make([]*ConnectedAgent, 0, len(agents))
-	ids := make([]string, 0, len(agents))
-	for id, a := range agents {
+	s.agentsMu.RLock()
+	conns := make([]*ConnectedAgent, 0, len(s.agents))
+	ids := make([]string, 0, len(s.agents))
+	for id, a := range s.agents {
 		ids = append(ids, id)
 		conns = append(conns, a)
 	}
-	agentsMu.RUnlock()
+	s.agentsMu.RUnlock()
 
 	for i := range conns {
-		go announceVersionToAgent(ids[i], conns[i])
+		mid, conn := ids[i], conns[i]
+		s.goTracked(func() { s.announceVersionToAgent(mid, conn) })
 	}
 
 	return c.JSON(http.StatusOK, map[string]string{"status": "resumed"})

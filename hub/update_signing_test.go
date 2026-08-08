@@ -184,7 +184,7 @@ func TestDetachedSignatureFor(t *testing.T) {
 // without it the agent has nothing to verify an announcement against and
 // self-update stays disabled.
 func TestInstallScriptPinsUpdateSigningKey(t *testing.T) {
-	e := setupTestServer(t)
+	e, _ := setupTestServer(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/install.sh", nil)
 	rec := httptest.NewRecorder()
@@ -210,7 +210,7 @@ func TestInstallScriptPinsUpdateSigningKey(t *testing.T) {
 }
 
 func TestWindowsInstallScriptPinsUpdateSigningKey(t *testing.T) {
-	e := setupTestServer(t)
+	e, _ := setupTestServer(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/install.ps1", nil)
 	rec := httptest.NewRecorder()
@@ -239,7 +239,7 @@ func TestWindowsInstallScriptPinsUpdateSigningKey(t *testing.T) {
 // "failed" after 3 restarts and fire OnFailure=, so this is about staying on
 // the documented key, not about repairing a broken rollback.
 func TestInstallScriptStartLimitLivesInUnitSection(t *testing.T) {
-	e := setupTestServer(t)
+	e, _ := setupTestServer(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/install.sh", nil)
 	rec := httptest.NewRecorder()
@@ -313,7 +313,7 @@ func splitUnitSections(t *testing.T, unit string) (string, string) {
 // on the wire" claim is TestNoSignatureMeansNoAnnounceOnTheWire below, which
 // drives a real agent WebSocket.
 func TestNoSignatureAvailableWithoutSigningKey(t *testing.T) {
-	setupTestServer(t)
+	_, _ = setupTestServer(t)
 	withoutSigningKey(t)
 
 	dir := t.TempDir()
@@ -585,20 +585,20 @@ type announceProbe struct {
 // collectAnnounceFrames enrols an agent, sends metrics so the hub learns the
 // OS, reports agent_running_version, and returns every agent_version frame
 // the hub sent within the window.
-func collectAnnounceFrames(t *testing.T, e *echo.Echo, p announceProbe) []string {
+func (s *Server) collectAnnounceFrames(t *testing.T, e *echo.Echo, p announceProbe) []string {
 	t.Helper()
 
 	server := httptest.NewServer(e)
 	t.Cleanup(server.Close)
 
-	token := seedValidToken(t)
+	token := s.seedValidToken(t)
 	conn, err := wsDialAgent(t, server, "token="+token)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
 	t.Cleanup(func() {
 		conn.Close()
-		waitAgentDrain(t, p.machineID, 2*time.Second)
+		s.waitAgentDrain(t, p.machineID, 2*time.Second)
 	})
 
 	sendMetricsMsg(t, conn, p.machineID)
@@ -677,12 +677,12 @@ func stagePendingUpdate(t *testing.T) {
 // That agent's AgentVersionMessage has no signature field, so it would take
 // the update unverified — the exact hop an on-path attacker owns.
 func TestLegacyAgentGetsNoAnnounceOverPlaintext(t *testing.T) {
-	e := setupTestServer(t)
+	e, s := setupTestServer(t)
 	t.Setenv("PUBLIC_URL", "http://hub.example.com")
 	stagePendingUpdate(t)
 
 	const machineID = "legacy-plaintext-machine"
-	frames := collectAnnounceFrames(t, e, announceProbe{machineID: machineID, proto: 0})
+	frames := s.collectAnnounceFrames(t, e, announceProbe{machineID: machineID, proto: 0})
 	if len(frames) != 0 {
 		t.Fatalf("hub announced an update to a pre-signature agent over plaintext: %q", frames)
 	}
@@ -693,11 +693,11 @@ func TestLegacyAgentGetsNoAnnounceOverPlaintext(t *testing.T) {
 // off-host attacker cannot reach it. This is the control for the test above —
 // same helper, same proto — so the plaintext case cannot pass vacuously.
 func TestLegacyAgentGetsAnnounceOverTLS(t *testing.T) {
-	e := setupTestServer(t)
+	e, s := setupTestServer(t)
 	t.Setenv("PUBLIC_URL", "https://hub.example.com")
 	stagePendingUpdate(t)
 
-	frames := collectAnnounceFrames(t, e, announceProbe{machineID: "legacy-tls-machine", proto: 0})
+	frames := s.collectAnnounceFrames(t, e, announceProbe{machineID: "legacy-tls-machine", proto: 0})
 	if len(frames) == 0 {
 		t.Fatal("hub withheld the migration announce from a legacy agent on a TLS deployment")
 	}
@@ -708,7 +708,7 @@ func TestLegacyAgentGetsAnnounceOverTLS(t *testing.T) {
 // reconnect expectation that expires into a false rollout failure. This test
 // previously asserted the opposite and locked in that bug; Codex caught it.
 func TestNoAnnounceWhenAgentReportsPlaintextTransport(t *testing.T) {
-	e := setupTestServer(t)
+	e, s := setupTestServer(t)
 	// PUBLIC_URL says TLS. The agent says otherwise about its own hub URL,
 	// and the agent is the one that has to perform the download — this is
 	// the mixed deployment PUBLIC_URL alone cannot see.
@@ -716,7 +716,7 @@ func TestNoAnnounceWhenAgentReportsPlaintextTransport(t *testing.T) {
 	stagePendingUpdate(t)
 
 	const machineID = "capable-plaintext-machine"
-	frames := collectAnnounceFrames(t, e, announceProbe{machineID: machineID, proto: 1, transportOK: false})
+	frames := s.collectAnnounceFrames(t, e, announceProbe{machineID: machineID, proto: 1, transportOK: false})
 	if len(frames) != 0 {
 		t.Fatalf("hub announced an update the agent had already said it would refuse: %q", frames)
 	}
@@ -726,11 +726,11 @@ func TestNoAnnounceWhenAgentReportsPlaintextTransport(t *testing.T) {
 // And the same agent reporting a usable transport and a pinned key is
 // announced to normally, with a signature it can actually verify.
 func TestSignatureCapableAgentWithUsableTransportGetsSignedAnnounce(t *testing.T) {
-	e := setupTestServer(t)
+	e, s := setupTestServer(t)
 	t.Setenv("PUBLIC_URL", "https://hub.example.com")
 	stagePendingUpdate(t)
 
-	frames := collectAnnounceFrames(t, e, announceProbe{machineID: "capable-tls-machine", proto: 1, transportOK: true, keyPinned: true})
+	frames := s.collectAnnounceFrames(t, e, announceProbe{machineID: "capable-tls-machine", proto: 1, transportOK: true, keyPinned: true})
 	if len(frames) == 0 {
 		t.Fatal("hub withheld an announce from a signature-capable agent on a usable transport")
 	}
@@ -759,12 +759,12 @@ func TestSignatureCapableAgentWithUsableTransportGetsSignedAnnounce(t *testing.T
 // machines trips the fleet-wide circuit breaker — blaming agent health for
 // a refusal the hub itself provoked.
 func TestNoAnnounceWhenAgentKeyNotPinned(t *testing.T) {
-	e := setupTestServer(t)
+	e, s := setupTestServer(t)
 	t.Setenv("PUBLIC_URL", "https://hub.example.com")
 	stagePendingUpdate(t)
 
 	const machineID = "capable-unpinned-machine"
-	frames := collectAnnounceFrames(t, e, announceProbe{machineID: machineID, proto: 1, transportOK: true, keyPinned: false})
+	frames := s.collectAnnounceFrames(t, e, announceProbe{machineID: machineID, proto: 1, transportOK: true, keyPinned: false})
 	if len(frames) != 0 {
 		t.Fatalf("hub announced an update to an agent with no pinned key: %q", frames)
 	}
@@ -791,12 +791,12 @@ func TestNoAnnounceWhenAgentKeyNotPinned(t *testing.T) {
 // bool field at its zero value, and this test is what pins that behavior in
 // place rather than trusting it not to change out from under the gate.
 func TestNoAnnounceWhenAgentOmitsKeyPinnedField(t *testing.T) {
-	e := setupTestServer(t)
+	e, s := setupTestServer(t)
 	t.Setenv("PUBLIC_URL", "https://hub.example.com")
 	stagePendingUpdate(t)
 
 	const machineID = "capable-legacy-field-machine"
-	frames := collectAnnounceFrames(t, e, announceProbe{machineID: machineID, proto: 1, transportOK: true, omitKeyPinned: true})
+	frames := s.collectAnnounceFrames(t, e, announceProbe{machineID: machineID, proto: 1, transportOK: true, omitKeyPinned: true})
 	if len(frames) != 0 {
 		t.Fatalf("hub announced an update to an agent that never reported update_key_pinned: %q", frames)
 	}
@@ -807,7 +807,7 @@ func TestNoAnnounceWhenAgentOmitsKeyPinnedField(t *testing.T) {
 // the old TestNoSignatureMeansNoAnnounce made in its name but never tested:
 // with no signing key, nothing goes out on the socket at all.
 func TestNoSignatureMeansNoAnnounceOnTheWire(t *testing.T) {
-	e := setupTestServer(t)
+	e, s := setupTestServer(t)
 	t.Setenv("PUBLIC_URL", "https://hub.example.com")
 	withoutSigningKey(t)
 	stagePendingUpdate(t)
@@ -815,7 +815,7 @@ func TestNoSignatureMeansNoAnnounceOnTheWire(t *testing.T) {
 	const machineID = "unsigned-hub-machine"
 	// keyPinned: true isolates the variable this test is about — the hub
 	// cannot sign — from the key-pinned gate, which has its own tests below.
-	frames := collectAnnounceFrames(t, e, announceProbe{machineID: machineID, proto: 1, transportOK: true, keyPinned: true})
+	frames := s.collectAnnounceFrames(t, e, announceProbe{machineID: machineID, proto: 1, transportOK: true, keyPinned: true})
 	if len(frames) != 0 {
 		t.Fatalf("hub announced an update it could not sign: %q", frames)
 	}
@@ -826,7 +826,7 @@ func TestNoSignatureMeansNoAnnounceOnTheWire(t *testing.T) {
 // fleet that has permanently stopped updating is indistinguishable from a
 // rollout in progress: update_pending true on every agent, forever.
 func TestVersionsAPIReportsWhyUpdatesAreWithheld(t *testing.T) {
-	e := setupTestServer(t)
+	e, s := setupTestServer(t)
 	t.Setenv("PUBLIC_URL", "https://hub.example.com")
 	withoutSigningKey(t)
 	setUpdateSigningDisabled("the signing key at /etc/bloxos/x.key is corrupt")
@@ -850,7 +850,7 @@ func TestVersionsAPIReportsWhyUpdatesAreWithheld(t *testing.T) {
 		agentRunningVersionsMu.Unlock()
 	})
 
-	markCredentialsRotated(t)
+	s.markCredentialsRotated(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/versions", nil)
 	req.Header.Set("Authorization", "Bearer "+loginAndGetToken(t, e))
 	rec := httptest.NewRecorder()
@@ -912,8 +912,8 @@ func TestVersionsAPIReportsWhyUpdatesAreWithheld(t *testing.T) {
 // work runs in a goroutine and the test fails on a deadline instead of
 // stalling the suite silently. Run under -race for the full signal.
 func TestVersionsAPIDoesNotDeadlockWithConcurrentAgentReports(t *testing.T) {
-	e := setupTestServer(t)
-	markCredentialsRotated(t)
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
 	token := loginAndGetToken(t, e)
 	stagePendingUpdate(t)
 
@@ -961,7 +961,7 @@ func TestVersionsAPIDoesNotDeadlockWithConcurrentAgentReports(t *testing.T) {
 						return
 					default:
 					}
-					recordAgentRunningVersion(fmt.Sprintf("deadlock-probe-%d", i%machines),
+					s.recordAgentRunningVersion(fmt.Sprintf("deadlock-probe-%d", i%machines),
 						agentVersionReport{
 							RunningSHA:     strings.Repeat("44", 32),
 							OS:             "linux",

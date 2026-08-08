@@ -33,7 +33,7 @@ func ctxWithBearer(e *echo.Echo, token string) echo.Context {
 // TestExtractUserIDValidToken: a properly signed, unexpired token yields its
 // user_id.
 func TestExtractUserIDValidToken(t *testing.T) {
-	e := setupTestServer(t)
+	e, _ := setupTestServer(t)
 	tok := signHS256(t, jwt.MapClaims{"user_id": "user-123", "exp": time.Now().Add(time.Hour).Unix()}, jwtSecret)
 	if got := extractUserIDFromRequest(ctxWithBearer(e, tok)); got != "user-123" {
 		t.Fatalf("extractUserIDFromRequest = %q, want user-123", got)
@@ -43,7 +43,7 @@ func TestExtractUserIDValidToken(t *testing.T) {
 // TestExtractUserIDRejectsBadSignature: a token signed with the wrong key must
 // not be trusted.
 func TestExtractUserIDRejectsBadSignature(t *testing.T) {
-	e := setupTestServer(t)
+	e, _ := setupTestServer(t)
 	tok := signHS256(t, jwt.MapClaims{"user_id": "user-123", "exp": time.Now().Add(time.Hour).Unix()}, []byte("a-totally-different-signing-key-32b!"))
 	if got := extractUserIDFromRequest(ctxWithBearer(e, tok)); got != "" {
 		t.Fatalf("expected empty userID for bad signature, got %q", got)
@@ -53,7 +53,7 @@ func TestExtractUserIDRejectsBadSignature(t *testing.T) {
 // TestExtractUserIDRejectsNoneAlg: an alg=none token must be rejected (the
 // keyfunc must require HMAC).
 func TestExtractUserIDRejectsNoneAlg(t *testing.T) {
-	e := setupTestServer(t)
+	e, _ := setupTestServer(t)
 	tok, err := jwt.NewWithClaims(jwt.SigningMethodNone, jwt.MapClaims{
 		"user_id": "user-123", "exp": time.Now().Add(time.Hour).Unix(),
 	}).SignedString(jwt.UnsafeAllowNoneSignatureType)
@@ -67,7 +67,7 @@ func TestExtractUserIDRejectsNoneAlg(t *testing.T) {
 
 // TestExtractUserIDRejectsExpired: an expired token must not be trusted.
 func TestExtractUserIDRejectsExpired(t *testing.T) {
-	e := setupTestServer(t)
+	e, _ := setupTestServer(t)
 	tok := signHS256(t, jwt.MapClaims{"user_id": "user-123", "exp": time.Now().Add(-time.Hour).Unix()}, jwtSecret)
 	if got := extractUserIDFromRequest(ctxWithBearer(e, tok)); got != "" {
 		t.Fatalf("expected empty userID for expired token, got %q", got)
@@ -79,7 +79,7 @@ func TestExtractUserIDRejectsExpired(t *testing.T) {
 // comparable to a real user's — closing the username-enumeration timing oracle.
 // Before the fix the unknown-username path returned in well under a millisecond.
 func TestLoginUnknownUsernameRunsDummyCompare(t *testing.T) {
-	e := setupTestServer(t)
+	e, _ := setupTestServer(t)
 
 	body := `{"username":"definitely-not-a-real-user","password":"whatever-password"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(body))
