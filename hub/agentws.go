@@ -36,12 +36,12 @@ type ConnectedAgent struct {
 // and token-based fresh enrolment — call this exactly once per connection,
 // which guarantees Phase-8 auto-update propagates on reconnect (the bug
 // that originally motivated extracting this helper).
-func registerAgentConnection(machineID string, agent *ConnectedAgent) {
+func (s *Server) registerAgentConnection(machineID string, agent *ConnectedAgent) {
 	agent.MachineID = machineID
-	agentsMu.Lock()
-	agents[machineID] = agent
-	agentsMu.Unlock()
-	go announceVersionToAgent(machineID, agent)
+	s.agentsMu.Lock()
+	s.agents[machineID] = agent
+	s.agentsMu.Unlock()
+	go s.announceVersionToAgent(machineID, agent)
 }
 
 // unregisterAgentConnection is the symmetric cleanup for
@@ -51,23 +51,23 @@ func registerAgentConnection(machineID string, agent *ConnectedAgent) {
 // — otherwise we'd false-offline a fast-reconnecting agent whose new
 // handler already overwrote the entry. Empty machineID (auth never
 // succeeded) is a no-op.
-func unregisterAgentConnection(machineID string, agent *ConnectedAgent) {
+func (s *Server) unregisterAgentConnection(machineID string, agent *ConnectedAgent) {
 	if machineID == "" {
 		return
 	}
-	agentsMu.Lock()
-	current, ok := agents[machineID]
+	s.agentsMu.Lock()
+	current, ok := s.agents[machineID]
 	stillOurs := ok && current == agent
 	if stillOurs {
-		delete(agents, machineID)
+		delete(s.agents, machineID)
 	}
-	agentsMu.Unlock()
+	s.agentsMu.Unlock()
 	if stillOurs {
-		markOffline(machineID)
+		s.markOffline(machineID)
 	}
 }
 
-func handleCreateToken(c echo.Context) error {
+func (s *Server) handleCreateToken(c echo.Context) error {
 	ip := getRealIP(c)
 	if !rateLimiter.Allow("token_create", ip, 3) {
 		log.Printf("rate limit exceeded: token_create from %s", ip)
@@ -89,7 +89,7 @@ func handleCreateToken(c echo.Context) error {
 	tokenHash := hex.EncodeToString(h[:])
 	expiresAt := time.Now().Add(15 * time.Minute)
 
-	_, err := db.Exec(`INSERT INTO tokens (token_hash, expires_at) VALUES (?, ?)`, tokenHash, expiresAt)
+	_, err := s.db.Exec(`INSERT INTO tokens (token_hash, expires_at) VALUES (?, ?)`, tokenHash, expiresAt)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
@@ -499,7 +499,7 @@ var agentAuthWindow = 30 * time.Second
 // the OS keepalive notices (which can take ~2h).
 var agentIdleTimeout = 90 * time.Second
 
-func handleAgentWS(c echo.Context) error {
+func (s *Server) handleAgentWS(c echo.Context) error {
 	ip := getRealIP(c)
 	if !rateLimiter.Allow("ws_agent", ip, wsAgentRateLimit) {
 		log.Printf("rate limit exceeded: ws_agent from %s", ip)
@@ -527,7 +527,7 @@ func handleAgentWS(c echo.Context) error {
 	var secretMachineID string
 	if agentSecret != "" {
 		var err error
-		secretMachineID, err = validateAgentSecret(agentSecret)
+		secretMachineID, err = s.validateAgentSecret(agentSecret)
 		if err != nil {
 			log.Printf("agent secret validation failed: %v", err)
 			// If secret was provided but invalid, and no token fallback, reject.
@@ -544,7 +544,7 @@ func handleAgentWS(c echo.Context) error {
 	tokenValidated := false
 	if agentSecret == "" && token != "" {
 		var err error
-		tokenHash, err = validateAgentToken(token)
+		tokenHash, err = s.validateAgentToken(token)
 		if err != nil {
 			tokenHash = ""
 			log.Printf("agent token validation deferred (may be reconnecting agent): %v", err)
@@ -585,7 +585,7 @@ func handleAgentWS(c echo.Context) error {
 	agent := &ConnectedAgent{Conn: ws}
 	if secretMachineID != "" {
 		machineID = secretMachineID
-		registerAgentConnection(machineID, agent)
+		s.registerAgentConnection(machineID, agent)
 		log.Printf("agent authenticated via secret: machine_id=%s", machineID)
 	}
 
@@ -593,7 +593,7 @@ func handleAgentWS(c echo.Context) error {
 		_, msg, err := ws.ReadMessage()
 		if err != nil {
 			log.Printf("agent disconnected: %v", err)
-			unregisterAgentConnection(machineID, agent)
+			s.unregisterAgentConnection(machineID, agent)
 			return nil
 		}
 		// A frame arrived — extend the deadline to the idle timeout.
@@ -635,8 +635,8 @@ func handleAgentWS(c echo.Context) error {
 
 				// Check if this machine_id already exists (reconnecting agent).
 				var existingID string
-				knownMachine := db.QueryRow(`SELECT id FROM machines WHERE id = ?`, machineID).Scan(&existingID) == nil
-				hasCredential := machineHasCredential(machineID)
+				knownMachine := s.db.QueryRow(`SELECT id FROM machines WHERE id = ?`, machineID).Scan(&existingID) == nil
+				hasCredential := s.machineHasCredential(machineID)
 
 				if knownMachine && secretMachineID == machineID {
 					log.Printf("known agent reconnecting with durable credential: %s (%s)", m.Hostname, machineID)
@@ -648,7 +648,7 @@ func handleAgentWS(c echo.Context) error {
 						ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","message":"enrollment failed"}`))
 						return nil
 					}
-					if err := consumeTokenAndStoreCredential(tokenHash, machineID, secretHash); err != nil {
+					if err := s.consumeTokenAndStoreCredential(tokenHash, machineID, secretHash); err != nil {
 						log.Printf("failed to store agent credential: %v", err)
 						ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","message":"enrollment failed"}`))
 						return nil
@@ -679,7 +679,7 @@ func handleAgentWS(c echo.Context) error {
 					return nil
 				}
 
-				registerAgentConnection(machineID, agent)
+				s.registerAgentConnection(machineID, agent)
 				log.Printf("agent registered: %s (%s)", m.Hostname, machineID)
 			}
 
@@ -702,8 +702,8 @@ func handleAgentWS(c echo.Context) error {
 				}
 			}
 
-			upsertMachine(m)
-			storeMetrics(m)
+			s.upsertMachine(m)
+			s.storeMetrics(m)
 
 			// Enrich the metrics broadcast with latency.
 			machineLatencyMu.RLock()
@@ -736,7 +736,7 @@ func handleAgentWS(c echo.Context) error {
 			if mid == "" {
 				mid = sm.MachineID
 			}
-			upsertServices(mid, sm.Services)
+			s.upsertServices(mid, sm.Services)
 			framed := []byte(fmt.Sprintf("event: services\ndata: %s\n\n", msg))
 			broadcastSSE(framed)
 
@@ -750,7 +750,7 @@ func handleAgentWS(c echo.Context) error {
 			if mid == "" {
 				mid = cm.MachineID
 			}
-			upsertContainers(mid, cm.Containers)
+			s.upsertContainers(mid, cm.Containers)
 			framed := []byte(fmt.Sprintf("event: containers\ndata: %s\n\n", msg))
 			broadcastSSE(framed)
 
@@ -775,7 +775,7 @@ func handleAgentWS(c echo.Context) error {
 			if mid == "" {
 				mid = hw.MachineID
 			}
-			if _, err := db.Exec(`
+			if _, err := s.db.Exec(`
 				INSERT INTO machines (id, hostname, status, hardware_info)
 				VALUES (?, '', 'offline', ?)
 				ON CONFLICT(id) DO UPDATE SET hardware_info = excluded.hardware_info
@@ -811,7 +811,7 @@ func handleAgentWS(c echo.Context) error {
 				continue
 			}
 			if versionMsg.SHA256 != "" && machineID != "" {
-				recordAgentRunningVersion(machineID, agentVersionReport{
+				s.recordAgentRunningVersion(machineID, agentVersionReport{
 					RunningSHA:     versionMsg.SHA256,
 					OS:             versionMsg.OS,
 					UpdateProtocol: versionMsg.UpdateProtocol,
@@ -1006,13 +1006,13 @@ if ($svc -and $svc.Status -eq 'Running') {
 
 // validateAgentToken checks a token against the DB (Finding #1).
 // Returns the token hash so the caller can mark it as used after enrollment.
-func validateAgentToken(token string) (string, error) {
+func (s *Server) validateAgentToken(token string) (string, error) {
 	h := sha256.Sum256([]byte(token))
 	tokenHash := hex.EncodeToString(h[:])
 
 	var expiresAt string
 	var used bool
-	err := db.QueryRow(`SELECT expires_at, used FROM tokens WHERE token_hash = ?`, tokenHash).Scan(&expiresAt, &used)
+	err := s.db.QueryRow(`SELECT expires_at, used FROM tokens WHERE token_hash = ?`, tokenHash).Scan(&expiresAt, &used)
 	if err == sql.ErrNoRows {
 		return "", fmt.Errorf("invalid token")
 	}
@@ -1038,8 +1038,8 @@ func validateAgentToken(token string) (string, error) {
 }
 
 // consumeToken marks a token as used after successful enrollment.
-func consumeToken(tokenHash string) {
-	_, err := db.Exec(`UPDATE tokens SET used = TRUE WHERE token_hash = ?`, tokenHash)
+func (s *Server) consumeToken(tokenHash string) {
+	_, err := s.db.Exec(`UPDATE tokens SET used = TRUE WHERE token_hash = ?`, tokenHash)
 	if err != nil {
 		log.Printf("failed to mark token as used: %v", err)
 	} else {
@@ -1047,8 +1047,8 @@ func consumeToken(tokenHash string) {
 	}
 }
 
-func consumeTokenAndStoreCredential(tokenHash, machineID, secretHash string) error {
-	tx, err := db.Begin()
+func (s *Server) consumeTokenAndStoreCredential(tokenHash, machineID, secretHash string) error {
+	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
@@ -1087,15 +1087,15 @@ func generateAgentSecret() (raw string, hash string, err error) {
 }
 
 // storeAgentCredential saves (or replaces) the hashed secret for a machine.
-func storeAgentCredential(machineID, secretHash string) error {
-	_, err := db.Exec(`INSERT OR REPLACE INTO agent_credentials (machine_id, secret_hash, created_at, last_used_at)
+func (s *Server) storeAgentCredential(machineID, secretHash string) error {
+	_, err := s.db.Exec(`INSERT OR REPLACE INTO agent_credentials (machine_id, secret_hash, created_at, last_used_at)
 		VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`, machineID, secretHash)
 	return err
 }
 
-func machineHasCredential(machineID string) bool {
+func (s *Server) machineHasCredential(machineID string) bool {
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM agent_credentials WHERE machine_id = ?`, machineID).Scan(&count); err != nil {
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM agent_credentials WHERE machine_id = ?`, machineID).Scan(&count); err != nil {
 		log.Printf("failed checking agent credential for %s: %v", machineID, err)
 		return false
 	}
@@ -1104,12 +1104,12 @@ func machineHasCredential(machineID string) bool {
 
 // validateAgentSecret looks up a credential by the SHA-256 hash of the provided secret.
 // Returns the associated machine_id if found.
-func validateAgentSecret(secret string) (string, error) {
+func (s *Server) validateAgentSecret(secret string) (string, error) {
 	h := sha256.Sum256([]byte(secret))
 	secretHash := hex.EncodeToString(h[:])
 
 	var machineID string
-	err := db.QueryRow(`SELECT machine_id FROM agent_credentials WHERE secret_hash = ?`, secretHash).Scan(&machineID)
+	err := s.db.QueryRow(`SELECT machine_id FROM agent_credentials WHERE secret_hash = ?`, secretHash).Scan(&machineID)
 	if err == sql.ErrNoRows {
 		return "", fmt.Errorf("invalid agent secret")
 	}
@@ -1118,21 +1118,21 @@ func validateAgentSecret(secret string) (string, error) {
 	}
 
 	// Update last_used_at.
-	_, _ = db.Exec(`UPDATE agent_credentials SET last_used_at = CURRENT_TIMESTAMP WHERE secret_hash = ?`, secretHash)
+	_, _ = s.db.Exec(`UPDATE agent_credentials SET last_used_at = CURRENT_TIMESTAMP WHERE secret_hash = ?`, secretHash)
 
 	return machineID, nil
 }
 
 // revokeAgentCredential removes the stored credential for a machine.
-func revokeAgentCredential(machineID string) error {
-	_, err := db.Exec(`DELETE FROM agent_credentials WHERE machine_id = ?`, machineID)
+func (s *Server) revokeAgentCredential(machineID string) error {
+	_, err := s.db.Exec(`DELETE FROM agent_credentials WHERE machine_id = ?`, machineID)
 	return err
 }
 
 // generateFirstRunToken creates a one-time token on first startup when no tokens and no machines exist.
-func generateFirstRunToken() {
+func (s *Server) generateFirstRunToken() {
 	var tokenCount int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM tokens`).Scan(&tokenCount); err != nil {
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM tokens`).Scan(&tokenCount); err != nil {
 		log.Printf("first-run check: token count error: %v", err)
 		return
 	}
@@ -1141,7 +1141,7 @@ func generateFirstRunToken() {
 	}
 
 	var machineCount int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM machines`).Scan(&machineCount); err != nil {
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM machines`).Scan(&machineCount); err != nil {
 		log.Printf("first-run check: machine count error: %v", err)
 		return
 	}
@@ -1155,7 +1155,7 @@ func generateFirstRunToken() {
 	tokenHash := hex.EncodeToString(h[:])
 	expiresAt := time.Now().Add(1 * time.Hour)
 
-	_, err := db.Exec(`INSERT INTO tokens (token_hash, expires_at) VALUES (?, ?)`, tokenHash, expiresAt)
+	_, err := s.db.Exec(`INSERT INTO tokens (token_hash, expires_at) VALUES (?, ?)`, tokenHash, expiresAt)
 	if err != nil {
 		log.Printf("first-run: failed to insert token: %v", err)
 		return

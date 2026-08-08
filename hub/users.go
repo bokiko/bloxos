@@ -23,7 +23,7 @@ type userRecord struct {
 
 var pinPattern = regexp.MustCompile(`^\d{4,}$`)
 
-func handleCreateUser(c echo.Context) error {
+func (s *Server) handleCreateUser(c echo.Context) error {
 	var body struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -53,7 +53,7 @@ func handleCreateUser(c echo.Context) error {
 	}
 
 	var existing string
-	err := db.QueryRow(`SELECT id FROM users WHERE username = ?`, body.Username).Scan(&existing)
+	err := s.db.QueryRow(`SELECT id FROM users WHERE username = ?`, body.Username).Scan(&existing)
 	if err == nil {
 		return c.JSON(http.StatusConflict, map[string]string{"error": "username already exists"})
 	}
@@ -72,7 +72,7 @@ func handleCreateUser(c echo.Context) error {
 
 	id := uuid.New().String()
 	// Admin-provisioned users must rotate the temporary credentials on first login.
-	_, err = db.Exec(
+	_, err = s.db.Exec(
 		`INSERT INTO users (id, username, password_hash, terminal_pin_hash, password_changed, pin_changed, role) VALUES (?, ?, ?, ?, FALSE, FALSE, ?)`,
 		id, body.Username, string(passwordHash), string(pinHash), role,
 	)
@@ -80,15 +80,15 @@ func handleCreateUser(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to create user"})
 	}
 
-	rec, err := fetchUser(id)
+	rec, err := s.fetchUser(id)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "user created but fetch failed"})
 	}
 	return c.JSON(http.StatusCreated, rec)
 }
 
-func handleListUsers(c echo.Context) error {
-	rows, err := db.Query(
+func (s *Server) handleListUsers(c echo.Context) error {
+	rows, err := s.db.Query(
 		`SELECT id, username, COALESCE(role, 'admin'), created_at,
 		        COALESCE(password_changed, FALSE), COALESCE(pin_changed, FALSE)
 		 FROM users ORDER BY created_at ASC`,
@@ -109,7 +109,7 @@ func handleListUsers(c echo.Context) error {
 	return c.JSON(http.StatusOK, users)
 }
 
-func handleUpdateUser(c echo.Context) error {
+func (s *Server) handleUpdateUser(c echo.Context) error {
 	targetID := c.Param("id")
 	if targetID == "" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "user id required"})
@@ -132,7 +132,7 @@ func handleUpdateUser(c echo.Context) error {
 	}
 
 	var currentRole string
-	if err := db.QueryRow(`SELECT COALESCE(role, 'admin') FROM users WHERE id = ?`, targetID).Scan(&currentRole); err != nil {
+	if err := s.db.QueryRow(`SELECT COALESCE(role, 'admin') FROM users WHERE id = ?`, targetID).Scan(&currentRole); err != nil {
 		if err == sql.ErrNoRows {
 			return c.JSON(http.StatusNotFound, map[string]string{"error": "user not found"})
 		}
@@ -150,7 +150,7 @@ func handleUpdateUser(c echo.Context) error {
 		if currentRole == string(RoleAdmin) && newRole != RoleAdmin {
 			// Atomic check-and-demote: the subquery guard ensures we never
 			// drop below 1 admin even under concurrent requests.
-			res, err := db.Exec(
+			res, err := s.db.Exec(
 				`UPDATE users SET role = ? WHERE id = ? AND (SELECT COUNT(*) FROM users WHERE role = ?) > 1`,
 				newRole, targetID, RoleAdmin,
 			)
@@ -160,7 +160,7 @@ func handleUpdateUser(c echo.Context) error {
 			if n, _ := res.RowsAffected(); n == 0 {
 				return c.JSON(http.StatusBadRequest, map[string]string{"error": "cannot demote the last admin"})
 			}
-		} else if _, err := db.Exec(`UPDATE users SET role = ? WHERE id = ?`, newRole, targetID); err != nil {
+		} else if _, err := s.db.Exec(`UPDATE users SET role = ? WHERE id = ?`, newRole, targetID); err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to update role"})
 		}
 	}
@@ -174,7 +174,7 @@ func handleUpdateUser(c echo.Context) error {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to hash password"})
 		}
 		// Force the target to rotate on next login.
-		if _, err := db.Exec(
+		if _, err := s.db.Exec(
 			`UPDATE users SET password_hash = ?, password_changed = FALSE WHERE id = ?`,
 			string(hash), targetID,
 		); err != nil {
@@ -190,7 +190,7 @@ func handleUpdateUser(c echo.Context) error {
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to hash PIN"})
 		}
-		if _, err := db.Exec(
+		if _, err := s.db.Exec(
 			`UPDATE users SET terminal_pin_hash = ?, pin_changed = FALSE WHERE id = ?`,
 			string(hash), targetID,
 		); err != nil {
@@ -198,14 +198,14 @@ func handleUpdateUser(c echo.Context) error {
 		}
 	}
 
-	rec, err := fetchUser(targetID)
+	rec, err := s.fetchUser(targetID)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "user updated but fetch failed"})
 	}
 	return c.JSON(http.StatusOK, rec)
 }
 
-func handleDeleteUser(c echo.Context) error {
+func (s *Server) handleDeleteUser(c echo.Context) error {
 	targetID := c.Param("id")
 	if targetID == "" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "user id required"})
@@ -219,7 +219,7 @@ func handleDeleteUser(c echo.Context) error {
 	}
 
 	var role string
-	if err := db.QueryRow(`SELECT COALESCE(role, 'admin') FROM users WHERE id = ?`, targetID).Scan(&role); err != nil {
+	if err := s.db.QueryRow(`SELECT COALESCE(role, 'admin') FROM users WHERE id = ?`, targetID).Scan(&role); err != nil {
 		if err == sql.ErrNoRows {
 			return c.JSON(http.StatusNotFound, map[string]string{"error": "user not found"})
 		}
@@ -227,7 +227,7 @@ func handleDeleteUser(c echo.Context) error {
 	}
 	if role == string(RoleAdmin) {
 		// Atomic check-and-delete: only succeeds when >1 admin exists.
-		res, err := db.Exec(
+		res, err := s.db.Exec(
 			`DELETE FROM users WHERE id = ? AND (SELECT COUNT(*) FROM users WHERE role = ?) > 1`,
 			targetID, RoleAdmin,
 		)
@@ -240,15 +240,15 @@ func handleDeleteUser(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "deleted"})
 	}
 
-	if _, err := db.Exec(`DELETE FROM users WHERE id = ?`, targetID); err != nil {
+	if _, err := s.db.Exec(`DELETE FROM users WHERE id = ?`, targetID); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database error"})
 	}
 	return c.JSON(http.StatusOK, map[string]string{"status": "deleted"})
 }
 
-func fetchUser(id string) (userRecord, error) {
+func (s *Server) fetchUser(id string) (userRecord, error) {
 	var u userRecord
-	err := db.QueryRow(
+	err := s.db.QueryRow(
 		`SELECT id, username, COALESCE(role, 'admin'), created_at,
 		        COALESCE(password_changed, FALSE), COALESCE(pin_changed, FALSE)
 		 FROM users WHERE id = ?`,
@@ -257,9 +257,9 @@ func fetchUser(id string) (userRecord, error) {
 	return u, err
 }
 
-func isLastAdmin() (bool, error) {
+func (s *Server) isLastAdmin() (bool, error) {
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM users WHERE role = ?`, RoleAdmin).Scan(&count); err != nil {
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM users WHERE role = ?`, RoleAdmin).Scan(&count); err != nil {
 		return false, err
 	}
 	return count <= 1, nil

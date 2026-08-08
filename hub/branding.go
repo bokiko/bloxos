@@ -61,13 +61,13 @@ func validatePNG(data []byte, maxBytes int, label string) (sha string, err error
 }
 
 // handleGetBranding returns the public branding metadata. No auth.
-func handleGetBranding(c echo.Context) error {
+func (s *Server) handleGetBranding(c echo.Context) error {
 	var (
 		title, subtitle, welcome string
 		logoSHA, faviconSHA      sql.NullString
 		logoMime, faviconMime    sql.NullString
 	)
-	err := db.QueryRow(`
+	err := s.db.QueryRow(`
 		SELECT title, subtitle, COALESCE(welcome_message, ''), logo_sha, logo_mime, favicon_sha, favicon_mime
 		FROM branding_config WHERE id = 1
 	`).Scan(&title, &subtitle, &welcome, &logoSHA, &logoMime, &faviconSHA, &faviconMime)
@@ -110,7 +110,7 @@ var (
 	brandingFaviconImage = brandingImage{dataCol: "favicon_data", mimeCol: "favicon_mime", shaCol: "favicon_sha"}
 )
 
-func serveBrandingImage(c echo.Context, img brandingImage) error {
+func (s *Server) serveBrandingImage(c echo.Context, img brandingImage) error {
 	query := fmt.Sprintf(`SELECT %s, %s, %s FROM branding_config WHERE id = 1`,
 		img.dataCol, img.mimeCol, img.shaCol)
 	var (
@@ -118,7 +118,7 @@ func serveBrandingImage(c echo.Context, img brandingImage) error {
 		mime     sql.NullString
 		shaStore sql.NullString
 	)
-	err := db.QueryRow(query).Scan(&data, &mime, &shaStore)
+	err := s.db.QueryRow(query).Scan(&data, &mime, &shaStore)
 	if err == sql.ErrNoRows || len(data) == 0 || !mime.Valid || mime.String == "" {
 		return c.NoContent(http.StatusNotFound)
 	}
@@ -135,16 +135,16 @@ func serveBrandingImage(c echo.Context, img brandingImage) error {
 	return c.Blob(http.StatusOK, mime.String, data)
 }
 
-func handleGetLogo(c echo.Context) error {
-	return serveBrandingImage(c, brandingLogoImage)
+func (s *Server) handleGetLogo(c echo.Context) error {
+	return s.serveBrandingImage(c, brandingLogoImage)
 }
 
-func handleGetFavicon(c echo.Context) error {
-	return serveBrandingImage(c, brandingFaviconImage)
+func (s *Server) handleGetFavicon(c echo.Context) error {
+	return s.serveBrandingImage(c, brandingFaviconImage)
 }
 
 // handleUpdateBrandingText accepts PATCH {title?, subtitle?}.
-func handleUpdateBrandingText(c echo.Context) error {
+func (s *Server) handleUpdateBrandingText(c echo.Context) error {
 	var body struct {
 		Title          *string `json:"title,omitempty"`
 		Subtitle       *string `json:"subtitle,omitempty"`
@@ -187,13 +187,13 @@ func handleUpdateBrandingText(c echo.Context) error {
 
 	sets = append(sets, "updated_at = CURRENT_TIMESTAMP")
 	query := fmt.Sprintf(`UPDATE branding_config SET %s WHERE id = 1`, strings.Join(sets, ", "))
-	if _, err := db.Exec(query, args...); err != nil {
+	if _, err := s.db.Exec(query, args...); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database error"})
 	}
-	return handleGetBranding(c)
+	return s.handleGetBranding(c)
 }
 
-func handleUploadBrandingImage(c echo.Context, img brandingImage, maxBytes int, label string) error {
+func (s *Server) handleUploadBrandingImage(c echo.Context, img brandingImage, maxBytes int, label string) error {
 	fh, err := c.FormFile("file")
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "missing file field"})
@@ -224,22 +224,22 @@ func handleUploadBrandingImage(c echo.Context, img brandingImage, maxBytes int, 
 
 	query := fmt.Sprintf(`UPDATE branding_config SET %s = ?, %s = ?, %s = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1`,
 		img.dataCol, img.mimeCol, img.shaCol)
-	if _, err := db.Exec(query, data, "image/png", sha); err != nil {
+	if _, err := s.db.Exec(query, data, "image/png", sha); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database error"})
 	}
-	return handleGetBranding(c)
+	return s.handleGetBranding(c)
 }
 
-func handleUploadLogo(c echo.Context) error {
-	return handleUploadBrandingImage(c, brandingLogoImage, maxLogoBytes, "logo")
+func (s *Server) handleUploadLogo(c echo.Context) error {
+	return s.handleUploadBrandingImage(c, brandingLogoImage, maxLogoBytes, "logo")
 }
 
-func handleUploadFavicon(c echo.Context) error {
-	return handleUploadBrandingImage(c, brandingFaviconImage, maxFaviconBytes, "favicon")
+func (s *Server) handleUploadFavicon(c echo.Context) error {
+	return s.handleUploadBrandingImage(c, brandingFaviconImage, maxFaviconBytes, "favicon")
 }
 
 // handleClearBrandingImage removes a previously uploaded logo or favicon.
-func handleClearBrandingImage(c echo.Context) error {
+func (s *Server) handleClearBrandingImage(c echo.Context) error {
 	kind := c.Param("kind")
 	var img brandingImage
 	switch kind {
@@ -252,8 +252,8 @@ func handleClearBrandingImage(c echo.Context) error {
 	}
 	query := fmt.Sprintf(`UPDATE branding_config SET %s = NULL, %s = NULL, %s = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = 1`,
 		img.dataCol, img.mimeCol, img.shaCol)
-	if _, err := db.Exec(query); err != nil {
+	if _, err := s.db.Exec(query); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database error"})
 	}
-	return handleGetBranding(c)
+	return s.handleGetBranding(c)
 }

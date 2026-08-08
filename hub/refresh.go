@@ -23,12 +23,12 @@ import (
  * RBAC: fleet.control scope (operators + admins).
  * ============================================================================ */
 
-func handleMachineRefresh(c echo.Context) error {
+func (s *Server) handleMachineRefresh(c echo.Context) error {
 	machineID := c.Param("id")
 
-	agentsMu.RLock()
-	agent, ok := agents[machineID]
-	agentsMu.RUnlock()
+	s.agentsMu.RLock()
+	agent, ok := s.agents[machineID]
+	s.agentsMu.RUnlock()
 	if !ok {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "agent not connected"})
 	}
@@ -54,19 +54,19 @@ func handleMachineRefresh(c echo.Context) error {
 	})
 }
 
-func handleFleetRefresh(c echo.Context) error {
-	agentsMu.RLock()
-	machineIDs := make([]string, 0, len(agents))
-	for id := range agents {
+func (s *Server) handleFleetRefresh(c echo.Context) error {
+	s.agentsMu.RLock()
+	machineIDs := make([]string, 0, len(s.agents))
+	for id := range s.agents {
 		machineIDs = append(machineIDs, id)
 	}
-	agentsMu.RUnlock()
+	s.agentsMu.RUnlock()
 
 	refreshed := 0
 	for _, id := range machineIDs {
-		agentsMu.RLock()
-		agent, ok := agents[id]
-		agentsMu.RUnlock()
+		s.agentsMu.RLock()
+		agent, ok := s.agents[id]
+		s.agentsMu.RUnlock()
 		if !ok {
 			continue
 		}

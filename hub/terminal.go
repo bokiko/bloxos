@@ -73,7 +73,7 @@ func generateTerminalBrowserToken(sessionID, userID string) (string, error) {
 }
 
 // handleStartTerminal creates a terminal session and tells the agent to spawn a PTY.
-func handleStartTerminal(c echo.Context) error {
+func (s *Server) handleStartTerminal(c echo.Context) error {
 	ip := getRealIP(c)
 	if !rateLimiter.Allow("terminal", ip, 5) {
 		log.Printf("rate limit exceeded: terminal from %s", ip)
@@ -93,7 +93,7 @@ func handleStartTerminal(c echo.Context) error {
 	if userID == "" {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "missing user context"})
 	}
-	if err := verifyTerminalPIN(userID, body.Pin); err != nil {
+	if err := s.verifyTerminalPIN(userID, body.Pin); err != nil {
 		return c.JSON(http.StatusForbidden, map[string]string{"error": "invalid PIN"})
 	}
 
@@ -111,9 +111,9 @@ func handleStartTerminal(c echo.Context) error {
 		return c.JSON(http.StatusTooManyRequests, map[string]string{"error": "max concurrent terminal sessions reached (3)"})
 	}
 
-	agentsMu.RLock()
-	agent, ok := agents[machineID]
-	agentsMu.RUnlock()
+	s.agentsMu.RLock()
+	agent, ok := s.agents[machineID]
+	s.agentsMu.RUnlock()
 	if !ok {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "agent not connected"})
 	}
@@ -150,20 +150,20 @@ func handleStartTerminal(c echo.Context) error {
 	go func() {
 		time.Sleep(30 * time.Second)
 		termSessionsMu.RLock()
-		s, exists := termSessions[sessionID]
+		sess, exists := termSessions[sessionID]
 		termSessionsMu.RUnlock()
 		if exists {
-			s.mu.Lock()
-			agentConnected := s.AgentWS != nil
-			s.mu.Unlock()
+			sess.mu.Lock()
+			agentConnected := sess.AgentWS != nil
+			sess.mu.Unlock()
 			if !agentConnected {
 				log.Printf("terminal %s: terminal_token expired (agent never connected)", sessionID)
-				cleanupTerminalSession(sessionID)
+				s.cleanupTerminalSession(sessionID)
 			}
 		}
 	}()
 
-	_, err = db.Exec(`INSERT INTO terminal_sessions (id, machine_id, source_ip, user_id) VALUES (?, ?, ?, ?)`, sessionID, machineID, sourceIP, userID)
+	_, err = s.db.Exec(`INSERT INTO terminal_sessions (id, machine_id, source_ip, user_id) VALUES (?, ?, ?, ?)`, sessionID, machineID, sourceIP, userID)
 	if err != nil {
 		log.Printf("terminal session DB insert error: %v", err)
 	}
@@ -192,7 +192,7 @@ func handleStartTerminal(c echo.Context) error {
 	})
 }
 
-func handleCloseTerminal(c echo.Context) error {
+func (s *Server) handleCloseTerminal(c echo.Context) error {
 	sessionID := c.Param("session_id")
 
 	termSessionsMu.RLock()
@@ -207,13 +207,13 @@ func handleCloseTerminal(c echo.Context) error {
 	// are closed, and the DB row is finalized. The old inline teardown deleted
 	// the map entry and closed the sockets but never closed Done, leaking the
 	// waiter goroutine on every close.
-	cleanupTerminalSession(sessionID)
+	s.cleanupTerminalSession(sessionID)
 
 	log.Printf("terminal session %s closed via API", sessionID)
 	return c.JSON(http.StatusOK, map[string]string{"status": "closed"})
 }
 
-func handleTerminalWS(c echo.Context) error {
+func (s *Server) handleTerminalWS(c echo.Context) error {
 	sessionID := c.Param("session_id")
 	role := c.QueryParam("role")
 	browserUserID := ""
@@ -320,7 +320,7 @@ func handleTerminalWS(c echo.Context) error {
 	session.mu.Unlock()
 
 	if agentWS != nil && browserWS != nil {
-		goSafelyOnce("terminalRelay/"+sessionID, func() { terminalRelay(sessionID, session) })
+		goSafelyOnce("terminalRelay/"+sessionID, func() { s.terminalRelay(sessionID, session) })
 	} else {
 		go func() {
 			time.Sleep(30 * time.Second)
@@ -330,7 +330,7 @@ func handleTerminalWS(c echo.Context) error {
 			session.mu.Unlock()
 			if a == nil || b == nil {
 				log.Printf("terminal %s: timeout waiting for both sides, cleaning up", sessionID)
-				cleanupTerminalSession(sessionID)
+				s.cleanupTerminalSession(sessionID)
 			}
 		}()
 	}
@@ -352,7 +352,7 @@ func waitForSessionEnd(sessionID string) <-chan struct{} {
 	return session.Done
 }
 
-func terminalRelay(sessionID string, session *TerminalSession) {
+func (s *Server) terminalRelay(sessionID string, session *TerminalSession) {
 	log.Printf("terminal %s: relay started", sessionID)
 	// Terminal audit: session metadata only. No command capture by design — see hardening plan item #13.
 
@@ -438,10 +438,10 @@ func terminalRelay(sessionID string, session *TerminalSession) {
 
 	<-done
 	log.Printf("terminal %s: relay ended, cleaning up", sessionID)
-	cleanupTerminalSession(sessionID)
+	s.cleanupTerminalSession(sessionID)
 }
 
-func cleanupTerminalSession(sessionID string) {
+func (s *Server) cleanupTerminalSession(sessionID string) {
 	termSessionsMu.Lock()
 	session, ok := termSessions[sessionID]
 	if ok {
@@ -471,5 +471,5 @@ func cleanupTerminalSession(sessionID string) {
 	log.Printf("terminal session %s closed: machine=%s user=%s ip=%s duration=%s",
 		sessionID, session.MachineID, session.UserID, session.SourceIP, duration)
 
-	_, _ = db.Exec(`UPDATE terminal_sessions SET ended_at = CURRENT_TIMESTAMP, status = 'closed' WHERE id = ?`, sessionID)
+	_, _ = s.db.Exec(`UPDATE terminal_sessions SET ended_at = CURRENT_TIMESTAMP, status = 'closed' WHERE id = ?`, sessionID)
 }

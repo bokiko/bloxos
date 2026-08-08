@@ -40,9 +40,9 @@ type Alert struct {
 }
 
 // seedAlertRules inserts default alert rules if the table is empty.
-func seedAlertRules() {
+func (s *Server) seedAlertRules() {
 	var count int
-	err := db.QueryRow(`SELECT COUNT(*) FROM alert_rules`).Scan(&count)
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM alert_rules`).Scan(&count)
 	if err != nil {
 		log.Printf("error checking alert_rules count: %v", err)
 		return
@@ -69,7 +69,7 @@ func seedAlertRules() {
 
 	for _, d := range defaults {
 		id := uuid.New().String()
-		_, err := db.Exec(`INSERT INTO alert_rules (id, name, metric, operator, threshold, duration_secs, severity) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		_, err := s.db.Exec(`INSERT INTO alert_rules (id, name, metric, operator, threshold, duration_secs, severity) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			id, d.name, d.metric, d.operator, d.threshold, d.duration, d.severity)
 		if err != nil {
 			log.Printf("error seeding alert rule %s: %v", d.name, err)
@@ -79,25 +79,25 @@ func seedAlertRules() {
 }
 
 // alertEvalLoop runs every 30 seconds to evaluate alert rules.
-func alertEvalLoop() {
+func (s *Server) alertEvalLoop() {
 	time.Sleep(5 * time.Second) // Wait for startup.
 	log.Println("alert evaluation loop started")
 	for {
-		evaluateAlerts()
+		s.evaluateAlerts()
 		time.Sleep(30 * time.Second)
 	}
 }
 
-func evaluateAlerts() {
+func (s *Server) evaluateAlerts() {
 	// Get all enabled rules.
-	rules, err := getAlertRules(true)
+	rules, err := s.getAlertRules(true)
 	if err != nil {
 		log.Printf("alert eval: error getting rules: %v", err)
 		return
 	}
 
 	// Get all machines with latest metrics.
-	rows, err := db.Query(`
+	rows, err := s.db.Query(`
 		SELECT m.id, m.hostname, m.last_seen,
 			COALESCE(met.cpu_percent, 0),
 			COALESCE(met.ram_used_bytes, 0), COALESCE(met.ram_total_bytes, 0),
@@ -142,7 +142,7 @@ func evaluateAlerts() {
 	// Pre-fetch all active alerts once to avoid one SELECT per (rule×machine)
 	// in the inner loop. Active alerts are a small set; the cross product is not.
 	active := map[string]string{} // key: ruleID+"|"+machineID → alertID
-	if alertRows, err := db.Query(`SELECT rule_id, machine_id, id FROM alerts WHERE status = 'active'`); err == nil {
+	if alertRows, err := s.db.Query(`SELECT rule_id, machine_id, id FROM alerts WHERE status = 'active'`); err == nil {
 		for alertRows.Next() {
 			var ruleID, machineID, alertID string
 			if alertRows.Scan(&ruleID, &machineID, &alertID) == nil {
@@ -209,7 +209,7 @@ func evaluateAlerts() {
 			if triggered && !hasActive {
 				// Create new alert.
 				alertID := uuid.New().String()
-				_, err := db.Exec(`INSERT INTO alerts (id, rule_id, machine_id, message, severity) VALUES (?, ?, ?, ?, ?)`,
+				_, err := s.db.Exec(`INSERT INTO alerts (id, rule_id, machine_id, message, severity) VALUES (?, ?, ?, ?, ?)`,
 					alertID, rule.ID, m.id, msg, rule.Severity)
 				if err != nil {
 					log.Printf("alert eval: error creating alert: %v", err)
@@ -242,7 +242,7 @@ func evaluateAlerts() {
 				// dashboard with one alert event per machine per 30s. The
 				// dashboard picks up the refreshed message on next reload
 				// or fetch of /api/alerts.
-				_, err := db.Exec(`UPDATE alerts SET message = ? WHERE id = ?`, msg, existingID)
+				_, err := s.db.Exec(`UPDATE alerts SET message = ? WHERE id = ?`, msg, existingID)
 				if err != nil {
 					log.Printf("alert eval: error refreshing alert message: %v", err)
 					continue
@@ -250,7 +250,7 @@ func evaluateAlerts() {
 
 			} else if !triggered && hasActive {
 				// Resolve the alert.
-				_, err := db.Exec(`UPDATE alerts SET status = 'resolved', resolved_at = CURRENT_TIMESTAMP WHERE id = ?`, existingID)
+				_, err := s.db.Exec(`UPDATE alerts SET status = 'resolved', resolved_at = CURRENT_TIMESTAMP WHERE id = ?`, existingID)
 				if err != nil {
 					log.Printf("alert eval: error resolving alert: %v", err)
 					continue
@@ -287,14 +287,14 @@ func compareValue(value float64, operator string, threshold float64) bool {
 	}
 }
 
-func getAlertRules(enabledOnly bool) ([]AlertRule, error) {
+func (s *Server) getAlertRules(enabledOnly bool) ([]AlertRule, error) {
 	query := `SELECT id, name, metric, operator, threshold, duration_secs, severity, enabled, created_at FROM alert_rules`
 	if enabledOnly {
 		query += ` WHERE enabled = TRUE`
 	}
 	query += ` ORDER BY created_at`
 
-	rows, err := db.Query(query)
+	rows, err := s.db.Query(query)
 	if err != nil {
 		return nil, err
 	}
@@ -370,7 +370,7 @@ func sendTelegram(text string) {
 
 // --- Alert REST API ---
 
-func handleListAlerts(c echo.Context) error {
+func (s *Server) handleListAlerts(c echo.Context) error {
 	status := c.QueryParam("status")
 	query := `SELECT a.id, a.rule_id, a.machine_id, a.message, a.severity, a.status, a.triggered_at, a.resolved_at,
 		COALESCE(m.hostname, a.machine_id) as hostname
@@ -380,7 +380,7 @@ func handleListAlerts(c echo.Context) error {
 	}
 	query += ` ORDER BY a.triggered_at DESC LIMIT 200`
 
-	rows, err := db.Query(query)
+	rows, err := s.db.Query(query)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
@@ -401,18 +401,18 @@ func handleListAlerts(c echo.Context) error {
 	return c.JSON(http.StatusOK, alerts)
 }
 
-func handleAlertCount(c echo.Context) error {
+func (s *Server) handleAlertCount(c echo.Context) error {
 	var count int
-	err := db.QueryRow(`SELECT COUNT(*) FROM alerts WHERE status = 'active'`).Scan(&count)
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM alerts WHERE status = 'active'`).Scan(&count)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 	return c.JSON(http.StatusOK, map[string]int{"count": count})
 }
 
-func handleAcknowledgeAlert(c echo.Context) error {
+func (s *Server) handleAcknowledgeAlert(c echo.Context) error {
 	id := c.Param("id")
-	res, err := db.Exec(`UPDATE alerts SET status = 'acknowledged' WHERE id = ? AND status = 'active'`, id)
+	res, err := s.db.Exec(`UPDATE alerts SET status = 'acknowledged' WHERE id = ? AND status = 'active'`, id)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
@@ -423,15 +423,15 @@ func handleAcknowledgeAlert(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]string{"status": "acknowledged"})
 }
 
-func handleListAlertRules(c echo.Context) error {
-	rules, err := getAlertRules(false)
+func (s *Server) handleListAlertRules(c echo.Context) error {
+	rules, err := s.getAlertRules(false)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 	return c.JSON(http.StatusOK, rules)
 }
 
-func handleUpdateAlertRule(c echo.Context) error {
+func (s *Server) handleUpdateAlertRule(c echo.Context) error {
 	id := c.Param("id")
 	var body struct {
 		Enabled   *bool    `json:"enabled"`
@@ -443,19 +443,19 @@ func handleUpdateAlertRule(c echo.Context) error {
 	}
 
 	if body.Enabled != nil {
-		_, err := db.Exec(`UPDATE alert_rules SET enabled = ? WHERE id = ?`, *body.Enabled, id)
+		_, err := s.db.Exec(`UPDATE alert_rules SET enabled = ? WHERE id = ?`, *body.Enabled, id)
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		}
 	}
 	if body.Threshold != nil {
-		_, err := db.Exec(`UPDATE alert_rules SET threshold = ? WHERE id = ?`, *body.Threshold, id)
+		_, err := s.db.Exec(`UPDATE alert_rules SET threshold = ? WHERE id = ?`, *body.Threshold, id)
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		}
 	}
 	if body.Name != nil {
-		_, err := db.Exec(`UPDATE alert_rules SET name = ? WHERE id = ?`, *body.Name, id)
+		_, err := s.db.Exec(`UPDATE alert_rules SET name = ? WHERE id = ?`, *body.Name, id)
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		}

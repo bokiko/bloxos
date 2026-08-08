@@ -16,12 +16,12 @@ import (
 // seedTokenValue inserts a valid (unused, unexpired) install token with the
 // given raw value and returns it. Complements seedValidToken, which always
 // inserts the same fixed token.
-func seedTokenValue(t *testing.T, raw string) string {
+func (s *Server) seedTokenValue(t *testing.T, raw string) string {
 	t.Helper()
 	h := sha256.Sum256([]byte(raw))
 	tokenHash := hex.EncodeToString(h[:])
 	expiresAt := time.Now().Add(1 * time.Hour).Format("2006-01-02 15:04:05")
-	if _, err := db.Exec(`INSERT INTO tokens (token_hash, expires_at, used) VALUES (?, ?, FALSE)`, tokenHash, expiresAt); err != nil {
+	if _, err := s.db.Exec(`INSERT INTO tokens (token_hash, expires_at, used) VALUES (?, ?, FALSE)`, tokenHash, expiresAt); err != nil {
 		t.Fatalf("seed token %q: %v", raw, err)
 	}
 	return raw
@@ -31,24 +31,24 @@ func seedTokenValue(t *testing.T, raw string) string {
 // install token must not be able to claim a machine_id that already has a
 // durable credential. Re-enrollment requires an explicit revoke first.
 func TestInstallTokenCannotTakeOverEnrolledMachine(t *testing.T) {
-	e := setupTestServer(t)
+	e, s := setupTestServer(t)
 	server := httptest.NewServer(e)
 	defer server.Close()
 
 	// Enroll machine-A and capture its durable secret.
-	token1 := seedValidToken(t)
-	secret := enrollAndCaptureSecret(t, server, token1, "machine-A")
+	token1 := s.seedValidToken(t)
+	secret := s.enrollAndCaptureSecret(t, server, token1, "machine-A")
 	if secret == "" {
 		t.Fatal("enrollment did not yield a secret")
 	}
 
 	var before string
-	if err := db.QueryRow(`SELECT secret_hash FROM agent_credentials WHERE machine_id = ?`, "machine-A").Scan(&before); err != nil {
+	if err := s.db.QueryRow(`SELECT secret_hash FROM agent_credentials WHERE machine_id = ?`, "machine-A").Scan(&before); err != nil {
 		t.Fatalf("read machine-A credential: %v", err)
 	}
 
 	// Attacker holds a fresh, valid token and tries to claim machine-A.
-	seedTokenValue(t, "attacker-token-xyz")
+	s.seedTokenValue(t, "attacker-token-xyz")
 	conn, err := wsDialAgent(t, server, "token=attacker-token-xyz")
 	if err != nil {
 		t.Fatalf("attacker dial: %v", err)
@@ -70,14 +70,14 @@ func TestInstallTokenCannotTakeOverEnrolledMachine(t *testing.T) {
 
 	// machine-A's credential must be unchanged, and unique.
 	var after string
-	if err := db.QueryRow(`SELECT secret_hash FROM agent_credentials WHERE machine_id = ?`, "machine-A").Scan(&after); err != nil {
+	if err := s.db.QueryRow(`SELECT secret_hash FROM agent_credentials WHERE machine_id = ?`, "machine-A").Scan(&after); err != nil {
 		t.Fatalf("read machine-A credential after: %v", err)
 	}
 	if after != before {
 		t.Fatal("machine-A credential was replaced by a takeover enrollment")
 	}
 	var n int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM agent_credentials WHERE machine_id = ?`, "machine-A").Scan(&n); err != nil {
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM agent_credentials WHERE machine_id = ?`, "machine-A").Scan(&n); err != nil {
 		t.Fatalf("count machine-A credentials: %v", err)
 	}
 	if n != 1 {
@@ -88,7 +88,7 @@ func TestInstallTokenCannotTakeOverEnrolledMachine(t *testing.T) {
 	// still use it after an explicit revoke.
 	h := sha256.Sum256([]byte("attacker-token-xyz"))
 	var used bool
-	if err := db.QueryRow(`SELECT used FROM tokens WHERE token_hash = ?`, hex.EncodeToString(h[:])).Scan(&used); err != nil {
+	if err := s.db.QueryRow(`SELECT used FROM tokens WHERE token_hash = ?`, hex.EncodeToString(h[:])).Scan(&used); err != nil {
 		t.Fatalf("read attacker token: %v", err)
 	}
 	if used {
@@ -100,9 +100,9 @@ func TestInstallTokenCannotTakeOverEnrolledMachine(t *testing.T) {
 // /api/tokens must refuse rather than emit a Host-header-derived install
 // command, and must not mint a token.
 func TestCreateTokenRequiresPublicURL(t *testing.T) {
-	e := setupTestServer(t)
+	e, s := setupTestServer(t)
 	token := loginAndGetToken(t, e)
-	markCredentialsRotated(t)
+	s.markCredentialsRotated(t)
 	t.Setenv("PUBLIC_URL", "")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/tokens", nil)
@@ -117,7 +117,7 @@ func TestCreateTokenRequiresPublicURL(t *testing.T) {
 		t.Fatalf("expected error to mention PUBLIC_URL, got %s", rec.Body.String())
 	}
 	var n int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM tokens`).Scan(&n); err != nil {
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM tokens`).Scan(&n); err != nil {
 		t.Fatalf("count tokens: %v", err)
 	}
 	if n != 0 {
@@ -128,9 +128,9 @@ func TestCreateTokenRequiresPublicURL(t *testing.T) {
 // TestCreateTokenUsesPublicURL locks in item 2's happy path: with PUBLIC_URL
 // set, the generated command is derived from PUBLIC_URL.
 func TestCreateTokenUsesPublicURL(t *testing.T) {
-	e := setupTestServer(t)
+	e, s := setupTestServer(t)
 	token := loginAndGetToken(t, e)
-	markCredentialsRotated(t)
+	s.markCredentialsRotated(t)
 	t.Setenv("PUBLIC_URL", "https://hub.public.example")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/tokens", nil)
@@ -160,7 +160,7 @@ func TestCreateTokenUsesPublicURL(t *testing.T) {
 // install.sh must verify the downloaded agent binary's SHA-256 against the hash
 // of the binary the hub actually serves.
 func TestInstallScriptPinsAgentBinaryHash(t *testing.T) {
-	e := setupTestServer(t)
+	e, _ := setupTestServer(t)
 
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "bloxos-agent")
@@ -204,7 +204,7 @@ func TestInstallScriptPinsAgentBinaryHash(t *testing.T) {
 // binary with TLS verification (via the bootstrapped CA), not curl -k. The
 // initial CA fetch may remain insecure.
 func TestWindowsInstallScriptPinsHashAndVerifiesBinaryDownload(t *testing.T) {
-	e := setupTestServer(t)
+	e, _ := setupTestServer(t)
 
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "bloxos-agent.exe")

@@ -41,7 +41,7 @@ func TestValidatePassword(t *testing.T) {
 // endpoint enforced 8. A 7-char password should now be rejected by all four
 // password-accepting endpoints with the same error message.
 func TestChangePasswordRejectsSevenCharPassword(t *testing.T) {
-	e := setupTestServer(t)
+	e, _ := setupTestServer(t)
 	token := loginAndGetToken(t, e)
 
 	body := `{"current_password":"bloxos","new_password":"7chars7"}`
@@ -60,8 +60,8 @@ func TestChangePasswordRejectsSevenCharPassword(t *testing.T) {
 }
 
 func TestAdminCreateUserRejectsSevenCharPassword(t *testing.T) {
-	e := setupTestServer(t)
-	markCredentialsRotated(t)
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
 	adminToken := loginAndGetToken(t, e)
 
 	body := `{"username":"shorty","password":"7chars7","pin":"1234","role":"viewer"}`

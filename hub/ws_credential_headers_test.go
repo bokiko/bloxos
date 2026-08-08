@@ -24,12 +24,12 @@ func dialWSWithHeader(t *testing.T, server *httptest.Server, path string, h http
 // TestAgentWSAuthViaSecretHeader proves /ws/agent authenticates a durable
 // secret presented in the Authorization header, with no query credentials.
 func TestAgentWSAuthViaSecretHeader(t *testing.T) {
-	e := setupTestServer(t)
+	e, s := setupTestServer(t)
 	server := httptest.NewServer(e)
 	defer server.Close()
 
-	token := seedValidToken(t)
-	secret := enrollAndCaptureSecret(t, server, token, "machine-hdr-secret")
+	token := s.seedValidToken(t)
+	secret := s.enrollAndCaptureSecret(t, server, token, "machine-hdr-secret")
 	if secret == "" {
 		t.Fatal("enrollment did not yield a secret")
 	}
@@ -49,9 +49,9 @@ func TestAgentWSAuthViaSecretHeader(t *testing.T) {
 	// A secret-authenticated connection is registered at upgrade time.
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		agentsMu.RLock()
-		_, ok := agents["machine-hdr-secret"]
-		agentsMu.RUnlock()
+		s.agentsMu.RLock()
+		_, ok := s.agents["machine-hdr-secret"]
+		s.agentsMu.RUnlock()
 		if ok {
 			break
 		}
@@ -65,11 +65,11 @@ func TestAgentWSAuthViaSecretHeader(t *testing.T) {
 // TestAgentWSEnrollViaTokenHeader proves /ws/agent performs token enrollment
 // when the install token is presented in the X-Bloxos-Enroll-Token header.
 func TestAgentWSEnrollViaTokenHeader(t *testing.T) {
-	e := setupTestServer(t)
+	e, s := setupTestServer(t)
 	server := httptest.NewServer(e)
 	defer server.Close()
 
-	token := seedValidToken(t)
+	token := s.seedValidToken(t)
 	h := http.Header{}
 	h.Set("X-Bloxos-Enroll-Token", token)
 	conn, resp, err := dialWSWithHeader(t, server, "/ws/agent", h)
@@ -110,12 +110,12 @@ func TestAgentWSEnrollViaTokenHeader(t *testing.T) {
 // TestAgentWSSecretQueryFallback proves the deprecated query-param credential
 // path still authenticates, so agents predating the header change keep working.
 func TestAgentWSSecretQueryFallback(t *testing.T) {
-	e := setupTestServer(t)
+	e, s := setupTestServer(t)
 	server := httptest.NewServer(e)
 	defer server.Close()
 
-	token := seedValidToken(t)
-	secret := enrollAndCaptureSecret(t, server, token, "machine-qp-secret")
+	token := s.seedValidToken(t)
+	secret := s.enrollAndCaptureSecret(t, server, token, "machine-qp-secret")
 
 	conn, resp, err := dialWSWithHeader(t, server, "/ws/agent?secret="+secret, nil)
 	if err != nil {
@@ -129,9 +129,9 @@ func TestAgentWSSecretQueryFallback(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		agentsMu.RLock()
-		_, ok := agents["machine-qp-secret"]
-		agentsMu.RUnlock()
+		s.agentsMu.RLock()
+		_, ok := s.agents["machine-qp-secret"]
+		s.agentsMu.RUnlock()
 		if ok {
 			break
 		}
@@ -145,7 +145,7 @@ func TestAgentWSSecretQueryFallback(t *testing.T) {
 // TestTerminalAgentTokenViaHeader proves /ws/terminal role=agent accepts the
 // terminal token in the X-Bloxos-Terminal-Token header.
 func TestTerminalAgentTokenViaHeader(t *testing.T) {
-	e := setupTestServer(t)
+	e, s := setupTestServer(t)
 	server := httptest.NewServer(e)
 	defer server.Close()
 
@@ -161,7 +161,7 @@ func TestTerminalAgentTokenViaHeader(t *testing.T) {
 		Done:          make(chan struct{}),
 	}
 	termSessionsMu.Unlock()
-	t.Cleanup(func() { cleanupTerminalSession(sid) })
+	t.Cleanup(func() { s.cleanupTerminalSession(sid) })
 
 	h := http.Header{}
 	h.Set("X-Bloxos-Terminal-Token", "tok-header-abc")
@@ -179,7 +179,7 @@ func TestTerminalAgentTokenViaHeader(t *testing.T) {
 // TestTerminalAgentTokenQueryFallback proves the deprecated query-param
 // terminal_token still authenticates the agent role.
 func TestTerminalAgentTokenQueryFallback(t *testing.T) {
-	e := setupTestServer(t)
+	e, s := setupTestServer(t)
 	server := httptest.NewServer(e)
 	defer server.Close()
 
@@ -195,7 +195,7 @@ func TestTerminalAgentTokenQueryFallback(t *testing.T) {
 		Done:          make(chan struct{}),
 	}
 	termSessionsMu.Unlock()
-	t.Cleanup(func() { cleanupTerminalSession(sid) })
+	t.Cleanup(func() { s.cleanupTerminalSession(sid) })
 
 	conn, resp, err := dialWSWithHeader(t, server, "/ws/terminal/"+sid+"?role=agent&terminal_token=tok-qp-abc", nil)
 	if err != nil {
@@ -211,7 +211,7 @@ func TestTerminalAgentTokenQueryFallback(t *testing.T) {
 // TestTerminalAgentInvalidTokenHeaderRejected proves a wrong header token is
 // rejected before upgrade.
 func TestTerminalAgentInvalidTokenHeaderRejected(t *testing.T) {
-	e := setupTestServer(t)
+	e, s := setupTestServer(t)
 	server := httptest.NewServer(e)
 	defer server.Close()
 
@@ -226,7 +226,7 @@ func TestTerminalAgentInvalidTokenHeaderRejected(t *testing.T) {
 		Done:          make(chan struct{}),
 	}
 	termSessionsMu.Unlock()
-	t.Cleanup(func() { cleanupTerminalSession(sid) })
+	t.Cleanup(func() { s.cleanupTerminalSession(sid) })
 
 	h := http.Header{}
 	h.Set("X-Bloxos-Terminal-Token", "tok-wrong")

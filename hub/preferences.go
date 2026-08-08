@@ -84,7 +84,7 @@ type UserPreferences struct {
 }
 
 // handleGetMyPreferences returns the entire prefs bundle in one round-trip.
-func handleGetMyPreferences(c echo.Context) error {
+func (s *Server) handleGetMyPreferences(c echo.Context) error {
 	claims, ok := authClaimsFromContext(c)
 	if !ok || claims.UserID == "" {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "missing user context"})
@@ -96,7 +96,7 @@ func handleGetMyPreferences(c echo.Context) error {
 	}
 	var avatarSHA sql.NullString
 	var hasAvatar sql.NullInt64
-	err := db.QueryRow(`
+	err := s.db.QueryRow(`
 		SELECT
 			COALESCE(display_name, ''),
 			COALESCE(density, 'comfortable'),
@@ -135,7 +135,7 @@ func handleGetMyPreferences(c echo.Context) error {
 	}
 
 	// Pinned machines (most-recent first).
-	rows, err := db.Query(`
+	rows, err := s.db.Query(`
 		SELECT machine_id FROM user_pinned_machines WHERE user_id = ? ORDER BY pinned_at DESC
 	`, claims.UserID)
 	if err != nil {
@@ -154,7 +154,7 @@ func handleGetMyPreferences(c echo.Context) error {
 	}
 
 	// Saved filters (most-recent first).
-	frows, err := db.Query(`
+	frows, err := s.db.Query(`
 		SELECT id, name, filter_json, created_at
 		FROM user_saved_filters WHERE user_id = ? ORDER BY created_at DESC
 	`, claims.UserID)
@@ -179,7 +179,7 @@ func handleGetMyPreferences(c echo.Context) error {
 }
 
 // handlePatchMyPreferences accepts {display_name?, density?, default_view?, default_sort?}.
-func handlePatchMyPreferences(c echo.Context) error {
+func (s *Server) handlePatchMyPreferences(c echo.Context) error {
 	claims, ok := authClaimsFromContext(c)
 	if !ok || claims.UserID == "" {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "missing user context"})
@@ -239,14 +239,14 @@ func handlePatchMyPreferences(c echo.Context) error {
 
 	query := fmt.Sprintf(`UPDATE users SET %s WHERE id = ?`, strings.Join(sets, ", "))
 	args = append(args, claims.UserID)
-	if _, err := db.Exec(query, args...); err != nil {
+	if _, err := s.db.Exec(query, args...); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database error"})
 	}
-	return handleGetMyPreferences(c)
+	return s.handleGetMyPreferences(c)
 }
 
 // handleUploadAvatar accepts a PNG up to 200 KB.
-func handleUploadAvatar(c echo.Context) error {
+func (s *Server) handleUploadAvatar(c echo.Context) error {
 	claims, ok := authClaimsFromContext(c)
 	if !ok || claims.UserID == "" {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "missing user context"})
@@ -284,33 +284,33 @@ func handleUploadAvatar(c echo.Context) error {
 	sum := sha256.Sum256(data)
 	sha := hex.EncodeToString(sum[:])[:16]
 
-	if _, err := db.Exec(
+	if _, err := s.db.Exec(
 		`UPDATE users SET avatar_data = ?, avatar_mime = ?, avatar_sha = ? WHERE id = ?`,
 		data, "image/png", sha, claims.UserID,
 	); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database error"})
 	}
-	return handleGetMyPreferences(c)
+	return s.handleGetMyPreferences(c)
 }
 
 // handleDeleteAvatar clears the avatar columns.
-func handleDeleteAvatar(c echo.Context) error {
+func (s *Server) handleDeleteAvatar(c echo.Context) error {
 	claims, ok := authClaimsFromContext(c)
 	if !ok || claims.UserID == "" {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "missing user context"})
 	}
-	if _, err := db.Exec(
+	if _, err := s.db.Exec(
 		`UPDATE users SET avatar_data = NULL, avatar_mime = NULL, avatar_sha = NULL WHERE id = ?`,
 		claims.UserID,
 	); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database error"})
 	}
-	return handleGetMyPreferences(c)
+	return s.handleGetMyPreferences(c)
 }
 
 // handleGetAvatar returns the avatar blob for any user. Cached aggressively
 // when the request's `?v=<sha>` matches the stored SHA.
-func handleGetAvatar(c echo.Context) error {
+func (s *Server) handleGetAvatar(c echo.Context) error {
 	userID := c.Param("user_id")
 	if userID == "" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "missing user_id"})
@@ -320,7 +320,7 @@ func handleGetAvatar(c echo.Context) error {
 		mime     sql.NullString
 		shaStore sql.NullString
 	)
-	err := db.QueryRow(
+	err := s.db.QueryRow(
 		`SELECT avatar_data, avatar_mime, avatar_sha FROM users WHERE id = ?`, userID,
 	).Scan(&data, &mime, &shaStore)
 	if err == sql.ErrNoRows || len(data) == 0 || !mime.Valid || mime.String == "" {
@@ -339,7 +339,7 @@ func handleGetAvatar(c echo.Context) error {
 }
 
 // handlePinMachine adds machine_id to the user's pinned set (idempotent).
-func handlePinMachine(c echo.Context) error {
+func (s *Server) handlePinMachine(c echo.Context) error {
 	claims, ok := authClaimsFromContext(c)
 	if !ok || claims.UserID == "" {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "missing user context"})
@@ -351,13 +351,13 @@ func handlePinMachine(c echo.Context) error {
 	// Verify the machine exists so we don't accumulate orphan pins for
 	// hosts that never enrolled.
 	var exists int
-	if err := db.QueryRow(`SELECT 1 FROM machines WHERE id = ?`, machineID).Scan(&exists); err != nil {
+	if err := s.db.QueryRow(`SELECT 1 FROM machines WHERE id = ?`, machineID).Scan(&exists); err != nil {
 		if err == sql.ErrNoRows {
 			return c.JSON(http.StatusNotFound, map[string]string{"error": "machine not found"})
 		}
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database error"})
 	}
-	if _, err := db.Exec(
+	if _, err := s.db.Exec(
 		`INSERT OR IGNORE INTO user_pinned_machines (user_id, machine_id) VALUES (?, ?)`,
 		claims.UserID, machineID,
 	); err != nil {
@@ -367,7 +367,7 @@ func handlePinMachine(c echo.Context) error {
 }
 
 // handleUnpinMachine removes a pin (idempotent).
-func handleUnpinMachine(c echo.Context) error {
+func (s *Server) handleUnpinMachine(c echo.Context) error {
 	claims, ok := authClaimsFromContext(c)
 	if !ok || claims.UserID == "" {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "missing user context"})
@@ -376,7 +376,7 @@ func handleUnpinMachine(c echo.Context) error {
 	if machineID == "" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "missing machine_id"})
 	}
-	if _, err := db.Exec(
+	if _, err := s.db.Exec(
 		`DELETE FROM user_pinned_machines WHERE user_id = ? AND machine_id = ?`,
 		claims.UserID, machineID,
 	); err != nil {
@@ -386,12 +386,12 @@ func handleUnpinMachine(c echo.Context) error {
 }
 
 // handleListSavedFilters returns this user's saved filters.
-func handleListSavedFilters(c echo.Context) error {
+func (s *Server) handleListSavedFilters(c echo.Context) error {
 	claims, ok := authClaimsFromContext(c)
 	if !ok || claims.UserID == "" {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "missing user context"})
 	}
-	rows, err := db.Query(`
+	rows, err := s.db.Query(`
 		SELECT id, name, filter_json, created_at
 		FROM user_saved_filters WHERE user_id = ? ORDER BY created_at DESC
 	`, claims.UserID)
@@ -416,7 +416,7 @@ func handleListSavedFilters(c echo.Context) error {
 }
 
 // handleCreateSavedFilter accepts {name, filter}. Caps at maxSavedFiltersPerUser.
-func handleCreateSavedFilter(c echo.Context) error {
+func (s *Server) handleCreateSavedFilter(c echo.Context) error {
 	claims, ok := authClaimsFromContext(c)
 	if !ok || claims.UserID == "" {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "missing user context"})
@@ -447,7 +447,7 @@ func handleCreateSavedFilter(c echo.Context) error {
 
 	// Enforce the per-user cap.
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM user_saved_filters WHERE user_id = ?`, claims.UserID).Scan(&count); err != nil {
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM user_saved_filters WHERE user_id = ?`, claims.UserID).Scan(&count); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database error"})
 	}
 	if count >= maxSavedFiltersPerUser {
@@ -455,7 +455,7 @@ func handleCreateSavedFilter(c echo.Context) error {
 	}
 
 	id := uuid.New().String()
-	if _, err := db.Exec(
+	if _, err := s.db.Exec(
 		`INSERT INTO user_saved_filters (id, user_id, name, filter_json) VALUES (?, ?, ?, ?)`,
 		id, claims.UserID, name, string(body.Filter),
 	); err != nil {
@@ -465,7 +465,7 @@ func handleCreateSavedFilter(c echo.Context) error {
 	// Return the created row so the dashboard can prepend without refetching.
 	var created SavedFilter
 	var filterJSON string
-	err := db.QueryRow(
+	err := s.db.QueryRow(
 		`SELECT id, name, filter_json, created_at FROM user_saved_filters WHERE id = ?`,
 		id,
 	).Scan(&created.ID, &created.Name, &filterJSON, &created.CreatedAt)
@@ -477,7 +477,7 @@ func handleCreateSavedFilter(c echo.Context) error {
 }
 
 // handleDeleteSavedFilter removes one of the user's filters.
-func handleDeleteSavedFilter(c echo.Context) error {
+func (s *Server) handleDeleteSavedFilter(c echo.Context) error {
 	claims, ok := authClaimsFromContext(c)
 	if !ok || claims.UserID == "" {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "missing user context"})
@@ -486,7 +486,7 @@ func handleDeleteSavedFilter(c echo.Context) error {
 	if id == "" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "missing id"})
 	}
-	res, err := db.Exec(
+	res, err := s.db.Exec(
 		`DELETE FROM user_saved_filters WHERE id = ? AND user_id = ?`,
 		id, claims.UserID,
 	)
