@@ -25,7 +25,10 @@ func setupAlertsDB(t *testing.T) *Server {
 	sseClientsMu.Lock()
 	sseClients = make(map[chan []byte]struct{})
 	sseClientsMu.Unlock()
-	return newServer(db)
+	s := newServer(db)
+	// See setupTestServer: LIFO cleanup, drain before the db closes.
+	t.Cleanup(func() { s.Shutdown(2 * time.Second) })
+	return s
 }
 
 func (s *Server) insertAlertRule(t *testing.T, metric, operator string, threshold float64) string {

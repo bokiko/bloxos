@@ -41,7 +41,7 @@ func (s *Server) registerAgentConnection(machineID string, agent *ConnectedAgent
 	s.agentsMu.Lock()
 	s.agents[machineID] = agent
 	s.agentsMu.Unlock()
-	go s.announceVersionToAgent(machineID, agent)
+	s.goTracked(func() { s.announceVersionToAgent(machineID, agent) })
 }
 
 // unregisterAgentConnection is the symmetric cleanup for

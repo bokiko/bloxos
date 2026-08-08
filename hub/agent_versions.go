@@ -627,7 +627,7 @@ func (s *Server) recordAgentRunningVersion(machineID string, report agentVersion
 		agent, online := s.agents[machineID]
 		s.agentsMu.RUnlock()
 		if online {
-			go s.announceVersionToAgent(machineID, agent)
+			s.goTracked(func() { s.announceVersionToAgent(machineID, agent) })
 		}
 	}
 }
@@ -773,7 +773,8 @@ func (s *Server) handleResumeRollout(c echo.Context) error {
 	s.agentsMu.RUnlock()
 
 	for i := range conns {
-		go s.announceVersionToAgent(ids[i], conns[i])
+		mid, conn := ids[i], conns[i]
+		s.goTracked(func() { s.announceVersionToAgent(mid, conn) })
 	}
 
 	return c.JSON(http.StatusOK, map[string]string{"status": "resumed"})

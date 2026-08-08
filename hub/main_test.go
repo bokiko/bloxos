@@ -154,6 +154,10 @@ func setupTestServer(t *testing.T) (*echo.Echo, *Server) {
 	}
 
 	s := newServer(db)
+	// Registered after the db.Close() cleanup above so it runs BEFORE it:
+	// t.Cleanup is LIFO, and background work must drain while the database
+	// it queries is still open.
+	t.Cleanup(func() { s.Shutdown(2 * time.Second) })
 	s.seedTestAdmin(t)
 	jwtSecret = []byte("test-secret-key-for-smoke-tests")
 	rateLimiter = NewRateLimiter()
@@ -202,6 +206,10 @@ func setupEmptyTestServer(t *testing.T) (*echo.Echo, *Server) {
 	setupTokenValue = "test-setup-token-abc123"
 
 	s := newServer(db)
+	// Registered after the db.Close() cleanup above so it runs BEFORE it:
+	// t.Cleanup is LIFO, and background work must drain while the database
+	// it queries is still open.
+	t.Cleanup(func() { s.Shutdown(2 * time.Second) })
 
 	e := echo.New()
 	e.HideBanner = true
