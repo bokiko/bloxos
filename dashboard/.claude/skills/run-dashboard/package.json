@@ -1,0 +1,8 @@
+{
+  "name": "run-dashboard-driver",
+  "private": true,
+  "description": "Isolated Playwright install for the run-dashboard skill's driver. Deliberately not part of dashboard/'s own package.json/pnpm-lock.yaml.",
+  "dependencies": {
+    "playwright": "^1.55.0"
+  }
+}

@@ -32,9 +32,12 @@ Thumbs.db
 *.db-shm
 .bak
 
-# Local Claude Code / dev tool artifacts
+# Local Claude Code / dev tool artifacts. Skills are the one thing meant
+# to be shared and committed -- everything else under .claude/ (settings,
+# caches, session state) stays local.
 .backups/
-.claude/
+.claude/*
+!.claude/skills/
 .turbo/
 
 # Local-only audit / analysis drafts (not meant to live in git)
