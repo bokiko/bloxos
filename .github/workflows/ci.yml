@@ -34,18 +34,20 @@ jobs:
       - name: Run hub tests
         run: go test -count=1 ./...
 
-  # Reports only; does not block merges yet. The hub keeps its DB handle and ten
-  # other pieces of state in package globals (hub/main.go), so main_test.go
-  # reassigns them between tests while leaked agent-WS goroutines still write
-  # through them -- that is issue #60, and it is an architecture fix, not a test
-  # fix. Flip continue-on-error off once #60 lands so this becomes a real gate.
+  # A real gate as of issue #60: the hub's DB handle and agent registry now live
+  # on a Server instance, so tests build isolated servers instead of reassigning
+  # package globals under leaked agent-WS goroutines. Verified stable across four
+  # consecutive full runs before this was made blocking.
+  #
+  # If this job starts failing, treat it as a real finding. It is no longer the
+  # known-red job it used to be, and the whole point of flipping it was that a
+  # permanently-red gate trains everyone to ignore red CI.
   hub-race:
-    name: Hub Tests (race, non-blocking)
+    name: Hub Tests (race)
     runs-on: ubuntu-latest
-    continue-on-error: true
-    # continue-on-error only applies once the process exits, so a hung race run
-    # would sit pending indefinitely without these. The Go timeout is the lower
-    # of the two on purpose -- it dumps goroutine stacks, the Actions kill does not.
+    # A hung race run would otherwise sit pending indefinitely rather than
+    # failing. The Go timeout is the lower of the two on purpose -- it dumps
+    # goroutine stacks, the Actions kill does not.
     timeout-minutes: 15
     defaults:
       run:
