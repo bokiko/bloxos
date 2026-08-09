@@ -216,38 +216,8 @@ func applyPendingUpdate() {
 		return
 	}
 
-	pm, err := parsePendingMarker(markerPath)
-	if err != nil {
-		log.Printf("update: could not read .pending marker, cleaning up")
-		os.Remove(markerPath)
-		os.Remove(newPath)
-		return
-	}
-
-	if pm.ExpectedSHA == "" || pm.Signature == "" {
-		log.Printf("update: invalid .pending marker (missing sha256 or signature), cleaning up")
-		os.Remove(markerPath)
-		os.Remove(newPath)
-		return
-	}
-
-	downloadedSHA, err := computeFileSHA256(newPath)
-	if err != nil {
-		log.Printf("update: failed to compute SHA of .new binary: %v, cleaning up", err)
-		os.Remove(markerPath)
-		os.Remove(newPath)
-		return
-	}
-
-	if !strings.EqualFold(downloadedSHA, pm.ExpectedSHA) {
-		log.Printf("update: SHA mismatch for staged binary (expected %s, got %s), cleaning up", shortSHA(pm.ExpectedSHA), shortSHA(downloadedSHA))
-		os.Remove(markerPath)
-		os.Remove(newPath)
-		return
-	}
-
-	if err := verifyAnnouncedRelease(exe, "windows", downloadedSHA, pm.Signature); err != nil {
-		log.Printf("update: staged binary failed signature verification: %v, cleaning up", err)
+	if err := validatePendingUpdate(exe, markerPath, newPath); err != nil {
+		log.Printf("update: %v, cleaning up", err)
 		os.Remove(markerPath)
 		os.Remove(newPath)
 		return
@@ -274,6 +244,34 @@ func applyPendingUpdate() {
 
 	log.Printf("update: helper spawned, exiting so SCM can restart on new binary")
 	os.Exit(0)
+}
+
+// validatePendingUpdate reads and validates the marker, hashes the staged .new file,
+// and calls the real signature-verification mechanism. Returns an error if any step fails.
+func validatePendingUpdate(exe, markerPath, newPath string) error {
+	pm, err := parsePendingMarker(markerPath)
+	if err != nil {
+		return fmt.Errorf("could not read .pending marker: %w", err)
+	}
+
+	if pm.ExpectedSHA == "" || pm.Signature == "" {
+		return fmt.Errorf("invalid .pending marker (missing sha256 or signature)")
+	}
+
+	downloadedSHA, err := computeFileSHA256(newPath)
+	if err != nil {
+		return fmt.Errorf("failed to compute SHA of .new binary: %w", err)
+	}
+
+	if !strings.EqualFold(downloadedSHA, pm.ExpectedSHA) {
+		return fmt.Errorf("SHA mismatch for staged binary (expected %s, got %s)", shortSHA(pm.ExpectedSHA), shortSHA(downloadedSHA))
+	}
+
+	if err := verifyAnnouncedRelease(exe, "windows", downloadedSHA, pm.Signature); err != nil {
+		return fmt.Errorf("staged binary failed signature verification: %w", err)
+	}
+
+	return nil
 }
 
 // buildHelperBatch returns the contents of the .bat we leave on disk.
