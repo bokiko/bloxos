@@ -33,11 +33,12 @@ import (
  *   1. Hub announces a new SHA via agent_version frame.
  *   2. Agent downloads to <exe>.new, verifies SHA.
  *   3. Agent writes a marker file <exe>.pending describing the swap.
- *   4. Agent exits cleanly. SCM restarts us per recovery actions.
+ *   4. Agent exits with failure (code 1) so SCM restarts us per recovery actions.
  *   5. NEW process boot: applyPendingUpdate() runs BEFORE the SCM main
- *      loop. If <exe>.pending + <exe>.new exist, spawn a detached batch
- *      helper that: sleeps, deletes the running exe, renames .new ->
- *      target, removes marker, restarts the service, and self-deletes.
+ *      loop. If <exe>.pending + <exe>.new exist, it reads the marker, verifies
+ *      the signature and SHA, and spawns a detached batch helper that:
+ *      sleeps, moves .new -> target over the running exe, removes marker,
+ *      restarts the service, and self-deletes.
  *   6. The newly-restarted service boots from the new binary cleanly.
  *
  * Why a batch helper instead of doing the work in-process: by the time
@@ -215,7 +216,7 @@ func applyPendingUpdate() {
 		return
 	}
 
-	markerData, err := os.ReadFile(markerPath)
+	pm, err := parsePendingMarker(markerPath)
 	if err != nil {
 		log.Printf("update: could not read .pending marker, cleaning up")
 		os.Remove(markerPath)
@@ -223,17 +224,7 @@ func applyPendingUpdate() {
 		return
 	}
 
-	var expectedSHA, signature string
-	for _, line := range strings.Split(string(markerData), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "sha256=") {
-			expectedSHA = strings.TrimPrefix(line, "sha256=")
-		} else if strings.HasPrefix(line, "signature=") {
-			signature = strings.TrimPrefix(line, "signature=")
-		}
-	}
-
-	if expectedSHA == "" || signature == "" {
+	if pm.ExpectedSHA == "" || pm.Signature == "" {
 		log.Printf("update: invalid .pending marker (missing sha256 or signature), cleaning up")
 		os.Remove(markerPath)
 		os.Remove(newPath)
@@ -248,14 +239,14 @@ func applyPendingUpdate() {
 		return
 	}
 
-	if !strings.EqualFold(downloadedSHA, expectedSHA) {
-		log.Printf("update: SHA mismatch for staged binary (expected %s, got %s), cleaning up", shortSHA(expectedSHA), shortSHA(downloadedSHA))
+	if !strings.EqualFold(downloadedSHA, pm.ExpectedSHA) {
+		log.Printf("update: SHA mismatch for staged binary (expected %s, got %s), cleaning up", shortSHA(pm.ExpectedSHA), shortSHA(downloadedSHA))
 		os.Remove(markerPath)
 		os.Remove(newPath)
 		return
 	}
 
-	if err := verifyAnnouncedRelease(exe, "windows", downloadedSHA, signature); err != nil {
+	if err := verifyAnnouncedRelease(exe, "windows", downloadedSHA, pm.Signature); err != nil {
 		log.Printf("update: staged binary failed signature verification: %v, cleaning up", err)
 		os.Remove(markerPath)
 		os.Remove(newPath)
