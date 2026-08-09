@@ -206,20 +206,9 @@ func applyPendingUpdate() {
 	markerPath := exe + ".pending"
 	newPath := exe + ".new"
 
-	if _, err := os.Stat(markerPath); err != nil {
-		return // no pending update
-	}
-	if _, err := os.Stat(newPath); err != nil {
-		// Marker present but new binary missing — clean up the stale marker.
-		log.Printf("update: stale .pending marker (no .new binary), cleaning up")
-		os.Remove(markerPath)
-		return
-	}
-
-	if err := validatePendingUpdate(exe, markerPath, newPath); err != nil {
-		log.Printf("update: %v, cleaning up", err)
-		os.Remove(markerPath)
-		os.Remove(newPath)
+	if err := checkAndCleanPendingUpdate(exe, markerPath, newPath); err != nil {
+		// checkAndCleanPendingUpdate handles its own logging and cleanup,
+		// but also cleanly returns err for missing markers where we just abort.
 		return
 	}
 
@@ -244,6 +233,28 @@ func applyPendingUpdate() {
 
 	log.Printf("update: helper spawned, exiting so SCM can restart on new binary")
 	os.Exit(0)
+}
+
+// checkAndCleanPendingUpdate wraps the validation of a pending update and centralizes
+// the failure cleanup. If validation fails, it deletes both files.
+func checkAndCleanPendingUpdate(exe, markerPath, newPath string) error {
+	if _, err := os.Stat(markerPath); err != nil {
+		return err // No pending update marker, expected standard abort path.
+	}
+	if _, err := os.Stat(newPath); err != nil {
+		log.Printf("update: stale .pending marker (no .new binary), cleaning up")
+		os.Remove(markerPath)
+		return fmt.Errorf("missing .new binary")
+	}
+
+	if err := validatePendingUpdate(exe, markerPath, newPath); err != nil {
+		log.Printf("update: %v, cleaning up", err)
+		os.Remove(markerPath)
+		os.Remove(newPath)
+		return err
+	}
+
+	return nil
 }
 
 // validatePendingUpdate reads and validates the marker, hashes the staged .new file,
