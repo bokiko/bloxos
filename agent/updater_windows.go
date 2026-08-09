@@ -117,7 +117,7 @@ func handleAgentVersion(msg []byte) {
 			updateInFlightWindows = false
 			updateMuWindows.Unlock()
 		}()
-		if err := performUpdateWindows(version.SHA256); err != nil {
+		if err := performUpdateWindows(version.SHA256, version.Signature); err != nil {
 			log.Printf("update: FAILED — %v (continuing on current version)", err)
 		}
 	}()
@@ -126,7 +126,7 @@ func handleAgentVersion(msg []byte) {
 // performUpdateWindows downloads the new binary, verifies its SHA, writes a
 // marker file, and exits. SCM will restart us; applyPendingUpdate runs on
 // boot and arranges the actual swap via a helper batch script.
-func performUpdateWindows(expectedSHA string) error {
+func performUpdateWindows(expectedSHA, signature string) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("get executable path: %w", err)
@@ -169,14 +169,14 @@ func performUpdateWindows(expectedSHA string) error {
 	// Write the pending marker so applyPendingUpdate, on next boot,
 	// picks up the swap.
 	now := time.Now().UTC().Format(time.RFC3339)
-	marker := fmt.Sprintf("source=%s\ntarget=%s\nat=%s\n", newPath, exe, now)
+	marker := fmt.Sprintf("source=%s\ntarget=%s\nat=%s\nsha256=%s\nsignature=%s\n", newPath, exe, now, expectedSHA, signature)
 	if err := os.WriteFile(markerPath, []byte(marker), 0644); err != nil {
 		os.Remove(newPath)
 		return fmt.Errorf("write pending marker: %w", err)
 	}
 
 	log.Printf("update: marker written, exiting for SCM restart + helper to apply swap")
-	os.Exit(0)
+	os.Exit(1)
 	return nil // unreachable
 }
 
@@ -215,6 +215,53 @@ func applyPendingUpdate() {
 		return
 	}
 
+	markerData, err := os.ReadFile(markerPath)
+	if err != nil {
+		log.Printf("update: could not read .pending marker, cleaning up")
+		os.Remove(markerPath)
+		os.Remove(newPath)
+		return
+	}
+
+	var expectedSHA, signature string
+	for _, line := range strings.Split(string(markerData), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "sha256=") {
+			expectedSHA = strings.TrimPrefix(line, "sha256=")
+		} else if strings.HasPrefix(line, "signature=") {
+			signature = strings.TrimPrefix(line, "signature=")
+		}
+	}
+
+	if expectedSHA == "" || signature == "" {
+		log.Printf("update: invalid .pending marker (missing sha256 or signature), cleaning up")
+		os.Remove(markerPath)
+		os.Remove(newPath)
+		return
+	}
+
+	downloadedSHA, err := computeFileSHA256(newPath)
+	if err != nil {
+		log.Printf("update: failed to compute SHA of .new binary: %v, cleaning up", err)
+		os.Remove(markerPath)
+		os.Remove(newPath)
+		return
+	}
+
+	if !strings.EqualFold(downloadedSHA, expectedSHA) {
+		log.Printf("update: SHA mismatch for staged binary (expected %s, got %s), cleaning up", shortSHA(expectedSHA), shortSHA(downloadedSHA))
+		os.Remove(markerPath)
+		os.Remove(newPath)
+		return
+	}
+
+	if err := verifyAnnouncedRelease(exe, "windows", downloadedSHA, signature); err != nil {
+		log.Printf("update: staged binary failed signature verification: %v, cleaning up", err)
+		os.Remove(markerPath)
+		os.Remove(newPath)
+		return
+	}
+
 	log.Printf("update: applying pending update via batch helper")
 
 	dir := filepath.Dir(exe)
@@ -247,7 +294,6 @@ func buildHelperBatch(target, newBin, marker string) string {
 	marker = filepath.FromSlash(marker)
 	return "@echo off\r\n" +
 		"timeout /t 3 /nobreak > nul\r\n" +
-		"del \"" + target + "\" 2> nul\r\n" +
 		"move /Y \"" + newBin + "\" \"" + target + "\" > nul\r\n" +
 		"del \"" + marker + "\" 2> nul\r\n" +
 		"sc.exe start " + windowsServiceName + " > nul\r\n" +
