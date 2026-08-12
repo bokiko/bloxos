@@ -199,6 +199,31 @@ func TestInstallScriptPinsAgentBinaryHash(t *testing.T) {
 	}
 }
 
+// The generated Linux installer must not preserve the unprivileged
+// downloader's ownership on a binary that systemd later executes as root.
+func TestInstallScriptInstallsAgentBinaryAsRoot(t *testing.T) {
+	e, _ := setupTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/install.sh", nil)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+
+	body := rec.Body.String()
+	const install = "sudo install -o root -g root -m 0755 /tmp/bloxos-agent /usr/local/bin/bloxos-agent"
+	if !strings.Contains(body, install) {
+		t.Fatal("install.sh does not install the agent root-owned with mode 0755")
+	}
+	if strings.Contains(body, "sudo mv /tmp/bloxos-agent /usr/local/bin/bloxos-agent") {
+		t.Fatal("install.sh still preserves the downloaded agent's unprivileged ownership")
+	}
+	if !strings.Contains(body, "rm -f /tmp/bloxos-agent") {
+		t.Fatal("install.sh leaves the downloaded temporary agent behind")
+	}
+}
+
 // TestWindowsInstallScriptPinsHashAndVerifiesBinaryDownload locks in item 3
 // (Windows): install.ps1 must pin the agent .exe SHA-256 and must download the
 // binary with TLS verification (via the bootstrapped CA), not curl -k. The

@@ -225,7 +225,8 @@ if ! id -u bloxos &>/dev/null; then
 fi
 
 # Install binary.
-sudo mv /tmp/bloxos-agent /usr/local/bin/bloxos-agent
+sudo install -o root -g root -m 0755 /tmp/bloxos-agent /usr/local/bin/bloxos-agent
+rm -f /tmp/bloxos-agent
 
 # Create credential directory for agent secret (post-enrollment).
 sudo mkdir -p /etc/bloxos
