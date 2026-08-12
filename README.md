@@ -107,56 +107,122 @@ SSE from hub to browser means the dashboard updates live without WebSocket compl
 
 ---
 
-## Quick start
+## Configuration
 
-> **Status:** BloxOS is pre-1.0. The core app runs in production, but the polished one-line public installer is still in progress. The commands below are the current source-built development path.
+The hub refuses to start unless an origin policy is explicit. Set
+`PUBLIC_URL`, `ALLOWED_ORIGINS`, or both before the first boot. Copy
+[.env.example](.env.example) for a commented reference covering every
+environment variable read by the Go hub and agent.
 
-### 1. Run the hub
+| Variable | Required | Purpose |
+|---|---:|---|
+| `PUBLIC_URL` | **Yes, unless `ALLOWED_ORIGINS` is set** | Browser-facing hub URL; also drives generated commands and update transport policy. |
+| `ALLOWED_ORIGINS` | **Yes, unless `PUBLIC_URL` is set** | Comma-separated browser origins permitted by CORS. |
+| `HUB_LISTEN` | No | Hub listen address; defaults to `127.0.0.1:4000`. |
+| `BLOXOS_JWT_SECRET` | No | JWT secret, at least 32 bytes; otherwise generated and persisted. |
+| `BLOXOS_SETUP_TOKEN` | No | Fixed first-boot setup token; otherwise generated and persisted. |
+| `BLOXOS_CA_CERT` | No | Additional CA certificate used by installers and agents. |
+| `BLOXOS_AGENT_BINARY` | Recommended | Absolute Linux agent binary served by the hub. |
+| `BLOXOS_AGENT_BINARY_WINDOWS` | No | Absolute Windows agent binary served by the hub. |
+| `BLOXOS_UPDATE_PUBKEY` | No | Base64 Ed25519 public key for detached-signature mode. |
+| `BLOXOS_UPDATE_SIGNING_KEY` | No | Explicit online-signing private-key path. |
+| `BLOXOS_ALLOW_PRIVATE_TARGETS` | No | Set to `1` to permit API pollers to target RFC1918 addresses. |
+| `BLOXOS_TELEGRAM_TOKEN` | No | Telegram bot token; both Telegram values are needed. |
+| `BLOXOS_TELEGRAM_CHAT_ID` | No | Telegram destination chat ID. |
+| `BLOXOS_HUB` | Agent | Hub base WebSocket URL; the agent appends `/ws/agent`. |
+| `BLOXOS_SECRET` | Agent | Durable machine credential, normally managed by enrollment. |
+| `BLOXOS_TOKEN` | Agent enrollment | One-time enrollment token. |
+| `BLOXOS_TERMINAL_USER` | No | Linux account used for terminal sessions. |
+| `BLOXOS_UPDATE_PUBKEY_PATH` | No | Override for the agent's pinned update-key file. |
+| `BLOXOS_TLS_INSECURE` | Development only | TLS bypass available only in an agent built with `-tags insecure`. |
+| `ProgramFiles` | Windows-provided | Used to discover NVIDIA tooling; normally never overridden. |
+| `NEXT_PUBLIC_HUB_URL` | Dashboard | Hub origin when dashboard and hub are not same-origin. |
 
-On any Linux machine you want as the central server:
+## Quick start from source
+
+> **Status:** BloxOS is pre-1.0. The polished public installer is still in
+> progress. This path builds the hub and Linux agent from source and keeps the
+> first enrollment on loopback.
+
+### 1. Clone and build
 
 ```bash
 git clone https://github.com/bokiko/bloxos.git
-cd bloxos/hub
-go run .
+cd bloxos
+mkdir -p bin
+(cd hub && go build -o ../bin/bloxos-hub .)
+(cd agent && go build -o ../bin/bloxos-agent .)
 ```
 
-This starts the hub API on `127.0.0.1:4000` by default. On first run it creates a setup token in `~/.bloxos/setup-token`; use that token on the dashboard setup screen to create the first admin.
+To build the Windows agent artifact:
 
-### 2. Run the dashboard
+```bash
+(cd agent && GOOS=windows GOARCH=amd64 go build -o ../bin/bloxos-agent.exe .)
+```
+
+Windows enrollment is under active rework and is intentionally not documented
+as a runnable installer flow yet.
+
+### 2. Configure and run the hub
+
+These exports set the origin policy required for startup. The explicit
+agent-binary path also ensures that the download endpoint serves the artifact
+you just built.
+
+```bash
+export PUBLIC_URL=http://localhost:4000
+export ALLOWED_ORIGINS=http://localhost:3000
+export HUB_LISTEN=127.0.0.1:4000
+export BLOXOS_AGENT_BINARY="$PWD/bin/bloxos-agent"
+./bin/bloxos-hub
+```
+
+On first run the hub creates a setup token in `~/.bloxos/setup-token`.
+Keep this shell running.
+
+### 3. Run the dashboard
 
 In another shell:
 
 ```bash
 cd bloxos/dashboard
 pnpm install
-pnpm dev
+NEXT_PUBLIC_HUB_URL=http://localhost:4000 pnpm dev
 ```
 
-Open `http://localhost:3000`. With the default empty `NEXT_PUBLIC_HUB_URL`, the browser uses the same origin for API calls. For a split dev setup, set `NEXT_PUBLIC_HUB_URL=http://localhost:4000`.
+Open `http://localhost:3000`, enter the setup token, and create the first
+admin account.
 
-For LAN production, run the hub on `127.0.0.1:4000`, run the dashboard on `127.0.0.1:3000`, and put Caddy in front using [scripts/caddy/Caddyfile](scripts/caddy/Caddyfile). Then browse to `https://<hub-host>`.
+### 4. Enroll the local Linux agent
 
-### 3. Add your first machine
+In the dashboard, choose **Add Machine → Linux** and run the generated command
+on this same machine. The loopback quick start avoids a remote first-contact
+trust decision while the public bootstrap flow is being reworked. The agent
+uses its one-time token once, stores a durable machine secret, and then appears
+in the fleet.
 
-Click **Add Machine** in the dashboard. Pick **Linux** or **Windows**. The hub creates a one-time install token and returns a command that calls the generated `/install.sh` or `/install.ps1` endpoint. Run that command on the target machine. The agent installs, registers, stores a durable per-machine secret, and shows up in the dashboard within seconds.
+For a LAN deployment, terminate TLS in front of the hub, set `PUBLIC_URL` to
+that trusted HTTPS origin, set `ALLOWED_ORIGINS` to the dashboard origin, and
+keep `BLOXOS_AGENT_BINARY` on an explicit absolute path. A safe cold-start
+bootstrap for a private or self-signed CA remains tracked in
+[#150](https://github.com/bokiko/bloxos/issues/150).
 
-For Linux:
+### 5. Production builds and sample services
+
 ```bash
-export BLOXOS_HUB=wss://<your-hub>/ws/agent BLOXOS_TOKEN=<one-time-token>
-curl -fsSL https://<your-hub>/install.sh | bash
+(cd hub && go build -o ../bin/bloxos-hub .)
+(cd agent && go build -o ../bin/bloxos-agent .)
+(cd dashboard && pnpm install --frozen-lockfile && pnpm build)
 ```
 
-For Windows (PowerShell as Administrator):
-```powershell
-$env:BLOXOS_HUB="wss://<your-hub>/ws/agent"
-$env:BLOXOS_TOKEN="<one-time-token>"
-iex (irm https://<your-hub>/install.ps1)
+The sample units in [scripts/systemd](scripts/systemd) use `<user>` and
+`/opt/bloxos` placeholders. Replace `<user>`, install the built artifacts,
+then enable each installed unit:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now bloxos-hub bloxos-dashboard bloxos-agent
 ```
-
-### 4. That's it
-
-The agent self-updates from now on. Add more machines the same way.
 
 ---
 
