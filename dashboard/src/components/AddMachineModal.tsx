@@ -87,7 +87,8 @@ export function AddMachineModal({ open, onClose }: AddMachineModalProps) {
         headers,
       });
       if (!res.ok) {
-        setError("Failed to generate token. Is the hub reachable?");
+        const data = await res.json().catch(() => null);
+        setError(data?.error || `Failed to generate token (${res.status})`);
         setState({ kind: "choose-os" });
         return;
       }

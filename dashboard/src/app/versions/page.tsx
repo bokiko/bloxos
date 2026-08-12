@@ -12,6 +12,8 @@ import {
   AlertTriangle,
   CheckCircle2,
   Clock,
+  KeyRound,
+  ShieldCheck,
 } from "lucide-react";
 import { useVersions } from "@/contexts/VersionsContext";
 import { useAuth } from "@/contexts/AuthContext";
@@ -113,7 +115,7 @@ export default function VersionsPage() {
           <div className="flex items-start gap-3 rounded-xl border border-red-500/20 bg-red-500/5 px-4 py-3">
             <AlertTriangle className="w-4 h-4 text-red-400 mt-0.5 shrink-0" />
             <div className="flex-1">
-              <p className="text-sm text-blox-text font-medium">Failed to load versions</p>
+              <p className="text-sm text-blox-text font-medium">Versions request failed</p>
               <p className="text-xs text-blox-muted mt-1">{error}</p>
             </div>
           </div>
@@ -121,6 +123,31 @@ export default function VersionsPage() {
 
         {data && (
           <>
+            <div
+              className={`flex items-start gap-3 rounded-xl border px-4 py-3 ${
+                data.signing_enabled
+                  ? "border-emerald-500/20 bg-emerald-500/5"
+                  : "border-red-500/20 bg-red-500/5"
+              }`}
+              data-testid="signing-status-banner"
+            >
+              {data.signing_enabled ? (
+                <ShieldCheck className="w-4 h-4 text-emerald-400 mt-0.5 shrink-0" />
+              ) : (
+                <AlertTriangle className="w-4 h-4 text-red-400 mt-0.5 shrink-0" />
+              )}
+              <div>
+                <p className="text-sm text-blox-text font-medium">
+                  Update signing {data.signing_enabled ? "enabled" : "disabled"}
+                </p>
+                <p className="text-xs text-blox-muted mt-1">
+                  {data.signing_enabled
+                    ? "The hub can authenticate agent update announcements."
+                    : data.signing_disabled_reason || "The hub cannot produce update signatures."}
+                </p>
+              </div>
+            </div>
+
             {/* Hub binary status card */}
             <div className="bg-blox-card border border-blox-border rounded-xl p-5">
               <div className="flex items-center justify-between gap-4 flex-wrap">
@@ -194,7 +221,7 @@ export default function VersionsPage() {
             </div>
 
             {/* Agents table */}
-            <div className="bg-blox-card border border-blox-border rounded-xl overflow-hidden">
+            <div className="bg-blox-card border border-blox-border rounded-xl overflow-x-auto">
               <Table>
                 <TableHeader>
                   <TableRow className="border-b-blox-border hover:bg-transparent">
@@ -208,6 +235,12 @@ export default function VersionsPage() {
                       Status
                     </TableHead>
                     <TableHead className="text-blox-muted text-[11px] uppercase tracking-[0.06em] font-medium">
+                      Key pinned
+                    </TableHead>
+                    <TableHead className="text-blox-muted text-[11px] uppercase tracking-[0.06em] font-medium">
+                      Blocked reason
+                    </TableHead>
+                    <TableHead className="text-blox-muted text-[11px] uppercase tracking-[0.06em] font-medium">
                       Last connect
                     </TableHead>
                   </TableRow>
@@ -216,7 +249,7 @@ export default function VersionsPage() {
                   {data.agents.length === 0 ? (
                     <TableRow>
                       <TableCell
-                        colSpan={4}
+                        colSpan={6}
                         className="text-center py-8 text-blox-muted text-xs"
                       >
                         No agents have reported their version yet
@@ -239,7 +272,15 @@ export default function VersionsPage() {
                             {shortSHA(agent.running_sha)}
                           </TableCell>
                           <TableCell>
-                            {agent.update_pending ? (
+                            {agent.update_pending && agent.update_blocked_reason ? (
+                              <Badge
+                                variant="outline"
+                                className="border-red-500/30 bg-red-500/10 text-red-400 text-[10px]"
+                              >
+                                <AlertTriangle className="w-2.5 h-2.5 mr-1" />
+                                Withheld
+                              </Badge>
+                            ) : agent.update_pending ? (
                               <Badge
                                 variant="outline"
                                 className="border-amber-500/30 bg-amber-500/10 text-amber-400 text-[10px]"
@@ -256,6 +297,38 @@ export default function VersionsPage() {
                                 Up to date
                               </Badge>
                             )}
+                          </TableCell>
+                          <TableCell>
+                            {agent.update_protocol < 1 ? (
+                              <Badge
+                                variant="outline"
+                                className="border-blox-border text-blox-muted text-[10px]"
+                              >
+                                Not reported
+                              </Badge>
+                            ) : agent.update_key_pinned ? (
+                              <Badge
+                                variant="outline"
+                                className="border-emerald-500/30 bg-emerald-500/10 text-emerald-400 text-[10px]"
+                              >
+                                <KeyRound className="w-2.5 h-2.5 mr-1" />
+                                Pinned
+                              </Badge>
+                            ) : (
+                              <Badge
+                                variant="outline"
+                                className="border-red-500/30 bg-red-500/10 text-red-400 text-[10px]"
+                              >
+                                <AlertTriangle className="w-2.5 h-2.5 mr-1" />
+                                Missing
+                              </Badge>
+                            )}
+                          </TableCell>
+                          <TableCell
+                            className="max-w-[360px] whitespace-normal text-xs text-blox-muted"
+                            title={agent.update_blocked_reason || undefined}
+                          >
+                            {agent.update_blocked_reason || "—"}
                           </TableCell>
                           <TableCell className="text-xs text-blox-muted font-mono tabular-nums">
                             {timeSince(agent.reported_at)}

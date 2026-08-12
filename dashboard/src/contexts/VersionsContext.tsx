@@ -17,9 +17,15 @@ export interface AgentVersionInfo {
   running_sha?: string;
   reported_at: string;
   update_pending: boolean;
+  update_blocked_reason?: string;
+  update_key_pinned: boolean;
+  update_transport_ok: boolean;
+  update_protocol: number;
 }
 
 export interface VersionsResponse {
+  signing_enabled: boolean;
+  signing_disabled_reason: string;
   hub_sha: string;
   hub_short_sha: string;
   hub_mtime: string;
@@ -67,21 +73,31 @@ export function VersionsProvider({ children }: { children: ReactNode }) {
 
   const pauseRollout = useCallback(async () => {
     if (!isAuthenticated) return;
+    setError(null);
     try {
-      await authFetch(`${HUB_URL}/api/versions/pause`, { method: "POST" });
+      const res = await authFetch(`${HUB_URL}/api/versions/pause`, { method: "POST" });
+      if (!res.ok) {
+        const json = await res.json().catch(() => null);
+        throw new Error(json?.error || `Failed to pause rollout (${res.status})`);
+      }
       await refresh();
     } catch (err) {
-      console.warn("pauseRollout failed:", err);
+      setError(err instanceof Error ? err.message : "Failed to pause rollout");
     }
   }, [authFetch, isAuthenticated, refresh]);
 
   const resumeRollout = useCallback(async () => {
     if (!isAuthenticated) return;
+    setError(null);
     try {
-      await authFetch(`${HUB_URL}/api/versions/resume`, { method: "POST" });
+      const res = await authFetch(`${HUB_URL}/api/versions/resume`, { method: "POST" });
+      if (!res.ok) {
+        const json = await res.json().catch(() => null);
+        throw new Error(json?.error || `Failed to resume rollout (${res.status})`);
+      }
       await refresh();
     } catch (err) {
-      console.warn("resumeRollout failed:", err);
+      setError(err instanceof Error ? err.message : "Failed to resume rollout");
     }
   }, [authFetch, isAuthenticated, refresh]);
 
