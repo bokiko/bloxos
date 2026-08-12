@@ -46,10 +46,19 @@ xterm.js, theme-aware, stable 360px pane. Hit a machine, get a real shell. No SS
 ### Two operating systems, one dashboard
 The Linux agent and the Windows agent speak the same WebSocket protocol to the same hub. The Windows agent registers itself as a Windows Service via SCM, collects hardware via WMI, and supports the same auto-update flow. From the dashboard, a Windows machine and a Linux machine look and behave identically.
 
-### Auto-update with rollback
-The hub announces the agent's current SHA. Agents compare against their own binary. If different, they download the new version, verify the SHA, save the previous binary as `.prev`, atomically rename, and exit — systemd or SCM restarts them on the new version. If anything goes wrong, a recovery service swaps the previous binary back. A circuit breaker pauses rollout after two failures in five minutes.
+### Signed auto-update and recovery
+Protocol-v1 agents accept an update only when its Ed25519 release signature verifies against their pinned key and the transport is permitted. Protocol-0 agents require a deliberately limited migration hop to reach protocol v1, because signature verification cannot be retrofitted into an already-running binary; the hub permits that hop only over TLS or loopback. After migration, the agent is withheld until its update key is pinned through a trusted provisioning path.
 
-You push an update to the hub. The fleet self-heals to the new version. Or rolls back. Either way, you don't get paged.
+The signature covers `bloxos-agent-update:v1:<os>:<sha>`. It may come from a detached `<binary>.sig` produced offline, in which case the hub holds no private key, or from a hub-held signing key. Protocol-v1 updates fail closed when the signature is missing or invalid, the transport is plaintext, or the agent has no pinned key.
+
+Both platforms use a `.prev` file for recovery, but their behavior differs:
+
+- **Linux** verifies the update, replaces the executable atomically, and exits for systemd to restart it. An `OnFailure` recovery unit can automatically restore `.prev` after repeated startup failure.
+- **Windows** attempts to snapshot `.prev`, downloads to `<exe>.new`, and writes `<exe>.pending` with the expected `sha256` and `signature`. On the SCM restart, `applyPendingUpdate` hashes `.new`, compares the SHA, and verifies the signature against the pinned key before spawning the swap helper. `performUpdateWindows` exits with code `1` to trigger that SCM restart. The helper attempts `move /Y` before deleting the marker, but marker deletion is unconditional; Windows has no automatic rollback, so restoring `.prev` remains manual.
+
+A circuit breaker pauses fleet rollout after two failures in five minutes. Signatures still have no downgrade or monotonicity protection: a previously valid `(os, sha)` pair remains valid indefinitely ([#145](https://github.com/bokiko/bloxos/issues/145)).
+
+You push an update to the hub and the fleet moves to the new version on its own. On Linux, a bad build can also recover automatically.
 
 ### Multi-user with real permissions
 Viewers, operators, admins. Every endpoint has a scope (`fleet.read`, `fleet.control`, `fleet.metadata`, `fleet.admin`, `branding.admin`, `users.admin`). Operators can run actions but not change roles. Admins can change branding. Viewers can look but not touch. JWT-based, bcrypt for passwords.

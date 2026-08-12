@@ -103,6 +103,28 @@ Each PR has: **Goal** (one line), **Mechanics** (concrete moves), **Verification
 **LOC touched:** ~3000 (every handler + every test)
 **Risk:** Highest. Pure mechanical transformation, no extraction.
 
+> ⚠️ **PARTIALLY SUPERSEDED by #148 — do not start this from scratch, and do
+> not treat it as finished either.**
+>
+> #148 landed a deliberately **scoped subset** of this PR, sized to what
+> issue #60 actually required rather than the full transformation below:
+>
+> - `Server` struct exists in `package main` (`hub/server.go`)
+> - **only** `db`, `agents`, and `agentsMu` moved onto it
+> - most handlers became methods on `*Server`
+> - `goTracked` / `Shutdown` added, so a server waits for work it spawned
+>
+> **Still outstanding:** most package-level mutable state is untouched —
+> `sseClients`, `pendingCmds`, `termSessions`, `jwtSecret`, `rateLimiter`,
+> `setupTokenValue`, `machineLatency`, `apiPollers`, the telegram config, and
+> the rollout/version caches all remain package-level. `newServer` and
+> `registerRoutes` exist in narrower forms than described below, and no `Run`
+> method exists.
+>
+> The remaining scope should be reassessed against the current code before any
+> of it is implemented — the description below predates #148 and no longer
+> describes the starting point.
+
 **Goal:** Move every package-level mutable global into `*Server` fields. Convert every handler to a method on `*Server`. `main()` shrinks to: build config, build server, register routes, listen.
 
 **Mechanics:**
