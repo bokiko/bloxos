@@ -4,9 +4,9 @@ After=network.target bloxos-hub.service
 
 [Service]
 Type=simple
-User=bokiko
-WorkingDirectory=/home/bokiko/bloxos/dashboard
-ExecStart=/usr/bin/npx next start -H 127.0.0.1 -p 3000
+User=<user>
+WorkingDirectory=/opt/bloxos/dashboard
+ExecStart=/usr/bin/pnpm start -- -H 127.0.0.1 -p 3000
 Restart=always
 RestartSec=5
 Environment=NODE_ENV=production
@@ -14,3 +14,6 @@ Environment=NEXT_PUBLIC_HUB_URL=
 
 [Install]
 WantedBy=multi-user.target
+
+# After copying this file to /etc/systemd/system/:
+# sudo systemctl daemon-reload && sudo systemctl enable --now bloxos-dashboard
