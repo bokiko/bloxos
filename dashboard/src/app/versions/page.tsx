@@ -105,7 +105,8 @@ export default function VersionsPage() {
           </div>
           <p className="text-[12px] text-blox-muted mt-1.5">
             Auto-update status and version visibility across the fleet.
-            Agents check the hub&apos;s announced SHA on connect; mismatches trigger silent updates with automatic rollback on failure.
+            Protocol-v1 agents verify signed updates against their pinned key.
+            Windows revalidates the staged binary&apos;s SHA and signature on service restart, but still requires manual rollback.
           </p>
         </div>
       </section>
