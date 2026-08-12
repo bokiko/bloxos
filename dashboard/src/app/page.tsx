@@ -34,6 +34,7 @@ import {
   Plus, WifiOff, Search, LayoutGrid, List,
   ChevronDown, Square, CheckSquare, RotateCcw, Trash2, Pencil,
   ArrowUpDown, Filter, Monitor, Server, RefreshCw, Boxes,
+  GitCompareArrows,
 } from "lucide-react";
 import Link from "next/link";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -409,6 +410,15 @@ export default function Home() {
               aria-label="Hardware inventory"
             >
               <Boxes className="w-4 h-4" />
+            </Link>
+
+            <Link
+              href="/versions"
+              className="inline-flex items-center justify-center rounded-md w-8 h-8 text-blox-muted hover:text-blox-text hover:bg-blox-border/50 transition-colors"
+              title="Agent versions"
+              aria-label="Agent versions"
+            >
+              <GitCompareArrows className="w-4 h-4" />
             </Link>
 
             {/* Vertical divider — separates utility icons from create actions */}
