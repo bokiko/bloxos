@@ -17,9 +17,20 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bokiko/bloxos/proto/updatesigning"
 	"github.com/gorilla/websocket"
 	"github.com/labstack/echo/v4"
 )
+
+func writeOfflineSigningKey(t *testing.T, priv ed25519.PrivateKey) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "update-signing.key")
+	body := base64.StdEncoding.EncodeToString(priv) + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write private key: %v", err)
+	}
+	return path
+}
 
 // ensureTestUpdateSigningKey gives the test binary a process-lifetime signing
 // key. Production does this in main() via initUpdateSigning(); without it
@@ -177,6 +188,74 @@ func TestDetachedSignatureFor(t *testing.T) {
 
 	if got := detachedSignatureFor("", "linux", sha); got != "" {
 		t.Fatalf("empty binary path returned %q", got)
+	}
+}
+
+func TestOfflineSigningToolRoundTripDetachedSignature(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bloxos-agent")
+	if err := os.WriteFile(bin, []byte("offline-signed agent"), 0o755); err != nil {
+		t.Fatalf("write binary: %v", err)
+	}
+
+	result, err := updatesigning.SignFile(bin, "linux", writeOfflineSigningKey(t, priv))
+	if err != nil {
+		t.Fatalf("sign file: %v", err)
+	}
+
+	updateSigningMu.Lock()
+	oldPub := updateSigningPub
+	updateSigningPub = pub
+	updateSigningMu.Unlock()
+	t.Cleanup(func() {
+		updateSigningMu.Lock()
+		updateSigningPub = oldPub
+		updateSigningMu.Unlock()
+	})
+
+	if got := detachedSignatureFor(bin, "linux", result.SHA256); got != result.Signature {
+		t.Fatalf("detachedSignatureFor = %q, want tool signature %q", got, result.Signature)
+	}
+	if got := detachedSignatureFor(bin, "windows", result.SHA256); got != "" {
+		t.Fatalf("linux signature accepted for windows: %q", got)
+	}
+	if got := detachedSignatureFor(bin, "linux", strings.Repeat("ab", 32)); got != "" {
+		t.Fatalf("signature accepted for wrong SHA: %q", got)
+	}
+}
+
+func TestDetachedSignatureForFailsClosedWithoutPublicKey(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bloxos-agent")
+	if err := os.WriteFile(bin, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write binary: %v", err)
+	}
+	sha := strings.Repeat("cd", 32)
+	sig := base64.StdEncoding.EncodeToString(ed25519.Sign(priv, updateSigningMessage("linux", sha)))
+	if err := os.WriteFile(bin+".sig", []byte(sig+"\n"), 0o644); err != nil {
+		t.Fatalf("write signature: %v", err)
+	}
+
+	updateSigningMu.Lock()
+	oldPub := updateSigningPub
+	updateSigningPub = nil
+	updateSigningMu.Unlock()
+	t.Cleanup(func() {
+		updateSigningMu.Lock()
+		updateSigningPub = oldPub
+		updateSigningMu.Unlock()
+	})
+
+	if got := detachedSignatureFor(bin, "linux", sha); got != "" {
+		t.Fatalf("detached signature returned without a public key: %q", got)
 	}
 }
 

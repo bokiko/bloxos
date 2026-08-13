@@ -2,13 +2,13 @@ package main
 
 import (
 	"crypto/ed25519"
-	"encoding/base64"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/bokiko/bloxos/proto/updatesigning"
 )
 
 /* ============================================================================
@@ -29,14 +29,9 @@ import (
  * The signed message binds the OS so a signature issued for the Linux binary
  * cannot be replayed as the Windows announcement.
  *
- * updateSigContext and updateSigningMessage are duplicated in
- * hub/update_signing.go. Both sides assert the exact literal format in their
- * tests so the two cannot drift apart silently.
+ * The canonical message and key codecs live in the updatesigning package,
+ * shared by the agent, hub, and offline signing tool.
  * ============================================================================ */
-
-// updateSigContext namespaces the signature so this key can never be
-// repurposed to sign anything else meaningful.
-const updateSigContext = "bloxos-agent-update:v1"
 
 // agentUpdateProtocol is reported to the hub in every agent_running_version
 // frame. Version 1 means "this binary verifies signed announcements."
@@ -54,11 +49,9 @@ const agentUpdateProtocol = 1
 // the key. Windows pins it next to the agent executable instead.
 const defaultUpdatePublicKeyPathLinux = "/etc/bloxos/agent-update.pub"
 
-// updateSigningMessage builds the exact byte string that gets signed.
+// updateSigningMessage delegates to the canonical shared message format.
 func updateSigningMessage(osName, sha256hex string) []byte {
-	return []byte(updateSigContext + ":" +
-		strings.ToLower(strings.TrimSpace(osName)) + ":" +
-		strings.ToLower(strings.TrimSpace(sha256hex)))
+	return updatesigning.Message(osName, sha256hex)
 }
 
 // selfUpdateTransportOK reports whether this agent's actual hub URL permits a
@@ -128,46 +121,16 @@ func updatePublicKeyPath(exePath string) string {
 // parseUpdatePublicKey reads a pinned key file: the first non-empty,
 // non-comment line, base64-standard-encoded.
 func parseUpdatePublicKey(data []byte) (ed25519.PublicKey, error) {
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		raw, err := base64.StdEncoding.DecodeString(line)
-		if err != nil {
-			return nil, fmt.Errorf("key is not valid base64: %w", err)
-		}
-		if len(raw) != ed25519.PublicKeySize {
-			return nil, fmt.Errorf("key is %d bytes, want %d", len(raw), ed25519.PublicKeySize)
-		}
-		return ed25519.PublicKey(raw), nil
-	}
-	return nil, fmt.Errorf("no key found in file")
+	return updatesigning.DecodePublicKey(data)
 }
 
 // verifyUpdateSignature checks sigB64 over (osName, sha256hex) against pub.
 func verifyUpdateSignature(pub ed25519.PublicKey, osName, sha256hex, sigB64 string) error {
-	if len(pub) != ed25519.PublicKeySize {
-		return fmt.Errorf("pinned key is malformed")
-	}
-	sigB64 = strings.TrimSpace(sigB64)
-	if sigB64 == "" {
+	if strings.TrimSpace(sigB64) == "" {
 		return fmt.Errorf("hub announced no signature for the %s binary", osName)
 	}
-	sig, err := base64.StdEncoding.DecodeString(sigB64)
-	if err != nil {
-		return fmt.Errorf("signature is not valid base64: %w", err)
-	}
-	if len(sig) != ed25519.SignatureSize {
-		return fmt.Errorf("signature is %d bytes, want %d", len(sig), ed25519.SignatureSize)
-	}
-	// Reject a non-hex "SHA" before it reaches the signed message — it would
-	// otherwise be possible to sign an arbitrary string in the SHA slot.
-	if _, err := hex.DecodeString(strings.TrimSpace(sha256hex)); err != nil {
-		return fmt.Errorf("announced SHA is not hex: %w", err)
-	}
-	if !ed25519.Verify(pub, updateSigningMessage(osName, sha256hex), sig) {
-		return fmt.Errorf("signature does not verify against the pinned update key")
+	if err := updatesigning.Verify(pub, osName, sha256hex, sigB64); err != nil {
+		return fmt.Errorf("signature does not verify against the pinned update key: %w", err)
 	}
 	return nil
 }
