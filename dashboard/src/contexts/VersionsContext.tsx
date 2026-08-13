@@ -23,12 +23,27 @@ export interface AgentVersionInfo {
   update_protocol: number;
 }
 
+export interface AgentBinaryInfo {
+  path: string;
+  source: string;
+  sha: string;
+  mtime: string;
+  error: string;
+}
+
 export interface VersionsResponse {
   signing_enabled: boolean;
   signing_disabled_reason: string;
   hub_sha: string;
   hub_short_sha: string;
   hub_mtime: string;
+  hub_windows_sha: string;
+  hub_windows_short_sha: string;
+  hub_windows_mtime: string;
+  agent_binaries?: {
+    linux: AgentBinaryInfo;
+    windows: AgentBinaryInfo;
+  };
   agents: AgentVersionInfo[];
   rollout_paused: boolean;
   pause_reason: string;

@@ -1562,15 +1562,8 @@ func TestAgentVersionAnnouncedOnReconnect(t *testing.T) {
 	t.Setenv("PUBLIC_URL", "https://hub.example.com")
 
 	const stagedSHA = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
-	hubAgentBinaryMu.Lock()
-	prevSHA := hubAgentBinarySHA
-	hubAgentBinarySHA = stagedSHA
-	hubAgentBinaryMu.Unlock()
-	t.Cleanup(func() {
-		hubAgentBinaryMu.Lock()
-		hubAgentBinarySHA = prevSHA
-		hubAgentBinaryMu.Unlock()
-	})
+	withAgentBinaryState(t)
+	setAgentBinaryState("linux", agentBinaryState{SHA: stagedSHA})
 
 	server := httptest.NewServer(e)
 	defer server.Close()
@@ -1657,18 +1650,9 @@ func TestAnnouncedSHAIsPerPlatform(t *testing.T) {
 	const linuxSHA = "1111111111111111111111111111111111111111111111111111111111111111"
 	const windowsSHA = "2222222222222222222222222222222222222222222222222222222222222222"
 
-	hubAgentBinaryMu.Lock()
-	prevLinux := hubAgentBinarySHA
-	prevWindows := hubWindowsAgentBinarySHA
-	hubAgentBinarySHA = linuxSHA
-	hubWindowsAgentBinarySHA = windowsSHA
-	hubAgentBinaryMu.Unlock()
-	t.Cleanup(func() {
-		hubAgentBinaryMu.Lock()
-		hubAgentBinarySHA = prevLinux
-		hubWindowsAgentBinarySHA = prevWindows
-		hubAgentBinaryMu.Unlock()
-	})
+	withAgentBinaryState(t)
+	setAgentBinaryState("linux", agentBinaryState{SHA: linuxSHA})
+	setAgentBinaryState("windows", agentBinaryState{SHA: windowsSHA})
 
 	if got := announcedSHAFor("linux"); got != linuxSHA {
 		t.Fatalf("announcedSHAFor(linux) = %s, want %s", got, linuxSHA)
@@ -1702,18 +1686,9 @@ func TestRecordAgentRunningVersionTracksOS(t *testing.T) {
 	const linuxSHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	const windowsSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
-	hubAgentBinaryMu.Lock()
-	prevLinux := hubAgentBinarySHA
-	prevWindows := hubWindowsAgentBinarySHA
-	hubAgentBinarySHA = linuxSHA
-	hubWindowsAgentBinarySHA = windowsSHA
-	hubAgentBinaryMu.Unlock()
-	t.Cleanup(func() {
-		hubAgentBinaryMu.Lock()
-		hubAgentBinarySHA = prevLinux
-		hubWindowsAgentBinarySHA = prevWindows
-		hubAgentBinaryMu.Unlock()
-	})
+	withAgentBinaryState(t)
+	setAgentBinaryState("linux", agentBinaryState{SHA: linuxSHA})
+	setAgentBinaryState("windows", agentBinaryState{SHA: windowsSHA})
 
 	// Cleanup test entries from the in-memory map.
 	t.Cleanup(func() {
