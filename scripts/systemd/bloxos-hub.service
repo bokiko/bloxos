@@ -11,7 +11,7 @@ Restart=always
 RestartSec=5
 Environment=PATH=/usr/local/go/bin:/usr/bin:/bin
 Environment="BLOXOS_CA_CERT=/var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt"
-Environment="BLOXOS_AGENT_BINARY=/opt/bloxos/agent/bloxos-agent"
+Environment="BLOXOS_AGENT_BINARY=/usr/local/lib/bloxos/linux/bloxos-agent"
 
 [Install]
 WantedBy=multi-user.target

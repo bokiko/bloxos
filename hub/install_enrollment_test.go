@@ -170,16 +170,8 @@ func TestInstallScriptPinsAgentBinaryHash(t *testing.T) {
 	}
 	t.Setenv("BLOXOS_AGENT_BINARY", bin)
 
-	hubAgentBinaryMu.Lock()
-	prevSHA, prevMtime := hubAgentBinarySHA, hubAgentBinaryMtime
-	hubAgentBinarySHA = ""
-	hubAgentBinaryMtime = time.Time{}
-	hubAgentBinaryMu.Unlock()
-	t.Cleanup(func() {
-		hubAgentBinaryMu.Lock()
-		hubAgentBinarySHA, hubAgentBinaryMtime = prevSHA, prevMtime
-		hubAgentBinaryMu.Unlock()
-	})
+	withAgentBinaryState(t)
+	useTestResolvedBinary(t, "linux", bin)
 
 	sum := sha256.Sum256(content)
 	want := hex.EncodeToString(sum[:])
@@ -203,6 +195,7 @@ func TestInstallScriptPinsAgentBinaryHash(t *testing.T) {
 // downloader's ownership on a binary that systemd later executes as root.
 func TestInstallScriptInstallsAgentBinaryAsRoot(t *testing.T) {
 	e, _ := setupTestServer(t)
+	useGeneratedTestBinary(t, "linux")
 
 	req := httptest.NewRequest(http.MethodGet, "/install.sh", nil)
 	rec := httptest.NewRecorder()
@@ -239,16 +232,8 @@ func TestWindowsInstallScriptPinsHashAndVerifiesBinaryDownload(t *testing.T) {
 	}
 	t.Setenv("BLOXOS_AGENT_BINARY_WINDOWS", bin)
 
-	hubAgentBinaryMu.Lock()
-	prevSHA, prevMtime := hubWindowsAgentBinarySHA, hubWindowsAgentBinaryMtime
-	hubWindowsAgentBinarySHA = ""
-	hubWindowsAgentBinaryMtime = time.Time{}
-	hubAgentBinaryMu.Unlock()
-	t.Cleanup(func() {
-		hubAgentBinaryMu.Lock()
-		hubWindowsAgentBinarySHA, hubWindowsAgentBinaryMtime = prevSHA, prevMtime
-		hubAgentBinaryMu.Unlock()
-	})
+	withAgentBinaryState(t)
+	useTestResolvedBinary(t, "windows", bin)
 
 	sum := sha256.Sum256(content)
 	want := hex.EncodeToString(sum[:])

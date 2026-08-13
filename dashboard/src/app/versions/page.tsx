@@ -15,7 +15,7 @@ import {
   KeyRound,
   ShieldCheck,
 } from "lucide-react";
-import { useVersions } from "@/contexts/VersionsContext";
+import { AgentBinaryInfo, useVersions } from "@/contexts/VersionsContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import {
@@ -47,10 +47,92 @@ function timeSince(iso: string | undefined): string {
   return `${d}d ago`;
 }
 
+function AgentBinaryCard({
+  platform,
+  binary,
+}: {
+  platform: "Linux" | "Windows";
+  binary: AgentBinaryInfo;
+}) {
+  const available = Boolean(binary.sha) && !binary.error;
+
+  return (
+    <div
+      className={`rounded-xl border p-4 ${
+        available
+          ? "border-blox-border bg-blox-card"
+          : "border-red-500/20 bg-red-500/5"
+      }`}
+      data-testid={`agent-binary-${platform.toLowerCase()}`}
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.1em] text-blox-muted/70 font-medium">
+          <Server className="w-3 h-3" />
+          {platform} agent binary
+        </div>
+        <Badge
+          variant="outline"
+          className={
+            available
+              ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400 text-[10px]"
+              : "border-red-500/30 bg-red-500/10 text-red-400 text-[10px]"
+          }
+        >
+          {available ? "Trusted" : "Unavailable"}
+        </Badge>
+      </div>
+      {available ? (
+        <>
+          <div className="flex items-baseline gap-3 mt-3">
+            <code className="text-sm font-mono font-semibold text-blox-text">
+              {shortSHA(binary.sha)}
+            </code>
+            <span className="text-[11px] text-blox-muted">
+              checked {timeSince(binary.mtime)}
+            </span>
+          </div>
+          <dl className="mt-3 grid gap-2 text-[11px]">
+            <div>
+              <dt className="text-blox-muted">Source</dt>
+              <dd className="text-blox-text font-mono break-all">{binary.source}</dd>
+            </div>
+            <div>
+              <dt className="text-blox-muted">Resolved path</dt>
+              <dd className="text-blox-text font-mono break-all">{binary.path}</dd>
+            </div>
+          </dl>
+        </>
+      ) : (
+        <p className="text-xs text-red-300 mt-3 break-words">
+          {binary.error || "No trusted binary resolved for this platform."}
+        </p>
+      )}
+    </div>
+  );
+}
+
 export default function VersionsPage() {
   const { data, loading, error, refresh, pauseRollout, resumeRollout } = useVersions();
   const { hasScope } = useAuth();
   const canManageRollout = hasScope("fleet.admin");
+  const binaries = data
+    ? data.agent_binaries ?? {
+        linux: {
+          path: "",
+          source: "legacy API",
+          sha: data.hub_sha,
+          mtime: data.hub_mtime,
+          error: "Resolver details require an updated hub.",
+        },
+        windows: {
+          path: "",
+          source: "legacy API",
+          sha: data.hub_windows_sha,
+          mtime: data.hub_windows_mtime,
+          error: "Resolver details require an updated hub.",
+        },
+      }
+    : null;
 
   useEffect(() => {
     refresh();
@@ -149,22 +231,30 @@ export default function VersionsPage() {
               </div>
             </div>
 
+            <section aria-labelledby="served-agent-binaries">
+              <h2
+                id="served-agent-binaries"
+                className="text-sm font-medium text-blox-text mb-3"
+              >
+                Served agent binaries
+              </h2>
+              <div className="grid gap-3 md:grid-cols-2">
+                <AgentBinaryCard platform="Linux" binary={binaries!.linux} />
+                <AgentBinaryCard platform="Windows" binary={binaries!.windows} />
+              </div>
+            </section>
+
             {/* Hub binary status card */}
             <div className="bg-blox-card border border-blox-border rounded-xl p-5">
               <div className="flex items-center justify-between gap-4 flex-wrap">
                 <div>
                   <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.1em] text-blox-muted/70 font-medium mb-2">
                     <Server className="w-3 h-3" />
-                    Hub binary
+                    Fleet rollout
                   </div>
-                  <div className="flex items-baseline gap-3">
-                    <code className="text-base font-mono font-semibold text-blox-text">
-                      {shortSHA(data.hub_sha)}
-                    </code>
-                    <span className="text-[11px] text-blox-muted">
-                      built {timeSince(data.hub_mtime)}
-                    </span>
-                  </div>
+                  <p className="text-xs text-blox-muted">
+                    Control update announcements for every platform.
+                  </p>
                 </div>
 
                 {/* Rollout pause/resume control */}

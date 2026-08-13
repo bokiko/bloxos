@@ -325,8 +325,14 @@ echo "Check status: systemctl status bloxos-agent"
 `
 	// Pin the hash of the binary the hub actually serves. recompute is
 	// mtime-cached, so this is cheap on the hot path.
-	recomputeAgentBinarySHA()
-	script = strings.ReplaceAll(script, "__EXPECTED_AGENT_SHA256__", announcedSHAFor("linux"))
+	recomputeBinaryFor("linux")
+	linuxState := currentAgentBinaryState("linux")
+	if linuxState.Error != "" || linuxState.SHA == "" {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "Linux agent binary unavailable: " + linuxState.Error,
+		})
+	}
+	script = strings.ReplaceAll(script, "__EXPECTED_AGENT_SHA256__", linuxState.SHA)
 	script = strings.ReplaceAll(script, "__UPDATE_PUBKEY__", updateSigningPublicKeyBase64())
 	return c.String(http.StatusOK, script)
 }
@@ -402,55 +408,35 @@ func buildInstallCommand(httpBase, wsBase, token string) (command string, caURL 
 }
 
 func handleDownloadAgent(c echo.Context) error {
-	// Phase 9: per-OS binary resolution. The target OS is detected from
-	// either the explicit ?os= query parameter (PowerShell installer
-	// passes this) or the User-Agent string.
+	// The target OS is detected from either the explicit ?os= query parameter
+	// or the User-Agent string. Resolution itself is centralized: recompute
+	// hashes a trusted path and the handler serves that exact cached path.
 	osName := strings.ToLower(strings.TrimSpace(c.QueryParam("os")))
 	if osName == "" {
 		ua := strings.ToLower(c.Request().UserAgent())
 		if strings.Contains(ua, "windows") {
 			osName = "windows"
-		} else {
-			osName = "linux"
 		}
 	}
-
-	var candidates []string
-	switch osName {
-	case "windows":
-		candidates = []string{
-			os.Getenv("BLOXOS_AGENT_BINARY_WINDOWS"),
-			"./agent/bloxos-agent.exe",
-			"/usr/local/bin/bloxos-agent.exe",
+	osName = normalizeAgentOS(osName)
+	recomputeBinaryFor(osName)
+	state := currentAgentBinaryState(osName)
+	if state.Error != "" || state.Path == "" || state.SHA == "" {
+		reason := state.Error
+		if reason == "" {
+			reason = "no trusted binary is available"
 		}
-	default:
-		osName = "linux"
-		candidates = []string{
-			os.Getenv("BLOXOS_AGENT_BINARY"),
-			"./agent/bloxos-agent",
-			"/usr/local/bin/bloxos-agent",
-		}
-	}
-
-	binaryPath := ""
-	for _, p := range candidates {
-		if p == "" {
-			continue
-		}
-		if _, err := os.Stat(p); err == nil {
-			binaryPath = p
-			break
-		}
-	}
-	if binaryPath == "" {
-		return c.JSON(http.StatusNotFound, map[string]string{
-			"error": fmt.Sprintf("agent binary for os=%s not found; set BLOXOS_AGENT_BINARY%s env var", osName, map[string]string{"windows": "_WINDOWS"}[osName]),
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error":  fmt.Sprintf("agent binary for os=%s unavailable: %s", osName, reason),
+			"os":     osName,
+			"source": state.Source,
 		})
 	}
 
 	arch := c.QueryParam("arch")
-	log.Printf("agent download: os=%s arch=%s path=%s", osName, arch, binaryPath)
-	return c.File(binaryPath)
+	log.Printf("agent download: os=%s arch=%s source=%s path=%s sha=%s",
+		osName, arch, state.Source, state.Path, versionShortSHA(state.SHA))
+	return c.File(state.Path)
 }
 
 func handleDownloadCACert(c echo.Context) error {
@@ -999,8 +985,14 @@ if ($svc -and $svc.Status -eq 'Running') {
     Write-Warning "BloxOSAgent service is not running. Check Event Viewer or services.msc."
 }
 `
-	recomputeAgentBinarySHA()
-	script = strings.ReplaceAll(script, "__EXPECTED_AGENT_SHA256__", announcedSHAFor("windows"))
+	recomputeBinaryFor("windows")
+	windowsState := currentAgentBinaryState("windows")
+	if windowsState.Error != "" || windowsState.SHA == "" {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "Windows agent binary unavailable: " + windowsState.Error,
+		})
+	}
+	script = strings.ReplaceAll(script, "__EXPECTED_AGENT_SHA256__", windowsState.SHA)
 	script = strings.ReplaceAll(script, "__UPDATE_PUBKEY__", updateSigningPublicKeyBase64())
 	return c.String(http.StatusOK, script)
 }

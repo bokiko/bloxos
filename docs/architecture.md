@@ -126,18 +126,31 @@ state and pending updates.
 Signatures still carry no downgrade or monotonicity protection, so a previously
 valid `(os, sha)` pair remains valid indefinitely ([#145]).
 
-### Resolving the served binary (Linux)
+### Resolving served agent binaries
 
-For Linux agents, `agentBinaryPathFor` resolves the served binary from an
-ordered candidate list: `$BLOXOS_AGENT_BINARY`, then `./agent/bloxos-agent`
-relative to the hub's working directory, then `/usr/local/bin/bloxos-agent`.
-The relative candidate does not resolve when the hub's `WorkingDirectory` is
-the `hub/` subdirectory, and the fallback is silent. Set
-`BLOXOS_AGENT_BINARY` explicitly in deployments to avoid serving a stale binary
-([#149]). Windows resolution uses its own environment variable and fallbacks.
+A single resolver supplies the path used to hash, find the detached `.sig`, and
+serve `/download/agent`. Linux and Windows resolve independently. An explicit
+`BLOXOS_AGENT_BINARY` or `BLOXOS_AGENT_BINARY_WINDOWS` is authoritative: it
+must be absolute and trusted, and a missing or rejected configured path fails
+closed without falling through. Without an override, each platform checks its
+root-owned system default under `/usr/local/lib/bloxos/`, then a sibling of the
+running hub executable. Resolution never depends on the process working
+directory.
+
+The resolver canonicalizes the path and requires the binary plus every ancestor
+to be root-owned and not group/other-writable. The API and Versions dashboard
+show the selected path, source, SHA, mtime, or platform-specific resolution
+error. A failure clears only that platform's advertised SHA, so one missing
+artifact cannot leave a stale digest or disable the other platform.
+
+Deploying this resolver requires a coupled live migration, not a hub-only
+upgrade. Before restarting the updated hub, place the currently served Linux
+binary and its valid detached signature in a root-owned directory, and update
+`BLOXOS_AGENT_BINARY` to that path. Preserve the prior binary, signature, and
+service configuration for rollback. The migration and restart are operational
+changes and are intentionally separate from the code change.
 
 [#145]: https://github.com/bokiko/bloxos/issues/145
-[#149]: https://github.com/bokiko/bloxos/issues/149
 
 ## Deployment Assets
 
