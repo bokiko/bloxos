@@ -4,8 +4,11 @@ go 1.25.0
 
 toolchain go1.25.9
 
+replace github.com/bokiko/bloxos/proto => ../proto
+
 require (
 	github.com/StackExchange/wmi v1.2.1
+	github.com/bokiko/bloxos/proto v0.0.0
 	github.com/creack/pty v1.1.24
 	github.com/gorilla/websocket v1.5.3
 	github.com/shirou/gopsutil/v4 v4.26.6

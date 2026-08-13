@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/bokiko/bloxos/proto/updatesigning"
 )
 
 /* ============================================================================
@@ -44,13 +46,9 @@ import (
  * has downgrade/monotonicity protection yet. That is a separate gap, not
  * closed by either signing mode.
  *
- * updateSigContext and updateSigningMessage are duplicated in
- * agent/update_verify.go. Both sides assert the exact literal format in
- * their tests so the two cannot drift apart silently.
+ * The canonical message and key codecs live in the updatesigning package,
+ * shared by the hub, agent, and offline signing tool.
  * ============================================================================ */
-
-// updateSigContext namespaces the signature. Must match the agent's constant.
-const updateSigContext = "bloxos-agent-update:v1"
 
 var (
 	updateSigningKey    ed25519.PrivateKey
@@ -65,12 +63,9 @@ var (
 	updateSigningMu             sync.RWMutex
 )
 
-// updateSigningMessage builds the exact byte string that gets signed.
-// Must match agent/update_verify.go byte for byte.
+// updateSigningMessage delegates to the canonical shared message format.
 func updateSigningMessage(osName, sha256hex string) []byte {
-	return []byte(updateSigContext + ":" +
-		strings.ToLower(strings.TrimSpace(osName)) + ":" +
-		strings.ToLower(strings.TrimSpace(sha256hex)))
+	return updatesigning.Message(osName, sha256hex)
 }
 
 // initUpdateSigning resolves the hub's update signing material at startup.
@@ -217,37 +212,11 @@ func updateSigningStatus() (enabled bool, reason string) {
 }
 
 func decodeUpdatePublicKey(b64 string) (ed25519.PublicKey, error) {
-	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(b64))
-	if err != nil {
-		return nil, fmt.Errorf("not valid base64: %w", err)
-	}
-	if len(raw) != ed25519.PublicKeySize {
-		return nil, fmt.Errorf("key is %d bytes, want %d", len(raw), ed25519.PublicKeySize)
-	}
-	return ed25519.PublicKey(raw), nil
+	return updatesigning.DecodePublicKey([]byte(b64))
 }
 
 func decodeUpdatePrivateKey(data []byte) (ed25519.PrivateKey, error) {
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		raw, err := base64.StdEncoding.DecodeString(line)
-		if err != nil {
-			return nil, fmt.Errorf("not valid base64: %w", err)
-		}
-		switch len(raw) {
-		case ed25519.PrivateKeySize:
-			return ed25519.PrivateKey(raw), nil
-		case ed25519.SeedSize:
-			return ed25519.NewKeyFromSeed(raw), nil
-		default:
-			return nil, fmt.Errorf("key is %d bytes, want %d (private) or %d (seed)",
-				len(raw), ed25519.PrivateKeySize, ed25519.SeedSize)
-		}
-	}
-	return nil, fmt.Errorf("no key found in file")
+	return updatesigning.DecodePrivateKey(data)
 }
 
 // updateSigningPublicKeyBase64 returns the key that installers pin on the
@@ -272,8 +241,8 @@ func signAgentRelease(osName, sha string) string {
 }
 
 // detachedSignatureFor reads <binaryPath>.sig, an offline-produced base64
-// ed25519 signature. Returns "" if absent, malformed, or — when a public key
-// is known — if it does not actually verify for this (os, sha). Announcing a
+// ed25519 signature. Returns "" if absent, malformed, no public key is
+// configured, or it does not verify for this (os, sha). Announcing a
 // stale signature would only make every agent in the fleet reject the update
 // with a confusing error, so it is better caught here.
 func detachedSignatureFor(binaryPath, osName, sha string) string {
@@ -297,7 +266,10 @@ func detachedSignatureFor(binaryPath, osName, sha string) string {
 	updateSigningMu.RLock()
 	pub := updateSigningPub
 	updateSigningMu.RUnlock()
-	if pub != nil && !ed25519.Verify(pub, updateSigningMessage(osName, sha), sig) {
+	if pub == nil {
+		return ""
+	}
+	if err := updatesigning.Verify(pub, osName, sha, sigB64); err != nil {
 		log.Printf("update signing: %s.sig does not verify for the %s binary currently served "+
 			"(sha %s) — re-sign it, agents will reject this announcement",
 			binaryPath, osName, versionShortSHA(sha))
