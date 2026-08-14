@@ -24,6 +24,9 @@ https://{$HUB_HOST} {
 	handle /install.sh {
 		reverse_proxy 127.0.0.1:4000
 	}
+	handle /install.ps1 {
+		reverse_proxy 127.0.0.1:4000
+	}
 
 	# Agent binary download
 	handle /download/* {

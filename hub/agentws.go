@@ -95,18 +95,15 @@ func (s *Server) handleCreateToken(c echo.Context) error {
 	}
 
 	httpBase, wsBase := publicAndWebsocketBase()
-	command, caURL, caSHA256 := buildInstallCommand(httpBase, wsBase, token)
-
-	resp := map[string]interface{}{
-		"token":      token,
-		"expires_at": expiresAt.Format(time.RFC3339),
-		"command":    command,
-	}
-	if caURL != "" {
-		resp["ca_url"] = caURL
-		resp["ca_sha256"] = caSHA256
-	}
-	return c.JSON(http.StatusOK, resp)
+	caURL, caSHA256 := bootstrapCAFor(httpBase)
+	return c.JSON(http.StatusOK, installTokenResponse{
+		Token:          token,
+		Command:        buildLinuxInstallCommand(httpBase, wsBase, token, caURL, caSHA256),
+		WindowsCommand: buildWindowsInstallCommand(httpBase, wsBase, token, caURL, caSHA256),
+		CAURL:          caURL,
+		CASHA256:       caSHA256,
+		ExpiresAt:      expiresAt.Format(time.RFC3339),
+	})
 }
 
 func handleInstallScript(c echo.Context) error {
@@ -161,25 +158,31 @@ if [[ -n "$CA_URL" ]]; then
     exit 1
   fi
 
-  echo "Bootstrapping trusted CA..."
-  TMP_CA=$(mktemp)
-  trap 'rm -f "$TMP_CA"' EXIT
-  curl_fetch_bootstrap "$CA_URL" -o "$TMP_CA"
-  ACTUAL_CA_SHA=$(sha256sum "$TMP_CA" | awk '{print $1}')
-  if [[ "$ACTUAL_CA_SHA" != "$CA_SHA256" ]]; then
-    echo "CA fingerprint mismatch"
-    echo "Expected: $CA_SHA256"
-    echo "Actual:   $ACTUAL_CA_SHA"
-    exit 1
+  CA_PATH="${BLOXOS_CA_CERT:-/etc/bloxos/ca.crt}"
+  if sudo test -f "$CA_PATH"; then
+    ACTUAL_CA_SHA=$(sudo sha256sum "$CA_PATH" | awk '{print $1}')
+    if [[ "$ACTUAL_CA_SHA" != "$CA_SHA256" ]]; then
+      echo "Existing CA fingerprint mismatch; refusing to replace $CA_PATH"
+      exit 1
+    fi
+    echo "Reusing fingerprint-verified CA at $CA_PATH"
+  else
+    echo "Bootstrapping trusted CA..."
+    TMP_CA=$(mktemp)
+    trap 'rm -f "$TMP_CA"' EXIT
+    curl_fetch_bootstrap "$CA_URL" -o "$TMP_CA"
+    ACTUAL_CA_SHA=$(sha256sum "$TMP_CA" | awk '{print $1}')
+    if [[ "$ACTUAL_CA_SHA" != "$CA_SHA256" ]]; then
+      echo "CA fingerprint mismatch"
+      echo "Expected: $CA_SHA256"
+      echo "Actual:   $ACTUAL_CA_SHA"
+      exit 1
+    fi
+    sudo install -d -o root -g root -m 0755 "$(dirname "$CA_PATH")"
+    sudo install -o root -g root -m 0644 "$TMP_CA" "$CA_PATH"
   fi
-
-  sudo mkdir -p /etc/bloxos
-  # 0755 so the next curl (running as the invoking user, not root) can traverse
-  # /etc/bloxos to read ca.crt. The agent-secret file inside is 0600.
-  sudo chmod 755 /etc/bloxos
-  sudo install -m 0644 "$TMP_CA" /etc/bloxos/ca.crt
-  CA_CURL_ARGS+=(--cacert /etc/bloxos/ca.crt)
-  AGENT_CA_ENV='Environment="BLOXOS_CA_CERT=/etc/bloxos/ca.crt"'
+  CA_CURL_ARGS+=(--cacert "$CA_PATH")
+  AGENT_CA_ENV="Environment=\"BLOXOS_CA_CERT=$CA_PATH\""
 fi
 
 # Download agent binary.
@@ -385,26 +388,18 @@ func loadBootstrapCACert() ([]byte, string, error) {
 	return nil, "", os.ErrNotExist
 }
 
-func buildInstallCommand(httpBase, wsBase, token string) (command string, caURL string, caSHA256 string) {
-	curlFlags := "-fsSL"
+func bootstrapCAFor(httpBase string) (caURL string, caSHA256 string) {
 	if strings.HasPrefix(httpBase, "https://") {
 		if caPEM, caPath, err := loadBootstrapCACert(); err == nil {
 			caURL = httpBase + "/download/ca.crt"
 			sum := sha256.Sum256(caPEM)
 			caSHA256 = hex.EncodeToString(sum[:])
-			curlFlags = "-fsSLk"
 			log.Printf("install bootstrap: using CA cert %s", caPath)
 		} else if !os.IsNotExist(err) {
 			log.Printf("WARNING: install bootstrap CA unavailable: %v", err)
 		}
 	}
-
-	command = fmt.Sprintf("export BLOXOS_HUB=%s BLOXOS_TOKEN=%s", wsBase, token)
-	if caURL != "" {
-		command += fmt.Sprintf(" BLOXOS_CA_URL=%s BLOXOS_CA_SHA256=%s", caURL, caSHA256)
-	}
-	command += fmt.Sprintf("; curl %s %s/install.sh | bash", curlFlags, httpBase)
-	return command, caURL, caSHA256
+	return caURL, caSHA256
 }
 
 func handleDownloadAgent(c echo.Context) error {
@@ -842,174 +837,6 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 			log.Printf("unknown message type from agent: %s", envelope.Type)
 		}
 	}
-}
-
-// handleWindowsInstallScript serves a PowerShell installer that mirrors
-// install.sh: download the agent, register a Windows service, start it.
-//
-// The script is intentionally returned as plain text so a one-liner like
-//
-//	iex (irm https://hub.example/install.ps1)
-//
-// works as expected. It honours the BLOXOS_HUB / BLOXOS_TOKEN environment
-// variables set by `gh api .../install-script` callers, and it requests
-// admin via WindowsBuiltInRole before doing anything destructive.
-func handleWindowsInstallScript(c echo.Context) error {
-	// PowerShell raw block. Go raw strings can't contain backticks, and
-	// PowerShell doesn't strictly need them here — we keep the script
-	// backtick-free.
-	script := `# BloxOS Windows Agent installer
-$ErrorActionPreference = 'Stop'
-
-# Require admin.
-$current = [Security.Principal.WindowsIdentity]::GetCurrent()
-$principal = New-Object Security.Principal.WindowsPrincipal($current)
-if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Write-Error "This installer must be run from an elevated PowerShell session."
-    exit 1
-}
-
-$Hub = $env:BLOXOS_HUB
-$Token = $env:BLOXOS_TOKEN
-if (-not $Hub)   { Write-Error "BLOXOS_HUB must be set"; exit 1 }
-if (-not $Token) { Write-Error "BLOXOS_TOKEN must be set"; exit 1 }
-
-# Convert wss:// -> https://, ws:// -> http://
-$HubHttp = $Hub -replace '^wss://','https://' -replace '^ws://','http://'
-Write-Host "Hub:    $HubHttp"
-Write-Host "WS hub: $Hub"
-
-# install.ps1 is invoked via 'powershell.exe -ExecutionPolicy Bypass -File'.
-# HTTP downloads use curl.exe rather than a PowerShell cert callback or
-# SecurityProtocol pinning. Only the initial CA bootstrap fetch uses -k; the
-# agent binary fetch verifies TLS against the bootstrapped CA (--cacert) and is
-# additionally SHA-256-pinned.
-
-# Stop + remove existing service if present.
-$svc = Get-Service -Name BloxOSAgent -ErrorAction SilentlyContinue
-if ($svc) {
-    Write-Host "Existing BloxOSAgent service found, stopping..."
-    if ($svc.Status -ne 'Stopped') {
-        Stop-Service -Name BloxOSAgent -Force -ErrorAction SilentlyContinue
-        Start-Sleep -Seconds 2
-    }
-    & sc.exe delete BloxOSAgent | Out-Null
-    Start-Sleep -Seconds 2
-}
-
-# Wipe stale credentials from any prior install. The Windows agent runs as
-# LocalSystem so its credential dir is C:\Windows\System32\config\systemprofile\.bloxos.
-# Without this cleanup, a re-install would inherit the prior secret and the
-# agent would attempt to authenticate with stale credentials instead of using
-# the new enrollment token. (See agent/main.go credentialFilePath() and the
-# secret>token priority in the WebSocket URL builder.)
-$CredDir = "C:\Windows\System32\config\systemprofile\.bloxos"
-if (Test-Path $CredDir) {
-    Write-Host "Removing stale agent credentials at $CredDir ..."
-    Remove-Item -Path $CredDir -Recurse -Force -ErrorAction SilentlyContinue
-}
-
-# Fetch the hub's local CA so the agent can validate wss:// without depending
-# on the Windows system trust store. Linux install.sh does the equivalent
-# (writes /etc/bloxos/ca.crt and sets BLOXOS_CA_CERT). Windows install.ps1
-# historically did not — fleet trust silently relied on whatever ca.crt was
-# already in .bloxos\ from a previous-era install.
-$CaPath = Join-Path $CredDir "ca.crt"
-if (-not (Test-Path $CredDir)) {
-    New-Item -ItemType Directory -Path $CredDir -Force | Out-Null
-}
-Write-Host "Downloading hub CA certificate to $CaPath ..."
-& curl.exe -ksfL -o $CaPath "$HubHttp/download/ca.crt"
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "CA cert download failed (curl exit code $LASTEXITCODE)"
-    exit 1
-}
-[Environment]::SetEnvironmentVariable("BLOXOS_CA_CERT", $CaPath, "Machine")
-
-$InstallDir = "C:\Program Files\BloxOS"
-$AgentExe   = Join-Path $InstallDir "bloxos-agent.exe"
-if (-not (Test-Path $InstallDir)) {
-    New-Item -ItemType Directory -Path $InstallDir | Out-Null
-}
-
-Write-Host "Downloading agent binary to $AgentExe ..."
-$DownloadUrl = "$HubHttp/download/agent?os=windows"
-# Use curl.exe (ships with Win10 1803+ and Win11) instead of Invoke-WebRequest.
-# IWR uses .NET HttpWebRequest, which mishandles TLS 1.3 post-handshake frames
-# (NewSessionTicket) and HTTP/2 ALPN against self-signed Caddy certs and bails
-# with "underlying connection was closed". curl.exe uses Schannel for TLS but
-# its own HTTP stack, which handles both cleanly.
-#
-# The CA was bootstrapped above, so verify TLS against it (--cacert) instead of
-# using -k. Only the initial CA fetch remains insecure; the agent binary is
-# both TLS-verified here and SHA-256-pinned below.
-& curl.exe --cacert $CaPath -sfL -o $AgentExe $DownloadUrl
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "Agent binary download failed (curl exit code $LASTEXITCODE)"
-    exit 1
-}
-
-# Verify the downloaded binary against the SHA-256 the hub computed for the
-# binary it serves.
-$ExpectedSha = "__EXPECTED_AGENT_SHA256__"
-if ($ExpectedSha) {
-    $ActualSha = (Get-FileHash -Algorithm SHA256 -Path $AgentExe).Hash.ToLower()
-    if ($ActualSha -ne $ExpectedSha.ToLower()) {
-        Remove-Item -Path $AgentExe -Force -ErrorAction SilentlyContinue
-        Write-Error "Agent binary fingerprint mismatch. Expected $ExpectedSha, got $ActualSha"
-        exit 1
-    }
-    Write-Host "Agent binary verified ($ExpectedSha)"
-} else {
-    Write-Warning "Hub did not provide an agent binary hash; skipping integrity check"
-}
-
-# Pin the hub's agent-update signing key beside the executable. The agent
-# refuses to self-update unless the announced SHA carries a signature from
-# this key. C:\Program Files is admin-writable only, which is what keeps an
-# unprivileged process from swapping the key out. See agent/update_verify.go.
-$UpdatePubKey = "__UPDATE_PUBKEY__"
-if ($UpdatePubKey) {
-    $PubKeyPath = Join-Path $InstallDir "agent-update.pub"
-    Set-Content -Path $PubKeyPath -Value $UpdatePubKey -Encoding ASCII
-    Write-Host "Pinned agent update signing key to $PubKeyPath"
-} else {
-    Write-Warning "Hub provided no update signing key; agent self-update will stay disabled"
-}
-
-# Persist HUB + TOKEN for the service to pick up at next start.
-[Environment]::SetEnvironmentVariable("BLOXOS_HUB", $Hub, "Machine")
-[Environment]::SetEnvironmentVariable("BLOXOS_TOKEN", $Token, "Machine")
-
-# Register the service via the agent's own SCM installer.
-Write-Host "Installing BloxOSAgent service..."
-& $AgentExe -install-service
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "Service installation failed (exit code $LASTEXITCODE)"
-    exit 1
-}
-
-Write-Host "Starting BloxOSAgent ..."
-Start-Service -Name BloxOSAgent
-
-Start-Sleep -Seconds 3
-$svc = Get-Service -Name BloxOSAgent -ErrorAction SilentlyContinue
-if ($svc -and $svc.Status -eq 'Running') {
-    Write-Host "=== BloxOS agent installed and running ==="
-} else {
-    Write-Warning "BloxOSAgent service is not running. Check Event Viewer or services.msc."
-}
-`
-	recomputeBinaryFor("windows")
-	windowsState := currentAgentBinaryState("windows")
-	if windowsState.Error != "" || windowsState.SHA == "" {
-		return c.JSON(http.StatusServiceUnavailable, map[string]string{
-			"error": "Windows agent binary unavailable: " + windowsState.Error,
-		})
-	}
-	script = strings.ReplaceAll(script, "__EXPECTED_AGENT_SHA256__", windowsState.SHA)
-	script = strings.ReplaceAll(script, "__UPDATE_PUBKEY__", updateSigningPublicKeyBase64())
-	return c.String(http.StatusOK, script)
 }
 
 // validateAgentToken checks a token against the DB (Finding #1).

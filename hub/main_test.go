@@ -849,14 +849,17 @@ func TestCreateTokenIncludesCABootstrapForHTTPS(t *testing.T) {
 	}
 
 	command, _ := resp["command"].(string)
-	if !strings.Contains(command, "BLOXOS_CA_URL=https://bloxos.example/download/ca.crt") {
-		t.Fatalf("expected command to include CA URL, got %q", command)
+	if !strings.Contains(command, "CA_URL='https://bloxos.example/download/ca.crt'") {
+		t.Fatalf("expected command to pin the CA URL, got %q", command)
 	}
-	if !strings.Contains(command, "BLOXOS_CA_SHA256=") {
-		t.Fatalf("expected command to include CA SHA256, got %q", command)
+	if !strings.Contains(command, "CA_SHA256='") {
+		t.Fatalf("expected command to pin the CA SHA256, got %q", command)
 	}
-	if !strings.Contains(command, "curl -fsSLk https://bloxos.example/install.sh | bash") {
-		t.Fatalf("expected HTTPS bootstrap command with curl -k, got %q", command)
+	if strings.Contains(command, "install.sh | bash") {
+		t.Fatalf("installer must be downloaded through the verified CA and executed from a file, got %q", command)
+	}
+	if !strings.Contains(command, `--cacert "$CA_PATH"`) || !strings.Contains(command, `bash "$INSTALLER"`) {
+		t.Fatalf("expected verified installer download followed by file execution, got %q", command)
 	}
 	if resp["ca_url"] != "https://bloxos.example/download/ca.crt" {
 		t.Fatalf("unexpected ca_url: %v", resp["ca_url"])
