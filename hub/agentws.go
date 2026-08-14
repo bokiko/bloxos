@@ -492,6 +492,19 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 		log.Printf("rate limit exceeded: ws_agent from %s", ip)
 		return c.JSON(http.StatusTooManyRequests, map[string]string{"error": "rate limit exceeded"})
 	}
+	// Serialize credential revocation with the short authentication window.
+	// Without this gate, a socket could validate a secret, lose a race with
+	// revocation, and register after the revoke handler had already looked for
+	// a live connection to close.
+	s.agentAuthMu.RLock()
+	authPending := true
+	completeAuth := func() {
+		if authPending {
+			authPending = false
+			s.agentAuthMu.RUnlock()
+		}
+	}
+	defer completeAuth()
 
 	// Prefer credentials from handshake headers — unlike query strings, they
 	// are not written to reverse-proxy access logs. Fall back to the deprecated
@@ -573,6 +586,7 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 	if secretMachineID != "" {
 		machineID = secretMachineID
 		s.registerAgentConnection(machineID, agent)
+		completeAuth()
 		log.Printf("agent authenticated via secret: machine_id=%s", machineID)
 	}
 
@@ -667,6 +681,7 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 				}
 
 				s.registerAgentConnection(machineID, agent)
+				completeAuth()
 				log.Printf("agent registered: %s (%s)", m.Hostname, machineID)
 			}
 
@@ -1120,6 +1135,66 @@ func (s *Server) validateAgentSecret(secret string) (string, error) {
 func (s *Server) revokeAgentCredential(machineID string) error {
 	_, err := s.db.Exec(`DELETE FROM agent_credentials WHERE machine_id = ?`, machineID)
 	return err
+}
+
+// handleRevokeAgentCredential removes only a machine's durable enrollment
+// credential. The machine and all of its history remain intact so the same
+// host can re-enroll under its stable machine ID with a fresh install token.
+// Any currently authenticated socket is closed after the database commit;
+// otherwise revocation would not take effect until that connection happened
+// to reconnect.
+func (s *Server) handleRevokeAgentCredential(c echo.Context) error {
+	s.agentAuthMu.Lock()
+	defer s.agentAuthMu.Unlock()
+	machineID := c.Param("id")
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to start transaction"})
+	}
+	defer tx.Rollback()
+
+	var exists int
+	if err := tx.QueryRow(`SELECT 1 FROM machines WHERE id = ?`, machineID).Scan(&exists); err != nil {
+		if err == sql.ErrNoRows {
+			return c.JSON(http.StatusNotFound, map[string]string{"error": "machine not found"})
+		}
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to query machine"})
+	}
+
+	result, err := tx.Exec(`DELETE FROM agent_credentials WHERE machine_id = ?`, machineID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to revoke credential"})
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to confirm credential revocation"})
+	}
+	if err := tx.Commit(); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to commit credential revocation"})
+	}
+
+	// Snapshot the connection under the registry lock, then release the lock
+	// before closing the socket. The read-loop performs the normal symmetric
+	// cleanup; unregisterAgentConnection below makes the result synchronous and
+	// remains safe if that cleanup already won the race.
+	s.agentsMu.RLock()
+	agent := s.agents[machineID]
+	s.agentsMu.RUnlock()
+	connectionClosed := agent != nil && agent.Conn != nil
+	if connectionClosed {
+		_ = agent.Conn.Close()
+		s.unregisterAgentConnection(machineID, agent)
+	}
+
+	credentialExisted := rows > 0
+	log.Printf("agent credential revoked: machine_id=%s credential_existed=%t connection_closed=%t",
+		machineID, credentialExisted, connectionClosed)
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"machine_id":         machineID,
+		"credential_existed": credentialExisted,
+		"connection_closed":  connectionClosed,
+	})
 }
 
 // generateFirstRunToken creates a one-time token on first startup when no tokens and no machines exist.
