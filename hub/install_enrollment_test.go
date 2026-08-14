@@ -251,10 +251,10 @@ func TestWindowsInstallScriptPinsHashAndVerifiesBinaryDownload(t *testing.T) {
 	if strings.Contains(body, "curl.exe -ksfL -o $AgentExe") {
 		t.Fatal("install.ps1 still downloads the agent binary with insecure curl -k")
 	}
-	if !strings.Contains(body, "--cacert $CaPath") {
-		t.Fatal("install.ps1 agent download should verify TLS via the bootstrapped CA (--cacert)")
+	if !strings.Contains(body, "$CurlTlsArgs = @('--cacert', $CaPath)") {
+		t.Fatal("install.ps1 agent download should verify TLS via the fingerprint-pinned CA")
 	}
-	if !strings.Contains(body, "curl.exe -ksfL -o $CaPath") {
-		t.Fatal("expected the initial CA bootstrap fetch to remain (curl -k to $CaPath)")
+	if strings.Contains(body, "curl.exe -ksfL -o $CaPath") {
+		t.Fatal("install.ps1 must not bootstrap or replace CA trust; the authenticated paste block owns that step")
 	}
 }
