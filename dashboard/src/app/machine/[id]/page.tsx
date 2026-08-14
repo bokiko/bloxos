@@ -27,6 +27,7 @@ import {
   Activity, Zap, Terminal as TerminalIcon, RotateCcw,
   Lock, Unlock, X, Maximize2, Minimize2, Wifi, BarChart3, Trash2,
   LayoutDashboard, Box, Container as ContainerIcon, StickyNote, KeyRound,
+  RefreshCw, Copy, Check,
 } from "lucide-react";
 import { HUB_URL, getAuthHeaders } from "@/lib/session";
 import { useAuth } from "@/contexts/AuthContext";
@@ -134,6 +135,17 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
   const [showRevokeConfirm, setShowRevokeConfirm] = useState(false);
   const [revoking, setRevoking] = useState(false);
   const [revokeError, setRevokeError] = useState<string | null>(null);
+  const [showReenrollDialog, setShowReenrollDialog] = useState(false);
+  const [preparingReenroll, setPreparingReenroll] = useState(false);
+  const [reenrollError, setReenrollError] = useState<string | null>(null);
+  const [reenrollResponse, setReenrollResponse] = useState<{
+    machine_id: string;
+    windows_command: string;
+    ca_url: string;
+    ca_sha256: string;
+    expires_at: string;
+  } | null>(null);
+  const [reenrollCopied, setReenrollCopied] = useState<"command" | "sha" | null>(null);
   const { hasScope, authFetch } = useAuth();
   const canDelete = hasScope("fleet.admin");
   const canControl = hasScope("fleet.control");
@@ -349,6 +361,37 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
     }
   }, [authFetch, id]);
 
+  // Preparing a re-enrollment command is inert: it mints a machine-bound
+  // token and returns a command, but does not touch the current credential
+  // or connection. Only running the returned command on the host performs
+  // the actual credential rotation.
+  const handlePrepareReenrollment = useCallback(async () => {
+    setPreparingReenroll(true);
+    setReenrollError(null);
+    try {
+      const res = await authFetch(`${HUB_URL}/api/machines/${id}/windows-re-enrollment`, {
+        method: "POST",
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        setReenrollError(data?.error || `Failed to prepare re-enrollment (${res.status})`);
+        return;
+      }
+      setReenrollResponse(data);
+    } catch {
+      setReenrollError("Failed to prepare re-enrollment. Is the hub reachable?");
+    } finally {
+      setPreparingReenroll(false);
+    }
+  }, [authFetch, id]);
+
+  const handleCopyReenroll = useCallback((text: string, which: "command" | "sha") => {
+    if (!text) return;
+    navigator.clipboard.writeText(text);
+    setReenrollCopied(which);
+    setTimeout(() => setReenrollCopied(null), 2000);
+  }, []);
+
   useEffect(() => {
     if (termState === "pin_entry") {
       setTimeout(() => pinInputRef.current?.focus(), 100);
@@ -468,6 +511,108 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Windows re-enrollment dialog */}
+      <Dialog
+        open={showReenrollDialog}
+        onOpenChange={(open) => {
+          if (!open && !preparingReenroll) {
+            setShowReenrollDialog(false);
+            setReenrollError(null);
+            setReenrollResponse(null);
+          }
+        }}
+      >
+        <DialogContent className="bg-blox-card border-blox-border text-blox-text ring-0 sm:max-w-lg" showCloseButton={false}>
+          <DialogHeader>
+            <div className="flex items-center gap-3">
+              <div className="p-2 rounded-xl bg-blox-blue/10">
+                <RefreshCw className="w-5 h-5 text-blox-blue" />
+              </div>
+              <DialogTitle className="text-blox-text">Prepare Windows re-enrollment</DialogTitle>
+            </div>
+            <DialogDescription className="text-blox-muted text-xs mt-2">
+              {reenrollResponse ? (
+                <>
+                  Run this command on <span className="text-blox-text font-medium">{machine.hostname}</span> in an
+                  elevated PowerShell session. It expires at{" "}
+                  <span className="text-blox-text font-medium">{new Date(reenrollResponse.expires_at).toLocaleString()}</span>.
+                  Running it rotates the credential; nothing changes on the hub until then.
+                </>
+              ) : (
+                <>
+                  Preparing the command does not disconnect{" "}
+                  <span className="text-blox-text font-medium">{machine.hostname}</span> — it stays connected and
+                  authenticated until you run the returned command on that host, which is what actually performs the
+                  credential rotation.
+                </>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          {reenrollError && (
+            <div className="text-[11px] text-blox-red bg-blox-red/10 border border-blox-red/30 rounded-lg px-3 py-2">
+              {reenrollError}
+            </div>
+          )}
+          {reenrollResponse && (
+            <div className="space-y-3">
+              <div className="relative">
+                <pre className="bg-black/40 border border-blox-border rounded-lg p-3 text-[11px] font-mono text-blox-text whitespace-pre-wrap break-all max-h-48 overflow-y-auto">
+                  {reenrollResponse.windows_command}
+                </pre>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handleCopyReenroll(reenrollResponse.windows_command, "command")}
+                  className="absolute top-2 right-2 text-xs border-blox-border gap-1.5"
+                  aria-label="Copy re-enrollment command"
+                >
+                  {reenrollCopied === "command" ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                  Copy
+                </Button>
+              </div>
+              {reenrollResponse.ca_sha256 && (
+                <div className="relative">
+                  <div className="text-[10px] text-blox-muted mb-1">CA fingerprint (SHA-256)</div>
+                  <code className="block text-[10px] font-mono text-blox-text break-all bg-black/40 border border-blox-border rounded-lg p-2 pr-16">
+                    {reenrollResponse.ca_sha256}
+                  </code>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleCopyReenroll(reenrollResponse.ca_sha256, "sha")}
+                    className="absolute top-5 right-2 text-xs border-blox-border gap-1.5"
+                    aria-label="Copy CA SHA-256 fingerprint"
+                  >
+                    {reenrollCopied === "sha" ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                    Copy SHA
+                  </Button>
+                </div>
+              )}
+            </div>
+          )}
+          <DialogFooter className="bg-transparent border-t-blox-border">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setShowReenrollDialog(false);
+                setReenrollError(null);
+                setReenrollResponse(null);
+              }}
+              disabled={preparingReenroll}
+              className="text-xs text-blox-muted border-blox-border"
+            >
+              {reenrollResponse ? "Close" : "Cancel"}
+            </Button>
+            {!reenrollResponse && (
+              <Button variant="default" size="sm" onClick={handlePrepareReenrollment} disabled={preparingReenroll} className="text-xs">
+                {preparingReenroll ? "Preparing..." : "Prepare command"}
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       {showReboot && (
         <RebootModal
           hostname={machine.hostname}
@@ -516,6 +661,21 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
               >
                 <KeyRound className="w-3.5 h-3.5" />
                 Revoke credential
+              </Button>
+            )}
+            {canDelete && !isAPIMachine && (machine.os?.toLowerCase().includes("windows") ?? false) && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setReenrollError(null);
+                  setReenrollResponse(null);
+                  setShowReenrollDialog(true);
+                }}
+                className="text-xs border-blox-border text-blox-muted hover:text-blox-blue hover:border-blox-blue/30 gap-1.5"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                Prepare Windows re-enrollment
               </Button>
             )}
             {canDelete && (

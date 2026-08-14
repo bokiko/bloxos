@@ -174,20 +174,73 @@ func loadCredentialFile() string {
 	return strings.TrimSpace(string(data))
 }
 
-// saveCredentialFile writes the agent secret to the credential file with 0600 perms.
+// saveCredentialFile durably writes the agent secret to the credential file
+// via writeCredentialFileAtomic (temp file + rename), so a crash mid-write
+// never leaves a partial credential on disk. On POSIX this yields real
+// 0600 owner-only permissions; on Windows, protection instead comes from
+// the file living in the protected systemprofile credential directory,
+// whose ACL is inherited rather than expressed as POSIX permission bits.
+// The directory itself stays 0755 (POSIX) so the install-time curl
+// (running as the invoking user) can traverse it to read
+// /etc/bloxos/ca.crt.
 func saveCredentialFile(secret string) error {
 	path := credentialFilePath()
-	dir := filepath.Dir(path)
-	// 0755 so the install-time curl (running as the invoking user) can traverse
-	// the dir to read /etc/bloxos/ca.crt. The secret file itself is 0600.
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("create credential dir: %w", err)
-	}
-	if err := os.WriteFile(path, []byte(secret+"\n"), 0600); err != nil {
-		return fmt.Errorf("write credential file: %w", err)
+	if err := writeCredentialFileAtomic(path, secret); err != nil {
+		return err
 	}
 	log.Printf("agent secret saved to %s", path)
 	return nil
+}
+
+// loadPendingCredentialFile reads a staged-but-unconfirmed secret, or ""
+// if none is pending.
+func loadPendingCredentialFile() string {
+	data, err := os.ReadFile(pendingCredentialPath(credentialFilePath()))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// savePendingCredentialFile durably writes secret to the PENDING path only
+// — see handleEnrolledFrame / handleEnrollmentConfirmed for why the active
+// credential file must never be touched here.
+func savePendingCredentialFile(secret string) error {
+	path := pendingCredentialPath(credentialFilePath())
+	if err := writeCredentialFileAtomic(path, secret); err != nil {
+		return err
+	}
+	log.Printf("staged pending agent secret at %s (awaiting hub confirmation)", path)
+	return nil
+}
+
+// defaultCredentialConfirmDeps wires handleEnrollmentConfirmed to the real
+// filesystem: the active path, the pending path beside it, and the same
+// durableRename primitive (see durable_rename_*.go) that
+// defaultCredentialFileWriter uses for the temp -> pending commit — one
+// shared durable rename/replace implementation per platform, not two
+// subtly different ones.
+func defaultCredentialConfirmDeps() credentialConfirmDeps {
+	activePath := credentialFilePath()
+	pendingPath := pendingCredentialPath(activePath)
+	return credentialConfirmDeps{
+		hashActive:  func() (string, error) { return hashCredentialFile(activePath) },
+		hashPending: func() (string, error) { return hashCredentialFile(pendingPath) },
+		promote: func() error {
+			if err := durableRename(pendingPath, activePath); err != nil {
+				return err
+			}
+			log.Printf("promoted pending agent secret to active at %s", activePath)
+			return nil
+		},
+		removePending: func() error {
+			err := os.Remove(pendingPath)
+			if err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			return nil
+		},
+	}
 }
 
 // caCertFilePath returns the path where the agent expects an additional trusted CA.
@@ -339,20 +392,150 @@ func backoffAfterConn(current, base, uptime time.Duration) time.Duration {
 	return current
 }
 
+// authOutcome classifies why a runAgent connection attempt ended, so
+// connectLoop can tell a definitive credential rejection (the hub's HTTP
+// 401 on the handshake itself) apart from every other kind of failure —
+// transport/TLS errors, a later read/write error, or a clean disconnect.
+// Only a definitive rejection of a PENDING credential should make
+// connectLoop fall back to the active credential immediately, without
+// waiting out the normal backoff; any other outcome just means "try the
+// same candidate again" (an abandoned/unreachable hub must never cause the
+// agent to discard a credential it never actually got to test).
+type authOutcome int
+
+const (
+	authOutcomeUnknown authOutcome = iota
+	authOutcomeRejected
+)
+
+// classifyDialAuthOutcome inspects a failed WebSocket handshake and reports
+// whether it was a definitive credential rejection (HTTP 401 from the hub,
+// meaning the hub actually evaluated and refused the credential) versus
+// anything else (network unreachable, TLS failure, timeout — none of which
+// mean the credential itself is bad). Split out from runAgent so this
+// classification is unit-testable without a real socket.
+func classifyDialAuthOutcome(resp *http.Response, dialErr error) authOutcome {
+	if dialErr != nil && resp != nil && resp.StatusCode == http.StatusUnauthorized {
+		return authOutcomeRejected
+	}
+	return authOutcomeUnknown
+}
+
+// shouldFallBackToActive decides whether connectLoop should immediately
+// retry with the active credential — skipping the normal backoff — after a
+// connection attempt that used the pending credential. Only a definitive
+// rejection of the pending credential, with an active credential actually
+// available to fall back to, qualifies: a transport/TLS failure must never
+// trigger this (the hub never got to evaluate the credential at all), and
+// there is nothing to fall back to if no active credential exists.
+func shouldFallBackToActive(usedPending bool, outcome authOutcome, haveActive bool) bool {
+	return usedPending && outcome == authOutcomeRejected && haveActive
+}
+
+// credentialSelection is what one connectLoop iteration decided to dial
+// with.
+type credentialSelection struct {
+	secret      string
+	usedPending bool
+}
+
+// selectCredentialCandidate is connectLoop's per-iteration candidate
+// decision, factored out as a pure function of what's currently on disk
+// PLUS what the hub most recently, definitively rejected — comparing by the
+// secret's VALUE, not a one-shot bool. A bool ("give up on pending") would
+// either get re-armed every iteration (since the pending file itself is
+// never deleted merely by a rejection — see handleEnrollmentConfirmed,
+// which only ever removes it via a hash-bound confirmation) — recreating an
+// instant pending→401→pending loop — or, if latched forever, would wrongly
+// keep ignoring a GENUINELY NEW pending secret staged by a fresh
+// re-enrollment attempt after the old one was abandoned. Comparing values
+// solves both: the same still-rejected pending file is skipped on every
+// subsequent iteration until it changes or disappears, while a different
+// pending value (fresh attempt) is tried immediately.
+func selectCredentialCandidate(pending, active, rejectedPending string) credentialSelection {
+	if pending != "" && pending != rejectedPending {
+		return credentialSelection{secret: pending, usedPending: true}
+	}
+	if active != "" {
+		return credentialSelection{secret: active, usedPending: false}
+	}
+	if pending != "" {
+		// The only credential that exists at all is the one already known
+		// to be rejected — requirement is to retain and keep retrying it
+		// (with the normal backoff) rather than have nothing to dial with.
+		return credentialSelection{secret: pending, usedPending: true}
+	}
+	return credentialSelection{secret: "", usedPending: false}
+}
+
+// nextRejectedPendingSecret computes the "known-rejected pending secret"
+// value connectLoop carries into its next iteration, given this iteration's
+// selection and outcome:
+//   - a definitive rejection of a pending-backed attempt marks that exact
+//     secret as rejected, so selectCredentialCandidate skips it (in favor of
+//     active, if available) on every subsequent iteration until it changes;
+//   - once there is no pending file at all, there is nothing left to avoid,
+//     so tracking is cleared — this also means a brand new pending secret
+//     staged later starts unrejected, as it must;
+//   - any other outcome (a successful connection, a transport/TLS failure,
+//     a rejection while using the active credential) leaves the tracked
+//     value untouched, so an active-fallback session that hits a transport
+//     failure keeps retrying active rather than reverting to the
+//     already-rejected pending candidate.
+func nextRejectedPendingSecret(current string, sel credentialSelection, outcome authOutcome, pendingOnDisk string) string {
+	if sel.usedPending && outcome == authOutcomeRejected {
+		return sel.secret
+	}
+	if pendingOnDisk == "" {
+		return ""
+	}
+	return current
+}
+
 func connectLoop(machineID string) {
 	backoff := time.Second
 	maxBackoff := 60 * time.Second
 
+	// rejectedPendingSecret persists ACROSS loop iterations — see
+	// nextRejectedPendingSecret's doc for why a value, not a bool.
+	var rejectedPendingSecret string
+
 	for {
-		// On reconnect, prefer credential file if it exists.
-		if stored := loadCredentialFile(); stored != "" {
-			agentSecret = stored
-		}
+		// On reconnect, a staged-but-unconfirmed PENDING credential is tried
+		// FIRST unless it is the exact value already known-rejected by the
+		// hub: it is either the not-yet-promoted result of a re-enrollment
+		// whose "enrollment_confirmed" never arrived — in which case the hub
+		// recognizes and promotes it (see validateAgentSecret) — or it is
+		// abandoned/expired, in which case the hub rejects it and this loop
+		// falls back to the still-valid active credential, below, WITHOUT
+		// re-selecting the same rejected pending value merely because its
+		// file is still on disk (see selectCredentialCandidate).
+		pending := loadPendingCredentialFile()
+		active := loadCredentialFile()
+		sel := selectCredentialCandidate(pending, active, rejectedPendingSecret)
+		agentSecret = sel.secret
 
 		start := time.Now()
-		err := runAgent(machineID)
+		outcome, err := runAgent(machineID)
 		if err != nil {
 			log.Printf("connection error: %v", err)
+		}
+
+		// A definitive rejection of the PENDING credential specifically
+		// means it is abandoned or expired hub-side — falling back to the
+		// still-valid active credential must not wait out the normal
+		// backoff, or a machine whose re-enrollment attempt lapsed would sit
+		// disconnected for up to maxBackoff before recovering on its own.
+		// Any other outcome (transport/TLS failure, a later read/write
+		// error, or a rejection of the active credential itself) gets the
+		// normal backoff+retry with the same candidate — in particular, a
+		// transport failure must never be treated as a credential rejection
+		// merely because the network happened to be unavailable.
+		immediateRetry := shouldFallBackToActive(sel.usedPending, outcome, active != "")
+		rejectedPendingSecret = nextRejectedPendingSecret(rejectedPendingSecret, sel, outcome, pending)
+		if immediateRetry {
+			log.Printf("pending credential rejected by hub — falling back to active credential")
+			continue
 		}
 
 		// A connection that stayed up long enough to be "stable" resets the
@@ -371,10 +554,10 @@ func connectLoop(machineID string) {
 	}
 }
 
-func runAgent(machineID string) error {
+func runAgent(machineID string) (authOutcome, error) {
 	u, err := url.Parse(hubURL)
 	if err != nil {
-		return fmt.Errorf("invalid hub URL: %w", err)
+		return authOutcomeUnknown, fmt.Errorf("invalid hub URL: %w", err)
 	}
 
 	// Send whichever credentials we have via handshake headers rather than the
@@ -396,14 +579,25 @@ func runAgent(machineID string) error {
 	log.Printf("connecting to %s", hubURL)
 	dialer, err := websocketDialerFor(u.String())
 	if err != nil {
-		return fmt.Errorf("build websocket dialer: %w", err)
+		return authOutcomeUnknown, fmt.Errorf("build websocket dialer: %w", err)
 	}
-	conn, _, err := dialer.Dial(u.String(), header)
+	conn, dialResp, err := dialer.Dial(u.String(), header)
 	if err != nil {
-		return fmt.Errorf("dial failed: %w", err)
+		return classifyDialAuthOutcome(dialResp, err), fmt.Errorf("dial failed: %w", err)
 	}
 	defer conn.Close()
 	log.Println("connected to hub")
+
+	// An ordinary reconnect (durable secret, no token in flight) is exactly
+	// the case where BLOXOS_TOKEN is provably no longer needed right now — no
+	// enrollment is in progress on this connection at all. When a token IS
+	// also present, a fresh or targeted re-enrollment may still be pending;
+	// cleanup is deferred to the "enrolled" handler instead (see
+	// handleEnrolledFrame) so a legitimate retry never loses the token to a
+	// premature wipe before enrollment actually completes.
+	maybeCleanupTokenOnReconnect(agentSecret != "", token != "", func() {
+		tokenCleanupOnce.Do(wipeMachineTokenIfBootstrapped)
+	})
 
 	// Mutex for concurrent writes to WebSocket.
 	var writeMu sync.Mutex
@@ -430,32 +624,67 @@ func runAgent(machineID string) error {
 
 			// Decode the type field to dispatch.
 			var envelope struct {
-				Type        string `json:"type"`
-				AgentSecret string `json:"agent_secret"`
+				Type         string `json:"type"`
+				AgentSecret  string `json:"agent_secret"`
+				SecretSHA256 string `json:"secret_sha256"`
 			}
 			if err := json.Unmarshal(msg, &envelope); err != nil {
 				log.Printf("invalid message from hub: %v", err)
 				continue
 			}
 
-			// First successful message decode = we're authenticated. If a
-			// durable secret exists on disk, BLOXOS_TOKEN env var is no longer
-			// needed and persisting it lets re-installs accidentally inherit
-			// it. Best-effort wipe; failures don't affect this agent's
-			// operation. Platform-specific implementation in main_<os>.go.
-			tokenCleanupOnce.Do(wipeMachineTokenIfBootstrapped)
-
 			switch envelope.Type {
 			case "enrolled":
-				if envelope.AgentSecret != "" {
-					log.Printf("received enrollment secret from hub")
-					agentSecret = envelope.AgentSecret
-					token = "" // Clear token from memory.
-					if err := saveCredentialFile(agentSecret); err != nil {
-						log.Printf("WARNING: failed to save credential file: %v", err)
-					} else {
-						log.Printf("enrollment complete - will use secret for future connections")
-					}
+				// A fresh or staged secret is durably saved to the PENDING
+				// file — never the active one — BEFORE anything treats it as
+				// trustworthy. Sending "enrollment_committed" proves nothing
+				// by itself — only the hub's later hash-bound
+				// "enrollment_confirmed" (below) is what makes it safe to
+				// promote the pending file to active and drop BLOXOS_TOKEN.
+				// Any failure here (save or send) tears this connection down
+				// rather than continuing silently: a fresh connection either
+				// retries the save (secret never made it to disk) or, if the
+				// secret WAS saved but only the send failed, lets the next
+				// reconnect's pending-secret-first recovery path pick it up
+				// instead. The in-memory agentSecret and the active
+				// credential file are both deliberately left untouched here.
+				accepted, hErr := handleEnrolledFrame(
+					envelope.AgentSecret,
+					savePendingCredentialFile,
+					func() error {
+						committed := map[string]string{"type": "enrollment_committed"}
+						return writeJSON(conn, &writeMu, committed)
+					},
+				)
+				if hErr != nil {
+					errCh <- fmt.Errorf("enrollment handling failed: %w", hErr)
+					return
+				}
+				if accepted {
+					log.Printf("received enrollment secret from hub, staged pending — awaiting hub confirmation before promoting or dropping bootstrap token")
+				}
+
+			case "enrollment_confirmed":
+				// The hub always names the exact credential it is confirming
+				// via secret_sha256 — a missing or mismatched hash must
+				// change nothing locally (handleEnrollmentConfirmed
+				// enforces this) rather than guess which file to trust.
+				outcome, hErr := handleEnrollmentConfirmed(envelope.SecretSHA256, defaultCredentialConfirmDeps())
+				if hErr != nil {
+					errCh <- fmt.Errorf("enrollment confirmation rejected: %w", hErr)
+					return
+				}
+				// Only now — after the active credential file is provably
+				// the one the hub just confirmed, whether by promoting a
+				// pending file or because it already matched active — is it
+				// safe to refresh the in-memory secret and drop the token.
+				agentSecret = loadCredentialFile()
+				token = ""
+				tokenCleanupOnce.Do(wipeMachineTokenIfBootstrapped)
+				if outcome == enrollmentConfirmPromoted {
+					log.Printf("hub confirmed enrollment (promoted pending to active) - dropped bootstrap token")
+				} else {
+					log.Printf("hub confirmed enrollment (already active) - dropped bootstrap token")
 				}
 
 			case "agent_version":
@@ -484,7 +713,7 @@ func runAgent(machineID string) error {
 	// (hostname/IP/OS); any other persisted message that arrives before the
 	// row exists is silently dropped by a plain UPDATE.
 	if err := sendAll(conn, &writeMu, machineID); err != nil {
-		return err
+		return authOutcomeUnknown, err
 	}
 
 	// Send hardware snapshot once per connect, AFTER the first metric so the
@@ -509,10 +738,10 @@ func runAgent(machineID string) error {
 	for {
 		select {
 		case err := <-errCh:
-			return err
+			return authOutcomeUnknown, err
 		case <-ticker.C:
 			if err := sendAll(conn, &writeMu, machineID); err != nil {
-				return err
+				return authOutcomeUnknown, err
 			}
 		case <-pingTicker.C:
 			writeMu.Lock()
@@ -520,7 +749,7 @@ func runAgent(machineID string) error {
 			err := conn.WriteMessage(websocket.PingMessage, nil)
 			writeMu.Unlock()
 			if err != nil {
-				return fmt.Errorf("ping: %w", err)
+				return authOutcomeUnknown, fmt.Errorf("ping: %w", err)
 			}
 		}
 	}

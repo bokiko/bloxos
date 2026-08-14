@@ -284,6 +284,7 @@ func (s *Server) registerRoutes(e *echo.Echo) {
 	api.PUT("/api/machines/:id/notes", s.handleSetMachineNotes)
 	api.GET("/api/machines/:id/metrics/history", s.handleMetricsHistory)
 	api.DELETE("/api/machines/:id/credential", s.handleRevokeAgentCredential)
+	api.POST("/api/machines/:id/windows-re-enrollment", s.handleWindowsReenrollment)
 	api.DELETE("/api/machines/:id", s.handleDeleteMachine)
 
 	api.POST("/api/machines/:id/terminal", s.handleStartTerminal)
