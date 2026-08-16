@@ -907,7 +907,7 @@ func TestValidateAgentTokenValid(t *testing.T) {
 		t.Fatalf("insert token: %v", err)
 	}
 
-	gotHash, valErr := s.validateAgentToken(rawToken)
+	gotHash, _, valErr := s.validateAgentToken(rawToken)
 	if valErr != nil {
 		t.Fatalf("expected valid token, got error: %v", valErr)
 	}
@@ -931,7 +931,7 @@ func TestValidateAgentTokenUsed(t *testing.T) {
 		t.Fatalf("insert token: %v", err)
 	}
 
-	_, valErr := s.validateAgentToken(rawToken)
+	_, _, valErr := s.validateAgentToken(rawToken)
 	if valErr == nil {
 		t.Fatal("expected error for used token, got nil")
 	}
@@ -955,7 +955,7 @@ func TestValidateAgentTokenExpired(t *testing.T) {
 		t.Fatalf("insert token: %v", err)
 	}
 
-	_, valErr := s.validateAgentToken(rawToken)
+	_, _, valErr := s.validateAgentToken(rawToken)
 	if valErr == nil {
 		t.Fatal("expected error for expired token, got nil")
 	}

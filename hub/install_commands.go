@@ -17,6 +17,19 @@ type installTokenResponse struct {
 	ExpiresAt      string `json:"expires_at"`
 }
 
+// windowsReenrollmentResponse is the contract for a machine-bound Windows
+// re-enrollment token. Unlike installTokenResponse it carries no Linux
+// command (this flow is Windows-only) and echoes machine_id so the caller
+// can confirm the token was minted for the machine it asked about.
+type windowsReenrollmentResponse struct {
+	MachineID      string `json:"machine_id"`
+	Token          string `json:"token"`
+	WindowsCommand string `json:"windows_command"`
+	CAURL          string `json:"ca_url"`
+	CASHA256       string `json:"ca_sha256"`
+	ExpiresAt      string `json:"expires_at"`
+}
+
 func shellSingleQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
@@ -71,10 +84,14 @@ env BLOXOS_HUB="$HUB_WS" BLOXOS_TOKEN="$TOKEN" "${CA_ENV[@]}" bash "$INSTALLER"`
 		shellSingleQuote(caURL), shellSingleQuote(caSHA256))
 }
 
-func buildWindowsInstallCommand(httpBase, wsBase, token, caURL, caSHA256 string) string {
+func buildWindowsInstallCommand(httpBase, wsBase, token, caURL, caSHA256 string, forceReenroll bool) string {
 	httpWarning := ""
 	if strings.HasPrefix(httpBase, "http://") {
 		httpWarning = `Write-Warning "Direct HTTP bootstrap is unencrypted and is intended only for loopback or isolated test networks."`
+	}
+	installerArgs := ""
+	if forceReenroll {
+		installerArgs = " -ForceReenroll"
 	}
 	return fmt.Sprintf(`$ErrorActionPreference = 'Stop'
 $HubHttp = %s
@@ -113,11 +130,11 @@ try {
     $env:BLOXOS_HUB = $HubWs
     $env:BLOXOS_TOKEN = $Token
     $env:BLOXOS_CA_SHA256 = $ExpectedCaSha
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Installer
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Installer%s
     if ($LASTEXITCODE -ne 0) { throw "Installer failed (exit $LASTEXITCODE)" }
 } finally {
     Remove-Item -LiteralPath $TempDir -Recurse -Force -ErrorAction SilentlyContinue
 }`,
 		powershellSingleQuote(httpBase), powershellSingleQuote(wsBase), powershellSingleQuote(token),
-		powershellSingleQuote(caURL), powershellSingleQuote(caSHA256), httpWarning)
+		powershellSingleQuote(caURL), powershellSingleQuote(caSHA256), httpWarning, installerArgs)
 }

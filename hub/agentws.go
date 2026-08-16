@@ -29,6 +29,32 @@ type ConnectedAgent struct {
 	WriteMu   sync.Mutex
 }
 
+// wsMessageWriter is exactly gorilla/websocket's (*Conn).WriteMessage
+// signature, factored out so writeLockedTo is testable against a fake
+// writer instead of a live network connection.
+type wsMessageWriter interface {
+	WriteMessage(messageType int, data []byte) error
+}
+
+// writeLocked is the ONLY safe way to write to agent.Conn once
+// registerAgentConnection has been called: that call launches
+// announceVersionToAgent in a goroutine (and command/refresh/terminal
+// handlers write from their own goroutines too), so any write after
+// registration is racing at least one other potential writer.
+// gorilla/websocket allows exactly one writer at a time — violating that is
+// a protocol-level panic risk ("concurrent write to websocket connection"),
+// not merely a Go-level data race, so `go test -race` cannot be relied on to
+// catch a missing lock here.
+func (a *ConnectedAgent) writeLocked(messageType int, data []byte) error {
+	return writeLockedTo(&a.WriteMu, a.Conn, messageType, data)
+}
+
+func writeLockedTo(mu *sync.Mutex, w wsMessageWriter, messageType int, data []byte) error {
+	mu.Lock()
+	defer mu.Unlock()
+	return w.WriteMessage(messageType, data)
+}
+
 // registerAgentConnection finalises an authenticated WebSocket handshake.
 // It is the single chokepoint between "agent authed" and "agent fully
 // online", so any per-connect work (registry insert, version announce,
@@ -99,7 +125,73 @@ func (s *Server) handleCreateToken(c echo.Context) error {
 	return c.JSON(http.StatusOK, installTokenResponse{
 		Token:          token,
 		Command:        buildLinuxInstallCommand(httpBase, wsBase, token, caURL, caSHA256),
-		WindowsCommand: buildWindowsInstallCommand(httpBase, wsBase, token, caURL, caSHA256),
+		WindowsCommand: buildWindowsInstallCommand(httpBase, wsBase, token, caURL, caSHA256, false),
+		CAURL:          caURL,
+		CASHA256:       caSHA256,
+		ExpiresAt:      expiresAt.Format(time.RFC3339),
+	})
+}
+
+// handleWindowsReenrollment mints a token bound to exactly one existing
+// Windows machine and returns a -ForceReenroll command for it. Unlike
+// handleCreateToken (a generic, unbound Add Machine token), this never
+// deletes the machine's current credential or closes its live socket —
+// preparing the command is inert. The credential is only replaced once the
+// operator runs the returned command and the agent re-enrolls with the
+// target-bound token; see the WS handshake in handleAgentWS.
+func (s *Server) handleWindowsReenrollment(c echo.Context) error {
+	machineID := c.Param("id")
+
+	var osName sql.NullString
+	err := s.db.QueryRow(`SELECT os FROM machines WHERE id = ?`, machineID).Scan(&osName)
+	if err == sql.ErrNoRows {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "machine not found"})
+	}
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to query machine"})
+	}
+	if normalizeAgentOS(osName.String) != "windows" {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "machine is not a Windows agent"})
+	}
+
+	// A re-enrollment token stages a replacement for an EXISTING credential
+	// (see stageTargetedCredential); a machine with no active credential has
+	// nothing to stage against and should use the ordinary Add Machine flow
+	// instead. Checked before any write.
+	if !s.machineHasCredential(machineID) {
+		return c.JSON(http.StatusConflict, map[string]string{
+			"error": "machine has no active credential; use the Add Machine command instead",
+		})
+	}
+
+	// Same PUBLIC_URL requirement as handleCreateToken, and checked before any
+	// write: a re-enrollment command is exactly as authority-sensitive as a
+	// fresh install command, and this endpoint must fail closed rather than
+	// insert a token it then can't safely address.
+	if strings.TrimSpace(os.Getenv("PUBLIC_URL")) == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "PUBLIC_URL is not set on the hub; set PUBLIC_URL to the hub's public URL and restart before generating re-enrollment tokens",
+		})
+	}
+
+	token := uuid.New().String()
+	h := sha256.Sum256([]byte(token))
+	tokenHash := hex.EncodeToString(h[:])
+	expiresAt := time.Now().Add(15 * time.Minute)
+
+	if _, err := s.db.Exec(
+		`INSERT INTO tokens (token_hash, expires_at, target_machine_id) VALUES (?, ?, ?)`,
+		tokenHash, expiresAt, machineID,
+	); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+
+	httpBase, wsBase := publicAndWebsocketBase()
+	caURL, caSHA256 := bootstrapCAFor(httpBase)
+	return c.JSON(http.StatusOK, windowsReenrollmentResponse{
+		MachineID:      machineID,
+		Token:          token,
+		WindowsCommand: buildWindowsInstallCommand(httpBase, wsBase, token, caURL, caSHA256, true),
 		CAURL:          caURL,
 		CASHA256:       caSHA256,
 		ExpiresAt:      expiresAt.Format(time.RFC3339),
@@ -520,9 +612,10 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 
 	// Mode B: Agent reconnecting with durable secret.
 	var secretMachineID string
+	var secretJustPromoted bool
 	if agentSecret != "" {
 		var err error
-		secretMachineID, err = s.validateAgentSecret(agentSecret)
+		secretMachineID, secretJustPromoted, err = s.validateAgentSecret(agentSecret)
 		if err != nil {
 			log.Printf("agent secret validation failed: %v", err)
 			// If secret was provided but invalid, and no token fallback, reject.
@@ -534,14 +627,23 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 		}
 	}
 
-	// Mode A: Token-based enrollment (only if not already authenticated via secret).
+	// Mode A: token validation. Unlike the original secret-XOR-token design,
+	// this runs whenever a token is present even alongside an already-valid
+	// secret: a targeted re-enrollment token rides alongside the agent's
+	// still-valid old secret (see the dual-credential handling below), so we
+	// must know the token's target before deciding how to route this
+	// connection. A generic (untargeted) token found alongside a valid secret
+	// is simply never consulted again below — it can't override a valid
+	// credential.
 	var tokenHash string
+	var targetMachineID sql.NullString
 	tokenValidated := false
-	if agentSecret == "" && token != "" {
+	if token != "" {
 		var err error
-		tokenHash, err = s.validateAgentToken(token)
+		tokenHash, targetMachineID, err = s.validateAgentToken(token)
 		if err != nil {
 			tokenHash = ""
+			targetMachineID = sql.NullString{}
 			log.Printf("agent token validation deferred (may be reconnecting agent): %v", err)
 		} else {
 			tokenValidated = true
@@ -575,21 +677,82 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 		return ws.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(10*time.Second))
 	})
 
-	// If authenticated via secret, we already know the machine_id.
+	// If authenticated via secret, we already know the machine_id — UNLESS a
+	// target-bound token for that same machine is also present. That specific
+	// combination means the agent still has its old, still-valid secret AND a
+	// fresh re-enrollment token: it must be routed through the staging branch
+	// below (first metrics frame), not fast-pathed as an ordinary reconnect,
+	// so a legitimate targeted re-enrollment attempt is never silently
+	// downgraded to "just a normal reconnect" that never looks at the token.
+	dualCredentialTargetedReenroll := secretMachineID != "" && tokenValidated &&
+		targetMachineID.Valid && targetMachineID.String == secretMachineID
+
 	var machineID string
 	agent := &ConnectedAgent{Conn: ws}
-	if secretMachineID != "" {
+	// Single owner of connection cleanup. Every return from this point on —
+	// whether the read loop exits normally, or one of the many
+	// post-registration failure paths below returns early (a failed confirm
+	// write, a promotion that errors/mismatches/expires, an
+	// enrollment_committed with no matching staged state, etc.) — must run
+	// unregisterAgentConnection exactly once. A closure (not
+	// `defer s.unregisterAgentConnection(machineID, agent)`) is required
+	// because a direct defer call captures machineID's value NOW, while it is
+	// still "" — every post-registration path sets it before returning.
+	// unregisterAgentConnection's own identity check (current == agent) means
+	// this is always safe to call, including when registration never
+	// happened at all (no-op via the empty-machineID guard) or when a newer
+	// connection has already replaced this one in the registry (no-op via
+	// the identity check).
+	defer func() {
+		s.unregisterAgentConnection(machineID, agent)
+	}()
+	var stagedPendingSecretHash string
+	var freshlyEnrolledDirectly bool
+	var freshlyEnrolledSecretHash string
+	if secretMachineID != "" && !dualCredentialTargetedReenroll {
 		machineID = secretMachineID
 		s.registerAgentConnection(machineID, agent)
 		completeAuth()
 		log.Printf("agent authenticated via secret: machine_id=%s", machineID)
+
+		// enrollment_confirmed tells the agent it may safely drop
+		// BLOXOS_TOKEN. Two cases land here with a token still present:
+		//   - secretJustPromoted: this very auth call promoted a pending
+		//     secret to active (the lost-acknowledgement recovery path) —
+		//     the agent needs to hear that explicitly, it can't infer it.
+		//   - token != "" with no promotion: the agent already has an active
+		//     secret but is still holding a token from an earlier attempt
+		//     whose confirmation never arrived (e.g. promotion succeeded but
+		//     the confirm frame itself was lost). Confirming again is
+		//     harmless and lets it clear the stale token.
+		if secretJustPromoted || token != "" {
+			// Registration above already spawned announceVersionToAgent as a
+			// goroutine that may be writing to this same connection right
+			// now — this write MUST go through the per-agent mutex, never
+			// direct to ws. A failed write means the agent never actually
+			// received the confirmation, so it must not be logged as
+			// confirmed; closing the connection lets the agent's reconnect
+			// re-exercise this same recovery path.
+			//
+			// secret_sha256 names the EXACT credential this confirmation is
+			// for — agentSecret is, in both cases here, the secret that just
+			// authenticated this connection (whether or not this call is
+			// what promoted it), so its hash is always correct: the agent
+			// only ever promotes its local pending file when the hash
+			// matches, and never touches anything when it doesn't.
+			confirmMsg, _ := json.Marshal(map[string]string{"type": "enrollment_confirmed", "secret_sha256": secretSHA256Hex(agentSecret)})
+			if err := agent.writeLocked(websocket.TextMessage, confirmMsg); err != nil {
+				log.Printf("failed to send enrollment_confirmed to %s: %v — closing connection", machineID, err)
+				return nil
+			}
+			log.Printf("sent enrollment_confirmed to %s", machineID)
+		}
 	}
 
 	for {
 		_, msg, err := ws.ReadMessage()
 		if err != nil {
 			log.Printf("agent disconnected: %v", err)
-			s.unregisterAgentConnection(machineID, agent)
 			return nil
 		}
 		// A frame arrived — extend the deadline to the idle timeout.
@@ -629,12 +792,67 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 					return nil
 				}
 
+				// A targeted re-enrollment token (minted by
+				// POST /api/machines/:id/windows-re-enrollment) is bound to exactly
+				// one machine_id. Reject its use against any other machine before
+				// any credential/known-machine branching below, so the rejection
+				// applies uniformly whether or not this other machine currently has
+				// a credential. Nothing is written and the token stays unconsumed —
+				// a legitimate holder can still use it against the right machine.
+				if tokenValidated && targetMachineID.Valid && targetMachineID.String != machineID {
+					log.Printf("rejecting targeted re-enrollment token for %s (%s): bound to machine %s", m.Hostname, machineID, targetMachineID.String)
+					ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","message":"install token is bound to a different machine"}`))
+					return nil
+				}
+
 				// Check if this machine_id already exists (reconnecting agent).
 				var existingID string
 				knownMachine := s.db.QueryRow(`SELECT id FROM machines WHERE id = ?`, machineID).Scan(&existingID) == nil
 				hasCredential := s.machineHasCredential(machineID)
+				targetedForThisMachine := tokenValidated && targetMachineID.Valid && targetMachineID.String == machineID
 
-				if knownMachine && secretMachineID == machineID {
+				if hasCredential && targetedForThisMachine {
+					// Targeted re-enrollment: the token was minted for exactly this
+					// machine and a durable credential already exists. STAGE a
+					// replacement rather than installing it as active — the active
+					// secret_hash is untouched here, so the agent's old (still
+					// possibly in-use) secret keeps authenticating until the agent
+					// proves the new one is durably saved via "enrollment_committed"
+					// below. This closes the split-brain window where a hub-side
+					// replace commits before the agent's local write is proven, and
+					// a subsequent crash/timeout would strand the machine with a
+					// local secret the hub no longer recognizes.
+					rawSecret, secretHash, err := generateAgentSecret()
+					if err != nil {
+						log.Printf("failed to generate agent secret: %v", err)
+						ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","message":"enrollment failed"}`))
+						return nil
+					}
+					if err := s.stageTargetedCredential(tokenHash, machineID, secretHash); err != nil {
+						log.Printf("failed to stage pending credential via targeted re-enrollment: %v", err)
+						ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","message":"enrollment failed"}`))
+						return nil
+					}
+					stagedPendingSecretHash = secretHash
+					enrolledMsg, _ := json.Marshal(map[string]string{
+						"type":         "enrolled",
+						"agent_secret": rawSecret,
+					})
+					// No concurrent writer exists yet at this point — this
+					// connection has not been registered, so
+					// announceVersionToAgent has not been spawned — a direct
+					// write is safe. But the pending credential was already
+					// staged (a real DB mutation, and the token is already
+					// consumed): if the send itself fails, silently falling
+					// through to registration would leave the connection
+					// looking authenticated while the agent never actually
+					// received its new secret. Close instead.
+					if err := ws.WriteMessage(websocket.TextMessage, enrolledMsg); err != nil {
+						log.Printf("staged pending credential for %s but failed to send enrolled frame: %v — closing connection", machineID, err)
+						return nil
+					}
+					log.Printf("targeted re-enrollment staged a pending credential: %s (%s)", m.Hostname, machineID)
+				} else if knownMachine && secretMachineID == machineID {
 					log.Printf("known agent reconnecting with durable credential: %s (%s)", m.Hostname, machineID)
 				} else if tokenValidated && !hasCredential {
 					// New enrollment with valid token - consume it and issue durable secret.
@@ -653,14 +871,25 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 						"type":         "enrolled",
 						"agent_secret": rawSecret,
 					})
-					ws.WriteMessage(websocket.TextMessage, enrolledMsg)
+					// Same reasoning as the staging branch above: no
+					// concurrent writer exists pre-registration, but the
+					// credential was already committed active and the token
+					// already consumed — a failed send must not be treated
+					// as a silent success.
+					if err := ws.WriteMessage(websocket.TextMessage, enrolledMsg); err != nil {
+						log.Printf("stored agent credential for %s but failed to send enrolled frame: %v — closing connection", machineID, err)
+						return nil
+					}
+					freshlyEnrolledDirectly = true
+					freshlyEnrolledSecretHash = secretHash
 					log.Printf("new agent enrolled with durable secret: %s (%s)", m.Hostname, machineID)
 				} else if hasCredential {
 					// A durable credential already exists for this machine_id. A
-					// fresh install token must NOT silently replace it (that would
+					// generic install token must NOT silently replace it (that would
 					// let any valid token hijack an enrolled machine and lock out
-					// the legitimate agent). Require an explicit revoke first. The
-					// token is deliberately left unconsumed so a legitimate
+					// the legitimate agent). Require an explicit revoke first, or a
+					// targeted re-enrollment token minted for this specific machine.
+					// The token is deliberately left unconsumed so a legitimate
 					// re-enroll can proceed after revocation.
 					log.Printf("rejecting enrollment for %s (%s): machine already has a durable credential; revoke before re-enrolling", m.Hostname, machineID)
 					ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","message":"machine already enrolled; revoke its credential before re-enrolling"}`))
@@ -833,6 +1062,69 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 				ch <- resp
 			}
 
+		case "enrollment_committed":
+			// Sent by the agent only after it has durably saved a secret to
+			// disk (see agent/main.go's enrolled-frame handling) — either a
+			// freshly issued one (already active hub-side, nothing to
+			// promote) or a staged pending replacement. Confirmation is the
+			// ONLY thing that tells the agent it may drop BLOXOS_TOKEN; if
+			// promotion doesn't unambiguously succeed, the connection is
+			// closed rather than left in an ambiguous state — the agent's
+			// disconnect/reconnect cycle then exercises the pending-secret
+			// recovery path in validateAgentSecret, which gets its own
+			// chance to promote (or correctly keeps failing if the pending
+			// state is genuinely gone/expired).
+			// This connection was already registered (either pre-loop for
+			// ordinary secret auth, or at the end of the metrics-frame block
+			// for token-based/staged enrollment) before any "enrollment_committed"
+			// frame could arrive, so announceVersionToAgent's goroutine may
+			// already be writing — every send below MUST go through
+			// agent.writeLocked, never direct to ws.
+			if freshlyEnrolledDirectly {
+				// Nothing to promote — the credential was already written
+				// active by consumeTokenAndStoreCredential. "Confirmed" here
+				// means only that the confirmation frame was sent, not a
+				// fresh DB commit. secret_sha256 is that same active
+				// secret's hash — the agent's local pending file (written on
+				// receiving "enrolled") holds the identical secret, so its
+				// hash matches this one and the agent promotes it locally.
+				confirmMsg, _ := json.Marshal(map[string]string{"type": "enrollment_confirmed", "secret_sha256": freshlyEnrolledSecretHash})
+				if err := agent.writeLocked(websocket.TextMessage, confirmMsg); err != nil {
+					log.Printf("failed to send enrollment_confirmed to %s: %v — closing connection", machineID, err)
+					return nil
+				}
+				freshlyEnrolledDirectly = false
+				log.Printf("sent enrollment_confirmed for fresh enrollment: %s", machineID)
+				continue
+			}
+			if stagedPendingSecretHash == "" {
+				log.Printf("rejecting enrollment_committed from %s: no pending credential was staged on this connection", machineID)
+				return nil
+			}
+			promoted, err := s.promotePendingCredentialCAS(machineID, stagedPendingSecretHash)
+			if err != nil {
+				log.Printf("failed to promote pending credential for %s: %v — closing connection", machineID, err)
+				return nil
+			}
+			if !promoted {
+				log.Printf("pending credential for %s no longer matches or has expired — closing connection so it can retry", machineID)
+				return nil
+			}
+			// Promotion has committed in SQLite at this point. "Confirmed" is
+			// a separate claim — it requires the frame to actually reach the
+			// agent, so it is only logged after a successful write.
+			// secret_sha256 is captured BEFORE clearing stagedPendingSecretHash
+			// below — it is exactly the hash the agent's local pending file
+			// must match for it to promote.
+			promotedSecretHash := stagedPendingSecretHash
+			stagedPendingSecretHash = ""
+			confirmMsg, _ := json.Marshal(map[string]string{"type": "enrollment_confirmed", "secret_sha256": promotedSecretHash})
+			if err := agent.writeLocked(websocket.TextMessage, confirmMsg); err != nil {
+				log.Printf("promoted pending credential for %s but failed to send enrollment_confirmed: %v — closing connection", machineID, err)
+				return nil
+			}
+			log.Printf("promoted pending credential to active and sent enrollment_confirmed for %s", machineID)
+
 		default:
 			log.Printf("unknown message type from agent: %s", envelope.Type)
 		}
@@ -840,36 +1132,40 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 }
 
 // validateAgentToken checks a token against the DB (Finding #1).
-// Returns the token hash so the caller can mark it as used after enrollment.
-func (s *Server) validateAgentToken(token string) (string, error) {
+// Returns the token hash so the caller can mark it as used after enrollment,
+// plus the token's target machine (unset for an ordinary, unbound Add
+// Machine token; set for a Windows re-enrollment token minted for exactly
+// one machine_id).
+func (s *Server) validateAgentToken(token string) (string, sql.NullString, error) {
 	h := sha256.Sum256([]byte(token))
 	tokenHash := hex.EncodeToString(h[:])
 
 	var expiresAt string
 	var used bool
-	err := s.db.QueryRow(`SELECT expires_at, used FROM tokens WHERE token_hash = ?`, tokenHash).Scan(&expiresAt, &used)
+	var targetMachineID sql.NullString
+	err := s.db.QueryRow(`SELECT expires_at, used, target_machine_id FROM tokens WHERE token_hash = ?`, tokenHash).Scan(&expiresAt, &used, &targetMachineID)
 	if err == sql.ErrNoRows {
-		return "", fmt.Errorf("invalid token")
+		return "", sql.NullString{}, fmt.Errorf("invalid token")
 	}
 	if err != nil {
-		return "", fmt.Errorf("database error: %w", err)
+		return "", sql.NullString{}, fmt.Errorf("database error: %w", err)
 	}
 	if used {
-		return "", fmt.Errorf("token already used")
+		return "", sql.NullString{}, fmt.Errorf("token already used")
 	}
 	expTime, err := time.Parse("2006-01-02 15:04:05", expiresAt)
 	if err != nil {
 		expTime, err = time.Parse(time.RFC3339, expiresAt)
 		if err != nil {
-			return "", fmt.Errorf("invalid expiry format")
+			return "", sql.NullString{}, fmt.Errorf("invalid expiry format")
 		}
 	}
 	if time.Now().After(expTime) {
-		return "", fmt.Errorf("token expired")
+		return "", sql.NullString{}, fmt.Errorf("token expired")
 	}
 
 	log.Printf("agent token validated successfully")
-	return tokenHash, nil
+	return tokenHash, targetMachineID, nil
 }
 
 // consumeToken marks a token as used after successful enrollment.
@@ -882,12 +1178,29 @@ func (s *Server) consumeToken(tokenHash string) {
 	}
 }
 
+// consumeTokenAndStoreCredential atomically consumes tokenHash and stores (or
+// replaces) machineID's durable credential. The target check is repeated here
+// inside the transaction — not just by the earlier in-memory decision in
+// handleAgentWS — so a validate-then-consume race can't let a stale read win:
+// this is the last write before the credential exists, and it must not trust
+// anything computed outside its own transaction.
 func (s *Server) consumeTokenAndStoreCredential(tokenHash, machineID, secretHash string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+
+	var targetMachineID sql.NullString
+	if err := tx.QueryRow(`SELECT target_machine_id FROM tokens WHERE token_hash = ? AND used = FALSE`, tokenHash).Scan(&targetMachineID); err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("install token already consumed")
+		}
+		return err
+	}
+	if targetMachineID.Valid && targetMachineID.String != machineID {
+		return fmt.Errorf("install token is bound to a different machine")
+	}
 
 	res, err := tx.Exec(`UPDATE tokens SET used = TRUE WHERE token_hash = ? AND used = FALSE`, tokenHash)
 	if err != nil {
@@ -906,6 +1219,193 @@ func (s *Server) consumeTokenAndStoreCredential(tokenHash, machineID, secretHash
 		return err
 	}
 	return tx.Commit()
+}
+
+// pendingCredentialWindow bounds how long a staged pending secret remains
+// promotable. Comfortably longer than install.ps1's 30-second completion
+// gate so a slow-but-legitimate handoff never races its own timeout, while
+// still short enough that an abandoned attempt doesn't leave a promotable
+// credential lying around indefinitely.
+const pendingCredentialWindow = 5 * time.Minute
+
+// stageTargetedCredential atomically consumes a target-bound token and
+// records pendingSecretHash as machineID's PENDING credential — the active
+// secret_hash is left completely unchanged. This is deliberately not a
+// replace: the old secret keeps authenticating until the agent proves the
+// new one is durably saved and the hub receives "enrollment_committed" (see
+// promotePendingCredentialCAS). A machine with no active credential at
+// all is rejected here too — staging a replacement requires something to
+// replace; handleWindowsReenrollment already enforces this at mint time, but
+// the credential could theoretically be revoked in the window between
+// minting and use, so it's re-checked inside this transaction.
+func (s *Server) stageTargetedCredential(tokenHash, machineID, pendingSecretHash string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var targetMachineID sql.NullString
+	if err := tx.QueryRow(`SELECT target_machine_id FROM tokens WHERE token_hash = ? AND used = FALSE`, tokenHash).Scan(&targetMachineID); err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("install token already consumed")
+		}
+		return err
+	}
+	if !targetMachineID.Valid || targetMachineID.String != machineID {
+		return fmt.Errorf("install token is not bound to this machine")
+	}
+
+	var activeSecretHash string
+	if err := tx.QueryRow(`SELECT secret_hash FROM agent_credentials WHERE machine_id = ?`, machineID).Scan(&activeSecretHash); err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("no active credential to stage a re-enrollment against")
+		}
+		return err
+	}
+
+	res, err := tx.Exec(`UPDATE tokens SET used = TRUE WHERE token_hash = ? AND used = FALSE`, tokenHash)
+	if err != nil {
+		return err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return fmt.Errorf("install token already consumed")
+	}
+
+	pendingExpiresAt := time.Now().Add(pendingCredentialWindow)
+	if _, err := tx.Exec(
+		`UPDATE agent_credentials SET pending_secret_hash = ?, pending_expires_at = ? WHERE machine_id = ?`,
+		pendingSecretHash, pendingExpiresAt.Format(time.RFC3339), machineID,
+	); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// promotePendingCredentialCAS atomically promotes machineID's pending
+// credential to active via a genuine SQL compare-and-swap: the promoting
+// UPDATE's WHERE clause is constrained to the exact (machine_id,
+// pending_secret_hash, pending_expires_at) tuple read a moment earlier, and
+// RowsAffected() == 1 is the only thing that means "promoted" — never the
+// earlier SELECT by itself. A prior version checked the hash in a SELECT and
+// then wrote an UPDATE keyed only on machine_id; a stale acknowledgement
+// racing a newer re-stage could pass that SELECT and then clobber the newer
+// pending value on the unconstrained UPDATE. Constraining the UPDATE itself
+// closes that: two concurrent callers can each read the same row, but only
+// the one whose exact (hash, expiry) pair still matches at write time can
+// affect any rows — the loser's UPDATE matches zero rows and is a no-op.
+//
+// Fails closed on expiry: pending_secret_hash without a present, parseable,
+// strictly-future pending_expires_at is never promotable. A NULL or
+// unparseable expiry is opportunistically cleared (still via a CAS scoped to
+// the exact hash/expiry just read, so a concurrent re-stage isn't
+// clobbered) rather than left indefinitely promotable.
+//
+// The Go-side time.Now() check below is a fast pre-filter, not the actual
+// guard: real time can cross the deadline in the gap between that check and
+// the UPDATE actually executing (lock contention, GC pause, a slow disk).
+// The promoting UPDATE's WHERE clause therefore ALSO requires
+// julianday(pending_expires_at) > julianday('now'), evaluated by SQLite at
+// the moment the write happens — that is the predicate that actually can't
+// be raced, because nothing can execute between "the database checks its own
+// clock" and "the database applies the write" from outside the transaction.
+func (s *Server) promotePendingCredentialCAS(machineID, expectedPendingHash string) (bool, error) {
+	return s.promotePendingCredentialCASAt(machineID, expectedPendingHash, time.Now)
+}
+
+// promotePendingCredentialCASAt is promotePendingCredentialCAS with the
+// clock used for the Go-side pre-filter injectable, so a test can construct
+// the exact race the DB-time predicate exists to defeat: a nowFn that still
+// claims "not expired yet" while the real clock (and thus SQLite's
+// julianday('now')) has already moved past the deadline. Production always
+// calls this with time.Now; only tests substitute anything else. The SQL
+// UPDATE's own julianday('now') is never affected by nowFn — it is always
+// the real database clock.
+func (s *Server) promotePendingCredentialCASAt(machineID, expectedPendingHash string, nowFn func() time.Time) (bool, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+
+	var pendingHash, pendingExpiresAtRaw sql.NullString
+	if err := tx.QueryRow(
+		`SELECT pending_secret_hash, pending_expires_at FROM agent_credentials WHERE machine_id = ?`, machineID,
+	).Scan(&pendingHash, &pendingExpiresAtRaw); err != nil {
+		if err == sql.ErrNoRows {
+			return false, nil
+		}
+		return false, err
+	}
+	if !pendingHash.Valid || pendingHash.String != expectedPendingHash {
+		return false, nil
+	}
+
+	clearMalformed := func() (bool, error) {
+		// Scoped to the exact hash+expiry just read: if a concurrent caller
+		// already re-staged a different pending value, this affects zero rows
+		// and leaves that newer value alone.
+		if _, err := tx.Exec(
+			`UPDATE agent_credentials SET pending_secret_hash = NULL, pending_expires_at = NULL
+			 WHERE machine_id = ? AND pending_secret_hash = ? AND pending_expires_at IS ?`,
+			machineID, expectedPendingHash, pendingExpiresAtRaw,
+		); err != nil {
+			return false, err
+		}
+		return false, tx.Commit()
+	}
+
+	if !pendingExpiresAtRaw.Valid {
+		return clearMalformed()
+	}
+	expTime, perr := time.Parse(time.RFC3339, pendingExpiresAtRaw.String)
+	if perr != nil {
+		return clearMalformed()
+	}
+	if !nowFn().Before(expTime) {
+		// Not strictly before the deadline — covers both "in the past" and
+		// "exactly at the deadline" as expired, matching the "strictly in the
+		// future" requirement. This is the fast pre-filter only; the UPDATE
+		// below re-checks against the real DB clock regardless.
+		return clearMalformed()
+	}
+
+	// The julianday comparison is the actual, unrace-able guard: SQLite
+	// evaluates julianday('now') against its own clock at the instant this
+	// statement executes, inside the same transaction as the write it
+	// gates. Even if nowFn (Go-side) was stale, wrong, or simply unlucky
+	// timing let an already-past deadline through the pre-filter above,
+	// this predicate independently fails and the UPDATE matches zero rows.
+	res, err := tx.Exec(
+		`UPDATE agent_credentials SET secret_hash = ?, pending_secret_hash = NULL, pending_expires_at = NULL, last_used_at = CURRENT_TIMESTAMP
+		 WHERE machine_id = ? AND pending_secret_hash = ? AND pending_expires_at = ? AND julianday(pending_expires_at) > julianday('now')`,
+		expectedPendingHash, machineID, expectedPendingHash, pendingExpiresAtRaw.String,
+	)
+	if err != nil {
+		return false, err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if rows != 1 {
+		return false, nil
+	}
+	return true, tx.Commit()
+}
+
+// secretSHA256Hex is the same hex(SHA-256(secret)) computation used
+// everywhere a raw secret is turned into its lookup/comparison hash
+// (validateAgentSecret, lookupActiveCredential, generateAgentSecret) —
+// factored out so an enrollment_confirmed frame can name the exact
+// credential it confirms without duplicating the hashing inline.
+func secretSHA256Hex(secret string) string {
+	h := sha256.Sum256([]byte(secret))
+	return hex.EncodeToString(h[:])
 }
 
 // generateAgentSecret creates a 32-byte random secret for agent enrollment.
@@ -937,25 +1437,61 @@ func (s *Server) machineHasCredential(machineID string) bool {
 	return count > 0
 }
 
-// validateAgentSecret looks up a credential by the SHA-256 hash of the provided secret.
-// Returns the associated machine_id if found.
-func (s *Server) validateAgentSecret(secret string) (string, error) {
+// lookupActiveCredential looks up a credential by the SHA-256 hash of the
+// active secret. Returns (machineID, true) on a hit, refreshing last_used_at.
+func (s *Server) lookupActiveCredential(secretHash string) (string, bool) {
+	var machineID string
+	if err := s.db.QueryRow(`SELECT machine_id FROM agent_credentials WHERE secret_hash = ?`, secretHash).Scan(&machineID); err != nil {
+		return "", false
+	}
+	_, _ = s.db.Exec(`UPDATE agent_credentials SET last_used_at = CURRENT_TIMESTAMP WHERE secret_hash = ?`, secretHash)
+	return machineID, true
+}
+
+// validateAgentSecret looks up a credential by the SHA-256 hash of the
+// provided secret. Returns the associated machine_id and whether THIS call
+// is what promoted a pending secret to active (the caller uses that to send
+// enrollment_confirmed once the connection is up — see handleAgentWS).
+//
+// Beyond the active secret, this also recognizes an unexpired PENDING
+// secret: the recovery path for a targeted re-enrollment whose
+// "enrollment_committed" acknowledgement never reached the hub (lost after a
+// successful disk write, connection dropped immediately after storage, or
+// the service restarted between the two). Reconnecting with the pending
+// secret is itself proof the agent durably has it, so it's promoted to
+// active right here (via the same CAS as the explicit-ack path) rather than
+// waiting for an ack that may never come.
+func (s *Server) validateAgentSecret(secret string) (machineID string, promoted bool, err error) {
 	h := sha256.Sum256([]byte(secret))
 	secretHash := hex.EncodeToString(h[:])
 
-	var machineID string
-	err := s.db.QueryRow(`SELECT machine_id FROM agent_credentials WHERE secret_hash = ?`, secretHash).Scan(&machineID)
-	if err == sql.ErrNoRows {
-		return "", fmt.Errorf("invalid agent secret")
-	}
-	if err != nil {
-		return "", fmt.Errorf("database error: %w", err)
+	if mid, ok := s.lookupActiveCredential(secretHash); ok {
+		return mid, false, nil
 	}
 
-	// Update last_used_at.
-	_, _ = s.db.Exec(`UPDATE agent_credentials SET last_used_at = CURRENT_TIMESTAMP WHERE secret_hash = ?`, secretHash)
+	var pendingMachineID string
+	qerr := s.db.QueryRow(`SELECT machine_id FROM agent_credentials WHERE pending_secret_hash = ?`, secretHash).Scan(&pendingMachineID)
+	if qerr == sql.ErrNoRows {
+		return "", false, fmt.Errorf("invalid agent secret")
+	}
+	if qerr != nil {
+		return "", false, fmt.Errorf("database error: %w", qerr)
+	}
 
-	return machineID, nil
+	didPromote, perr := s.promotePendingCredentialCAS(pendingMachineID, secretHash)
+	if perr != nil {
+		return "", false, fmt.Errorf("database error: %w", perr)
+	}
+	if didPromote {
+		return pendingMachineID, true, nil
+	}
+	// Lost a race (already promoted by an in-flight enrollment_committed, or
+	// just expired). If something else already promoted it, it's now active —
+	// but THIS call didn't do the promoting, so promoted=false here.
+	if mid, ok := s.lookupActiveCredential(secretHash); ok {
+		return mid, false, nil
+	}
+	return "", false, fmt.Errorf("invalid agent secret")
 }
 
 // revokeAgentCredential removes the stored credential for a machine.
