@@ -4,13 +4,17 @@ After=network.target
 
 [Service]
 Type=simple
-User=bokiko
-WorkingDirectory=/home/bokiko/bloxos/hub
-ExecStart=/home/bokiko/bloxos/hub/bloxos-hub
+User=<user>
+WorkingDirectory=/opt/bloxos/hub
+ExecStart=/opt/bloxos/hub/bloxos-hub
 Restart=always
 RestartSec=5
 Environment=PATH=/usr/local/go/bin:/usr/bin:/bin
 Environment="BLOXOS_CA_CERT=/var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt"
+Environment="BLOXOS_AGENT_BINARY=/usr/local/lib/bloxos/linux/bloxos-agent"
 
 [Install]
 WantedBy=multi-user.target
+
+# After copying this file to /etc/systemd/system/:
+# sudo systemctl daemon-reload && sudo systemctl enable --now bloxos-hub

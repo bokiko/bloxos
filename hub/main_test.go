@@ -849,14 +849,17 @@ func TestCreateTokenIncludesCABootstrapForHTTPS(t *testing.T) {
 	}
 
 	command, _ := resp["command"].(string)
-	if !strings.Contains(command, "BLOXOS_CA_URL=https://bloxos.example/download/ca.crt") {
-		t.Fatalf("expected command to include CA URL, got %q", command)
+	if !strings.Contains(command, "CA_URL='https://bloxos.example/download/ca.crt'") {
+		t.Fatalf("expected command to pin the CA URL, got %q", command)
 	}
-	if !strings.Contains(command, "BLOXOS_CA_SHA256=") {
-		t.Fatalf("expected command to include CA SHA256, got %q", command)
+	if !strings.Contains(command, "CA_SHA256='") {
+		t.Fatalf("expected command to pin the CA SHA256, got %q", command)
 	}
-	if !strings.Contains(command, "curl -fsSLk https://bloxos.example/install.sh | bash") {
-		t.Fatalf("expected HTTPS bootstrap command with curl -k, got %q", command)
+	if strings.Contains(command, "install.sh | bash") {
+		t.Fatalf("installer must be downloaded through the verified CA and executed from a file, got %q", command)
+	}
+	if !strings.Contains(command, `--cacert "$CA_PATH"`) || !strings.Contains(command, `bash "$INSTALLER"`) {
+		t.Fatalf("expected verified installer download followed by file execution, got %q", command)
 	}
 	if resp["ca_url"] != "https://bloxos.example/download/ca.crt" {
 		t.Fatalf("unexpected ca_url: %v", resp["ca_url"])
@@ -904,7 +907,7 @@ func TestValidateAgentTokenValid(t *testing.T) {
 		t.Fatalf("insert token: %v", err)
 	}
 
-	gotHash, valErr := s.validateAgentToken(rawToken)
+	gotHash, _, valErr := s.validateAgentToken(rawToken)
 	if valErr != nil {
 		t.Fatalf("expected valid token, got error: %v", valErr)
 	}
@@ -928,7 +931,7 @@ func TestValidateAgentTokenUsed(t *testing.T) {
 		t.Fatalf("insert token: %v", err)
 	}
 
-	_, valErr := s.validateAgentToken(rawToken)
+	_, _, valErr := s.validateAgentToken(rawToken)
 	if valErr == nil {
 		t.Fatal("expected error for used token, got nil")
 	}
@@ -952,7 +955,7 @@ func TestValidateAgentTokenExpired(t *testing.T) {
 		t.Fatalf("insert token: %v", err)
 	}
 
-	_, valErr := s.validateAgentToken(rawToken)
+	_, _, valErr := s.validateAgentToken(rawToken)
 	if valErr == nil {
 		t.Fatal("expected error for expired token, got nil")
 	}
@@ -1562,15 +1565,8 @@ func TestAgentVersionAnnouncedOnReconnect(t *testing.T) {
 	t.Setenv("PUBLIC_URL", "https://hub.example.com")
 
 	const stagedSHA = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
-	hubAgentBinaryMu.Lock()
-	prevSHA := hubAgentBinarySHA
-	hubAgentBinarySHA = stagedSHA
-	hubAgentBinaryMu.Unlock()
-	t.Cleanup(func() {
-		hubAgentBinaryMu.Lock()
-		hubAgentBinarySHA = prevSHA
-		hubAgentBinaryMu.Unlock()
-	})
+	withAgentBinaryState(t)
+	setAgentBinaryState("linux", agentBinaryState{SHA: stagedSHA})
 
 	server := httptest.NewServer(e)
 	defer server.Close()
@@ -1657,18 +1653,9 @@ func TestAnnouncedSHAIsPerPlatform(t *testing.T) {
 	const linuxSHA = "1111111111111111111111111111111111111111111111111111111111111111"
 	const windowsSHA = "2222222222222222222222222222222222222222222222222222222222222222"
 
-	hubAgentBinaryMu.Lock()
-	prevLinux := hubAgentBinarySHA
-	prevWindows := hubWindowsAgentBinarySHA
-	hubAgentBinarySHA = linuxSHA
-	hubWindowsAgentBinarySHA = windowsSHA
-	hubAgentBinaryMu.Unlock()
-	t.Cleanup(func() {
-		hubAgentBinaryMu.Lock()
-		hubAgentBinarySHA = prevLinux
-		hubWindowsAgentBinarySHA = prevWindows
-		hubAgentBinaryMu.Unlock()
-	})
+	withAgentBinaryState(t)
+	setAgentBinaryState("linux", agentBinaryState{SHA: linuxSHA})
+	setAgentBinaryState("windows", agentBinaryState{SHA: windowsSHA})
 
 	if got := announcedSHAFor("linux"); got != linuxSHA {
 		t.Fatalf("announcedSHAFor(linux) = %s, want %s", got, linuxSHA)
@@ -1702,18 +1689,9 @@ func TestRecordAgentRunningVersionTracksOS(t *testing.T) {
 	const linuxSHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	const windowsSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
-	hubAgentBinaryMu.Lock()
-	prevLinux := hubAgentBinarySHA
-	prevWindows := hubWindowsAgentBinarySHA
-	hubAgentBinarySHA = linuxSHA
-	hubWindowsAgentBinarySHA = windowsSHA
-	hubAgentBinaryMu.Unlock()
-	t.Cleanup(func() {
-		hubAgentBinaryMu.Lock()
-		hubAgentBinarySHA = prevLinux
-		hubWindowsAgentBinarySHA = prevWindows
-		hubAgentBinaryMu.Unlock()
-	})
+	withAgentBinaryState(t)
+	setAgentBinaryState("linux", agentBinaryState{SHA: linuxSHA})
+	setAgentBinaryState("windows", agentBinaryState{SHA: windowsSHA})
 
 	// Cleanup test entries from the in-memory map.
 	t.Cleanup(func() {
