@@ -119,11 +119,15 @@ async function main() {
     .getByRole("columnheader", { name: "Blocked reason" })
     .isVisible();
   const signingBannerVisible = await page.locator('[data-testid="signing-status-banner"]').isVisible();
+  const linuxBinaryVisible = await page.locator('[data-testid="agent-binary-linux"]').isVisible();
+  const windowsBinaryVisible = await page.locator('[data-testid="agent-binary-windows"]').isVisible();
   log(
     "versions rendered:",
     `keyPinned=${keyPinnedColumnVisible}`,
     `blockedReason=${blockedReasonColumnVisible}`,
     `signingBanner=${signingBannerVisible}`,
+    `linuxBinary=${linuxBinaryVisible}`,
+    `windowsBinary=${windowsBinaryVisible}`,
   );
 
   await browser.close();
@@ -141,7 +145,9 @@ async function main() {
     !navigateVisible ||
     !keyPinnedColumnVisible ||
     !blockedReasonColumnVisible ||
-    !signingBannerVisible
+    !signingBannerVisible ||
+    !linuxBinaryVisible ||
+    !windowsBinaryVisible
   ) {
     log("FAIL: an expected element did not render");
     process.exit(1);

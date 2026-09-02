@@ -264,6 +264,7 @@ func TestDetachedSignatureForFailsClosedWithoutPublicKey(t *testing.T) {
 // self-update stays disabled.
 func TestInstallScriptPinsUpdateSigningKey(t *testing.T) {
 	e, _ := setupTestServer(t)
+	useGeneratedTestBinary(t, "linux")
 
 	req := httptest.NewRequest(http.MethodGet, "/install.sh", nil)
 	rec := httptest.NewRecorder()
@@ -290,6 +291,7 @@ func TestInstallScriptPinsUpdateSigningKey(t *testing.T) {
 
 func TestWindowsInstallScriptPinsUpdateSigningKey(t *testing.T) {
 	e, _ := setupTestServer(t)
+	useGeneratedTestBinary(t, "windows")
 
 	req := httptest.NewRequest(http.MethodGet, "/install.ps1", nil)
 	rec := httptest.NewRecorder()
@@ -319,6 +321,7 @@ func TestWindowsInstallScriptPinsUpdateSigningKey(t *testing.T) {
 // the documented key, not about repairing a broken rollback.
 func TestInstallScriptStartLimitLivesInUnitSection(t *testing.T) {
 	e, _ := setupTestServer(t)
+	useGeneratedTestBinary(t, "linux")
 
 	req := httptest.NewRequest(http.MethodGet, "/install.sh", nil)
 	rec := httptest.NewRecorder()
@@ -429,20 +432,14 @@ func withoutSigningKey(t *testing.T) {
 	})
 }
 
-// stageLinuxBinarySHA clears the cached linux SHA so the next recompute picks
-// up whatever BLOXOS_AGENT_BINARY currently points at, and restores it after.
+// stageLinuxBinarySHA clears the cached Linux state so recompute hashes the
+// test fixture selected by BLOXOS_AGENT_BINARY.
 func stageLinuxBinarySHA(t *testing.T) {
 	t.Helper()
-	hubAgentBinaryMu.Lock()
-	prevSHA, prevMtime := hubAgentBinarySHA, hubAgentBinaryMtime
-	hubAgentBinarySHA, hubAgentBinaryMtime = "", time.Time{}
-	hubAgentBinaryMu.Unlock()
-	t.Cleanup(func() {
-		hubAgentBinaryMu.Lock()
-		hubAgentBinarySHA, hubAgentBinaryMtime = prevSHA, prevMtime
-		hubAgentBinaryMu.Unlock()
-	})
-	recomputeAgentBinarySHA()
+	path := os.Getenv("BLOXOS_AGENT_BINARY")
+	withAgentBinaryState(t)
+	useTestResolvedBinary(t, "linux", path)
+	recomputeBinaryFor("linux")
 }
 
 /* ----------------------------------------------------------------------------

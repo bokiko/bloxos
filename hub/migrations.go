@@ -370,6 +370,28 @@ var migrations = []migration{
 			return err
 		},
 	},
+	{
+		description: "add nullable target_machine_id to tokens for machine-bound Windows re-enrollment",
+		apply: func(tx *sql.Tx) error {
+			_, err := tx.Exec(`ALTER TABLE tokens ADD COLUMN target_machine_id TEXT`)
+			if err != nil && isDuplicateColumnErr(err) {
+				return nil
+			}
+			return err
+		},
+	},
+	{
+		description: "add nullable pending_secret_hash and pending_expires_at to agent_credentials for staged Windows re-enrollment handoff",
+		apply: func(tx *sql.Tx) error {
+			if _, err := tx.Exec(`ALTER TABLE agent_credentials ADD COLUMN pending_secret_hash TEXT`); err != nil && !isDuplicateColumnErr(err) {
+				return err
+			}
+			if _, err := tx.Exec(`ALTER TABLE agent_credentials ADD COLUMN pending_expires_at DATETIME`); err != nil && !isDuplicateColumnErr(err) {
+				return err
+			}
+			return nil
+		},
+	},
 }
 
 // isDuplicateColumnErr returns true when SQLite rejects an ALTER TABLE ADD

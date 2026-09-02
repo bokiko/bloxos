@@ -20,9 +20,10 @@ interface AddMachineModalProps {
 interface TokenResponse {
   token: string;
   expires_at: string; // RFC3339
-  command: string; // server-built Linux paste-block (env vars + curl bootstrap)
-  ca_url?: string;
-  ca_sha256?: string;
+  command: string;
+  windows_command: string;
+  ca_url: string;
+  ca_sha256: string;
 }
 
 type OSChoice = "linux" | "windows";
@@ -31,37 +32,6 @@ type ModalState =
   | { kind: "choose-os" }
   | { kind: "loading"; os: OSChoice }
   | { kind: "show-command"; os: OSChoice; resp: TokenResponse };
-
-function deriveHttpHubBase(): string {
-  const base =
-    HUB_URL ||
-    (typeof window !== "undefined" ? window.location.origin : "");
-  return base.replace(/^wss:/, "https:").replace(/^ws:/, "http:");
-}
-
-function deriveWsHubBase(): string {
-  const base =
-    HUB_URL ||
-    (typeof window !== "undefined" ? window.location.origin : "");
-  return base.replace(/^https:/, "wss:").replace(/^http:/, "ws:");
-}
-
-function buildWindowsCommand(token: string): string {
-  const wsBase = deriveWsHubBase();
-  const httpBase = deriveHttpHubBase();
-  // Tls12 + ServerCertificateValidationCallback shim makes the bootstrap IWR
-  // tolerate Caddy's self-signed cert on PowerShell 5.1 (the default on
-  // Windows 10/11). install.ps1 itself installs a TrustAllCerts shim for the
-  // subsequent agent fetches. -SkipCertificateCheck is PS 7+ only and would
-  // break on stock Windows installs.
-  return [
-    `$env:BLOXOS_HUB="${wsBase}"`,
-    `$env:BLOXOS_TOKEN="${token}"`,
-    `[System.Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12`,
-    `[System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}`,
-    `iwr -UseBasicParsing ${httpBase}/install.ps1 | iex`,
-  ].join("; ");
-}
 
 export function AddMachineModal({ open, onClose }: AddMachineModalProps) {
   const [state, setState] = useState<ModalState>({ kind: "choose-os" });
@@ -239,8 +209,7 @@ function CommandDisplay({
   onCopy: (text: string) => void;
   onBack: () => void;
 }) {
-  const command =
-    os === "linux" ? resp.command : buildWindowsCommand(resp.token);
+  const command = os === "linux" ? resp.command : resp.windows_command;
   const osLabel = os === "linux" ? "Linux" : "Windows";
   const osEmoji = os === "linux" ? "🐧" : "🪟";
   const helpText =
@@ -303,6 +272,33 @@ function CommandDisplay({
           <span className="font-mono">{resp.expires_at}</span>.
         </p>
       </div>
+
+      {resp.ca_sha256 && (
+        <div className="rounded-xl border border-blox-border bg-blox-bg/60 p-3 space-y-2">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-[10px] uppercase tracking-wider font-medium text-blox-muted">Hub CA SHA-256</p>
+              <p className="text-[10px] text-blox-muted mt-1 leading-relaxed">
+                This fingerprint came through your authenticated dashboard session and is embedded in the command above.
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => onCopy(resp.ca_sha256)}
+              className="text-xs border-blox-border shrink-0"
+              aria-label="Copy CA SHA-256 fingerprint"
+            >
+              <Copy className="w-3 h-3" />
+              Copy SHA
+            </Button>
+          </div>
+          <code className="block text-[10px] font-mono text-blox-text break-all">{resp.ca_sha256}</code>
+          <p className="text-[10px] text-blox-muted leading-relaxed">
+            For a cold-start or higher-assurance setup, compare this value through a separate trusted channel before running the command. That out-of-band check is offered, not required for the normal authenticated-dashboard flow.
+          </p>
+        </div>
+      )}
     </>
   );
 }

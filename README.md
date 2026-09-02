@@ -161,6 +161,9 @@ cd bloxos
 mkdir -p bin
 (cd hub && go build -o ../bin/bloxos-hub .)
 (cd agent && go build -o ../bin/bloxos-agent .)
+sudo install -d -o root -g root -m 0755 /usr/local/lib/bloxos/linux
+sudo install -o root -g root -m 0755 bin/bloxos-agent \
+  /usr/local/lib/bloxos/linux/bloxos-agent
 ```
 
 To build the Windows agent artifact:
@@ -182,7 +185,7 @@ you just built.
 export PUBLIC_URL=http://localhost:4000
 export ALLOWED_ORIGINS=http://localhost:3000
 export HUB_LISTEN=127.0.0.1:4000
-export BLOXOS_AGENT_BINARY="$PWD/bin/bloxos-agent"
+export BLOXOS_AGENT_BINARY=/usr/local/lib/bloxos/linux/bloxos-agent
 ./bin/bloxos-hub
 ```
 
@@ -225,8 +228,10 @@ bootstrap for a private or self-signed CA remains tracked in
 ```
 
 The sample units in [scripts/systemd](scripts/systemd) use `<user>` and
-`/opt/bloxos` placeholders. Replace `<user>`, install the built artifacts,
-then enable each installed unit:
+`/opt/bloxos` placeholders. Replace `<user>` and install the hub and dashboard
+artifacts there. Keep the served agent binary on the root-owned path shown
+above (or another absolute path whose complete ancestor chain is root-owned and
+not group/other-writable), then enable each installed unit:
 
 ```bash
 sudo systemctl daemon-reload

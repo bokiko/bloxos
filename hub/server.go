@@ -17,6 +17,9 @@ type Server struct {
 	agents   map[string]*ConnectedAgent
 	agentsMu sync.RWMutex
 
+	// Serializes agent authentication/registration with credential revocation.
+	agentAuthMu sync.RWMutex
+
 	// Tracks background work this server spawned, so a caller can wait for
 	// it to finish before tearing the server down. See goTracked/Shutdown.
 	//
