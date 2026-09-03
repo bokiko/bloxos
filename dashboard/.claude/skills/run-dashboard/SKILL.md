@@ -31,7 +31,8 @@ this container).
 ## Build
 
 ```bash
-mkdir -p /tmp/bloxos-dashboard-smoke/hub-run
+mkdir -p /tmp/bloxos-dashboard-smoke/{home,hub-run}
+chmod 0700 /tmp/bloxos-dashboard-smoke/home
 ( cd ../hub && go build -o /tmp/bloxos-dashboard-smoke/hub-run/bloxos-hub . )
 ```
 
@@ -47,6 +48,7 @@ already up.
 ```bash
 # 1. Hub — from a scratch working directory, NOT hub/ (see Gotchas)
 cd /tmp/bloxos-dashboard-smoke/hub-run
+HOME=/tmp/bloxos-dashboard-smoke/home \
 BLOXOS_SETUP_TOKEN=smoketest-setup-token-12345 \
 ALLOWED_ORIGINS=http://localhost:3000 \
 nohup ./bloxos-hub > hub.log 2>&1 &
@@ -94,7 +96,7 @@ lsof -ti:4000 -sTCP:LISTEN | xargs -r kill -9
 ## Run (human path)
 
 ```bash
-( cd ../hub && go run . )                        # separate terminal, from a scratch cwd
+( cd ../hub && HOME=/tmp/bloxos-dashboard-smoke/home go run . ) # separate terminal
 NEXT_PUBLIC_HUB_URL=http://localhost:4000 pnpm dev         # from dashboard/
 ```
 
@@ -122,6 +124,11 @@ at runtime.
 - **Hub writes `bloxos.db` as a relative path.** Running it from
   `hub/` creates a stray SQLite file in the repo checkout. Always run
   the built binary from a scratch directory.
+- **Hub secrets follow `HOME`.** The hub reads or creates its JWT secret,
+  update-signing key, setup token, and first-run token under `~/.bloxos`.
+  Always point `HOME` at the smoke directory, or a sandbox run can read or
+  overwrite the operator's real local credentials even though its database is
+  in scratch.
 - **Hub fails closed on CORS by design.** With neither `ALLOWED_ORIGINS`
   nor `PUBLIC_URL` set, it refuses to start at all rather than fall
   back to a wildcard origin (`refusing to start with wildcard origin`).
