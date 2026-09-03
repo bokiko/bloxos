@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/bokiko/bloxos/proto/updatesigning"
 )
 
 // TestUpdateSigningMessageFormat locks the exact bytes that get signed. The
@@ -107,6 +109,35 @@ func TestVerifyUpdateSignature(t *testing.T) {
 			t.Fatal("accepted a non-hex SHA even though it was correctly signed")
 		}
 	})
+}
+
+func TestOfflineSigningToolRoundTripAgentVerification(t *testing.T) {
+	pub, priv := newTestKey(t)
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bloxos-agent")
+	if err := os.WriteFile(bin, []byte("offline-signed agent"), 0o755); err != nil {
+		t.Fatalf("write binary: %v", err)
+	}
+	keyPath := filepath.Join(dir, "update-signing.key")
+	if err := os.WriteFile(keyPath, []byte(base64.StdEncoding.EncodeToString(priv)+"\n"), 0o600); err != nil {
+		t.Fatalf("write private key: %v", err)
+	}
+
+	result, err := updatesigning.SignFile(bin, "linux", keyPath)
+	if err != nil {
+		t.Fatalf("sign file: %v", err)
+	}
+	pinKey(t, pub)
+
+	if err := verifyAnnouncedRelease(bin, "linux", result.SHA256, result.Signature); err != nil {
+		t.Fatalf("tool signature rejected by agent: %v", err)
+	}
+	if err := verifyAnnouncedRelease(bin, "windows", result.SHA256, result.Signature); err == nil {
+		t.Fatal("linux tool signature accepted for windows")
+	}
+	if err := verifyAnnouncedRelease(bin, "linux", strings.Repeat("ab", 32), result.Signature); err == nil {
+		t.Fatal("tool signature accepted for wrong SHA")
+	}
 }
 
 func TestParseUpdatePublicKey(t *testing.T) {

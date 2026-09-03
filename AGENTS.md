@@ -5,7 +5,7 @@ Fleet management dashboard for AI machines. Go hub + agent, Next.js dashboard.
 ## Architecture
 - `hub/` — Go API server (Echo + gorilla/websocket), port 4000
 - `agent/` — Go agent binary (gopsutil, go-nvml, creack/pty)
-- `dashboard/` — Next.js 15 frontend (React, Tailwind, Recharts, xterm.js)
+- `dashboard/` — Next.js 16 frontend (React 19, Tailwind, Recharts, xterm.js)
 - `proto/` — Shared protocol definitions
 - `scripts/` — Install/deploy scripts
 
@@ -15,9 +15,30 @@ Fleet management dashboard for AI machines. Go hub + agent, Next.js dashboard.
 - Dashboard: `cd dashboard && pnpm dev`
 
 ## Rules
-- Agent runs as non-root user with sudo whitelist
-- Terminal sessions require re-auth (PIN/password gate)
-- All terminal I/O logged for audit
+- The agent service runs with full privilege on both platforms: **Linux** uses
+  `User=root` in the generated systemd unit; **Windows** runs as `LocalSystem`.
+  It needs that to collect hardware inventory and manage services.
+- Terminal support is **Linux-only**, and the shell it spawns **drops to the
+  configured non-root user** — do not confuse the service account with the
+  terminal's.
+- Terminal sessions require re-auth (server-side PIN gate, bcrypt-verified)
+- **Only terminal session metadata is audited** — the `terminal_sessions` row
+  records machine, user, source IP, start/end and status. Terminal **content
+  and I/O are not recorded**; the hub relays frames without capturing them.
+  A full audit log is on the roadmap, not shipped.
+- Agent updates carry an Ed25519 release signature. **Protocol-v1** agents
+  verify it against their pinned key (Linux: `/etc/bloxos/agent-update.pub`;
+  Windows: beside the agent executable) and accept an update only when the
+  signature verifies and the transport is permitted. For those agents the hub
+  fails closed on missing signature, plaintext transport, or unpinned key.
+- **Exception — the legacy migration hop.** Protocol-0 agents cannot verify
+  signatures, because verification cannot be retrofitted into an already-running
+  binary. They take an unverifiable migration hop to reach protocol v1, and the
+  hub permits it only when `PUBLIC_URL` is TLS or loopback. After it, the agent
+  is withheld (`agent_key_not_pinned`) until its update key is pinned through a
+  trusted provisioning path.
+- The signature may come from a detached `<binary>.sig` produced offline, in
+  which case the hub holds no private key — do not assume the hub signs.
 - Credentials NEVER committed — use env vars or local config
 - Dark mode is the default UI theme
 - Caddy TLS uses RSA-2048 keys, not ECDSA. Do not change without testing on stock Windows PowerShell 5.1.

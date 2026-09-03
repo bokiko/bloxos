@@ -110,6 +110,26 @@ async function main() {
   log("command palette opened, NAVIGATE section visible:", navigateVisible);
   await page.keyboard.press("Escape");
 
+  // --- Agent versions: rollout status must be reachable and legible ---
+  await page.goto(BASE + "/versions", { waitUntil: "networkidle" });
+  await page.waitForTimeout(500);
+  await shot(page, "versions-page");
+  const keyPinnedColumnVisible = await page.getByRole("columnheader", { name: "Key pinned" }).isVisible();
+  const blockedReasonColumnVisible = await page
+    .getByRole("columnheader", { name: "Blocked reason" })
+    .isVisible();
+  const signingBannerVisible = await page.locator('[data-testid="signing-status-banner"]').isVisible();
+  const linuxBinaryVisible = await page.locator('[data-testid="agent-binary-linux"]').isVisible();
+  const windowsBinaryVisible = await page.locator('[data-testid="agent-binary-windows"]').isVisible();
+  log(
+    "versions rendered:",
+    `keyPinned=${keyPinnedColumnVisible}`,
+    `blockedReason=${blockedReasonColumnVisible}`,
+    `signingBanner=${signingBannerVisible}`,
+    `linuxBinary=${linuxBinaryVisible}`,
+    `windowsBinary=${windowsBinaryVisible}`,
+  );
+
   await browser.close();
 
   log("");
@@ -120,7 +140,15 @@ async function main() {
     log("FAIL: console errors were captured during the run");
     process.exit(1);
   }
-  if (!modalTitleVisible || !navigateVisible) {
+  if (
+    !modalTitleVisible ||
+    !navigateVisible ||
+    !keyPinnedColumnVisible ||
+    !blockedReasonColumnVisible ||
+    !signingBannerVisible ||
+    !linuxBinaryVisible ||
+    !windowsBinaryVisible
+  ) {
     log("FAIL: an expected element did not render");
     process.exit(1);
   }

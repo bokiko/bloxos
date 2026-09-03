@@ -33,11 +33,12 @@ import (
  *   1. Hub announces a new SHA via agent_version frame.
  *   2. Agent downloads to <exe>.new, verifies SHA.
  *   3. Agent writes a marker file <exe>.pending describing the swap.
- *   4. Agent exits cleanly. SCM restarts us per recovery actions.
+ *   4. Agent exits with failure (code 1) so SCM restarts us per recovery actions.
  *   5. NEW process boot: applyPendingUpdate() runs BEFORE the SCM main
- *      loop. If <exe>.pending + <exe>.new exist, spawn a detached batch
- *      helper that: sleeps, deletes the running exe, renames .new ->
- *      target, removes marker, restarts the service, and self-deletes.
+ *      loop. If <exe>.pending + <exe>.new exist, it reads the marker, verifies
+ *      the signature and SHA, and spawns a detached batch helper that:
+ *      sleeps, moves .new -> target over the running exe, removes marker,
+ *      restarts the service, and self-deletes.
  *   6. The newly-restarted service boots from the new binary cleanly.
  *
  * Why a batch helper instead of doing the work in-process: by the time
@@ -117,7 +118,7 @@ func handleAgentVersion(msg []byte) {
 			updateInFlightWindows = false
 			updateMuWindows.Unlock()
 		}()
-		if err := performUpdateWindows(version.SHA256); err != nil {
+		if err := performUpdateWindows(version.SHA256, version.Signature); err != nil {
 			log.Printf("update: FAILED — %v (continuing on current version)", err)
 		}
 	}()
@@ -126,7 +127,7 @@ func handleAgentVersion(msg []byte) {
 // performUpdateWindows downloads the new binary, verifies its SHA, writes a
 // marker file, and exits. SCM will restart us; applyPendingUpdate runs on
 // boot and arranges the actual swap via a helper batch script.
-func performUpdateWindows(expectedSHA string) error {
+func performUpdateWindows(expectedSHA, signature string) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("get executable path: %w", err)
@@ -169,14 +170,14 @@ func performUpdateWindows(expectedSHA string) error {
 	// Write the pending marker so applyPendingUpdate, on next boot,
 	// picks up the swap.
 	now := time.Now().UTC().Format(time.RFC3339)
-	marker := fmt.Sprintf("source=%s\ntarget=%s\nat=%s\n", newPath, exe, now)
+	marker := fmt.Sprintf("source=%s\ntarget=%s\nat=%s\nsha256=%s\nsignature=%s\n", newPath, exe, now, expectedSHA, signature)
 	if err := os.WriteFile(markerPath, []byte(marker), 0644); err != nil {
 		os.Remove(newPath)
 		return fmt.Errorf("write pending marker: %w", err)
 	}
 
 	log.Printf("update: marker written, exiting for SCM restart + helper to apply swap")
-	os.Exit(0)
+	os.Exit(1)
 	return nil // unreachable
 }
 
@@ -205,13 +206,9 @@ func applyPendingUpdate() {
 	markerPath := exe + ".pending"
 	newPath := exe + ".new"
 
-	if _, err := os.Stat(markerPath); err != nil {
-		return // no pending update
-	}
-	if _, err := os.Stat(newPath); err != nil {
-		// Marker present but new binary missing — clean up the stale marker.
-		log.Printf("update: stale .pending marker (no .new binary), cleaning up")
-		os.Remove(markerPath)
+	if err := checkAndCleanPendingUpdate(exe, markerPath, newPath); err != nil {
+		// checkAndCleanPendingUpdate handles its own logging and cleanup,
+		// but also cleanly returns err for missing markers where we just abort.
 		return
 	}
 
@@ -238,6 +235,56 @@ func applyPendingUpdate() {
 	os.Exit(0)
 }
 
+// checkAndCleanPendingUpdate wraps the validation of a pending update and centralizes
+// the failure cleanup. If validation fails, it deletes both files.
+func checkAndCleanPendingUpdate(exe, markerPath, newPath string) error {
+	if _, err := os.Stat(markerPath); err != nil {
+		return err // No pending update marker, expected standard abort path.
+	}
+	if _, err := os.Stat(newPath); err != nil {
+		log.Printf("update: stale .pending marker (no .new binary), cleaning up")
+		os.Remove(markerPath)
+		return fmt.Errorf("missing .new binary")
+	}
+
+	if err := validatePendingUpdate(exe, markerPath, newPath); err != nil {
+		log.Printf("update: %v, cleaning up", err)
+		os.Remove(markerPath)
+		os.Remove(newPath)
+		return err
+	}
+
+	return nil
+}
+
+// validatePendingUpdate reads and validates the marker, hashes the staged .new file,
+// and calls the real signature-verification mechanism. Returns an error if any step fails.
+func validatePendingUpdate(exe, markerPath, newPath string) error {
+	pm, err := parsePendingMarker(markerPath)
+	if err != nil {
+		return fmt.Errorf("could not read .pending marker: %w", err)
+	}
+
+	if pm.ExpectedSHA == "" || pm.Signature == "" {
+		return fmt.Errorf("invalid .pending marker (missing sha256 or signature)")
+	}
+
+	downloadedSHA, err := computeFileSHA256(newPath)
+	if err != nil {
+		return fmt.Errorf("failed to compute SHA of .new binary: %w", err)
+	}
+
+	if !strings.EqualFold(downloadedSHA, pm.ExpectedSHA) {
+		return fmt.Errorf("SHA mismatch for staged binary (expected %s, got %s)", shortSHA(pm.ExpectedSHA), shortSHA(downloadedSHA))
+	}
+
+	if err := verifyAnnouncedRelease(exe, "windows", downloadedSHA, pm.Signature); err != nil {
+		return fmt.Errorf("staged binary failed signature verification: %w", err)
+	}
+
+	return nil
+}
+
 // buildHelperBatch returns the contents of the .bat we leave on disk.
 // Format mirrors the spec.
 func buildHelperBatch(target, newBin, marker string) string {
@@ -247,7 +294,6 @@ func buildHelperBatch(target, newBin, marker string) string {
 	marker = filepath.FromSlash(marker)
 	return "@echo off\r\n" +
 		"timeout /t 3 /nobreak > nul\r\n" +
-		"del \"" + target + "\" 2> nul\r\n" +
 		"move /Y \"" + newBin + "\" \"" + target + "\" > nul\r\n" +
 		"del \"" + marker + "\" 2> nul\r\n" +
 		"sc.exe start " + windowsServiceName + " > nul\r\n" +

@@ -32,18 +32,31 @@ See `AGENTS.md` for repo conventions.
 Before pushing, run the same checks CI runs:
 
 ```sh
-( cd hub      && go test -count=1 ./... )
-( cd agent    && go test -count=1 ./... )
-( cd dashboard && pnpm lint && pnpm build )
+# Hub Tests
+( cd hub   && go vet ./... && go test -count=1 ./... )
+
+# Hub Tests (race)
+( cd hub   && go test -race -count=1 -timeout=10m ./... )
+
+# Agent Tests
+( cd agent && go vet ./... && go test -count=1 ./... )
+( cd agent && go vet -tags insecure ./... && go test -tags insecure -count=1 ./... )
+
+# Dashboard Lint + Build
+( cd dashboard && pnpm install --frozen-lockfile && pnpm lint && pnpm build )
 ```
 
-`go vet ./...` is recommended for Go changes, but it is not currently a CI gate.
-
-For agent changes that affect the Windows build, also run:
+The fifth required check, `Agent Tests (windows)`, runs `go vet ./...` and
+`go test -count=1 ./...` natively on a Windows runner. A Linux host cannot run
+that native job locally. For agent changes that affect Windows, cross-vet as a
+precheck before pushing:
 
 ```sh
 ( cd agent && GOOS=windows go vet ./... )
 ```
+
+All five checks are blocking on `main`. The race and native-Windows jobs cover
+behavior that ordinary Linux `go test` does not.
 
 ## Merge policy
 
