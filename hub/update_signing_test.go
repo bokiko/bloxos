@@ -679,6 +679,34 @@ func (s *Server) collectAnnounceFrames(t *testing.T, e *echo.Echo, p announcePro
 
 	sendMetricsMsg(t, conn, p.machineID)
 
+	// Commit like the real agent: a fresh enrollment is registered (and any
+	// registration-time announce sent) only once enrollment_committed has
+	// committed, so keep any announce that arrives alongside the confirmation.
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	readEnrolledSecret(t, conn)
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"enrollment_committed"}`)); err != nil {
+		t.Fatalf("send enrollment_committed: %v", err)
+	}
+	var frames []string
+	for {
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatalf("waiting for enrollment_confirmed: %v", err)
+		}
+		var probe struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(msg, &probe) != nil {
+			continue
+		}
+		if probe.Type == "agent_version" {
+			frames = append(frames, string(msg))
+		}
+		if probe.Type == "enrollment_confirmed" {
+			break
+		}
+	}
+
 	running := map[string]interface{}{
 		"type":   "agent_running_version",
 		"sha256": strings.Repeat("11", 32),
@@ -696,7 +724,6 @@ func (s *Server) collectAnnounceFrames(t *testing.T, e *echo.Echo, p announcePro
 		t.Fatalf("write agent_running_version: %v", err)
 	}
 
-	var frames []string
 	deadline := time.Now().Add(1500 * time.Millisecond)
 	for time.Now().Before(deadline) {
 		conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))

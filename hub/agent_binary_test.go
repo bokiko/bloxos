@@ -50,6 +50,13 @@ func TestResolveAgentBinaryIsWorkingDirectoryIndependent(t *testing.T) {
 	if err := os.WriteFile(agent, []byte("agent"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// The resolver returns canonical paths; canonicalize the expectation too
+	// so the assertion holds where the temp dir sits behind a symlink
+	// (macOS: /var -> /private/var).
+	agent, err := filepath.EvalSymlinks(agent)
+	if err != nil {
+		t.Fatal(err)
+	}
 	r := agentBinaryResolver{
 		executablePath: func() (string, error) { return exe, nil },
 		validate: func(path string) (string, error) {

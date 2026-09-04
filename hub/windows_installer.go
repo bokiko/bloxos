@@ -87,19 +87,14 @@ if ($KeyWasAlreadyPinned) {
 
 $SecretExistedBefore = Test-Path -LiteralPath $SecretPath
 
+# Every run is a repair or re-enrollment attempt. There is deliberately no
+# "already healthy" early exit: this script cannot tell whether the local
+# agent-secret is still valid at the hub, and a rerun with a fresh token is
+# exactly how an operator recovers a machine whose credential was revoked.
+# The token is persisted below and the restarted agent presents both the
+# secret and the token; the hub falls back to the token if the secret no
+# longer authenticates.
 $Service = Get-Service -Name BloxOSAgent -ErrorAction SilentlyContinue
-$ExistingHub = [Environment]::GetEnvironmentVariable("BLOXOS_HUB", "Machine")
-$FastPath = (-not $ForceReenroll) -and
-    $KeyWasAlreadyPinned -and
-    (Test-Path -LiteralPath $AgentExe) -and
-    ((Get-FileHash -Algorithm SHA256 -LiteralPath $AgentExe).Hash.ToLower() -eq $ExpectedSha.ToLower()) -and
-    (Test-Path -LiteralPath $SecretPath) -and
-    ($ExistingHub -eq $Hub) -and
-    $Service -and ($Service.Status -eq 'Running')
-if ($FastPath) {
-    Write-Host "BloxOS agent is already installed and healthy; no changes made."
-    exit 0
-}
 
 function Invoke-CurlDownload([string]$Url, [string]$OutputPath) {
     & curl.exe --ssl-revoke-best-effort @CurlTlsArgs -sfL -o $OutputPath $Url
@@ -212,8 +207,11 @@ try {
     #     the hub's own view of the credential or BLOXOS_TOKEN removal — that
     #     remains a separate acceptance check — but the local signal it does
     #     wait for is now a strong one, not a weak one;
-    #   - ordinary non-FastPath repair with an existing credential: the
-    #     credential is retained as-is, so service health is the only signal
+    #   - ordinary rerun with an existing credential (repair, or recovery
+    #     after the hub revoked that credential): the local secret is left
+    #     as-is and the fresh token is persisted alongside it; whether the
+    #     hub accepts the secret or falls back to the token is decided on the
+    #     agent's connect, so service health is the only local signal
     #     available and is sufficient.
     # Secret contents are never read for comparison, only their SHA-256 hash.
     # If this gate times out, agent-secret is exactly what it was before this

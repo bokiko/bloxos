@@ -572,6 +572,50 @@ func TestConsumeTokenAndStoreCredentialEnforcesTargetInsideTransaction(t *testin
 	}
 }
 
+// TestTokenTransactionsRecheckExpiryAndTakeoverGuard covers the rechecks
+// that run inside the consuming transactions rather than only at initial
+// validation: an expired token is refused by both the fresh-enrollment
+// commit and targeted staging, and a fresh commit refuses a machine that
+// gained a credential meanwhile. In every case the token stays unused.
+func TestTokenTransactionsRecheckExpiryAndTakeoverGuard(t *testing.T) {
+	_, s := setupTestServer(t)
+	expired := time.Now().Add(-time.Minute).Format(time.RFC3339)
+
+	freshHash := hashOf("expired-fresh-token")
+	if _, err := s.db.Exec(`INSERT INTO tokens (token_hash, expires_at, used) VALUES (?, ?, FALSE)`, freshHash, expired); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.consumeTokenAndStoreCredential(freshHash, "expired-fresh", "h1"); err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("fresh commit with expired token: err=%v, want expiry refusal", err)
+	}
+	if s.machineHasCredential("expired-fresh") || tokenUsed(t, s, freshHash) {
+		t.Fatal("expired fresh token consumed or credential stored")
+	}
+
+	seedMachineCredential(t, s, "expired-targeted", "active-hash")
+	targetedHash := hashOf("expired-targeted-token")
+	if _, err := s.db.Exec(`INSERT INTO tokens (token_hash, expires_at, used, target_machine_id) VALUES (?, ?, FALSE, ?)`, targetedHash, expired, "expired-targeted"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.stageTargetedCredential(targetedHash, "expired-targeted", "h2"); err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("staging with expired token: err=%v, want expiry refusal", err)
+	}
+	if tokenUsed(t, s, targetedHash) {
+		t.Fatal("expired targeted token consumed")
+	}
+
+	takeoverHash := hashOf("takeover-token")
+	if _, err := s.db.Exec(`INSERT INTO tokens (token_hash, expires_at, used) VALUES (?, ?, FALSE)`, takeoverHash, time.Now().Add(time.Hour).Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.consumeTokenAndStoreCredential(takeoverHash, "expired-targeted", "h3"); err == nil || !strings.Contains(err.Error(), "already has a durable credential") {
+		t.Fatalf("fresh commit against an enrolled machine: err=%v, want takeover refusal", err)
+	}
+	if got := activeSecretHash(t, s, "expired-targeted"); got != "active-hash" || tokenUsed(t, s, takeoverHash) {
+		t.Fatalf("takeover attempt changed state: active=%q used=%v", got, tokenUsed(t, s, takeoverHash))
+	}
+}
+
 // TestWindowsReenrollmentRouteHasFleetAdminScope mirrors
 // TestCredentialRevokeRouteHasFleetAdminScope: the new route must be present
 // in routeScopeRequirements with fleet.admin, and the generic startup audit

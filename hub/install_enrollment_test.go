@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 // seedTokenValue inserts a valid (unused, unexpired) install token with the
@@ -256,5 +259,235 @@ func TestWindowsInstallScriptPinsHashAndVerifiesBinaryDownload(t *testing.T) {
 	}
 	if strings.Contains(body, "curl.exe -ksfL -o $CaPath") {
 		t.Fatal("install.ps1 must not bootstrap or replace CA trust; the authenticated paste block owns that step")
+	}
+}
+
+func tokenUsed(t *testing.T, s *Server, tokenHash string) bool {
+	t.Helper()
+	var used bool
+	if err := s.db.QueryRow(`SELECT used FROM tokens WHERE token_hash = ?`, tokenHash).Scan(&used); err != nil {
+		t.Fatalf("read token: %v", err)
+	}
+	return used
+}
+
+// TestFreshEnrollmentCommitsOnlyAfterAgentCommitted locks in review
+// r3791514735 on #169: a fresh enrollment must not consume the token or
+// store a credential when "enrolled" is sent. If the agent then fails to
+// save the secret and drops the connection, the same token must still work;
+// only enrollment_committed atomically consumes it and activates the secret,
+// after which the hash-bound confirmation is sent.
+func TestFreshEnrollmentCommitsOnlyAfterAgentCommitted(t *testing.T) {
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
+	server := httptest.NewServer(e)
+	defer server.Close()
+	token := s.seedValidToken(t)
+	tokenHash := hashOf(token)
+	machineID := "fresh-commit-machine"
+
+	conn1, err := wsDialAgent(t, server, "token="+token)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	sendMetricsMsg(t, conn1, machineID)
+	conn1.SetReadDeadline(time.Now().Add(5 * time.Second))
+	readEnrolledSecret(t, conn1)
+	if tokenUsed(t, s, tokenHash) {
+		t.Fatal("token consumed before the agent committed the secret")
+	}
+	if s.machineHasCredential(machineID) {
+		t.Fatal("credential stored before the agent committed the secret")
+	}
+	if agentMapHasEntry(s, machineID) {
+		t.Fatal("fresh socket registered as a live agent before commit")
+	}
+
+	// The agent's local save fails: it drops the connection without committing.
+	conn1.Close()
+	s.waitAgentDrain(t, machineID, 2*time.Second)
+
+	conn2, err := wsDialAgent(t, server, "token="+token)
+	if err != nil {
+		t.Fatalf("retry dial with the same token: %v", err)
+	}
+	defer conn2.Close()
+	sendMetricsMsg(t, conn2, machineID)
+	conn2.SetReadDeadline(time.Now().Add(5 * time.Second))
+	secret := readEnrolledSecret(t, conn2)
+	if err := conn2.WriteMessage(websocket.TextMessage, []byte(`{"type":"enrollment_committed"}`)); err != nil {
+		t.Fatalf("send enrollment_committed: %v", err)
+	}
+	if got := readEnrollmentConfirmedHash(t, conn2); got != hashOf(secret) {
+		t.Fatalf("confirmation hash %q, want hash of the issued secret %q", got, hashOf(secret))
+	}
+	if !tokenUsed(t, s, tokenHash) {
+		t.Fatal("token not consumed by the committed enrollment")
+	}
+	if got := activeSecretHash(t, s, machineID); got != hashOf(secret) {
+		t.Fatalf("active secret hash %q, want %q", got, hashOf(secret))
+	}
+	if id, _, err := s.validateAgentSecret(secret); err != nil || id != machineID {
+		t.Fatalf("committed secret does not authenticate: id=%q err=%v", id, err)
+	}
+	if !agentMapHasEntry(s, machineID) {
+		t.Fatal("committed enrollment did not register the socket as a live agent")
+	}
+}
+
+// TestFreshEnrollmentExpiredTokenAtCommitYieldsNoCredential locks in review
+// r3791514737: expiry is re-checked at the commit point. A token that expires
+// between "enrolled" and enrollment_committed produces no credential, no
+// confirmation, and a closed connection.
+func TestFreshEnrollmentExpiredTokenAtCommitYieldsNoCredential(t *testing.T) {
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
+	server := httptest.NewServer(e)
+	defer server.Close()
+	token := s.seedValidToken(t)
+	machineID := "fresh-expired-machine"
+
+	conn, err := wsDialAgent(t, server, "token="+token)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	sendMetricsMsg(t, conn, machineID)
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	readEnrolledSecret(t, conn)
+	if agentMapHasEntry(s, machineID) {
+		t.Fatal("fresh socket registered as a live agent before commit")
+	}
+
+	if _, err := s.db.Exec(`UPDATE tokens SET expires_at = ? WHERE token_hash = ?`,
+		"2000-01-01 00:00:00", hashOf(token)); err != nil {
+		t.Fatalf("expire token: %v", err)
+	}
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"enrollment_committed"}`)); err != nil {
+		t.Fatalf("send enrollment_committed: %v", err)
+	}
+	// The hub must send no confirmation and close the socket itself; a
+	// client-side read timeout means it was left open.
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	for {
+		_, msg, err := conn.ReadMessage()
+		if err == nil {
+			if strings.Contains(string(msg), "enrollment_confirmed") {
+				t.Fatalf("confirmation sent for a token that expired before commit: %s", msg)
+			}
+			continue
+		}
+		if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			t.Fatal("connection left open after an expired commit")
+		}
+		break
+	}
+	if s.machineHasCredential(machineID) {
+		t.Fatal("credential stored from a token that expired before commit")
+	}
+	if tokenUsed(t, s, hashOf(token)) {
+		t.Fatal("expired token was consumed")
+	}
+	if agentMapHasEntry(s, machineID) {
+		t.Fatal("failed fresh commit left the socket registered as a live agent")
+	}
+	waitForCondition(t, 5*time.Second, func() bool { return machineStatus(t, s, machineID) == "offline" })
+}
+
+// TestFreshCommitIsSerializedWithRevocation answers the Codex P1 on #172: a
+// revocation cannot interleave with a fresh enrollment's commit. The fresh
+// socket holds the auth read lock from upgrade until after the commit
+// transaction and registration, and revocation needs the writer lock. So a
+// revoke issued while the enrollment is staged but uncommitted blocks until
+// the commit has landed, then finds the registered socket and deletes the
+// just-committed credential; the secret ends revoked, not resurrected.
+func TestFreshCommitIsSerializedWithRevocation(t *testing.T) {
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
+	server := httptest.NewServer(e)
+	defer server.Close()
+	token := s.seedValidToken(t)
+	adminToken := loginAndGetToken(t, e)
+	machineID := "revoke-machine" // matches testCredentialRevokePath
+
+	conn, err := wsDialAgent(t, server, "token="+token)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	sendMetricsMsg(t, conn, machineID)
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	secret := readEnrolledSecret(t, conn)
+
+	// Revocation arrives while the enrollment is staged but uncommitted.
+	revoked := make(chan *httptest.ResponseRecorder, 1)
+	go func() { revoked <- revokeCredentialRequest(e, adminToken) }()
+
+	select {
+	case rec := <-revoked:
+		t.Fatalf("revocation ran (status %d) while the fresh enrollment was still uncommitted", rec.Code)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if s.machineHasCredential(machineID) || tokenUsed(t, s, hashOf(token)) {
+		t.Fatal("state mutated before enrollment_committed")
+	}
+
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"enrollment_committed"}`)); err != nil {
+		t.Fatalf("send enrollment_committed: %v", err)
+	}
+
+	// Only after the commit does the writer get through, against the
+	// now-registered socket and the now-stored credential. The confirmation
+	// frame is not required here: once the read lock is released the
+	// waiting revoke may close the socket before the confirmation is
+	// delivered, which is a legitimate ordering.
+	var rec *httptest.ResponseRecorder
+	select {
+	case rec = <-revoked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("revocation never ran after the enrollment committed")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("revoke status=%d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		CredentialExisted bool `json:"credential_existed"`
+		ConnectionClosed  bool `json:"connection_closed"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode revoke response: %v", err)
+	}
+	if !resp.CredentialExisted || !resp.ConnectionClosed {
+		t.Fatalf("revocation did not run after the commit against the registered socket: %+v", resp)
+	}
+	if !tokenUsed(t, s, hashOf(token)) {
+		t.Fatal("commit did not consume the token")
+	}
+	if s.machineHasCredential(machineID) {
+		t.Fatal("credential resurrected after revocation")
+	}
+	if _, _, err := s.validateAgentSecret(secret); err == nil {
+		t.Fatal("revoked secret still authenticates")
+	}
+	// The hub must close the socket. A confirmation may or may not have
+	// been delivered before the close; if it was, it must name the
+	// committed secret.
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	for {
+		_, msg, err := conn.ReadMessage()
+		if err == nil {
+			var frame struct {
+				Type         string `json:"type"`
+				SecretSHA256 string `json:"secret_sha256"`
+			}
+			if json.Unmarshal(msg, &frame) == nil && frame.Type == "enrollment_confirmed" && frame.SecretSHA256 != hashOf(secret) {
+				t.Fatalf("confirmation hash %q, want %q", frame.SecretSHA256, hashOf(secret))
+			}
+			continue
+		}
+		if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			t.Fatal("revocation left the registered socket open")
+		}
+		break
 	}
 }

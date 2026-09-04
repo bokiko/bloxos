@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -151,22 +152,21 @@ func TestPromotionExpiredDuringCommitUnregisters(t *testing.T) {
 	waitForAgentMapAbsence(t, s, machineID, 5*time.Second)
 }
 
-// TestNewerConnectionSurvivesOlderHandlerExit is the end-to-end (not just
-// unregisterAgentConnection-unit-level) proof that a fast-reconnecting agent
-// is never false-offlined or evicted by its own stale handler's exit. Two
-// real connections authenticate with the same durable secret (the ordinary
-// reconnect / pre-loop registration path) for the same machine_id — the
-// second overwrites the registry entry the first installed. The first is
-// then closed; its handler's defer must find it is no longer the registered
-// connection and do nothing.
-func TestNewerConnectionSurvivesOlderHandlerExit(t *testing.T) {
+// TestReplacementClosesDisplacedConnectionAndKeepsNewer is the end-to-end
+// proof for overlapping reconnects (review r3779926380 on #167). Two real
+// connections authenticate with the same durable secret for the same
+// machine_id. Registering B must (1) make the hub close the displaced A,
+// so a later revocation cannot miss a still-authenticated old socket, and
+// (2) A's handler exit must find it is no longer the registered connection
+// and leave B registered, the machine online, and B usable.
+func TestReplacementClosesDisplacedConnectionAndKeepsNewer(t *testing.T) {
 	e, s := setupTestServer(t)
 	s.markCredentialsRotated(t)
 	server := httptest.NewServer(e)
 	defer server.Close()
 	rawToken := s.seedValidToken(t)
 
-	machineID := "dual-conn-survive"
+	machineID := "dual-conn-replace"
 	secret := s.enrollAndCaptureSecret(t, server, rawToken, machineID)
 
 	dial := func() *websocket.Conn {
@@ -187,21 +187,29 @@ func TestNewerConnectionSurvivesOlderHandlerExit(t *testing.T) {
 	connB := dial()
 	defer connB.Close()
 	sendMetricsMsg(t, connB, machineID)
-	waitForCondition(t, 5*time.Second, func() bool { return machineStatus(t, s, machineID) == "online" })
 
-	// A is now the stale, overwritten registration. Close it and give its
-	// handler's read loop + defer a chance to run.
-	connA.Close()
+	// (1) The hub must close A on its own. Drain any hub frames on A and
+	// distinguish a server-side close from this client's own read timeout.
+	connA.SetReadDeadline(time.Now().Add(2 * time.Second))
+	for {
+		_, _, err := connA.ReadMessage()
+		if err == nil {
+			continue
+		}
+		if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			t.Fatal("displaced connection A was left open after B registered; revocation would miss it")
+		}
+		break
+	}
+
+	// (2) A's handler exit must not disturb B's live registration.
 	time.Sleep(400 * time.Millisecond)
-
 	if status := machineStatus(t, s, machineID); status != "online" {
-		t.Fatalf("machine flipped to %q after the STALE connection exited; want unchanged 'online' (B is still live)", status)
+		t.Fatalf("machine flipped to %q after the displaced connection exited; want unchanged 'online' (B is still live)", status)
 	}
 	if !agentMapHasEntry(s, machineID) {
-		t.Fatal("agents map entry removed by the stale connection's exit — B's live registration was evicted")
+		t.Fatal("agents map entry removed by the displaced connection's exit — B's live registration was evicted")
 	}
-
-	// B is still actually the live, working connection.
 	if err := connB.WriteMessage(websocket.PingMessage, nil); err != nil {
 		t.Fatalf("B's connection is no longer usable after A's exit: %v", err)
 	}

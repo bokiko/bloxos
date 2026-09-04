@@ -47,27 +47,6 @@ func TestWindowsInstallerParamBlockPrecedesExecutableStatements(t *testing.T) {
 	}
 }
 
-// TestWindowsInstallerFastPathGatedByForceReenroll locks in that FastPath's
-// no-op short-circuit cannot trigger when the caller explicitly asked for a
-// forced re-enrollment.
-func TestWindowsInstallerFastPathGatedByForceReenroll(t *testing.T) {
-	body := fetchInstallPS1(t)
-	fastPathIdx := strings.Index(body, "$FastPath =")
-	if fastPathIdx < 0 {
-		t.Fatal("install.ps1 does not assign $FastPath")
-	}
-	// The assignment (through its trailing -and chain) must reference
-	// $ForceReenroll before the "if ($FastPath)" no-op check.
-	ifFastPathIdx := strings.Index(body, "if ($FastPath)")
-	if ifFastPathIdx < 0 {
-		t.Fatal("install.ps1 does not check if ($FastPath)")
-	}
-	assignmentBlock := body[fastPathIdx:ifFastPathIdx]
-	if !strings.Contains(assignmentBlock, "-not $ForceReenroll") {
-		t.Fatalf("FastPath assignment does not gate on (-not $ForceReenroll): %q", assignmentBlock)
-	}
-}
-
 // TestWindowsInstallerForcedReenrollPreservesAndCanRestoreSecret locks in the
 // secret-handling contract for -ForceReenroll: the existing secret is backed
 // up by exact path — recording only its hash, never moving, deleting, or

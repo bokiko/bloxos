@@ -40,9 +40,22 @@ func (s *Server) enrollAndCaptureSecret(t *testing.T, server *httptest.Server, t
 			secret = probe.AgentSecret
 		}
 	}
+	commitEnrollment(t, conn)
 	conn.Close()
 	s.waitAgentDrain(t, machineID, 2*time.Second)
 	return secret
+}
+
+// commitEnrollment mirrors the agent after it has durably staged the issued
+// secret: send enrollment_committed and wait for enrollment_confirmed. A
+// fresh enrollment only becomes active hub-side at this point.
+func commitEnrollment(t *testing.T, conn *websocket.Conn) {
+	t.Helper()
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"enrollment_committed"}`)); err != nil {
+		t.Fatalf("send enrollment_committed: %v", err)
+	}
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	readFrameType(t, conn, "enrollment_confirmed")
 }
 
 // TestAuthedAgentCannotWriteForeignMachineID locks in the identity-binding fix:
@@ -256,5 +269,97 @@ func TestHandleCloseTerminalReleasesWaiter(t *testing.T) {
 		// good — Done was closed.
 	case <-time.After(2 * time.Second):
 		t.Fatal("waiter parked on session.Done was not released by handleCloseTerminal (goroutine would leak)")
+	}
+}
+
+// TestUnauthenticatedSocketCannotExtendAuthGate locks in the bound on the
+// authentication gate (review r3779926376 on #167). A client that upgraded
+// with a valid token holds Server.agentAuthMu.RLock until it authenticates.
+// Frames and pings must not push its read deadline out to the idle timeout
+// before that happens; otherwise junk frames keep the gate held forever,
+// credential revocation (a writer) blocks, and every new agent handler
+// queues behind that writer.
+func TestUnauthenticatedSocketCannotExtendAuthGate(t *testing.T) {
+	e, s := setupTestServer(t)
+	token := s.seedValidToken(t)
+
+	prev := agentAuthWindow
+	agentAuthWindow = 200 * time.Millisecond
+	t.Cleanup(func() { agentAuthWindow = prev })
+
+	server := httptest.NewServer(e)
+	defer server.Close()
+
+	conn, err := wsDialAgent(t, server, "token="+token)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	// Keep the socket chatty without ever authenticating: invalid JSON and
+	// pings, each well inside the auth window, for three auth windows.
+	stop := time.Now().Add(3 * agentAuthWindow)
+	for time.Now().Before(stop) {
+		_ = conn.WriteMessage(websocket.TextMessage, []byte("not json"))
+		_ = conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(time.Second))
+		time.Sleep(agentAuthWindow / 4)
+	}
+
+	// The gate must be released once the auth window has elapsed. A writer
+	// acquiring the lock is exactly what credential revocation does.
+	deadline := time.Now().Add(time.Second)
+	for {
+		if s.agentAuthMu.TryLock() {
+			s.agentAuthMu.Unlock()
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("auth gate still held by an unauthenticated socket well past the auth window; revocation would block")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestAuthenticatedAgentPingsExtendIdleDeadline preserves the other half of
+// the contract: once a socket is authenticated, pings keep it alive past the
+// auth window, so a quiet-but-live agent is not dropped.
+func TestAuthenticatedAgentPingsExtendIdleDeadline(t *testing.T) {
+	e, s := setupTestServer(t)
+	token := s.seedValidToken(t)
+	server := httptest.NewServer(e)
+	defer server.Close()
+	secret := s.enrollAndCaptureSecret(t, server, token, "ping-machine")
+
+	prevWindow := agentAuthWindow
+	agentAuthWindow = 200 * time.Millisecond
+	t.Cleanup(func() { agentAuthWindow = prevWindow })
+
+	conn, err := wsDialAgent(t, server, "secret="+secret)
+	if err != nil {
+		t.Fatalf("dial with secret: %v", err)
+	}
+	defer conn.Close()
+
+	// Drain whatever the hub sends on registration in the background so a
+	// server-side close is observed as a read error, not a stalled read.
+	closed := make(chan error, 1)
+	go func() {
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				closed <- err
+				return
+			}
+		}
+	}()
+	stop := time.Now().Add(3 * agentAuthWindow)
+	for time.Now().Before(stop) {
+		if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(time.Second)); err != nil {
+			t.Fatalf("ping write failed: %v", err)
+		}
+		select {
+		case err := <-closed:
+			t.Fatalf("hub dropped an authenticated, pinging agent after the auth window: %v", err)
+		case <-time.After(agentAuthWindow / 4):
+		}
 	}
 }
