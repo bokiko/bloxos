@@ -18,7 +18,8 @@
 # builds only missing ones; run `docker compose --project-directory docker
 # build` first after changing a Dockerfile.
 #
-# Requires: docker compose, systemd, sudo without a password, curl, python3.
+# Requires: docker compose, systemd, sudo without a password, curl, openssl,
+# python3.
 set -euo pipefail
 
 if [[ "${SMOKE_CONFIRM_DISPOSABLE:-}" != "1" ]]; then
@@ -64,6 +65,11 @@ done
 curl -sk --max-time 3 "$HUB/health" | grep -q '"ok"' || fail "hub not healthy through Caddy"
 [[ "$(curl -sk -o /dev/null -w '%{http_code}' "$HUB/login")" == 200 ]] || fail "dashboard not served"
 [[ "$(curl -sk -o /dev/null -w '%{http_code}' "$HUB/install.ps1")" == 200 ]] || fail "Windows installer not served"
+
+echo "== served certificate key type"
+LEAF="$(openssl s_client -connect "$HUB_HOST:443" -servername "$HUB_HOST" </dev/null 2>/dev/null | openssl x509 -noout -text)"
+echo "$LEAF" | grep -q 'Public Key Algorithm: rsaEncryption' || fail "served certificate is not RSA (AGENTS.md requires RSA-2048 for Windows PowerShell 5.1 clients)"
+echo "$LEAF" | grep -q 'Public-Key: (2048 bit)' || fail "served RSA certificate is not 2048-bit"
 
 echo "== first-boot setup and login"
 PASSWORD="smoke-$(head -c 12 /dev/urandom | base64 | tr -dc 'A-Za-z0-9')"

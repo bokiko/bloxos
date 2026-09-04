@@ -59,7 +59,10 @@ jobs:
         run: scripts/smoke/compose-enroll.sh
 
   # Multi-platform build and push, version tags only. This is the only job
-  # with package write permission.
+  # with package write permission. Both images are pushed by digest first,
+  # with no tags, and promoted to the version and latest tags only after
+  # both pushes succeeded, so a failed build never leaves a mixed pair
+  # behind the default tags.
   publish:
     name: Publish images
     needs: smoke
@@ -77,37 +80,37 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - id: hub-meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.HUB_IMAGE }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=raw,value=latest
-      - name: Push hub image
+      - name: Push hub image by digest
+        id: hub
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile.hub
           platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.hub-meta.outputs.tags }}
-          labels: ${{ steps.hub-meta.outputs.labels }}
+          outputs: type=image,name=${{ env.HUB_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha,scope=hub
-      - id: dashboard-meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.DASHBOARD_IMAGE }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=raw,value=latest
-      - name: Push dashboard image
+      - name: Push dashboard image by digest
+        id: dashboard
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile.dashboard
           platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.dashboard-meta.outputs.tags }}
-          labels: ${{ steps.dashboard-meta.outputs.labels }}
+          outputs: type=image,name=${{ env.DASHBOARD_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha,scope=dashboard
+      - name: Promote both images to the version and latest tags
+        env:
+          VERSION: ${{ github.ref_name }}
+          HUB_DIGEST: ${{ steps.hub.outputs.digest }}
+          DASHBOARD_DIGEST: ${{ steps.dashboard.outputs.digest }}
+        run: |
+          set -euo pipefail
+          version="${VERSION#v}"
+          docker buildx imagetools create -t "$HUB_IMAGE:$version" -t "$HUB_IMAGE:latest" "$HUB_IMAGE@$HUB_DIGEST"
+          docker buildx imagetools create -t "$DASHBOARD_IMAGE:$version" -t "$DASHBOARD_IMAGE:latest" "$DASHBOARD_IMAGE@$DASHBOARD_DIGEST"
