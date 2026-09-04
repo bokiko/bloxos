@@ -1,0 +1,36 @@
+# Version control and tooling
+.git
+.github
+**/.claude
+.backups
+.turbo
+.idea
+.vscode
+**/.DS_Store
+
+# Dependencies and build outputs
+**/node_modules
+dashboard/.next
+dashboard/out
+bin
+hub/hub
+hub/bloxos-hub
+agent/agent
+agent/bloxos-agent
+**/*.exe
+
+# Databases
+**/*.db
+**/*.db-wal
+**/*.db-shm
+**/*.db-journal
+
+# Environment and secrets; the commented reference stays
+**/.env
+**/.env.*
+!**/.env.example
+**/*.local
+**/.bloxos
+**/*.key
+**/*.pem
+**/*.sig

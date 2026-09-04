@@ -3,7 +3,11 @@
 }
 
 https://{$HUB_HOST} {
-	tls internal
+	# RSA-2048 leaf certificates: stock Windows PowerShell 5.1 clients do not
+	# accept Caddy's default ECDSA keys (see AGENTS.md).
+	tls internal {
+		key_type rsa2048
+	}
 
 	# Hub API routes
 	handle /api/* {

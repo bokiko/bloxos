@@ -1,0 +1,55 @@
+# syntax=docker/dockerfile:1.7
+# BloxOS hub image.
+#
+# One build of this checkout produces the hub binary and the agent binaries
+# the hub serves to enrolling machines, so a running hub always offers
+# agents from the same commit. The served Linux agent matches the image's
+# own architecture (an arm64 image serves arm64 agents, an amd64 image
+# serves amd64 agents); the served Windows agent is always amd64. A single
+# image therefore serves one Linux architecture; see docker/README.md.
+#
+# Builds are deterministic for a given commit and toolchain (-trimpath,
+# no VCS stamping, stripped), so rebuilding does not change the served
+# agent hash and does not trigger a fleet rollout.
+
+FROM --platform=$BUILDPLATFORM golang:1.25.9-alpine AS build
+ARG TARGETARCH
+ENV CGO_ENABLED=0 \
+    GOTOOLCHAIN=local \
+    GOFLAGS="-trimpath -buildvcs=false"
+WORKDIR /src
+COPY proto/ proto/
+COPY hub/go.mod hub/go.sum hub/
+COPY agent/go.mod agent/go.sum agent/
+RUN --mount=type=cache,target=/go/pkg/mod \
+    (cd hub && go mod download) && (cd agent && go mod download)
+COPY hub/ hub/
+COPY agent/ agent/
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    mkdir -p /out/linux /out/windows \
+ && (cd hub   && GOOS=linux   GOARCH="$TARGETARCH" go build -ldflags='-s -w' -o /out/bloxos-hub .) \
+ && (cd agent && GOOS=linux   GOARCH="$TARGETARCH" go build -ldflags='-s -w' -o /out/linux/bloxos-agent .) \
+ && (cd agent && GOOS=windows GOARCH=amd64        go build -ldflags='-s -w' -o /out/windows/bloxos-agent.exe .)
+
+FROM alpine:3.22
+RUN apk add --no-cache ca-certificates \
+ && addgroup -g 65532 -S nonroot \
+ && adduser -u 65532 -S -G nonroot -h /data -s /sbin/nologin nonroot \
+ && mkdir -p /data && chown nonroot:nonroot /data && chmod 0700 /data
+# The hub's served-binary resolver requires root-owned, non-writable
+# artifacts and ancestors; the hub itself runs unprivileged.
+COPY --from=build --chown=root:root --chmod=0755 /out/bloxos-hub /usr/local/bin/bloxos-hub
+COPY --from=build --chown=root:root --chmod=0755 /out/linux/bloxos-agent /usr/local/lib/bloxos/linux/bloxos-agent
+COPY --from=build --chown=root:root --chmod=0755 /out/windows/bloxos-agent.exe /usr/local/lib/bloxos/windows/bloxos-agent.exe
+# State lives in one volume: bloxos.db in the working directory, secrets,
+# setup token and signing key under $HOME/.bloxos.
+ENV HOME=/data \
+    HUB_LISTEN=0.0.0.0:4000
+WORKDIR /data
+VOLUME ["/data"]
+USER nonroot
+EXPOSE 4000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget -qO- http://127.0.0.1:4000/health >/dev/null || exit 1
+ENTRYPOINT ["/usr/local/bin/bloxos-hub"]
