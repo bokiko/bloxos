@@ -40,9 +40,22 @@ func (s *Server) enrollAndCaptureSecret(t *testing.T, server *httptest.Server, t
 			secret = probe.AgentSecret
 		}
 	}
+	commitEnrollment(t, conn)
 	conn.Close()
 	s.waitAgentDrain(t, machineID, 2*time.Second)
 	return secret
+}
+
+// commitEnrollment mirrors the agent after it has durably staged the issued
+// secret: send enrollment_committed and wait for enrollment_confirmed. A
+// fresh enrollment only becomes active hub-side at this point.
+func commitEnrollment(t *testing.T, conn *websocket.Conn) {
+	t.Helper()
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"enrollment_committed"}`)); err != nil {
+		t.Fatalf("send enrollment_committed: %v", err)
+	}
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	readFrameType(t, conn, "enrollment_confirmed")
 }
 
 // TestAuthedAgentCannotWriteForeignMachineID locks in the identity-binding fix:

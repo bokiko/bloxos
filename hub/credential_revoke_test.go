@@ -245,6 +245,7 @@ func TestRevokedSecretWithFreshTokenReenrollsSameMachine(t *testing.T) {
 	if newSecret == oldSecret {
 		t.Fatal("re-enrollment reused the revoked secret")
 	}
+	commitEnrollment(t, conn)
 
 	var usedAfter bool
 	if err := s.db.QueryRow(`SELECT used FROM tokens WHERE token_hash = ?`, tokenHash).Scan(&usedAfter); err != nil {

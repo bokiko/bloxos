@@ -726,8 +726,9 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 		s.unregisterAgentConnection(machineID, agent)
 	}()
 	var stagedPendingSecretHash string
-	var freshlyEnrolledDirectly bool
-	var freshlyEnrolledSecretHash string
+	// Fresh enrollment issued on this connection but not yet committed: the
+	// token stays unused and no credential exists until enrollment_committed.
+	var freshPendingTokenHash, freshPendingSecretHash string
 	if secretMachineID != "" && !dualCredentialTargetedReenroll {
 		machineID = secretMachineID
 		s.registerAgentConnection(machineID, agent)
@@ -878,15 +879,16 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 				} else if knownMachine && secretMachineID == machineID {
 					log.Printf("known agent reconnecting with durable credential: %s (%s)", m.Hostname, machineID)
 				} else if tokenValidated && !hasCredential {
-					// New enrollment with valid token - consume it and issue durable secret.
+					// New enrollment with a valid token: issue a secret but
+					// write nothing yet. The token is consumed and the
+					// credential stored only when the agent reports the
+					// secret durably staged (enrollment_committed below), so
+					// an agent that fails to save it and drops the connection
+					// can retry with the same token instead of being stranded
+					// with a spent token and no secret.
 					rawSecret, secretHash, err := generateAgentSecret()
 					if err != nil {
 						log.Printf("failed to generate agent secret: %v", err)
-						ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","message":"enrollment failed"}`))
-						return nil
-					}
-					if err := s.consumeTokenAndStoreCredential(tokenHash, machineID, secretHash); err != nil {
-						log.Printf("failed to store agent credential: %v", err)
 						ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","message":"enrollment failed"}`))
 						return nil
 					}
@@ -894,18 +896,16 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 						"type":         "enrolled",
 						"agent_secret": rawSecret,
 					})
-					// Same reasoning as the staging branch above: no
-					// concurrent writer exists pre-registration, but the
-					// credential was already committed active and the token
-					// already consumed — a failed send must not be treated
-					// as a silent success.
+					// No concurrent writer exists pre-registration, so a
+					// direct write is safe; nothing has been committed, so a
+					// failed send simply closes and the token stays usable.
 					if err := ws.WriteMessage(websocket.TextMessage, enrolledMsg); err != nil {
-						log.Printf("stored agent credential for %s but failed to send enrolled frame: %v — closing connection", machineID, err)
+						log.Printf("failed to send enrolled frame to %s: %v — closing connection", machineID, err)
 						return nil
 					}
-					freshlyEnrolledDirectly = true
-					freshlyEnrolledSecretHash = secretHash
-					log.Printf("new agent enrolled with durable secret: %s (%s)", m.Hostname, machineID)
+					freshPendingTokenHash = tokenHash
+					freshPendingSecretHash = secretHash
+					log.Printf("new agent issued enrollment secret, awaiting commit: %s (%s)", m.Hostname, machineID)
 				} else if hasCredential {
 					// A durable credential already exists for this machine_id. A
 					// generic install token must NOT silently replace it (that would
@@ -1104,21 +1104,25 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 			// frame could arrive, so announceVersionToAgent's goroutine may
 			// already be writing — every send below MUST go through
 			// agent.writeLocked, never direct to ws.
-			if freshlyEnrolledDirectly {
-				// Nothing to promote — the credential was already written
-				// active by consumeTokenAndStoreCredential. "Confirmed" here
-				// means only that the confirmation frame was sent, not a
-				// fresh DB commit. secret_sha256 is that same active
-				// secret's hash — the agent's local pending file (written on
-				// receiving "enrolled") holds the identical secret, so its
-				// hash matches this one and the agent promotes it locally.
-				confirmMsg, _ := json.Marshal(map[string]string{"type": "enrollment_confirmed", "secret_sha256": freshlyEnrolledSecretHash})
-				if err := agent.writeLocked(websocket.TextMessage, confirmMsg); err != nil {
-					log.Printf("failed to send enrollment_confirmed to %s: %v — closing connection", machineID, err)
+			if freshPendingTokenHash != "" {
+				// Fresh enrollment: this is the commit point. The token is
+				// consumed and the credential stored in one transaction that
+				// re-checks expiry, target binding, and that no credential
+				// appeared meanwhile. On any failure nothing is written and
+				// the connection closes without confirmation; the agent's
+				// reconnect retries with the token if it is still valid.
+				if err := s.consumeTokenAndStoreCredential(freshPendingTokenHash, machineID, freshPendingSecretHash); err != nil {
+					log.Printf("fresh enrollment for %s could not be committed: %v — closing connection", machineID, err)
 					return nil
 				}
-				freshlyEnrolledDirectly = false
-				log.Printf("sent enrollment_confirmed for fresh enrollment: %s", machineID)
+				confirmedHash := freshPendingSecretHash
+				freshPendingTokenHash, freshPendingSecretHash = "", ""
+				confirmMsg, _ := json.Marshal(map[string]string{"type": "enrollment_confirmed", "secret_sha256": confirmedHash})
+				if err := agent.writeLocked(websocket.TextMessage, confirmMsg); err != nil {
+					log.Printf("committed fresh enrollment for %s but failed to send enrollment_confirmed: %v — closing connection", machineID, err)
+					return nil
+				}
+				log.Printf("committed fresh enrollment and sent enrollment_confirmed: %s", machineID)
 				continue
 			}
 			if stagedPendingSecretHash == "" {
@@ -1177,37 +1181,39 @@ func (s *Server) validateAgentToken(token string) (string, sql.NullString, error
 	if used {
 		return "", sql.NullString{}, fmt.Errorf("token already used")
 	}
-	expTime, err := time.Parse("2006-01-02 15:04:05", expiresAt)
-	if err != nil {
-		expTime, err = time.Parse(time.RFC3339, expiresAt)
-		if err != nil {
-			return "", sql.NullString{}, fmt.Errorf("invalid expiry format")
-		}
-	}
-	if time.Now().After(expTime) {
-		return "", sql.NullString{}, fmt.Errorf("token expired")
+	if err := checkTokenExpiry(expiresAt); err != nil {
+		return "", sql.NullString{}, err
 	}
 
 	log.Printf("agent token validated successfully")
 	return tokenHash, targetMachineID, nil
 }
 
-// consumeToken marks a token as used after successful enrollment.
-func (s *Server) consumeToken(tokenHash string) {
-	_, err := s.db.Exec(`UPDATE tokens SET used = TRUE WHERE token_hash = ?`, tokenHash)
+// checkTokenExpiry parses a tokens.expires_at value (either stored format)
+// and reports whether it has passed. It runs at initial validation and again
+// inside the transactions that consume a token, so a token that expires
+// between the handshake and the credential mutation is still refused.
+func checkTokenExpiry(expiresAt string) error {
+	expTime, err := time.Parse("2006-01-02 15:04:05", expiresAt)
 	if err != nil {
-		log.Printf("failed to mark token as used: %v", err)
-	} else {
-		log.Printf("install token consumed")
+		expTime, err = time.Parse(time.RFC3339, expiresAt)
+		if err != nil {
+			return fmt.Errorf("invalid expiry format")
+		}
 	}
+	if time.Now().After(expTime) {
+		return fmt.Errorf("token expired")
+	}
+	return nil
 }
 
-// consumeTokenAndStoreCredential atomically consumes tokenHash and stores (or
-// replaces) machineID's durable credential. The target check is repeated here
-// inside the transaction — not just by the earlier in-memory decision in
-// handleAgentWS — so a validate-then-consume race can't let a stale read win:
-// this is the last write before the credential exists, and it must not trust
-// anything computed outside its own transaction.
+// consumeTokenAndStoreCredential atomically consumes tokenHash and stores
+// machineID's first durable credential. Expiry, the target check, and the
+// no-existing-credential guard are all repeated here inside the transaction —
+// not just by the earlier in-memory decisions in handleAgentWS — so a
+// validate-then-consume race can't let a stale read win: this is the last
+// write before the credential exists, and it must not trust anything computed
+// outside its own transaction.
 func (s *Server) consumeTokenAndStoreCredential(tokenHash, machineID, secretHash string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -1216,14 +1222,25 @@ func (s *Server) consumeTokenAndStoreCredential(tokenHash, machineID, secretHash
 	defer tx.Rollback()
 
 	var targetMachineID sql.NullString
-	if err := tx.QueryRow(`SELECT target_machine_id FROM tokens WHERE token_hash = ? AND used = FALSE`, tokenHash).Scan(&targetMachineID); err != nil {
+	var expiresAt string
+	if err := tx.QueryRow(`SELECT target_machine_id, expires_at FROM tokens WHERE token_hash = ? AND used = FALSE`, tokenHash).Scan(&targetMachineID, &expiresAt); err != nil {
 		if err == sql.ErrNoRows {
 			return fmt.Errorf("install token already consumed")
 		}
 		return err
 	}
+	if err := checkTokenExpiry(expiresAt); err != nil {
+		return fmt.Errorf("install %w", err)
+	}
 	if targetMachineID.Valid && targetMachineID.String != machineID {
 		return fmt.Errorf("install token is bound to a different machine")
+	}
+	var existing int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM agent_credentials WHERE machine_id = ?`, machineID).Scan(&existing); err != nil {
+		return err
+	}
+	if existing > 0 {
+		return fmt.Errorf("machine already has a durable credential")
 	}
 
 	res, err := tx.Exec(`UPDATE tokens SET used = TRUE WHERE token_hash = ? AND used = FALSE`, tokenHash)
@@ -1238,7 +1255,7 @@ func (s *Server) consumeTokenAndStoreCredential(tokenHash, machineID, secretHash
 		return fmt.Errorf("install token already consumed")
 	}
 
-	if _, err := tx.Exec(`INSERT OR REPLACE INTO agent_credentials (machine_id, secret_hash, created_at, last_used_at)
+	if _, err := tx.Exec(`INSERT INTO agent_credentials (machine_id, secret_hash, created_at, last_used_at)
 		VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`, machineID, secretHash); err != nil {
 		return err
 	}
@@ -1270,11 +1287,15 @@ func (s *Server) stageTargetedCredential(tokenHash, machineID, pendingSecretHash
 	defer tx.Rollback()
 
 	var targetMachineID sql.NullString
-	if err := tx.QueryRow(`SELECT target_machine_id FROM tokens WHERE token_hash = ? AND used = FALSE`, tokenHash).Scan(&targetMachineID); err != nil {
+	var expiresAt string
+	if err := tx.QueryRow(`SELECT target_machine_id, expires_at FROM tokens WHERE token_hash = ? AND used = FALSE`, tokenHash).Scan(&targetMachineID, &expiresAt); err != nil {
 		if err == sql.ErrNoRows {
 			return fmt.Errorf("install token already consumed")
 		}
 		return err
+	}
+	if err := checkTokenExpiry(expiresAt); err != nil {
+		return fmt.Errorf("install %w", err)
 	}
 	if !targetMachineID.Valid || targetMachineID.String != machineID {
 		return fmt.Errorf("install token is not bound to this machine")

@@ -1465,6 +1465,7 @@ func TestAgentEnrollmentWithToken(t *testing.T) {
 	if len(enrolled.AgentSecret) != 64 { // 32 bytes hex-encoded
 		t.Fatalf("expected 64-char hex secret, got %d chars", len(enrolled.AgentSecret))
 	}
+	commitEnrollment(t, conn)
 
 	// Close connection and wait for handler goroutine to finish.
 	conn.Close()
@@ -1524,6 +1525,7 @@ func TestAgentReconnectWithSecret(t *testing.T) {
 	if enrolled.AgentSecret == "" {
 		t.Fatal("no secret received during enrollment")
 	}
+	commitEnrollment(t, conn1)
 	conn1.Close()
 
 	// Step 2: Reconnect using the secret.
@@ -1601,6 +1603,7 @@ func TestAgentVersionAnnouncedOnReconnect(t *testing.T) {
 	if secret == "" {
 		t.Fatal("enrolment did not yield a secret")
 	}
+	commitEnrollment(t, conn1)
 	conn1.Close()
 	s.waitAgentDrain(t, "test-machine-version-announce", 2*time.Second)
 
@@ -1820,6 +1823,7 @@ func TestAgentSecretRevocation(t *testing.T) {
 		AgentSecret string `json:"agent_secret"`
 	}
 	json.Unmarshal(msg, &enrolled)
+	commitEnrollment(t, conn1)
 	conn1.Close()
 	s.waitAgentDrain(t, "test-machine-revoke-001", 2*time.Second)
 

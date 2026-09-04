@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 // seedTokenValue inserts a valid (unused, unexpired) install token with the
@@ -256,5 +259,124 @@ func TestWindowsInstallScriptPinsHashAndVerifiesBinaryDownload(t *testing.T) {
 	}
 	if strings.Contains(body, "curl.exe -ksfL -o $CaPath") {
 		t.Fatal("install.ps1 must not bootstrap or replace CA trust; the authenticated paste block owns that step")
+	}
+}
+
+func tokenUsed(t *testing.T, s *Server, tokenHash string) bool {
+	t.Helper()
+	var used bool
+	if err := s.db.QueryRow(`SELECT used FROM tokens WHERE token_hash = ?`, tokenHash).Scan(&used); err != nil {
+		t.Fatalf("read token: %v", err)
+	}
+	return used
+}
+
+// TestFreshEnrollmentCommitsOnlyAfterAgentCommitted locks in review
+// r3791514735 on #169: a fresh enrollment must not consume the token or
+// store a credential when "enrolled" is sent. If the agent then fails to
+// save the secret and drops the connection, the same token must still work;
+// only enrollment_committed atomically consumes it and activates the secret,
+// after which the hash-bound confirmation is sent.
+func TestFreshEnrollmentCommitsOnlyAfterAgentCommitted(t *testing.T) {
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
+	server := httptest.NewServer(e)
+	defer server.Close()
+	token := s.seedValidToken(t)
+	tokenHash := hashOf(token)
+	machineID := "fresh-commit-machine"
+
+	conn1, err := wsDialAgent(t, server, "token="+token)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	sendMetricsMsg(t, conn1, machineID)
+	conn1.SetReadDeadline(time.Now().Add(5 * time.Second))
+	readEnrolledSecret(t, conn1)
+	if tokenUsed(t, s, tokenHash) {
+		t.Fatal("token consumed before the agent committed the secret")
+	}
+	if s.machineHasCredential(machineID) {
+		t.Fatal("credential stored before the agent committed the secret")
+	}
+
+	// The agent's local save fails: it drops the connection without committing.
+	conn1.Close()
+	s.waitAgentDrain(t, machineID, 2*time.Second)
+
+	conn2, err := wsDialAgent(t, server, "token="+token)
+	if err != nil {
+		t.Fatalf("retry dial with the same token: %v", err)
+	}
+	defer conn2.Close()
+	sendMetricsMsg(t, conn2, machineID)
+	conn2.SetReadDeadline(time.Now().Add(5 * time.Second))
+	secret := readEnrolledSecret(t, conn2)
+	if err := conn2.WriteMessage(websocket.TextMessage, []byte(`{"type":"enrollment_committed"}`)); err != nil {
+		t.Fatalf("send enrollment_committed: %v", err)
+	}
+	if got := readEnrollmentConfirmedHash(t, conn2); got != hashOf(secret) {
+		t.Fatalf("confirmation hash %q, want hash of the issued secret %q", got, hashOf(secret))
+	}
+	if !tokenUsed(t, s, tokenHash) {
+		t.Fatal("token not consumed by the committed enrollment")
+	}
+	if got := activeSecretHash(t, s, machineID); got != hashOf(secret) {
+		t.Fatalf("active secret hash %q, want %q", got, hashOf(secret))
+	}
+	if id, _, err := s.validateAgentSecret(secret); err != nil || id != machineID {
+		t.Fatalf("committed secret does not authenticate: id=%q err=%v", id, err)
+	}
+}
+
+// TestFreshEnrollmentExpiredTokenAtCommitYieldsNoCredential locks in review
+// r3791514737: expiry is re-checked at the commit point. A token that expires
+// between "enrolled" and enrollment_committed produces no credential, no
+// confirmation, and a closed connection.
+func TestFreshEnrollmentExpiredTokenAtCommitYieldsNoCredential(t *testing.T) {
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
+	server := httptest.NewServer(e)
+	defer server.Close()
+	token := s.seedValidToken(t)
+	machineID := "fresh-expired-machine"
+
+	conn, err := wsDialAgent(t, server, "token="+token)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	sendMetricsMsg(t, conn, machineID)
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	readEnrolledSecret(t, conn)
+
+	if _, err := s.db.Exec(`UPDATE tokens SET expires_at = ? WHERE token_hash = ?`,
+		"2000-01-01 00:00:00", hashOf(token)); err != nil {
+		t.Fatalf("expire token: %v", err)
+	}
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"enrollment_committed"}`)); err != nil {
+		t.Fatalf("send enrollment_committed: %v", err)
+	}
+	// The hub must send no confirmation and close the socket itself; a
+	// client-side read timeout means it was left open.
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	for {
+		_, msg, err := conn.ReadMessage()
+		if err == nil {
+			if strings.Contains(string(msg), "enrollment_confirmed") {
+				t.Fatalf("confirmation sent for a token that expired before commit: %s", msg)
+			}
+			continue
+		}
+		if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			t.Fatal("connection left open after an expired commit")
+		}
+		break
+	}
+	if s.machineHasCredential(machineID) {
+		t.Fatal("credential stored from a token that expired before commit")
+	}
+	if tokenUsed(t, s, hashOf(token)) {
+		t.Fatal("expired token was consumed")
 	}
 }
