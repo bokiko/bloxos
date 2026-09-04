@@ -583,6 +583,11 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 	// Without this gate, a socket could validate a secret, lose a race with
 	// revocation, and register after the revoke handler had already looked for
 	// a live connection to close.
+	// The gate is held for at most agentAuthWindow: until authentication
+	// completes, frames and pings must not extend the socket's read deadline,
+	// or a client with a valid token could hold this read lock indefinitely,
+	// block revocation (a writer), and queue every new agent handler behind
+	// that writer. Only an established agent moves to the idle deadline.
 	s.agentAuthMu.RLock()
 	authPending := true
 	completeAuth := func() {
@@ -673,7 +678,9 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 	// then go silent) and the ~2h half-open detection gap.
 	ws.SetReadDeadline(time.Now().Add(agentAuthWindow))
 	ws.SetPingHandler(func(appData string) error {
-		ws.SetReadDeadline(time.Now().Add(agentIdleTimeout))
+		if !authPending {
+			ws.SetReadDeadline(time.Now().Add(agentIdleTimeout))
+		}
 		return ws.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(10*time.Second))
 	})
 
@@ -713,6 +720,7 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 		machineID = secretMachineID
 		s.registerAgentConnection(machineID, agent)
 		completeAuth()
+		ws.SetReadDeadline(time.Now().Add(agentIdleTimeout))
 		log.Printf("agent authenticated via secret: machine_id=%s", machineID)
 
 		// enrollment_confirmed tells the agent it may safely drop
@@ -755,8 +763,11 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 			log.Printf("agent disconnected: %v", err)
 			return nil
 		}
-		// A frame arrived — extend the deadline to the idle timeout.
-		ws.SetReadDeadline(time.Now().Add(agentIdleTimeout))
+		// A frame arrived — extend the deadline to the idle timeout, but only
+		// for an established agent; the auth window stays fixed until then.
+		if !authPending {
+			ws.SetReadDeadline(time.Now().Add(agentIdleTimeout))
+		}
 
 		var envelope struct {
 			Type      string `json:"type"`
@@ -906,6 +917,7 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 
 				s.registerAgentConnection(machineID, agent)
 				completeAuth()
+				ws.SetReadDeadline(time.Now().Add(agentIdleTimeout))
 				log.Printf("agent registered: %s (%s)", m.Hostname, machineID)
 			}
 
