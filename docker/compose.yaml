@@ -1,0 +1,67 @@
+# BloxOS hub stack: Caddy (TLS with an internal CA) in front of the hub API and
+# the dashboard. Agents are native services on managed machines and are not
+# part of this stack.
+#
+# Required: HUB_HOST in docker/.env, the hostname or IP address that browsers
+# and agents will use. Everything is served from https://HUB_HOST; the hub's
+# PUBLIC_URL is derived from it.
+
+name: bloxos
+
+services:
+  hub:
+    build:
+      context: ..
+      dockerfile: Dockerfile.hub
+    image: bloxos-hub:local
+    restart: unless-stopped
+    environment:
+      PUBLIC_URL: https://${HUB_HOST:?set HUB_HOST in docker/.env to the hostname or IP of this machine}
+      # Caddy's internal CA, read-only, so the hub can pin it into the install
+      # commands it generates.
+      BLOXOS_CA_CERT: /caddy/caddy/pki/authorities/local/root.crt
+    volumes:
+      - bloxos-data:/data
+      - caddy-data:/caddy:ro
+
+  dashboard:
+    build:
+      context: ..
+      dockerfile: Dockerfile.dashboard
+    image: bloxos-dashboard:local
+    restart: unless-stopped
+
+  # One-shot. Caddy runs unprivileged as the hub's uid so that the CA files it
+  # writes are readable by the hub; fresh named volumes are root-owned, so
+  # hand them over once.
+  caddy-init:
+    image: alpine:3.22
+    command: chown -R 65532:65532 /data /config
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    user: "65532:65532"
+    environment:
+      HUB_HOST: ${HUB_HOST:?set HUB_HOST in docker/.env to the hostname or IP of this machine}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      caddy-init:
+        condition: service_completed_successfully
+      hub:
+        condition: service_healthy
+
+volumes:
+  bloxos-data:
+  caddy-data:
+  caddy-config:

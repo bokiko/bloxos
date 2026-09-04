@@ -1,0 +1,38 @@
+{
+	# Caddy runs unprivileged here and cannot install its root certificate
+	# into the container's trust store; clients receive the CA through the
+	# hub's install flow instead.
+	skip_install_trust
+	# Clients that connect by IP address send no SNI; serve HUB_HOST's
+	# certificate to them.
+	default_sni {$HUB_HOST}
+}
+
+https://{$HUB_HOST} {
+	tls internal
+
+	# Hub API, agent and terminal WebSockets, installers and downloads.
+	handle /api/* {
+		reverse_proxy hub:4000
+	}
+	handle /ws/* {
+		reverse_proxy hub:4000
+	}
+	handle /health {
+		reverse_proxy hub:4000
+	}
+	handle /install.sh {
+		reverse_proxy hub:4000
+	}
+	handle /install.ps1 {
+		reverse_proxy hub:4000
+	}
+	handle /download/* {
+		reverse_proxy hub:4000
+	}
+
+	# Dashboard (everything else)
+	handle {
+		reverse_proxy dashboard:3000
+	}
+}

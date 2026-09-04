@@ -26,9 +26,9 @@ agent/bloxos-agent
 **/*.db-journal
 
 # Environment and secrets; the commented reference stays
-.env
-.env.*
-!.env.example
+**/.env
+**/.env.*
+!**/.env.example
 **/*.local
 **/.bloxos
 **/*.key

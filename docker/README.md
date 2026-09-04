@@ -1,7 +1,68 @@
-# Container images
+# Containers
 
-Two images cover the hub side of a deployment. Agents stay native
-services on every managed machine; they are not containerized.
+The hub side of a deployment runs as containers: Caddy for TLS, the hub API,
+and the dashboard. Agents stay native services on every managed machine;
+they are not containerized.
+
+## Compose: the supported hub deployment
+
+One required setting, three commands, from a clone of this repository:
+
+```bash
+cd docker
+cp .env.example .env      # set HUB_HOST to this machine's hostname or IP
+docker compose up -d --build
+```
+
+Then read the first-boot setup token and open the dashboard:
+
+```bash
+docker compose exec hub cat /data/.bloxos/setup-token
+```
+
+Open `https://<HUB_HOST>`, accept the browser warning for the internal CA
+(or install its root certificate, see below), enter the token, and create
+the admin account. Use **Add Machine** to enroll agents; the generated
+command carries the CA fingerprint, so agents verify the hub without any
+manual trust step.
+
+What the stack contains:
+
+- `caddy` serves `https://HUB_HOST` with its internal CA and forwards API,
+  WebSocket, installer, and download paths to the hub and everything else to
+  the dashboard. It runs unprivileged as the hub's uid so the hub can read
+  the CA it writes.
+- `hub` derives `PUBLIC_URL` from `HUB_HOST` and reads Caddy's root
+  certificate read-only from the `caddy-data` volume to pin it into install
+  commands.
+- `dashboard` is served same-origin behind Caddy.
+- `caddy-init` runs once to hand the Caddy volumes to the unprivileged uid.
+
+`HUB_HOST` is a bare hostname or IP address, no scheme, no port; the stack
+publishes 80 and 443. IP addresses work because Caddy is given a default
+SNI for clients that connect without one.
+
+Client addresses: Caddy forwards the client address to the hub and the hub
+accepts it from peers on the private Compose network, so per-address rate
+limits and the terminal audit see clients, not Caddy. The hub's port is not
+published, so only the stack's own containers can reach it. On rootless
+Docker the address Caddy sees is the port forwarder's, so all external
+clients share one address there; rootful Docker passes the real address.
+
+Operations:
+
+- Upgrade: `git pull` then `docker compose up -d --build`. The hub and the
+  agents it serves are rebuilt from the same commit; connected agents that
+  have pinned the update key self-update.
+- Back up the `bloxos-data` volume (database, secrets, setup token,
+  update-signing key) and the `caddy-data` volume (the CA). Losing the
+  signing key strands agent self-update; losing the CA invalidates the
+  certificate every enrolled agent pinned, and each must be re-enrolled.
+- Root certificate for browsers:
+  `docker compose exec caddy cat /data/caddy/pki/authorities/local/root.crt`.
+- Logs: `docker compose logs -f hub`.
+
+## Images
 
 | Image | Dockerfile | Contents | Port |
 |---|---|---|---|
@@ -10,9 +71,10 @@ services on every managed machine; they are not containerized.
 
 Both build from the repository root (the hub and agent modules share
 `proto/` through a local replace directive) and run as unprivileged users.
-Compose and published images are not part of this step.
+The sections below run them individually, without Caddy; published images
+are not part of this step.
 
-## Build
+### Build
 
 ```bash
 docker build -f Dockerfile.hub -t bloxos-hub .
@@ -24,7 +86,7 @@ The hub image builds the hub and both agents from the same commit with
 rebuild of the same commit yields the same served agent hash and does not
 trigger a fleet rollout.
 
-## Architecture
+### Architecture
 
 The served Linux agent matches the image's own architecture: an arm64 image
 serves arm64 Linux agents, an amd64 image serves amd64 Linux agents. The
@@ -32,7 +94,7 @@ served Windows agent is always amd64. One image therefore serves one Linux
 agent architecture; a fleet that mixes amd64 and arm64 Linux machines needs
 per-architecture resolution in the hub, which is not implemented yet.
 
-## Run the hub
+### Run the hub alone
 
 The hub refuses to start without an origin policy, so `PUBLIC_URL` (or
 `ALLOWED_ORIGINS`) is required. All state lives in one volume mounted at
@@ -55,7 +117,7 @@ default paths, so no `BLOXOS_AGENT_BINARY*` setting is needed. For a private
 CA, mount the CA certificate and point `BLOXOS_CA_CERT` at it. Back up the
 `/data` volume; losing the update-signing key strands agent self-update.
 
-## Run the dashboard
+### Run the dashboard alone
 
 ```bash
 docker run -d --name bloxos-dashboard -p 3000:3000 bloxos-dashboard
