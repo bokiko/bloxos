@@ -1,8 +1,13 @@
 # syntax=docker/dockerfile:1.7
 # BloxOS dashboard image: Next.js standalone server, served same-origin
 # with the hub behind one reverse proxy, so NEXT_PUBLIC_HUB_URL is empty.
+#
+# The build stage runs on the build platform: the output is JavaScript and
+# static assets, and the dashboard never uses next/image (see next.config.ts),
+# so no target-specific native module is needed. The runtime stage has no
+# RUN steps, so a multi-platform build needs no emulation.
 
-FROM node:22-alpine AS build
+FROM --platform=$BUILDPLATFORM node:22-alpine AS build
 ENV PNPM_HOME=/pnpm \
     PATH=/pnpm:$PATH \
     NEXT_TELEMETRY_DISABLED=1 \

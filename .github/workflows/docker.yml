@@ -1,0 +1,113 @@
+name: Docker
+
+on:
+  pull_request:
+    paths:
+      - "Dockerfile.hub"
+      - "Dockerfile.dashboard"
+      - ".dockerignore"
+      - "docker/**"
+      - "scripts/smoke/**"
+      - ".github/workflows/docker.yml"
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  HUB_IMAGE: ghcr.io/${{ github.repository_owner }}/bloxos-hub
+  DASHBOARD_IMAGE: ghcr.io/${{ github.repository_owner }}/bloxos-dashboard
+
+jobs:
+  # Builds both images for the runner's platform and enrolls the runner as an
+  # agent through the Compose stack (scripts/smoke/compose-enroll.sh). Gates
+  # publishing and checks container-related pull requests.
+  smoke:
+    name: Compose smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v3
+      - name: Build hub image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.hub
+          load: true
+          tags: ${{ env.HUB_IMAGE }}:latest
+          cache-from: type=gha,scope=hub
+          cache-to: type=gha,scope=hub,mode=max
+      - name: Build dashboard image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.dashboard
+          load: true
+          tags: ${{ env.DASHBOARD_IMAGE }}:latest
+          cache-from: type=gha,scope=dashboard
+          cache-to: type=gha,scope=dashboard,mode=max
+      - name: Enroll the runner through the stack
+        env:
+          SMOKE_CONFIRM_DISPOSABLE: "1"
+          HUB_HOST: 127.0.0.1
+        run: scripts/smoke/compose-enroll.sh
+
+  # Multi-platform build and push, version tags only. This is the only job
+  # with package write permission.
+  publish:
+    name: Publish images
+    needs: smoke
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: hub-meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.HUB_IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=latest
+      - name: Push hub image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.hub
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.hub-meta.outputs.tags }}
+          labels: ${{ steps.hub-meta.outputs.labels }}
+          cache-from: type=gha,scope=hub
+      - id: dashboard-meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DASHBOARD_IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=latest
+      - name: Push dashboard image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.dashboard
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.dashboard-meta.outputs.tags }}
+          labels: ${{ steps.dashboard-meta.outputs.labels }}
+          cache-from: type=gha,scope=dashboard

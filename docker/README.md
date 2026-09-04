@@ -14,6 +14,12 @@ cp .env.example .env      # set HUB_HOST to this machine's hostname or IP
 docker compose up -d --build
 ```
 
+Published images are an alternative to building: every `v*` tag publishes
+`ghcr.io/bokiko/bloxos-hub` and `ghcr.io/bokiko/bloxos-dashboard` for
+amd64 and arm64, tagged with the version and `latest`. To use them, replace
+the last command with `docker compose pull && docker compose up -d`; set
+`BLOXOS_VERSION` in `.env` to pin a version instead of `latest`.
+
 Then read the first-boot setup token and open the dashboard:
 
 ```bash
@@ -51,9 +57,10 @@ clients share one address there; rootful Docker passes the real address.
 
 Operations:
 
-- Upgrade: `git pull` then `docker compose up -d --build`. The hub and the
-  agents it serves are rebuilt from the same commit; connected agents that
-  have pinned the update key self-update.
+- Upgrade: `git pull` then `docker compose up -d --build`, or with published
+  images `docker compose pull && docker compose up -d`. The hub and the
+  agents it serves come from the same commit; connected agents that have
+  pinned the update key self-update.
 - Back up the `bloxos-data` volume (database, secrets, setup token,
   update-signing key) and the `caddy-data` volume (the CA). Losing the
   signing key strands agent self-update; losing the CA invalidates the
@@ -61,6 +68,20 @@ Operations:
 - Root certificate for browsers:
   `docker compose exec caddy cat /data/caddy/pki/authorities/local/root.crt`.
 - Logs: `docker compose logs -f hub`.
+
+## Smoke test
+
+`scripts/smoke/compose-enroll.sh` is the end-to-end gate for this stack. On
+a disposable Linux host with Docker, systemd, and passwordless sudo it
+brings the stack up, completes setup through the API, mints an install
+token, runs the generated Linux command on that same host so it enrolls as
+an agent, asserts the machine is online with the CA pinned, then removes
+the agent and the stack. CI runs it on pull requests that touch the
+container files and before publishing images on a tag. Locally:
+
+```bash
+SMOKE_CONFIRM_DISPOSABLE=1 HUB_HOST=<this host's IP> scripts/smoke/compose-enroll.sh
+```
 
 ## Images
 

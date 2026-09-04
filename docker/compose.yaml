@@ -13,7 +13,9 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile.hub
-    image: bloxos-hub:local
+    # Published on version tags by .github/workflows/docker.yml; `docker
+    # compose pull` fetches it, `docker compose up -d --build` builds it here.
+    image: ghcr.io/bokiko/bloxos-hub:${BLOXOS_VERSION:-latest}
     restart: unless-stopped
     environment:
       PUBLIC_URL: https://${HUB_HOST:?set HUB_HOST in docker/.env to the hostname or IP of this machine}
@@ -28,7 +30,9 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile.dashboard
-    image: bloxos-dashboard:local
+    # Published on version tags by .github/workflows/docker.yml; `docker
+    # compose pull` fetches it, `docker compose up -d --build` builds it here.
+    image: ghcr.io/bokiko/bloxos-dashboard:${BLOXOS_VERSION:-latest}
     restart: unless-stopped
 
   # One-shot. Caddy runs unprivileged as the hub's uid so that the CA files it
