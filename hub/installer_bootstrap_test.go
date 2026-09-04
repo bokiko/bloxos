@@ -139,6 +139,11 @@ func TestWindowsInstallerIsNonDestructiveFailClosedAndTransactional(t *testing.T
 		"curl.exe -ksfL",
 		"-o $AgentExe $DownloadUrl",
 		"skipping integrity check",
+		// A "healthy" early exit keyed on the mere presence of agent-secret
+		// skips persisting the fresh token, so a machine whose secret was
+		// revoked at the hub could never recover by rerunning the command.
+		"$FastPath",
+		"no changes made",
 	} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("install.ps1 contains forbidden behavior %q", forbidden)
@@ -166,8 +171,16 @@ func TestWindowsInstallerIsNonDestructiveFailClosedAndTransactional(t *testing.T
 	if !strings.Contains(body, ".installing") || !strings.Contains(body, "Restore-PreviousInstall") {
 		t.Fatal("install.ps1 lacks staging and transactional restore")
 	}
-	if !strings.Contains(body, "$FastPath") || !strings.Contains(body, "$KeyWasAlreadyPinned") || !strings.Contains(body, "$SecretPath") || !strings.Contains(body, "already installed and healthy") {
-		t.Fatal("install.ps1 lacks the idempotent healthy-install fast path")
+	// Every run is a repair/re-enrollment attempt: the fresh token must be
+	// persisted for the agent service before it is (re)installed and started,
+	// so the agent's secret-to-token fallback can recover a revoked machine.
+	assertOrdered(t, body,
+		`[Environment]::SetEnvironmentVariable("BLOXOS_TOKEN", $Token, "Machine")`,
+		`throw "Service installation failed`,
+		"$EnrollDeadline = ",
+	)
+	if !strings.Contains(body, "$KeyWasAlreadyPinned") || !strings.Contains(body, "$SecretPath") {
+		t.Fatal("install.ps1 lost the pinned-key check or the secret-path handling")
 	}
 }
 
