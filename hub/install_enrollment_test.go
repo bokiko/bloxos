@@ -393,3 +393,101 @@ func TestFreshEnrollmentExpiredTokenAtCommitYieldsNoCredential(t *testing.T) {
 	}
 	waitForCondition(t, 5*time.Second, func() bool { return machineStatus(t, s, machineID) == "offline" })
 }
+
+// TestFreshCommitIsSerializedWithRevocation answers the Codex P1 on #172: a
+// revocation cannot interleave with a fresh enrollment's commit. The fresh
+// socket holds the auth read lock from upgrade until after the commit
+// transaction and registration, and revocation needs the writer lock. So a
+// revoke issued while the enrollment is staged but uncommitted blocks until
+// the commit has landed, then finds the registered socket and deletes the
+// just-committed credential; the secret ends revoked, not resurrected.
+func TestFreshCommitIsSerializedWithRevocation(t *testing.T) {
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
+	server := httptest.NewServer(e)
+	defer server.Close()
+	token := s.seedValidToken(t)
+	adminToken := loginAndGetToken(t, e)
+	machineID := "revoke-machine" // matches testCredentialRevokePath
+
+	conn, err := wsDialAgent(t, server, "token="+token)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	sendMetricsMsg(t, conn, machineID)
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	secret := readEnrolledSecret(t, conn)
+
+	// Revocation arrives while the enrollment is staged but uncommitted.
+	revoked := make(chan *httptest.ResponseRecorder, 1)
+	go func() { revoked <- revokeCredentialRequest(e, adminToken) }()
+
+	select {
+	case rec := <-revoked:
+		t.Fatalf("revocation ran (status %d) while the fresh enrollment was still uncommitted", rec.Code)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if s.machineHasCredential(machineID) || tokenUsed(t, s, hashOf(token)) {
+		t.Fatal("state mutated before enrollment_committed")
+	}
+
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"enrollment_committed"}`)); err != nil {
+		t.Fatalf("send enrollment_committed: %v", err)
+	}
+
+	// Only after the commit does the writer get through, against the
+	// now-registered socket and the now-stored credential. The confirmation
+	// frame is not required here: once the read lock is released the
+	// waiting revoke may close the socket before the confirmation is
+	// delivered, which is a legitimate ordering.
+	var rec *httptest.ResponseRecorder
+	select {
+	case rec = <-revoked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("revocation never ran after the enrollment committed")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("revoke status=%d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		CredentialExisted bool `json:"credential_existed"`
+		ConnectionClosed  bool `json:"connection_closed"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode revoke response: %v", err)
+	}
+	if !resp.CredentialExisted || !resp.ConnectionClosed {
+		t.Fatalf("revocation did not run after the commit against the registered socket: %+v", resp)
+	}
+	if !tokenUsed(t, s, hashOf(token)) {
+		t.Fatal("commit did not consume the token")
+	}
+	if s.machineHasCredential(machineID) {
+		t.Fatal("credential resurrected after revocation")
+	}
+	if _, _, err := s.validateAgentSecret(secret); err == nil {
+		t.Fatal("revoked secret still authenticates")
+	}
+	// The hub must close the socket. A confirmation may or may not have
+	// been delivered before the close; if it was, it must name the
+	// committed secret.
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	for {
+		_, msg, err := conn.ReadMessage()
+		if err == nil {
+			var frame struct {
+				Type         string `json:"type"`
+				SecretSHA256 string `json:"secret_sha256"`
+			}
+			if json.Unmarshal(msg, &frame) == nil && frame.Type == "enrollment_confirmed" && frame.SecretSHA256 != hashOf(secret) {
+				t.Fatalf("confirmation hash %q, want %q", frame.SecretSHA256, hashOf(secret))
+			}
+			continue
+		}
+		if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			t.Fatal("revocation left the registered socket open")
+		}
+		break
+	}
+}
