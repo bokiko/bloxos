@@ -5,7 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -210,6 +212,80 @@ func TestDashboardRendersOnlyServerGeneratedCommands(t *testing.T) {
 	for _, forbidden := range []string{"deriveHttpHubBase", "deriveWsHubBase", "buildWindowsCommand", "ServerCertificateValidationCallback", "iwr -UseBasicParsing"} {
 		if strings.Contains(source, forbidden) {
 			t.Fatalf("dashboard still builds/trusts installer command client-side: %s", forbidden)
+		}
+	}
+}
+
+// fetchLinuxInstallScript returns the hub-served install.sh for a hub that
+// has a Linux agent binary available.
+func fetchLinuxInstallScript(t *testing.T) string {
+	t.Helper()
+	e, _ := setupTestServer(t)
+	useGeneratedTestBinary(t, "linux")
+	req := httptest.NewRequest(http.MethodGet, "/install.sh", nil)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("install.sh status=%d: %s", rec.Code, rec.Body.String())
+	}
+	return rec.Body.String()
+}
+
+// TestLinuxInstallerConsumesPasteBlockCAContract pins the environment
+// contract between the paste block and install.sh. Regression: #168 changed
+// the paste block to pass BLOXOS_CA_CERT and BLOXOS_CA_SHA256 while
+// install.sh still keyed CA handling on BLOXOS_CA_URL, so on a private-CA hub
+// the agent download ran with system trust only. install.sh must consume the
+// CA the paste block already verified and installed, never fetch one itself,
+// use it for the agent download, and hand it to the agent unit.
+func TestLinuxInstallerConsumesPasteBlockCAContract(t *testing.T) {
+	got := createInstallerToken(t, "https://hub.public.example", "ignored.example", testCAFile(t))
+	script := fetchLinuxInstallScript(t)
+
+	// Outer -> inner: the paste block hands install.sh exactly these CA variables.
+	provided := map[string]bool{}
+	for _, m := range regexp.MustCompile(`\b(BLOXOS_[A-Z0-9_]+)=`).FindAllStringSubmatch(got.Command, -1) {
+		provided[m[1]] = true
+	}
+	for _, want := range []string{"BLOXOS_HUB", "BLOXOS_TOKEN", "BLOXOS_CA_CERT", "BLOXOS_CA_SHA256"} {
+		if !provided[want] {
+			t.Errorf("paste block does not pass %s to install.sh", want)
+		}
+	}
+	// Inner reads only what the outer provides (pre-fix it read BLOXOS_CA_URL).
+	for _, m := range regexp.MustCompile(`\$\{(BLOXOS_[A-Z0-9_]+)[:}]`).FindAllStringSubmatch(script, -1) {
+		if !provided[m[1]] {
+			t.Errorf("install.sh reads %s, which the paste block never provides", m[1])
+		}
+	}
+	// No second, unverified CA bootstrap inside install.sh.
+	for _, forbidden := range []string{"-fsSLk", "curl_fetch_bootstrap", "BLOXOS_CA_URL"} {
+		if strings.Contains(script, forbidden) {
+			t.Errorf("install.sh still contains %q; CA bootstrap belongs to the paste block only", forbidden)
+		}
+	}
+	// Gate on the provided variables, fail closed without the verified CA,
+	// then download the agent through it and tell the agent unit where it is.
+	assertOrdered(t, script,
+		`if [[ -n "$CA_PATH" || -n "$CA_SHA256" ]]; then`,
+		`Verified hub CA not found at $CA_PATH`,
+		`CA fingerprint mismatch at $CA_PATH`,
+		`CA_CURL_ARGS+=(--cacert "$CA_PATH")`,
+		`AGENT_CA_ENV="Environment=\"BLOXOS_CA_CERT=$CA_PATH\""`,
+		`curl_fetch "${HUB_HTTP}/download/agent?arch=${ARCH}" "${CA_CURL_ARGS[@]}"`,
+		"[Service]",
+		"${AGENT_CA_ENV}",
+		"ExecStart=/usr/local/bin/bloxos-agent",
+	)
+
+	// The served script must at least parse.
+	if bash, err := exec.LookPath("bash"); err == nil {
+		path := filepath.Join(t.TempDir(), "install.sh")
+		if err := os.WriteFile(path, []byte(script), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := exec.Command(bash, "-n", path).CombinedOutput(); err != nil {
+			t.Fatalf("bash -n install.sh: %v\n%s", err, out)
 		}
 	}
 }
