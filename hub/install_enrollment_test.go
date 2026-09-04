@@ -299,6 +299,9 @@ func TestFreshEnrollmentCommitsOnlyAfterAgentCommitted(t *testing.T) {
 	if s.machineHasCredential(machineID) {
 		t.Fatal("credential stored before the agent committed the secret")
 	}
+	if agentMapHasEntry(s, machineID) {
+		t.Fatal("fresh socket registered as a live agent before commit")
+	}
 
 	// The agent's local save fails: it drops the connection without committing.
 	conn1.Close()
@@ -327,6 +330,9 @@ func TestFreshEnrollmentCommitsOnlyAfterAgentCommitted(t *testing.T) {
 	if id, _, err := s.validateAgentSecret(secret); err != nil || id != machineID {
 		t.Fatalf("committed secret does not authenticate: id=%q err=%v", id, err)
 	}
+	if !agentMapHasEntry(s, machineID) {
+		t.Fatal("committed enrollment did not register the socket as a live agent")
+	}
 }
 
 // TestFreshEnrollmentExpiredTokenAtCommitYieldsNoCredential locks in review
@@ -349,6 +355,9 @@ func TestFreshEnrollmentExpiredTokenAtCommitYieldsNoCredential(t *testing.T) {
 	sendMetricsMsg(t, conn, machineID)
 	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	readEnrolledSecret(t, conn)
+	if agentMapHasEntry(s, machineID) {
+		t.Fatal("fresh socket registered as a live agent before commit")
+	}
 
 	if _, err := s.db.Exec(`UPDATE tokens SET expires_at = ? WHERE token_hash = ?`,
 		"2000-01-01 00:00:00", hashOf(token)); err != nil {
@@ -379,4 +388,8 @@ func TestFreshEnrollmentExpiredTokenAtCommitYieldsNoCredential(t *testing.T) {
 	if tokenUsed(t, s, hashOf(token)) {
 		t.Fatal("expired token was consumed")
 	}
+	if agentMapHasEntry(s, machineID) {
+		t.Fatal("failed fresh commit left the socket registered as a live agent")
+	}
+	waitForCondition(t, 5*time.Second, func() bool { return machineStatus(t, s, machineID) == "offline" })
 }

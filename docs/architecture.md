@@ -69,8 +69,32 @@ under the Service Control Manager, and use the same hub WebSocket protocol.
 Terminal sessions are currently Linux-only.
 
 On first enrollment, the agent connects with a one-time install token. The hub
-exchanges that token for a durable per-machine secret. Later reconnects prefer
-the durable secret.
+issues a durable per-machine secret in an `enrolled` frame but writes nothing
+yet: the agent stages the secret to disk and replies `enrollment_committed`,
+and only then does the hub consume the token, store the credential, register
+the connection, and answer with a hash-bound `enrollment_confirmed`. Until that
+commit the socket has no live registry entry, receives no routed commands, has
+not completed authentication, and stays inside the fixed authentication window
+rather than the idle deadline. The first metrics frame may already have
+created or updated the machine row as online; if the enrollment never commits,
+that row is marked offline when the socket disconnects. An agent that fails to
+save and drops the connection can retry with the same token. Later reconnects
+prefer the durable secret.
+
+The hub and the agent binaries it serves are a coupled deployment: build and
+deploy them from the same commit. Agents built from source since commit
+06a0b60 send `enrollment_committed`. An agent binary from before that commit
+saves the secret and drops its token on `enrolled` without ever committing, so
+under this contract it never receives a credential and cannot complete a fresh
+enrollment; already-enrolled agents reconnecting with a stored secret are
+unaffected.
+
+Rerunning the Windows paste command on a healthy machine intentionally
+redownloads the agent, reinstalls the service, and restarts it, the same as the
+Linux installer. The installer cannot tell whether the local secret is still
+valid at the hub, and a rerun with a fresh token is how an operator repairs a
+machine whose credential was revoked; a brief restart on a healthy box is
+expected, not a fault.
 
 ## Dashboard
 

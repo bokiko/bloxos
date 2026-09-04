@@ -707,13 +707,29 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 	// happened at all (no-op via the empty-machineID guard) or when a newer
 	// connection has already replaced this one in the registry (no-op via
 	// the identity check).
-	defer func() {
-		s.unregisterAgentConnection(machineID, agent)
-	}()
-	var stagedPendingSecretHash string
 	// Fresh enrollment issued on this connection but not yet committed: the
 	// token stays unused and no credential exists until enrollment_committed.
 	var freshPendingTokenHash, freshPendingSecretHash string
+	defer func() {
+		s.unregisterAgentConnection(machineID, agent)
+		// A fresh enrollment that never committed was never registered, so
+		// the identity-guarded unregister above cannot flip its machine row
+		// (upserted online by the first metrics frame) back offline. Do it
+		// here unless another live connection owns the machine, so an
+		// aborted enrollment leaves no phantom online machine. The read lock
+		// is held through the (short) markOffline update on purpose:
+		// registerAgentConnection needs the writer lock, so a durable
+		// reconnect cannot register in between the liveness check and the
+		// status write and be marked offline while live.
+		if freshPendingTokenHash != "" && machineID != "" {
+			s.agentsMu.RLock()
+			if _, live := s.agents[machineID]; !live {
+				s.markOffline(machineID)
+			}
+			s.agentsMu.RUnlock()
+		}
+	}()
+	var stagedPendingSecretHash string
 	if secretMachineID != "" && !dualCredentialTargetedReenroll {
 		machineID = secretMachineID
 		s.registerAgentConnection(machineID, agent)
@@ -912,10 +928,21 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 					return nil
 				}
 
-				s.registerAgentConnection(machineID, agent)
-				completeAuth()
-				ws.SetReadDeadline(time.Now().Add(agentIdleTimeout))
-				log.Printf("agent registered: %s (%s)", m.Hostname, machineID)
+				if freshPendingTokenHash != "" {
+					// Fresh enrollment is not an established agent yet: it
+					// stays unregistered (no command routing), behind the
+					// auth gate, and inside the fixed auth window until
+					// enrollment_committed commits (see that handler). The
+					// subsequent metrics upsert in this case may already show
+					// the row online; the exit path flips it offline if
+					// commit never happens.
+					log.Printf("agent awaiting enrollment commit: %s (%s)", m.Hostname, machineID)
+				} else {
+					s.registerAgentConnection(machineID, agent)
+					completeAuth()
+					ws.SetReadDeadline(time.Now().Add(agentIdleTimeout))
+					log.Printf("agent registered: %s (%s)", m.Hostname, machineID)
+				}
 			}
 
 			// The authenticated machineID is authoritative — bind this frame to
@@ -1102,6 +1129,13 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 				}
 				confirmedHash := freshPendingSecretHash
 				freshPendingTokenHash, freshPendingSecretHash = "", ""
+				// Only now is this socket an established agent: register
+				// exactly once, release the auth gate, and move to the idle
+				// deadline. Registration spawns the announce writer, so the
+				// confirmation below must go through the per-agent lock.
+				s.registerAgentConnection(machineID, agent)
+				completeAuth()
+				ws.SetReadDeadline(time.Now().Add(agentIdleTimeout))
 				confirmMsg, _ := json.Marshal(map[string]string{"type": "enrollment_confirmed", "secret_sha256": confirmedHash})
 				if err := agent.writeLocked(websocket.TextMessage, confirmMsg); err != nil {
 					log.Printf("committed fresh enrollment for %s but failed to send enrollment_confirmed: %v — closing connection", machineID, err)
