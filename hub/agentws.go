@@ -62,11 +62,23 @@ func writeLockedTo(mu *sync.Mutex, w wsMessageWriter, messageType int, data []by
 // and token-based fresh enrolment — call this exactly once per connection,
 // which guarantees Phase-8 auto-update propagates on reconnect (the bug
 // that originally motivated extracting this helper).
+//
+// Replacing the registry entry also closes any different connection it
+// displaced. Without that, an overlapping reconnect leaves the old socket
+// authenticated and active, and revocation, which closes only the
+// registered connection, misses it. The close happens after the lock is
+// released; the displaced handler's own exit path then sees it is no longer
+// the registered connection and leaves the new registration alone.
 func (s *Server) registerAgentConnection(machineID string, agent *ConnectedAgent) {
 	agent.MachineID = machineID
 	s.agentsMu.Lock()
+	displaced := s.agents[machineID]
 	s.agents[machineID] = agent
 	s.agentsMu.Unlock()
+	if displaced != nil && displaced != agent && displaced.Conn != nil {
+		log.Printf("agent %s reconnected; closing displaced connection", machineID)
+		_ = displaced.Conn.Close()
+	}
 	s.goTracked(func() { s.announceVersionToAgent(machineID, agent) })
 }
 
