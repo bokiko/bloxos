@@ -220,19 +220,43 @@ valid `(os, sha)` pair remains valid indefinitely ([#145]).
 ### Resolving served agent binaries
 
 A single resolver supplies the path used to hash, find the detached `.sig`, and
-serve `/download/agent`. Linux and Windows resolve independently. An explicit
-`BLOXOS_AGENT_BINARY` or `BLOXOS_AGENT_BINARY_WINDOWS` is authoritative: it
+serve `/download/agent`. It is keyed by platform: Linux amd64, Linux arm64 and
+Windows amd64 resolve independently. An explicit override is authoritative: it
 must be absolute and trusted, and a missing or rejected configured path fails
-closed without falling through. Without an override, each platform checks its
-root-owned system default under `/usr/local/lib/bloxos/`, then a sibling of the
-running hub executable. Resolution never depends on the process working
-directory.
+closed without falling through. `BLOXOS_AGENT_BINARY` keeps its original
+meaning and names the Linux amd64 binary; `BLOXOS_AGENT_BINARY_ARM64` names the
+Linux arm64 binary; `BLOXOS_AGENT_BINARY_WINDOWS` the Windows binary. Without an
+override, Linux checks `/usr/local/lib/bloxos/linux/<arch>/bloxos-agent`. Only
+amd64 then falls back to the legacy `/usr/local/lib/bloxos/linux/bloxos-agent`
+and to a sibling of the running hub executable, because every deployment that
+populated those did so with an amd64 build; an arm64 request never falls
+through to them. Windows checks its system default, then a hub sibling.
+Resolution never depends on the process working directory.
+
+`/download/agent` takes `os` and `arch` (GOARCH or `uname -m` spelling). A
+request without `arch` is served the amd64 build, which is what every
+installer and self-updater that predates the parameter expects. An
+architecture the hub has no binary for answers 404 with a message naming the
+architecture and the paths the resolver checked; the served `install.sh`
+requests the host's architecture, stops there before touching the system, and
+also refuses any ELF whose `e_machine` does not match the host CPU.
+
+Agents report `arch` in `agent_running_version`, and the hub announces the SHA
+for that architecture's build, withholding with an `update_blocked_reason` when
+it has none. An agent that reports no architecture also downloads without
+`arch`, so it is announced the amd64 SHA as before — unless the machine's
+metrics say it is not amd64, in which case the hub withholds
+(`agent_arch_not_reported`) rather than hand it a binary its CPU cannot run.
+The signed update message is unchanged (`bloxos-agent-update:v1:<os>:<sha256>`);
+the SHA is already per-architecture.
 
 The resolver canonicalizes the path and requires the binary plus every ancestor
 to be root-owned and not group/other-writable. The API and Versions dashboard
 show the selected path, source, SHA, mtime, or platform-specific resolution
-error. A failure clears only that platform's advertised SHA, so one missing
-artifact cannot leave a stale digest or disable the other platform.
+error; `/api/versions` keeps its per-OS fields (Linux meaning amd64) and adds
+`agent_binaries_by_arch`. A failure clears only that platform's advertised SHA,
+so one missing artifact cannot leave a stale digest or disable another
+platform.
 
 Deploying this resolver requires a coupled live migration, not a hub-only
 upgrade. Before restarting the updated hub, place the currently served Linux

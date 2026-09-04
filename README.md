@@ -131,7 +131,8 @@ environment variable read by the Go hub and agent.
 | `BLOXOS_JWT_SECRET` | No | JWT secret, at least 32 bytes; otherwise generated and persisted. |
 | `BLOXOS_SETUP_TOKEN` | No | Fixed first-boot setup token; otherwise generated and persisted. |
 | `BLOXOS_CA_CERT` | No | Additional CA certificate used by installers and agents. |
-| `BLOXOS_AGENT_BINARY` | Recommended | Absolute Linux agent binary served by the hub. |
+| `BLOXOS_AGENT_BINARY` | Recommended | Absolute Linux **amd64** agent binary served by the hub. |
+| `BLOXOS_AGENT_BINARY_ARM64` | No | Absolute Linux arm64 agent binary served by the hub; otherwise `/usr/local/lib/bloxos/linux/arm64/bloxos-agent`. |
 | `BLOXOS_AGENT_BINARY_WINDOWS` | No | Absolute Windows agent binary served by the hub. |
 | `BLOXOS_UPDATE_PUBKEY` | No | Base64 Ed25519 public key for detached-signature mode. |
 | `BLOXOS_UPDATE_SIGNING_KEY` | No | Explicit online-signing private-key path. |

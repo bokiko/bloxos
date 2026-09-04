@@ -656,6 +656,14 @@ type announceProbe struct {
 	// field unset. Proves the fail-closed default comes from the zero
 	// value, not from special-casing "field present and false".
 	omitKeyPinned bool
+	// arch is sent as the arch field of agent_running_version when set. Left
+	// empty it models an agent built before per-architecture delivery, which
+	// sends no such field and downloads without ?arch=.
+	arch string
+	// metricsOS overrides the OS string sent in the metrics frame (default
+	// "linux/amd64"), which is what the hub infers a legacy agent's
+	// architecture from.
+	metricsOS string
 }
 
 // collectAnnounceFrames enrols an agent, sends metrics so the hub learns the
@@ -677,7 +685,11 @@ func (s *Server) collectAnnounceFrames(t *testing.T, e *echo.Echo, p announcePro
 		s.waitAgentDrain(t, p.machineID, 2*time.Second)
 	})
 
-	sendMetricsMsg(t, conn, p.machineID)
+	metricsOS := p.metricsOS
+	if metricsOS == "" {
+		metricsOS = "linux/amd64"
+	}
+	sendMetricsMsgWithOS(t, conn, p.machineID, metricsOS)
 
 	// Commit like the real agent: a fresh enrollment is registered (and any
 	// registration-time announce sent) only once enrollment_committed has
@@ -711,6 +723,9 @@ func (s *Server) collectAnnounceFrames(t *testing.T, e *echo.Echo, p announcePro
 		"type":   "agent_running_version",
 		"sha256": strings.Repeat("11", 32),
 		"os":     "linux",
+	}
+	if p.arch != "" {
+		running["arch"] = p.arch
 	}
 	if p.proto > 0 {
 		running["update_protocol"] = p.proto
@@ -923,6 +938,210 @@ func TestNoSignatureMeansNoAnnounceOnTheWire(t *testing.T) {
 		t.Fatalf("hub announced an update it could not sign: %q", frames)
 	}
 	assertNoReconnectExpectation(t, machineID)
+}
+
+/* ----------------------------------------------------------------------------
+ * Architecture gating. The hub must never announce a SHA the agent's own
+ * download would not produce: an arm64 agent asks for arm64, so it gets the
+ * arm64 SHA or nothing; a legacy agent asks for nothing and gets amd64, so it
+ * gets the amd64 SHA — unless the machine is not amd64, in which case it gets
+ * nothing rather than a binary its CPU cannot run.
+ * -------------------------------------------------------------------------- */
+
+// stagePendingArm64Update adds an arm64 build, distinct from the amd64 one
+// stagePendingUpdate staged, and returns its SHA. Call after
+// stagePendingUpdate, which resets all platform state.
+func stagePendingArm64Update(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bloxos-agent")
+	if err := os.WriteFile(bin, []byte("staged-linux-arm64-agent-binary"), 0o755); err != nil {
+		t.Fatalf("write arm64 agent binary: %v", err)
+	}
+	useTestResolvedBinaryForArch(t, "linux", "arm64", bin)
+	recomputeBinaryForArch("linux", "arm64")
+	sha := announcedSHAForArch("linux", "arm64")
+	if sha == "" || sha == announcedSHAFor("linux") {
+		t.Fatalf("test setup: arm64 SHA %q must be staged and distinct from amd64", sha)
+	}
+	return sha
+}
+
+func parseAnnounce(t *testing.T, frame string) (sha, signature string) {
+	t.Helper()
+	var msg struct {
+		SHA256    string `json:"sha256"`
+		Signature string `json:"signature"`
+	}
+	if err := json.Unmarshal([]byte(frame), &msg); err != nil {
+		t.Fatalf("parse announce %q: %v", frame, err)
+	}
+	return msg.SHA256, msg.Signature
+}
+
+// An arm64 agent on a hub that only has an amd64 build gets nothing — the
+// amd64 SHA would send it to download bytes its CPU cannot run — and no
+// reconnect expectation, so the withhold cannot count as a rollout failure.
+// The reason is surfaced on /api/versions like every other withhold.
+func TestArm64AgentOnAmd64OnlyHubGetsNoAnnounce(t *testing.T) {
+	e, s := setupTestServer(t)
+	t.Setenv("PUBLIC_URL", "https://hub.example.com")
+	stagePendingUpdate(t)
+	// Pin the arm64 outcome regardless of what the host running the tests
+	// has under /usr/local/lib/bloxos.
+	amd64Resolver := resolveAgentBinaryFor
+	resolveAgentBinaryFor = func(osName, arch string) (agentBinaryResolution, error) {
+		if a, _ := normalizeAgentArch(arch); a == archARM64 {
+			return agentBinaryResolution{}, fmt.Errorf("no trusted linux/arm64 agent binary: system-default /usr/local/lib/bloxos/linux/arm64/bloxos-agent: no such file")
+		}
+		return amd64Resolver(osName, arch)
+	}
+	t.Cleanup(func() { resolveAgentBinaryFor = amd64Resolver })
+	recomputeBinaryForArch("linux", "arm64")
+	if announcedSHAForArch("linux", "arm64") != "" {
+		t.Fatal("test setup: an arm64 binary is staged")
+	}
+
+	const machineID = "arm64-agent-amd64-hub"
+	frames := s.collectAnnounceFrames(t, e, announceProbe{machineID: machineID, proto: 1, transportOK: true, keyPinned: true, arch: "arm64"})
+	if len(frames) != 0 {
+		t.Fatalf("hub announced to an arm64 agent with no arm64 build: %q", frames)
+	}
+	assertNoReconnectExpectation(t, machineID)
+
+	s.markCredentialsRotated(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/versions", nil)
+	req.Header.Set("Authorization", "Bearer "+loginAndGetToken(t, e))
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Agents []struct {
+			MachineID     string `json:"machine_id"`
+			Arch          string `json:"arch"`
+			ArchReported  bool   `json:"arch_reported"`
+			UpdatePending bool   `json:"update_pending"`
+		} `json:"agents"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse: %v (body=%s)", err, rec.Body.String())
+	}
+	var found bool
+	for _, a := range resp.Agents {
+		if a.MachineID != machineID {
+			continue
+		}
+		found = true
+		if a.Arch != "arm64" || !a.ArchReported {
+			t.Fatalf("recorded arch = %q reported=%v, want arm64 reported by the agent", a.Arch, a.ArchReported)
+		}
+		if a.UpdatePending {
+			t.Fatal("update_pending is true with no arm64 binary to update to")
+		}
+	}
+	if !found {
+		t.Fatalf("%s missing from /api/versions: %s", machineID, rec.Body.String())
+	}
+	agentRunningVersionsMu.RLock()
+	info := agentRunningVersions[machineID]
+	agentRunningVersionsMu.RUnlock()
+	_, reason := announceDecision(&info, "linux", announcedSHAForArch("linux", info.Arch))
+	if !strings.Contains(reason, "linux/arm64") {
+		t.Fatalf("withhold reason = %q, want it to name the missing linux/arm64 binary", reason)
+	}
+}
+
+// With both builds staged, an arm64 agent is announced the arm64 SHA, signed
+// over the unchanged v1 message, and an amd64 agent the amd64 SHA.
+func TestArchReportingAgentGetsItsOwnArchSHA(t *testing.T) {
+	for _, arch := range []string{"arm64", "amd64"} {
+		// One server per architecture: the enrolment token seeder is
+		// single-use per server.
+		t.Run(arch, func(t *testing.T) {
+			e, s := setupTestServer(t)
+			t.Setenv("PUBLIC_URL", "https://hub.example.com")
+			stagePendingUpdate(t)
+			shas := map[string]string{"amd64": announcedSHAFor("linux"), "arm64": stagePendingArm64Update(t)}
+			pub, err := base64.StdEncoding.DecodeString(updateSigningPublicKeyBase64())
+			if err != nil || len(pub) != ed25519.PublicKeySize {
+				t.Fatalf("test setup: hub public key unusable: %v", err)
+			}
+
+			machineID := arch + "-agent-both-builds"
+			frames := s.collectAnnounceFrames(t, e, announceProbe{machineID: machineID, proto: 1, transportOK: true, keyPinned: true, arch: arch})
+			if len(frames) == 0 {
+				t.Fatalf("hub withheld an announce from an %s agent it has a build for", arch)
+			}
+			sha, sig := parseAnnounce(t, frames[0])
+			if want := shas[arch]; sha != want {
+				t.Fatalf("%s agent was announced %s, want its own architecture's %s", arch, sha, want)
+			}
+			sigBytes, err := base64.StdEncoding.DecodeString(sig)
+			if err != nil || !ed25519.Verify(ed25519.PublicKey(pub), updatesigning.Message("linux", sha), sigBytes) {
+				t.Fatalf("%s announce signature does not verify over the v1 message (err=%v)", arch, err)
+			}
+		})
+	}
+}
+
+// An agent that reports no arch downloads without ?arch= and so gets the
+// amd64 build; the hub must announce the amd64 SHA to it exactly as before
+// per-architecture delivery existed. This is today's entire fleet.
+func TestLegacyAgentWithoutArchGetsAmd64SHA(t *testing.T) {
+	e, s := setupTestServer(t)
+	t.Setenv("PUBLIC_URL", "https://hub.example.com")
+	stagePendingUpdate(t)
+	amd64SHA := announcedSHAFor("linux")
+	stagePendingArm64Update(t)
+
+	const machineID = "legacy-agent-no-arch"
+	frames := s.collectAnnounceFrames(t, e, announceProbe{machineID: machineID, proto: 1, transportOK: true, keyPinned: true})
+	if len(frames) == 0 {
+		t.Fatal("hub withheld the amd64 announce from an agent that reports no arch")
+	}
+	if sha, _ := parseAnnounce(t, frames[0]); sha != amd64SHA {
+		t.Fatalf("legacy agent was announced %s, want the amd64 SHA %s", sha, amd64SHA)
+	}
+	agentRunningVersionsMu.RLock()
+	info := agentRunningVersions[machineID]
+	agentRunningVersionsMu.RUnlock()
+	if info.Arch != "amd64" || info.ArchReported {
+		t.Fatalf("recorded arch = %q reported=%v, want amd64 inferred from metrics, not reported", info.Arch, info.ArchReported)
+	}
+}
+
+// The same legacy agent on a machine whose metrics say arm64 gets nothing:
+// announce arm64 and it downloads amd64 bytes it rejects on SHA; announce
+// amd64 and it installs a binary its CPU cannot execute. Withhold, name the
+// reason, arm no reconnect expectation.
+func TestLegacyAgentOnArm64HostIsWithheld(t *testing.T) {
+	e, s := setupTestServer(t)
+	t.Setenv("PUBLIC_URL", "https://hub.example.com")
+	stagePendingUpdate(t)
+	stagePendingArm64Update(t)
+
+	const machineID = "legacy-agent-arm64-host"
+	frames := s.collectAnnounceFrames(t, e, announceProbe{machineID: machineID, proto: 1, transportOK: true, keyPinned: true, metricsOS: "linux/arm64"})
+	if len(frames) != 0 {
+		t.Fatalf("hub announced to a legacy agent on an arm64 host: %q", frames)
+	}
+	assertNoReconnectExpectation(t, machineID)
+
+	agentRunningVersionsMu.RLock()
+	info := agentRunningVersions[machineID]
+	agentRunningVersionsMu.RUnlock()
+	if info.Arch != "arm64" || info.ArchReported {
+		t.Fatalf("recorded arch = %q reported=%v, want arm64 inferred from metrics", info.Arch, info.ArchReported)
+	}
+	if !info.UpdatePending {
+		t.Fatal("update_pending must be true so the operator sees the machine needs its installer re-run")
+	}
+	_, reason := announceDecision(&info, "linux", announcedSHAForArch("linux", info.Arch))
+	if !strings.Contains(reason, "agent_arch_not_reported") || !strings.Contains(reason, "re-run the hub installer") {
+		t.Fatalf("withhold reason = %q, want agent_arch_not_reported with the installer remedy", reason)
+	}
 }
 
 // Whatever the hub withholds, GET /api/versions must say why. Otherwise a

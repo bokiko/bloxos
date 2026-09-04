@@ -185,12 +185,16 @@ func performUpdate(expectedSHA string) error {
 	return nil // unreachable
 }
 
-// downloadAgentBinary fetches /download/agent from the hub URL.
+// downloadAgentBinary fetches /download/agent?os=linux&arch=<GOARCH> from
+// the hub URL. Asking for this CPU's architecture explicitly is what keeps a
+// hub that serves several from handing an x86_64 host an arm64 build (or the
+// reverse), which passes the SHA check the hub announced for it and then
+// crash-loops under systemd with "Exec format error".
 // Reuses the agent's TLS configuration so the download inherits CA pinning.
 // agentDownloadURL refuses plaintext transports, so this is also the
 // second line of the transport gate applied in handleAgentVersion.
 func downloadAgentBinary(destPath string) error {
-	downloadURL, err := agentDownloadURL(hubURL, "")
+	downloadURL, err := agentDownloadURLForArch(hubURL, runtime.GOOS, runtime.GOARCH)
 	if err != nil {
 		return err
 	}
@@ -305,6 +309,11 @@ func reportAgentVersion(conn *websocket.Conn, mu *sync.Mutex) {
 		"type":   "agent_running_version",
 		"sha256": sha,
 		"os":     runtime.GOOS,
+		// The CPU architecture this binary was built for, which is also what
+		// downloadAgentBinary requests. The hub announces the SHA for this
+		// architecture's build, and withholds when it has none. Its absence
+		// is how the hub recognises an agent that downloads without ?arch=.
+		"arch": runtime.GOARCH,
 		// Tells the hub this binary verifies signed announcements. Its
 		// absence is how the hub recognises a pre-signature agent.
 		"update_protocol": agentUpdateProtocol,
@@ -322,6 +331,6 @@ func reportAgentVersion(conn *websocket.Conn, mu *sync.Mutex) {
 		log.Printf("update: failed to report version: %v", err)
 		return
 	}
-	log.Printf("update: reported running version %s to hub (os=%s, update_protocol=%d, transport_ok=%v, key_pinned=%v)",
-		shortSHA(sha), runtime.GOOS, agentUpdateProtocol, selfUpdateTransportOK(), updateKeyPinned())
+	log.Printf("update: reported running version %s to hub (os=%s, arch=%s, update_protocol=%d, transport_ok=%v, key_pinned=%v)",
+		shortSHA(sha), runtime.GOOS, runtime.GOARCH, agentUpdateProtocol, selfUpdateTransportOK(), updateKeyPinned())
 }

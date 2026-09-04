@@ -1407,12 +1407,19 @@ func (s *Server) seedValidToken(t *testing.T) string {
 // sendMetricsMsg sends a metrics message with the given machine_id and reads back any response.
 func sendMetricsMsg(t *testing.T, conn *websocket.Conn, machineID string) {
 	t.Helper()
+	sendMetricsMsgWithOS(t, conn, machineID, "linux/amd64")
+}
+
+// sendMetricsMsgWithOS is sendMetricsMsg with an explicit metrics OS string,
+// which is what the hub infers a legacy agent's architecture from.
+func sendMetricsMsgWithOS(t *testing.T, conn *websocket.Conn, machineID, osStr string) {
+	t.Helper()
 	metrics := map[string]interface{}{
 		"type":             "metrics",
 		"machine_id":       machineID,
 		"hostname":         "test-host",
 		"ip":               "10.0.0.1",
-		"os":               "linux/amd64",
+		"os":               osStr,
 		"cpu_percent":      25.0,
 		"ram_used_bytes":   1073741824,
 		"ram_total_bytes":  4294967296,

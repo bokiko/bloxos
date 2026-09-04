@@ -109,11 +109,16 @@ trigger a fleet rollout.
 
 ### Architecture
 
-The served Linux agent matches the image's own architecture: an arm64 image
-serves arm64 Linux agents, an amd64 image serves amd64 Linux agents. The
-served Windows agent is always amd64. One image therefore serves one Linux
-agent architecture; a fleet that mixes amd64 and arm64 Linux machines needs
-per-architecture resolution in the hub, which is not implemented yet.
+Every hub image, whatever architecture it runs on, carries Linux agents for
+both amd64 and arm64 (cross-compiled in the build stage, no emulation) and the
+Windows amd64 agent, so one hub serves a mixed fleet. The hub picks the Linux
+build from the `arch` the installer and the agent's self-updater request
+(`/download/agent?os=linux&arch=amd64|arm64`), answers 404 with a message
+naming the architecture when it has no binary for it, and the installer
+refuses to install an ELF whose `e_machine` does not match the host CPU. An
+agent reports its architecture on connect, and the hub announces only that
+architecture's SHA to it. A request without `arch`, or an agent that reports
+none, gets the amd64 build, as before.
 
 ### Run the hub alone
 
@@ -132,7 +137,8 @@ docker exec bloxos-hub cat /data/.bloxos/setup-token
 
 Inside the image the hub listens on `0.0.0.0:4000` and runs as uid 65532.
 The agent binaries are root-owned and read-only at
-`/usr/local/lib/bloxos/linux/bloxos-agent` and
+`/usr/local/lib/bloxos/linux/amd64/bloxos-agent`,
+`/usr/local/lib/bloxos/linux/arm64/bloxos-agent` and
 `/usr/local/lib/bloxos/windows/bloxos-agent.exe`, which are the resolver's
 default paths, so no `BLOXOS_AGENT_BINARY*` setting is needed. For a private
 CA, mount the CA certificate and point `BLOXOS_CA_CERT` at it. Back up the

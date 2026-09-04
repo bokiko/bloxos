@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -30,7 +31,7 @@ func TestResolveAgentBinaryConfiguredMissingFailsClosed(t *testing.T) {
 			return "", os.ErrNotExist
 		},
 	}
-	got, err := r.resolve("linux")
+	got, err := r.resolve("linux", "")
 	if err == nil || !strings.Contains(err.Error(), "BLOXOS_AGENT_BINARY") {
 		t.Fatalf("resolve error = %v, want configured-path failure", err)
 	}
@@ -57,10 +58,11 @@ func TestResolveAgentBinaryIsWorkingDirectoryIndependent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	amd64Default := filepath.Join(linuxAgentBinaryDir, archAMD64, "bloxos-agent")
 	r := agentBinaryResolver{
 		executablePath: func() (string, error) { return exe, nil },
 		validate: func(path string) (string, error) {
-			if path == linuxAgentBinaryDefault {
+			if path == linuxAgentBinaryDefault || path == amd64Default {
 				return "", os.ErrNotExist
 			}
 			return path, nil
@@ -78,7 +80,7 @@ func TestResolveAgentBinaryIsWorkingDirectoryIndependent(t *testing.T) {
 		if err := os.Chdir(t.TempDir()); err != nil {
 			t.Fatal(err)
 		}
-		got, err := r.resolve("linux")
+		got, err := r.resolve("linux", "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -87,12 +89,103 @@ func TestResolveAgentBinaryIsWorkingDirectoryIndependent(t *testing.T) {
 	if paths[0] != agent || paths[1] != agent {
 		t.Fatalf("resolved paths = %q, want executable-relative %q", paths, agent)
 	}
-	got, err := r.resolve("linux")
+	got, err := r.resolve("linux", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Source != "hub-executable-directory" || len(got.Skipped) != 1 || !strings.Contains(got.Skipped[0], linuxAgentBinaryDefault) {
-		t.Fatalf("resolution metadata = %+v, want source and skipped system default", got)
+	if got.Source != "hub-executable-directory" || len(got.Skipped) != 2 ||
+		!strings.Contains(got.Skipped[0], amd64Default) || !strings.Contains(got.Skipped[1], linuxAgentBinaryDefault) {
+		t.Fatalf("resolution metadata = %+v, want source and skipped system defaults", got)
+	}
+}
+
+// TestResolveLinuxAgentBinaryPerArch pins the per-architecture resolution
+// order. The failure it prevents happened live: a hub image whose only Linux
+// binary was arm64 served it to an x86_64 host, which installed it and
+// crash-looped under systemd with "Exec format error". An arm64 request must
+// resolve only from arm64 locations and, when none exists, fail with an error
+// that names the architecture and the path — never fall through to the
+// legacy amd64 locations.
+func TestResolveLinuxAgentBinaryPerArch(t *testing.T) {
+	t.Setenv("BLOXOS_AGENT_BINARY", "")
+	t.Setenv("BLOXOS_AGENT_BINARY_ARM64", "")
+	exeDir := t.TempDir()
+	exe := filepath.Join(exeDir, "bloxos-hub")
+	if err := os.WriteFile(exe, []byte("hub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	amd64Default := filepath.Join(linuxAgentBinaryDir, archAMD64, "bloxos-agent")
+	arm64Default := filepath.Join(linuxAgentBinaryDir, archARM64, "bloxos-agent")
+
+	resolverAccepting := func(present ...string) agentBinaryResolver {
+		return agentBinaryResolver{
+			executablePath: func() (string, error) { return exe, nil },
+			validate: func(path string) (string, error) {
+				for _, p := range present {
+					if path == p {
+						return path, nil
+					}
+				}
+				return "", os.ErrNotExist
+			},
+		}
+	}
+
+	// Both per-arch defaults present: each arch gets its own.
+	r := resolverAccepting(amd64Default, arm64Default, linuxAgentBinaryDefault)
+	for arch, want := range map[string]string{"amd64": amd64Default, "arm64": arm64Default, "aarch64": arm64Default, "x86_64": amd64Default, "": amd64Default} {
+		got, err := r.resolve("linux", arch)
+		if err != nil {
+			t.Fatalf("resolve(linux, %q): %v", arch, err)
+		}
+		if got.Path != want || got.Source != "system-default" {
+			t.Fatalf("resolve(linux, %q) = %+v, want %s from system-default", arch, got, want)
+		}
+	}
+
+	// Only the legacy path present: it serves amd64 (what it always held)
+	// and nothing else.
+	r = resolverAccepting(linuxAgentBinaryDefault)
+	got, err := r.resolve("linux", "amd64")
+	if err != nil || got.Path != linuxAgentBinaryDefault || got.Source != "system-default-legacy" {
+		t.Fatalf("legacy amd64 resolution = %+v, %v; want legacy path", got, err)
+	}
+	_, err = r.resolve("linux", "arm64")
+	if err == nil {
+		t.Fatal("arm64 request resolved from the legacy amd64 path")
+	}
+	for _, want := range []string{"linux/arm64", arm64Default} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("arm64 error = %v, want it to name %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), linuxAgentBinaryDefault) || strings.Contains(err.Error(), "hub-executable-directory") {
+		t.Fatalf("arm64 error = %v; the legacy locations must not even be candidates", err)
+	}
+
+	// An unsupported architecture is refused by name, before any lookup.
+	_, err = r.resolve("linux", "riscv64")
+	if err == nil || !strings.Contains(err.Error(), "riscv64") || !strings.Contains(err.Error(), "amd64, arm64") {
+		t.Fatalf("riscv64 error = %v, want the arch named and the supported list", err)
+	}
+	if _, err := r.resolve("windows", "arm64"); err == nil || !strings.Contains(err.Error(), "windows") {
+		t.Fatalf("windows/arm64 error = %v, want refusal (Windows is amd64-only)", err)
+	}
+
+	// BLOXOS_AGENT_BINARY keeps its pre-arch meaning: amd64 only. It must
+	// not redirect an arm64 request, and BLOXOS_AGENT_BINARY_ARM64 must be
+	// authoritative for arm64 the way the Windows override is for Windows.
+	t.Setenv("BLOXOS_AGENT_BINARY", "/srv/override/amd64/bloxos-agent")
+	r = resolverAccepting("/srv/override/amd64/bloxos-agent", arm64Default)
+	if got, err := r.resolve("linux", "amd64"); err != nil || got.Source != "environment:BLOXOS_AGENT_BINARY" {
+		t.Fatalf("amd64 with override = %+v, %v", got, err)
+	}
+	if got, err := r.resolve("linux", "arm64"); err != nil || got.Path != arm64Default {
+		t.Fatalf("arm64 with amd64 override = %+v, %v; want the arm64 default untouched", got, err)
+	}
+	t.Setenv("BLOXOS_AGENT_BINARY_ARM64", filepath.Join(t.TempDir(), "missing-arm64"))
+	if _, err := r.resolve("linux", "arm64"); err == nil || !strings.Contains(err.Error(), "BLOXOS_AGENT_BINARY_ARM64") {
+		t.Fatalf("arm64 with missing override = %v, want fail-closed on the configured path", err)
 	}
 }
 
@@ -137,7 +230,7 @@ func TestRecomputeFailureClearsOnlyFailedPlatformState(t *testing.T) {
 	windowsSHA := hex.EncodeToString(windowsSum[:])
 
 	oldResolver := resolveAgentBinaryFor
-	resolveAgentBinaryFor = func(osName string) (agentBinaryResolution, error) {
+	resolveAgentBinaryFor = func(osName, arch string) (agentBinaryResolution, error) {
 		if osName == "linux" {
 			return agentBinaryResolution{Path: "/missing/linux", Source: "environment:BLOXOS_AGENT_BINARY"}, os.ErrNotExist
 		}
@@ -168,7 +261,7 @@ func TestHashDownloadAndSignatureUseSameResolvedPath(t *testing.T) {
 	}
 
 	oldResolver := resolveAgentBinaryFor
-	resolveAgentBinaryFor = func(osName string) (agentBinaryResolution, error) {
+	resolveAgentBinaryFor = func(osName, arch string) (agentBinaryResolution, error) {
 		return agentBinaryResolution{Path: bin, Source: "test:canonical"}, nil
 	}
 	t.Cleanup(func() { resolveAgentBinaryFor = oldResolver })
@@ -259,29 +352,79 @@ func TestVersionsAPIExposesResolvedBinaryState(t *testing.T) {
 	}
 }
 
+// TestVersionsAPIExposesPerArchBinaryState pins the compatibility contract
+// of /api/versions: the pre-arch fields keep meaning linux/amd64 so the
+// Versions dashboard keeps working, and agent_binaries_by_arch carries every
+// platform.
+func TestVersionsAPIExposesPerArchBinaryState(t *testing.T) {
+	e, server := setupTestServer(t)
+	withAgentBinaryState(t)
+	amd64 := agentBinaryState{Path: "/usr/local/lib/bloxos/linux/amd64/bloxos-agent", Source: "system-default", SHA: strings.Repeat("a", 64)}
+	arm64 := agentBinaryState{Path: "/usr/local/lib/bloxos/linux/arm64/bloxos-agent", Source: "system-default", SHA: strings.Repeat("b", 64)}
+	setAgentBinaryStateFor("linux", "amd64", amd64)
+	setAgentBinaryStateFor("linux", "arm64", arm64)
+	server.markCredentialsRotated(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/versions", nil)
+	req.Header.Set("Authorization", "Bearer "+loginAndGetToken(t, e))
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		HubSHA        string                                 `json:"hub_sha"`
+		AgentBinaries map[string]agentBinaryState            `json:"agent_binaries"`
+		ByArch        map[string]map[string]agentBinaryState `json:"agent_binaries_by_arch"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	if response.HubSHA != amd64.SHA || response.AgentBinaries["linux"].SHA != amd64.SHA {
+		t.Fatalf("legacy linux fields = %q / %+v, want the amd64 state", response.HubSHA, response.AgentBinaries["linux"])
+	}
+	if got := response.ByArch["linux"]["amd64"]; got.SHA != amd64.SHA || got.Path != amd64.Path {
+		t.Fatalf("by_arch linux/amd64 = %+v, want %+v", got, amd64)
+	}
+	if got := response.ByArch["linux"]["arm64"]; got.SHA != arm64.SHA || got.Path != arm64.Path {
+		t.Fatalf("by_arch linux/arm64 = %+v, want %+v", got, arm64)
+	}
+	if _, ok := response.ByArch["windows"]["amd64"]; !ok {
+		t.Fatalf("by_arch lacks windows/amd64: %s", rec.Body.String())
+	}
+}
+
 func withAgentBinaryState(t *testing.T) {
 	t.Helper()
 	hubAgentBinaryMu.Lock()
-	oldLinux := agentBinaryStates["linux"]
-	oldWindows := agentBinaryStates["windows"]
-	agentBinaryStates["linux"] = agentBinaryState{}
-	agentBinaryStates["windows"] = agentBinaryState{}
+	old := agentBinaryStates
+	agentBinaryStates = newAgentBinaryStates()
 	hubAgentBinaryMu.Unlock()
 	t.Cleanup(func() {
 		hubAgentBinaryMu.Lock()
-		agentBinaryStates["linux"] = oldLinux
-		agentBinaryStates["windows"] = oldWindows
+		agentBinaryStates = old
 		hubAgentBinaryMu.Unlock()
 	})
 }
 
+// setAgentBinaryState stages the state for an OS's default architecture —
+// "linux" means linux/amd64, as it did before the hub knew about
+// architectures.
 func setAgentBinaryState(osName string, state agentBinaryState) {
+	setAgentBinaryStateFor(osName, defaultAgentArch, state)
+}
+
+func setAgentBinaryStateFor(osName, arch string, state agentBinaryState) {
+	platform, err := agentPlatformFor(osName, arch)
+	if err != nil {
+		panic(err)
+	}
 	hubAgentBinaryMu.Lock()
 	defer hubAgentBinaryMu.Unlock()
 	if state.Mtime.IsZero() {
 		state.Mtime = time.Now()
 	}
-	agentBinaryStates[osName] = state
+	agentBinaryStates[platform.String()] = state
 }
 
 func useGeneratedTestBinary(t *testing.T, osName string) string {
@@ -299,14 +442,99 @@ func useGeneratedTestBinary(t *testing.T, osName string) string {
 	return path
 }
 
+// useTestResolvedBinary serves path for an OS's default architecture; other
+// architectures keep whatever resolver was installed before.
 func useTestResolvedBinary(t *testing.T, osName, path string) {
 	t.Helper()
+	useTestResolvedBinaryForArch(t, osName, defaultAgentArch, path)
+}
+
+func useTestResolvedBinaryForArch(t *testing.T, osName, arch, path string) {
+	t.Helper()
+	want, err := agentPlatformFor(osName, arch)
+	if err != nil {
+		t.Fatal(err)
+	}
 	oldResolver := resolveAgentBinaryFor
-	resolveAgentBinaryFor = func(requestedOS string) (agentBinaryResolution, error) {
-		if normalizeAgentOS(requestedOS) == normalizeAgentOS(osName) {
+	resolveAgentBinaryFor = func(requestedOS, requestedArch string) (agentBinaryResolution, error) {
+		if got, err := agentPlatformFor(requestedOS, requestedArch); err == nil && got == want {
 			return agentBinaryResolution{Path: path, Source: "test:fixture"}, nil
 		}
-		return oldResolver(requestedOS)
+		return oldResolver(requestedOS, requestedArch)
 	}
 	t.Cleanup(func() { resolveAgentBinaryFor = oldResolver })
+}
+
+// useGeneratedTestBinaryForArch is useGeneratedTestBinary for one Linux
+// architecture, without resetting state already staged for other platforms.
+func useGeneratedTestBinaryForArch(t *testing.T, osName, arch string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "bloxos-agent")
+	if err := os.WriteFile(path, []byte("test "+osName+"/"+arch+" agent binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	useTestResolvedBinaryForArch(t, osName, arch, path)
+	return path
+}
+
+// TestDownloadAgentHonorsArch pins the download contract the installer and
+// the self-updater rely on: ?arch selects the build, no arch means amd64
+// (the pre-arch behaviour every deployed agent expects), and an
+// architecture the hub cannot serve is a 404 whose body names it and the
+// path the hub looked at — never the wrong architecture's bytes.
+func TestDownloadAgentHonorsArch(t *testing.T) {
+	e, _ := setupTestServer(t)
+	withAgentBinaryState(t)
+	amd64Path := useGeneratedTestBinaryForArch(t, "linux", "amd64")
+	arm64Path := useGeneratedTestBinaryForArch(t, "linux", "arm64")
+	recomputeAgentBinarySHA()
+
+	download := func(query string) (int, string) {
+		req := httptest.NewRequest(http.MethodGet, "/download/agent"+query, nil)
+		rec := httptest.NewRecorder()
+		e.ServeHTTP(rec, req)
+		return rec.Code, rec.Body.String()
+	}
+	amd64Body, _ := os.ReadFile(amd64Path)
+	arm64Body, _ := os.ReadFile(arm64Path)
+	if string(amd64Body) == string(arm64Body) {
+		t.Fatal("test setup: fixtures must differ")
+	}
+
+	for query, want := range map[string]string{
+		"?os=linux&arch=arm64":   string(arm64Body),
+		"?os=linux&arch=aarch64": string(arm64Body),
+		"?os=linux&arch=amd64":   string(amd64Body),
+		"?os=linux":              string(amd64Body),
+		"":                       string(amd64Body),
+	} {
+		code, body := download(query)
+		if code != http.StatusOK || body != want {
+			t.Fatalf("GET /download/agent%s = %d %q, want 200 with the right architecture's bytes", query, code, body)
+		}
+	}
+
+	code, body := download("?os=linux&arch=riscv64")
+	if code != http.StatusNotFound || !strings.Contains(body, "riscv64") || !strings.Contains(body, "amd64, arm64") {
+		t.Fatalf("unsupported arch = %d %s, want 404 naming riscv64 and the supported list", code, body)
+	}
+
+	// arm64 goes missing: its request must 404 with the resolver's path,
+	// while amd64 keeps serving.
+	oldResolver := resolveAgentBinaryFor
+	resolveAgentBinaryFor = func(osName, arch string) (agentBinaryResolution, error) {
+		if a, _ := normalizeAgentArch(arch); a == archARM64 {
+			return agentBinaryResolution{}, fmt.Errorf("no trusted linux/arm64 agent binary: system-default /usr/local/lib/bloxos/linux/arm64/bloxos-agent: no such file")
+		}
+		return oldResolver(osName, arch)
+	}
+	t.Cleanup(func() { resolveAgentBinaryFor = oldResolver })
+	code, body = download("?os=linux&arch=arm64")
+	if code != http.StatusNotFound || !strings.Contains(body, "arch=arm64") ||
+		!strings.Contains(body, "/usr/local/lib/bloxos/linux/arm64/bloxos-agent") {
+		t.Fatalf("missing arm64 = %d %s, want 404 naming the arch and the path looked at", code, body)
+	}
+	if code, body := download("?os=linux&arch=amd64"); code != http.StatusOK || body != string(amd64Body) {
+		t.Fatalf("amd64 after arm64 failure = %d %q, want still served", code, body)
+	}
 }

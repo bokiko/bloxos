@@ -31,6 +31,15 @@ import (
 // osQuery, when non-empty, is appended as ?os=<value> so a Windows agent
 // fetches the Windows binary.
 func agentDownloadURL(rawHubURL, osQuery string) (string, error) {
+	return agentDownloadURLForArch(rawHubURL, osQuery, "")
+}
+
+// agentDownloadURLForArch is agentDownloadURL with an additional
+// arch=<value> query (the agent's runtime.GOARCH) so the hub serves the
+// build for this CPU rather than its default. A hub that predates the
+// parameter ignores it; a hub with no binary for the architecture answers
+// 404 instead of handing over bytes this machine cannot execute.
+func agentDownloadURLForArch(rawHubURL, osQuery, archQuery string) (string, error) {
 	u, err := url.Parse(strings.TrimSpace(rawHubURL))
 	if err != nil {
 		return "", fmt.Errorf("parse hub URL: %w", err)
@@ -59,8 +68,15 @@ func agentDownloadURL(rawHubURL, osQuery string) (string, error) {
 	}
 
 	downloadURL := scheme + "://" + u.Host + "/download/agent"
+	query := url.Values{}
 	if osQuery != "" {
-		downloadURL += "?os=" + url.QueryEscape(osQuery)
+		query.Set("os", osQuery)
+	}
+	if archQuery != "" {
+		query.Set("arch", archQuery)
+	}
+	if len(query) > 0 {
+		downloadURL += "?" + query.Encode()
 	}
 	return downloadURL, nil
 }

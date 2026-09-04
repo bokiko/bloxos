@@ -3,10 +3,10 @@
 #
 # One build of this checkout produces the hub binary and the agent binaries
 # the hub serves to enrolling machines, so a running hub always offers
-# agents from the same commit. The served Linux agent matches the image's
-# own architecture (an arm64 image serves arm64 agents, an amd64 image
-# serves amd64 agents); the served Windows agent is always amd64. A single
-# image therefore serves one Linux architecture; see docker/README.md.
+# agents from the same commit. Every image, whatever its own architecture,
+# carries Linux agents for both amd64 and arm64 (cross-compiled, no
+# emulation) plus the Windows amd64 agent, so one hub serves a mixed fleet;
+# see docker/README.md.
 #
 # Builds are deterministic for a given commit and toolchain (-trimpath,
 # no VCS stamping, stripped), so rebuilding does not change the served
@@ -27,9 +27,10 @@ COPY hub/ hub/
 COPY agent/ agent/
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    mkdir -p /out/linux /out/windows \
+    mkdir -p /out/linux/amd64 /out/linux/arm64 /out/windows \
  && (cd hub   && GOOS=linux   GOARCH="$TARGETARCH" go build -ldflags='-s -w' -o /out/bloxos-hub .) \
- && (cd agent && GOOS=linux   GOARCH="$TARGETARCH" go build -ldflags='-s -w' -o /out/linux/bloxos-agent .) \
+ && (cd agent && GOOS=linux   GOARCH=amd64        go build -ldflags='-s -w' -o /out/linux/amd64/bloxos-agent .) \
+ && (cd agent && GOOS=linux   GOARCH=arm64        go build -ldflags='-s -w' -o /out/linux/arm64/bloxos-agent .) \
  && (cd agent && GOOS=windows GOARCH=amd64        go build -ldflags='-s -w' -o /out/windows/bloxos-agent.exe .)
 
 FROM alpine:3.22
@@ -38,9 +39,12 @@ RUN apk add --no-cache ca-certificates \
  && adduser -u 65532 -S -G nonroot -h /data -s /sbin/nologin nonroot \
  && mkdir -p /data && chown nonroot:nonroot /data && chmod 0700 /data
 # The hub's served-binary resolver requires root-owned, non-writable
-# artifacts and ancestors; the hub itself runs unprivileged.
+# artifacts and ancestors; the hub itself runs unprivileged. The Linux
+# agents sit at the resolver's per-architecture defaults,
+# /usr/local/lib/bloxos/linux/<arch>/bloxos-agent.
 COPY --from=build --chown=root:root --chmod=0755 /out/bloxos-hub /usr/local/bin/bloxos-hub
-COPY --from=build --chown=root:root --chmod=0755 /out/linux/bloxos-agent /usr/local/lib/bloxos/linux/bloxos-agent
+COPY --from=build --chown=root:root --chmod=0755 /out/linux/amd64/bloxos-agent /usr/local/lib/bloxos/linux/amd64/bloxos-agent
+COPY --from=build --chown=root:root --chmod=0755 /out/linux/arm64/bloxos-agent /usr/local/lib/bloxos/linux/arm64/bloxos-agent
 COPY --from=build --chown=root:root --chmod=0755 /out/windows/bloxos-agent.exe /usr/local/lib/bloxos/windows/bloxos-agent.exe
 # State lives in one volume: bloxos.db in the working directory, secrets,
 # setup token and signing key under $HOME/.bloxos.
