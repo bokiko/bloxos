@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -31,6 +32,26 @@ func machineStatus(t *testing.T, s *Server, machineID string) string {
 		t.Fatalf("read status for %s: %v", machineID, err)
 	}
 	return status
+}
+
+// expectConnectionClosed reads until the hub closes the socket. The only
+// frame tolerated on the way is the post-registration ai_sessions_config
+// notice; anything else means the hub kept talking instead of closing.
+func expectConnectionClosed(t *testing.T, conn *websocket.Conn, msg string) {
+	t.Helper()
+	for {
+		_, frame, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		var envelope struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(frame, &envelope) == nil && envelope.Type == aiSessionsConfigType {
+			continue
+		}
+		t.Fatalf("%s (got frame %s)", msg, frame)
+	}
 }
 
 func agentMapHasEntry(s *Server, machineID string) bool {
@@ -92,9 +113,7 @@ func TestEnrollmentCommittedWithNoStagedStateUnregisters(t *testing.T) {
 
 	// The hub must close the connection (no matching staged state).
 	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	if _, _, err := conn.ReadMessage(); err == nil {
-		t.Fatal("expected the connection to be closed after enrollment_committed with no staged state")
-	}
+	expectConnectionClosed(t, conn, "expected the connection to be closed after enrollment_committed with no staged state")
 	waitForAgentMapAbsence(t, s, machineID, 5*time.Second)
 }
 
@@ -118,9 +137,7 @@ func TestPromotionMismatchUnregisters(t *testing.T) {
 	}
 
 	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	if _, _, err := conn.ReadMessage(); err == nil {
-		t.Fatal("expected the connection to be closed after a mismatched promotion")
-	}
+	expectConnectionClosed(t, conn, "expected the connection to be closed after a mismatched promotion")
 	waitForAgentMapAbsence(t, s, "promo-mismatch-cleanup", 5*time.Second)
 }
 
@@ -146,9 +163,7 @@ func TestPromotionExpiredDuringCommitUnregisters(t *testing.T) {
 	}
 
 	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	if _, _, err := conn.ReadMessage(); err == nil {
-		t.Fatal("expected the connection to be closed after committing an expired pending credential")
-	}
+	expectConnectionClosed(t, conn, "expected the connection to be closed after committing an expired pending credential")
 	waitForAgentMapAbsence(t, s, machineID, 5*time.Second)
 }
 

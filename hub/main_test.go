@@ -1628,16 +1628,22 @@ func TestAgentVersionAnnouncedOnReconnect(t *testing.T) {
 	}
 
 	conn2.SetReadDeadline(time.Now().Add(3 * time.Second))
-	_, msg, err := conn2.ReadMessage()
-	if err != nil {
-		t.Fatalf("expected agent_version frame on reconnect, read err: %v", err)
-	}
+	var msg []byte
 	var versionMsg struct {
 		Type   string `json:"type"`
 		SHA256 string `json:"sha256"`
 	}
-	if err := json.Unmarshal(msg, &versionMsg); err != nil {
-		t.Fatalf("parse version frame: %v (raw=%q)", err, string(msg))
+	// Registration also emits ai_sessions_config on its own goroutine; the
+	// two post-registration frames have no ordering guarantee.
+	for versionMsg.Type == "" || versionMsg.Type == aiSessionsConfigType {
+		var err error
+		_, msg, err = conn2.ReadMessage()
+		if err != nil {
+			t.Fatalf("expected agent_version frame on reconnect, read err: %v", err)
+		}
+		if err := json.Unmarshal(msg, &versionMsg); err != nil {
+			t.Fatalf("parse version frame: %v (raw=%q)", err, string(msg))
+		}
 	}
 	if versionMsg.Type != "agent_version" {
 		t.Fatalf("expected type=agent_version, got %q (raw=%q)", versionMsg.Type, string(msg))

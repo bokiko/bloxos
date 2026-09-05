@@ -392,6 +392,18 @@ var migrations = []migration{
 			return nil
 		},
 	},
+	{
+		description: "create hub_settings key/value table (AI Sessions feature switch)",
+		apply: func(tx *sql.Tx) error {
+			_, err := tx.Exec(`
+			CREATE TABLE IF NOT EXISTS hub_settings (
+				key TEXT PRIMARY KEY,
+				value TEXT NOT NULL,
+				updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			)`)
+			return err
+		},
+	},
 }
 
 // isDuplicateColumnErr returns true when SQLite rejects an ALTER TABLE ADD

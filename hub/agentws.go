@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bokiko/bloxos/proto/aisessions"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/labstack/echo/v4"
@@ -80,6 +81,7 @@ func (s *Server) registerAgentConnection(machineID string, agent *ConnectedAgent
 		_ = displaced.Conn.Close()
 	}
 	s.goTracked(func() { s.announceVersionToAgent(machineID, agent) })
+	s.goTracked(func() { s.sendAISessionsConfig(machineID, agent) })
 }
 
 // unregisterAgentConnection is the symmetric cleanup for
@@ -102,6 +104,9 @@ func (s *Server) unregisterAgentConnection(machineID string, agent *ConnectedAge
 	s.agentsMu.Unlock()
 	if stillOurs {
 		s.markOffline(machineID)
+		// Live sessions only: a machine that is no longer connected has no
+		// sessions to show.
+		s.aiSessions.remove(machineID)
 	}
 }
 
@@ -1081,6 +1086,11 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 					KeyPinned:      versionMsg.UpdateKeyPinned,
 				})
 			}
+
+		case aisessions.MessageType:
+			// Read-only AI tool session metadata. Bound to the authenticated
+			// machine and to the registered socket; see ingestAISessions.
+			s.ingestAISessions(machineID, agent, msg)
 
 		case "command_response":
 			var resp CommandResponse
