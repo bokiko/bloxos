@@ -254,6 +254,10 @@ func (s *Server) registerRoutes(e *echo.Echo) {
 	e.POST("/api/auth/login", s.handleLogin)
 	e.GET("/install.sh", handleInstallScript)
 	e.GET("/install.ps1", handleWindowsInstallScript)
+	// One-line onboarding: the Linux bootstrap for an unexpired, unconsumed
+	// install token. Public by design; see join.go for what it does and
+	// does not reveal.
+	e.GET("/join/:code", s.handleJoinScript)
 	e.GET("/download/agent", handleDownloadAgent)
 	e.GET("/download/ca.crt", handleDownloadCACert)
 	e.GET("/api/setup/status", s.handleSetupStatus)
@@ -1422,33 +1426,65 @@ func (s *Server) getMachinesJSON() ([]byte, error) {
 
 // --- Security Functions ---
 
-// tokenRedactingWriter redacts JWT tokens from log output (Finding #8).
+// tokenRedactingWriter redacts JWT tokens from log output (Finding #8), and
+// the install token that a join link carries in its path (join.go).
 type tokenRedactingWriter struct {
 	w io.Writer
 }
 
 func (t *tokenRedactingWriter) Write(p []byte) (n int, err error) {
-	s := string(p)
+	s := redactJoinCodes(string(p))
 	for _, key := range []string{"token", "secret", "terminal_token", "browser_token"} {
 		needle := key + "="
+		// Resume each search after the previous replacement. Searching
+		// from the start again re-finds the same key with "[REDACTED]" as
+		// its value and never terminates; that spun one goroutine per
+		// logged request carrying ?token= or ?secret=.
+		from := 0
 		for {
-			idx := strings.Index(s, needle)
+			idx := strings.Index(s[from:], needle)
 			if idx == -1 {
 				break
 			}
-			end := idx + len(needle)
+			end := from + idx + len(needle)
 			valueEnd := end
 			for valueEnd < len(s) && s[valueEnd] != '&' && s[valueEnd] != ' ' && s[valueEnd] != '"' && s[valueEnd] != '\n' {
 				valueEnd++
 			}
 			if valueEnd > end {
 				s = s[:end] + "[REDACTED]" + s[valueEnd:]
+				from = end + len("[REDACTED]")
 			} else {
-				break
+				from = end
 			}
 		}
 	}
 	return t.w.Write([]byte(s))
+}
+
+// redactJoinCodes replaces the path segment after every "/join/" — the
+// install token — so the request logger's ${uri} never records a code that
+// is still usable.
+func redactJoinCodes(s string) string {
+	const needle = "/join/"
+	from := 0
+	for {
+		idx := strings.Index(s[from:], needle)
+		if idx == -1 {
+			return s
+		}
+		start := from + idx + len(needle)
+		end := start
+		for end < len(s) && s[end] != '/' && s[end] != '?' && s[end] != '#' && s[end] != ' ' && s[end] != '"' && s[end] != '\n' {
+			end++
+		}
+		if end > start {
+			s = s[:start] + "[REDACTED]" + s[end:]
+			from = start + len("[REDACTED]")
+		} else {
+			from = start
+		}
+	}
 }
 
 // RateLimiter provides simple in-memory per-IP rate limiting.

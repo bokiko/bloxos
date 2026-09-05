@@ -31,6 +31,10 @@ https://{$HUB_HOST} {
 	handle /install.ps1 {
 		reverse_proxy hub:4000
 	}
+	# One-line onboarding: join links serve the Linux bootstrap.
+	handle /join/* {
+		reverse_proxy hub:4000
+	}
 	handle /download/* {
 		reverse_proxy hub:4000
 	}

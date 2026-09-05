@@ -15,11 +15,15 @@ import (
 )
 
 type installerTokenResponse struct {
-	Command        string `json:"command"`
-	WindowsCommand string `json:"windows_command"`
-	CAURL          string `json:"ca_url"`
-	CASHA256       string `json:"ca_sha256"`
-	ExpiresAt      string `json:"expires_at"`
+	Token           string `json:"token"`
+	Command         string `json:"command"`
+	AdvancedCommand string `json:"advanced_command"`
+	JoinURL         string `json:"join_url"`
+	JoinPin         string `json:"join_pin"`
+	WindowsCommand  string `json:"windows_command"`
+	CAURL           string `json:"ca_url"`
+	CASHA256        string `json:"ca_sha256"`
+	ExpiresAt       string `json:"expires_at"`
 }
 
 func createInstallerToken(t *testing.T, publicURL, host, caPath string) installerTokenResponse {
@@ -70,10 +74,10 @@ func assertOrdered(t *testing.T, body string, needles ...string) {
 
 func TestInstallerCommandsUsePublicURLAndReturnTypedBootstrapFields(t *testing.T) {
 	got := createInstallerToken(t, "https://hub.public.example", "evil.example", testCAFile(t))
-	if got.Command == "" || got.WindowsCommand == "" || got.ExpiresAt == "" || got.CAURL == "" || got.CASHA256 == "" {
+	if got.Command == "" || got.AdvancedCommand == "" || got.JoinURL == "" || got.WindowsCommand == "" || got.ExpiresAt == "" || got.CAURL == "" || got.CASHA256 == "" {
 		t.Fatalf("incomplete token response: %+v", got)
 	}
-	for name, command := range map[string]string{"linux": got.Command, "windows": got.WindowsCommand} {
+	for name, command := range map[string]string{"linux": got.Command, "linux advanced": got.AdvancedCommand, "windows": got.WindowsCommand} {
 		if strings.Contains(command, "evil.example") || !strings.Contains(command, "hub.public.example") {
 			t.Fatalf("%s command did not use PUBLIC_URL exclusively: %q", name, command)
 		}
@@ -86,23 +90,23 @@ func TestInstallerCommandsUsePublicURLAndReturnTypedBootstrapFields(t *testing.T
 			t.Fatalf("Windows paste-block curl invocation lacks --ssl-revoke-best-effort: %s", line)
 		}
 	}
-	if !strings.Contains(got.WindowsCommand, got.CASHA256) || !strings.Contains(got.Command, got.CASHA256) {
+	if !strings.Contains(got.WindowsCommand, got.CASHA256) || !strings.Contains(got.AdvancedCommand, got.CASHA256) {
 		t.Fatal("CA fingerprint is not literal in both paste blocks")
 	}
 }
 
 func TestLinuxPasteBlockVerifiesCABeforeInstallerFetchAndExec(t *testing.T) {
 	got := createInstallerToken(t, "https://hub.public.example", "ignored.example", testCAFile(t))
-	assertOrdered(t, got.Command,
+	assertOrdered(t, got.AdvancedCommand,
 		"sha256sum",
 		"CA fingerprint mismatch",
 		"/install.sh",
 		"bash \"$INSTALLER\"",
 	)
-	if strings.Contains(got.Command, "install.sh | bash") || strings.Contains(got.Command, "curl -fsSLk https://hub.public.example/install.sh") {
-		t.Fatalf("Linux command still executes an unverified network pipe: %q", got.Command)
+	if strings.Contains(got.AdvancedCommand, "install.sh | bash") || strings.Contains(got.AdvancedCommand, "curl -fsSLk https://hub.public.example/install.sh") {
+		t.Fatalf("Linux command still executes an unverified network pipe: %q", got.AdvancedCommand)
 	}
-	if !strings.Contains(got.Command, "Existing CA fingerprint mismatch") || !strings.Contains(got.Command, "sudo install") {
+	if !strings.Contains(got.AdvancedCommand, "Existing CA fingerprint mismatch") || !strings.Contains(got.AdvancedCommand, "sudo install") {
 		t.Fatal("Linux command does not reuse matching CA / stop on mismatching CA")
 	}
 }
@@ -117,10 +121,10 @@ func TestPublicTrustedHTTPSAndHTTPCommandsDoNotFetchLocalCA(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := createInstallerToken(t, tc.url, "evil.example", filepath.Join(t.TempDir(), "missing.crt"))
-			if got.CAURL != "" || got.CASHA256 != "" || strings.Contains(got.Command, "/download/ca.crt") || strings.Contains(got.WindowsCommand, "/download/ca.crt") {
+			if got.CAURL != "" || got.CASHA256 != "" || got.JoinPin != "" || strings.Contains(got.AdvancedCommand, "/download/ca.crt") || strings.Contains(got.WindowsCommand, "/download/ca.crt") {
 				t.Fatalf("system-trust/direct-HTTP command unexpectedly bootstraps local CA: %+v", got)
 			}
-			if strings.HasPrefix(tc.url, "http://") && (!strings.Contains(got.Command, "unencrypted") || !strings.Contains(got.WindowsCommand, "unencrypted")) {
+			if strings.HasPrefix(tc.url, "http://") && (!strings.Contains(got.AdvancedCommand, "unencrypted") || !strings.Contains(got.WindowsCommand, "unencrypted")) {
 				t.Fatal("direct HTTP command does not state its transport limitation")
 			}
 		})
@@ -246,7 +250,7 @@ func TestLinuxInstallerConsumesPasteBlockCAContract(t *testing.T) {
 
 	// Outer -> inner: the paste block hands install.sh exactly these CA variables.
 	provided := map[string]bool{}
-	for _, m := range regexp.MustCompile(`\b(BLOXOS_[A-Z0-9_]+)=`).FindAllStringSubmatch(got.Command, -1) {
+	for _, m := range regexp.MustCompile(`\b(BLOXOS_[A-Z0-9_]+)=`).FindAllStringSubmatch(got.AdvancedCommand, -1) {
 		provided[m[1]] = true
 	}
 	for _, want := range []string{"BLOXOS_HUB", "BLOXOS_TOKEN", "BLOXOS_CA_CERT", "BLOXOS_CA_SHA256"} {

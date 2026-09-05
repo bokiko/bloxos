@@ -19,6 +19,7 @@ In production, Caddy normally fronts both local services:
 - `/api/*` -> hub
 - `/ws/*` -> hub
 - `/install.sh`, `/install.ps1` -> hub-generated installers
+- `/join/*` -> hub-generated Linux bootstrap for a live install token (one-line onboarding)
 - `/download/*` -> hub agent binaries and CA certificate
 - everything else -> dashboard
 
@@ -80,6 +81,36 @@ created or updated the machine row as online; if the enrollment never commits,
 that row is marked offline when the socket disconnects. An agent that fails to
 save and drops the connection can retry with the same token. Later reconnects
 prefer the durable secret.
+
+### One-line Linux onboarding
+
+`POST /api/tokens` returns the Linux install as one short line, `command`,
+which fetches `join_url` (`GET /join/<token>`) and runs it once; the complete
+verbose bootstrap it fetches is returned as `advanced_command` and is what the
+endpoint serves byte for byte. The join code is the install token itself: the
+same 15-minute expiry, and consumed only when `enrollment_committed` stores the
+durable credential, never by a GET, so an interrupted install can re-run the
+same line until it commits. Unknown, expired, consumed and Windows-bound codes
+all receive one identical plain-text 404 (`no-store`, `nosniff`), and the code
+is redacted from the request log. The hub's authority is always `PUBLIC_URL`,
+never the request Host, and minting still requires it.
+
+The command is `bash -c 's=$(curl ...) && bash -c "$s"'`: the script is
+downloaded whole before anything runs, and a failed fetch exits non-zero with
+curl's message and runs nothing. Behind publicly trusted TLS the fetch is plain
+verified `curl -fsS`. Behind a private CA (the Caddy internal CA in `docker/`)
+the hub verifies, at mint time and against `BLOXOS_CA_CERT`, the leaf
+certificate `PUBLIC_URL` presents, and the command carries `curl -k
+--pinnedpubkey sha256//<SPKI>` for that leaf: `-k` because the new machine
+cannot verify the chain yet, the pin because that is what authenticates the
+download instead. If the hub cannot obtain a pin it trusts — `PUBLIC_URL`
+unreachable from the hub, chain not issued by the configured CA, leaf expiring
+within the token window — `/api/tokens` returns 503 and mints nothing. Caddy
+re-keys its internal leaves on renewal (12-hour lifetime), so a command copied
+shortly before a renewal fails with curl exit 90 and must be regenerated. Over
+`http://` the command is plain and the served bootstrap prints the existing
+unencrypted-transport warning, exactly as before. `join_pin` exposes the pin
+for display. The Windows command is unchanged.
 
 The hub and the agent binaries it serves are a coupled deployment: build and
 deploy them from the same commit. Agents built from source since commit

@@ -127,25 +127,47 @@ func (s *Server) handleCreateToken(c echo.Context) error {
 		})
 	}
 
+	// Everything the join command needs is settled before the token row
+	// exists, so a hub that cannot produce a trustworthy command mints
+	// nothing: no token, no link, no fallback to an unauthenticated fetch.
+	httpBase, wsBase := publicAndWebsocketBase()
+	publicURL, err := parsePublicURL(httpBase)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+	caURL, caSHA256 := bootstrapCAFor(httpBase)
+	joinPin := ""
+	if caSHA256 != "" {
+		joinPin, err = joinPinForPrivateCA(c.Request().Context(), publicURL)
+		if err != nil {
+			log.Printf("token_create: refusing to mint, cannot pin the hub's TLS key for the join command: %v", err)
+			return c.JSON(http.StatusServiceUnavailable, map[string]string{
+				"error": "cannot generate an install command: " + err.Error() +
+					". The hub must be able to reach PUBLIC_URL over TLS with a certificate issued by BLOXOS_CA_CERT.",
+			})
+		}
+	}
+
 	token := uuid.New().String()
 	h := sha256.Sum256([]byte(token))
 	tokenHash := hex.EncodeToString(h[:])
-	expiresAt := time.Now().Add(15 * time.Minute)
+	expiresAt := time.Now().Add(installTokenTTL)
 
-	_, err := s.db.Exec(`INSERT INTO tokens (token_hash, expires_at) VALUES (?, ?)`, tokenHash, expiresAt)
-	if err != nil {
+	if _, err := s.db.Exec(`INSERT INTO tokens (token_hash, expires_at) VALUES (?, ?)`, tokenHash, expiresAt); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
-	httpBase, wsBase := publicAndWebsocketBase()
-	caURL, caSHA256 := bootstrapCAFor(httpBase)
+	joinURL := joinURLFor(httpBase, token)
 	return c.JSON(http.StatusOK, installTokenResponse{
-		Token:          token,
-		Command:        buildLinuxInstallCommand(httpBase, wsBase, token, caURL, caSHA256),
-		WindowsCommand: buildWindowsInstallCommand(httpBase, wsBase, token, caURL, caSHA256, false),
-		CAURL:          caURL,
-		CASHA256:       caSHA256,
-		ExpiresAt:      expiresAt.Format(time.RFC3339),
+		Token:           token,
+		Command:         buildLinuxJoinCommand(joinURL, joinPin),
+		AdvancedCommand: buildLinuxInstallCommand(httpBase, wsBase, token, caURL, caSHA256),
+		JoinURL:         joinURL,
+		JoinPin:         joinPin,
+		WindowsCommand:  buildWindowsInstallCommand(httpBase, wsBase, token, caURL, caSHA256, false),
+		CAURL:           caURL,
+		CASHA256:        caSHA256,
+		ExpiresAt:       expiresAt.Format(time.RFC3339),
 	})
 }
 
