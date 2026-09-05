@@ -63,6 +63,24 @@ func (st *aiSessionStore) remove(machineID string) {
 	st.mu.Unlock()
 }
 
+// removeIfPresent is remove that reports whether an entry existed.
+func (st *aiSessionStore) removeIfPresent(machineID string) bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	_, ok := st.byMachine[machineID]
+	delete(st.byMachine, machineID)
+	return ok
+}
+
+// putAt stores a snapshot and returns the receipt time used.
+func (st *aiSessionStore) putAt(machineID string, sessions []aisessions.Session) time.Time {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	now := st.now()
+	st.byMachine[machineID] = aiSessionSnapshot{Sessions: sessions, ReceivedAt: now}
+	return now
+}
+
 func (st *aiSessionStore) clear() {
 	st.mu.Lock()
 	st.byMachine = make(map[string]aiSessionSnapshot)
@@ -220,7 +238,46 @@ func (s *Server) setAISessionsEnabled(enabled bool) error {
 		s.aiSessions.clear()
 	}
 	s.broadcastAISessionsConfig(enabled, rev)
+	broadcastAISessionsConfigSSE(enabled)
 	return nil
+}
+
+// --- live delivery (dashboard SSE) ---
+//
+// Three events, all built from the sanitized contract only:
+//   ai_sessions          one machine's current snapshot (same shape as a
+//                        GET /api/ai-sessions machine entry)
+//   ai_sessions_removed  {"machine_id"} — the machine's socket went away or
+//                        the machine was deleted; drop its sessions
+//   ai_sessions_config   {"enabled"} — the admin switch changed; when false
+//                        every snapshot is gone
+// The dashboard bootstraps from GET on every (re)connect, so no SSE
+// snapshot of sessions is needed at stream start.
+
+func sseFrame(event string, v any) []byte {
+	data, _ := json.Marshal(v)
+	return []byte(fmt.Sprintf("event: %s\ndata: %s\n\n", event, data))
+}
+
+func (s *Server) broadcastAISessionsView(view aiSessionsMachineView) {
+	broadcastSSE(sseFrame("ai_sessions", view))
+}
+
+func broadcastAISessionsRemoved(machineID string) {
+	broadcastSSE(sseFrame("ai_sessions_removed", map[string]string{"machine_id": machineID}))
+}
+
+func broadcastAISessionsConfigSSE(enabled bool) {
+	broadcastSSE(sseFrame("ai_sessions_config", map[string]bool{"enabled": enabled}))
+}
+
+// removeAISessions drops a machine's snapshot and tells dashboards, but only
+// announces when there was something to drop, so an unrelated disconnect
+// does not spray events.
+func (s *Server) removeAISessions(machineID string) {
+	if s.aiSessions.removeIfPresent(machineID) {
+		broadcastAISessionsRemoved(machineID)
+	}
 }
 
 // --- ingest (agent WebSocket) ---
@@ -246,7 +303,24 @@ func (s *Server) ingestAISessions(machineID string, agent *ConnectedAgent, raw [
 		return
 	}
 	clean := aisessions.Sanitize(msg)
-	s.aiSessions.put(machineID, clean.Sessions)
+	receivedAt := s.aiSessions.putAt(machineID, clean.Sessions)
+	s.broadcastAISessionsView(s.aiSessionsMachineView(machineID, clean.Sessions, receivedAt))
+}
+
+// aiSessionsMachineView builds the wire view for one machine. Hostname is
+// display sugar; a missing row (machine deleted while its socket lingers)
+// is not an error.
+func (s *Server) aiSessionsMachineView(machineID string, sessions []aisessions.Session, receivedAt time.Time) aiSessionsMachineView {
+	view := aiSessionsMachineView{
+		MachineID:  machineID,
+		ReceivedAt: receivedAt.UTC().Format(time.RFC3339),
+		Sessions:   sessions,
+	}
+	if view.Sessions == nil {
+		view.Sessions = []aisessions.Session{}
+	}
+	_ = s.db.QueryRow(`SELECT hostname FROM machines WHERE id = ?`, machineID).Scan(&view.Hostname)
+	return view
 }
 
 // isRegisteredConnection reports whether agent is the live registry entry
@@ -268,9 +342,12 @@ type aiSessionsMachineView struct {
 }
 
 type aiSessionsResponse struct {
-	Enabled           bool                    `json:"enabled"`
-	StaleAfterSeconds int                     `json:"stale_after_seconds"`
-	Machines          []aiSessionsMachineView `json:"machines"`
+	Enabled           bool `json:"enabled"`
+	StaleAfterSeconds int  `json:"stale_after_seconds"`
+	// Now is the hub clock at response time, so a client can age
+	// received_at against the same clock instead of its own.
+	Now      string                  `json:"now"`
+	Machines []aiSessionsMachineView `json:"machines"`
 }
 
 // handleListAISessions returns the live snapshot for every reporting
@@ -279,6 +356,7 @@ func (s *Server) handleListAISessions(c echo.Context) error {
 	resp := aiSessionsResponse{
 		Enabled:           s.aiSessionsEnabled(),
 		StaleAfterSeconds: int(aiSessionsStaleAfter / time.Second),
+		Now:               s.aiSessions.now().UTC().Format(time.RFC3339),
 		Machines:          []aiSessionsMachineView{},
 	}
 	if !resp.Enabled {
@@ -287,18 +365,7 @@ func (s *Server) handleListAISessions(c echo.Context) error {
 	}
 	live := s.aiSessions.live()
 	for id, snap := range live {
-		view := aiSessionsMachineView{
-			MachineID:  id,
-			ReceivedAt: snap.ReceivedAt.UTC().Format(time.RFC3339),
-			Sessions:   snap.Sessions,
-		}
-		if view.Sessions == nil {
-			view.Sessions = []aisessions.Session{}
-		}
-		// Hostname is display sugar; a missing row (machine deleted while
-		// its socket lingers) is not an error.
-		_ = s.db.QueryRow(`SELECT hostname FROM machines WHERE id = ?`, id).Scan(&view.Hostname)
-		resp.Machines = append(resp.Machines, view)
+		resp.Machines = append(resp.Machines, s.aiSessionsMachineView(id, snap.Sessions, snap.ReceivedAt))
 	}
 	sort.Slice(resp.Machines, func(i, j int) bool {
 		a, b := resp.Machines[i], resp.Machines[j]

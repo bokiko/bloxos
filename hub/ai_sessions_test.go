@@ -893,3 +893,184 @@ func TestAISessionsConcurrentTogglesKeepDBAndCacheConsistent(t *testing.T) {
 		t.Fatalf("persisted=%v cached=%v after concurrent toggles", persisted, cached)
 	}
 }
+
+// subscribeSSE registers a test channel with the global SSE client set and
+// returns it plus a cleanup that removes it.
+func subscribeSSE(t *testing.T) chan []byte {
+	t.Helper()
+	ch := make(chan []byte, 64)
+	sseClientsMu.Lock()
+	sseClients[ch] = struct{}{}
+	sseClientsMu.Unlock()
+	t.Cleanup(func() {
+		sseClientsMu.Lock()
+		delete(sseClients, ch)
+		sseClientsMu.Unlock()
+	})
+	return ch
+}
+
+// nextSSEEvent waits for the next frame of the named event and returns its
+// decoded data. Frames for other events are skipped.
+func nextSSEEvent(t *testing.T, ch chan []byte, event string) (string, map[string]any) {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case frame := <-ch:
+			text := string(frame)
+			if !strings.HasPrefix(text, "event: "+event+"\n") {
+				continue
+			}
+			payload := strings.TrimSuffix(strings.TrimPrefix(text, "event: "+event+"\ndata: "), "\n\n")
+			var decoded map[string]any
+			if err := json.Unmarshal([]byte(payload), &decoded); err != nil {
+				t.Fatalf("decode %s payload %q: %v", event, payload, err)
+			}
+			return payload, decoded
+		case <-deadline:
+			t.Fatalf("no %s SSE event within 5s", event)
+		}
+	}
+}
+
+// TestAISessionsSSEEventShapeAndPrivacy: an accepted report is broadcast as
+// one ai_sessions event carrying exactly the GET view shape, sanitized.
+func TestAISessionsSSEEventShapeAndPrivacy(t *testing.T) {
+	_, s := setupTestServer(t)
+	s.seedTestMachine(t, "m-sse")
+	agent := &ConnectedAgent{}
+	s.agentsMu.Lock()
+	s.agents["m-sse"] = agent
+	s.agentsMu.Unlock()
+	t.Cleanup(func() {
+		s.agentsMu.Lock()
+		delete(s.agents, "m-sse")
+		s.agentsMu.Unlock()
+	})
+	ch := subscribeSSE(t)
+
+	const secret = "sk-ant/PLANTED+SECRET"
+	frame := aiSessionsFrame("m-sse",
+		validSession("5e5e0001", "claude"),
+		map[string]any{"id": "5e5e0002", "tool": "codex", "prompt": secret, "cwd": "/home/alice/x",
+			"model": map[string]any{"value": secret, "source": "argv_flag", "confidence": "exact"}},
+		map[string]any{"id": "5e5e0003", "tool": "cursor"},
+	)
+	frame["env"] = map[string]string{"KEY": secret}
+	raw, _ := json.Marshal(frame)
+	s.ingestAISessions("m-sse", agent, raw)
+
+	payload, decoded := nextSSEEvent(t, ch, "ai_sessions")
+	for _, forbidden := range []string{secret, "PLANTED", "/home/", "alice", `"prompt"`, `"cwd":`, `"env"`, "cursor"} {
+		if strings.Contains(payload, forbidden) {
+			t.Errorf("SSE payload leaks %q: %s", forbidden, payload)
+		}
+	}
+	wantKeys := map[string]bool{"machine_id": true, "hostname": true, "received_at": true, "sessions": true}
+	for k := range decoded {
+		if !wantKeys[k] {
+			t.Errorf("unexpected top-level key %q in ai_sessions event", k)
+		}
+	}
+	if decoded["machine_id"] != "m-sse" || decoded["hostname"] != "machine-m-sse" {
+		t.Fatalf("machine identity wrong: %s", payload)
+	}
+	sessions := decoded["sessions"].([]any)
+	if len(sessions) != 2 {
+		t.Fatalf("expected 2 whitelisted sessions, got %d: %s", len(sessions), payload)
+	}
+	for _, raw := range sessions {
+		sess := raw.(map[string]any)
+		for k := range sess {
+			switch k {
+			case "id", "tool", "started_at", "project", "model", "activity":
+			default:
+				t.Errorf("unexpected session key %q", k)
+			}
+		}
+	}
+	second := sessions[1].(map[string]any)
+	if second["model"].(map[string]any)["value"] != "" {
+		t.Errorf("secret-shaped model value must be dropped: %v", second["model"])
+	}
+	if _, err := time.Parse(time.RFC3339, decoded["received_at"].(string)); err != nil {
+		t.Errorf("received_at not RFC3339: %v", decoded["received_at"])
+	}
+}
+
+// TestAISessionsSSERemovalAndConfigBroadcasts: unregistering the reporting
+// socket announces removal once; deleting a machine does too; toggling the
+// switch announces the new state and disable clears everything.
+func TestAISessionsSSERemovalAndConfigBroadcasts(t *testing.T) {
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
+	admin := loginAndGetToken(t, e)
+	ch := subscribeSSE(t)
+
+	agent := &ConnectedAgent{}
+	s.agentsMu.Lock()
+	s.agents["m-rm"] = agent
+	s.agentsMu.Unlock()
+	raw, _ := json.Marshal(aiSessionsFrame("m-rm", validSession("0a0a0a0a", "kimi")))
+	s.ingestAISessions("m-rm", agent, raw)
+	nextSSEEvent(t, ch, "ai_sessions")
+
+	// A displaced (non-registered) socket unregistering must not announce.
+	s.unregisterAgentConnection("m-rm", &ConnectedAgent{})
+	// The registered socket going away does.
+	s.unregisterAgentConnection("m-rm", agent)
+	_, removed := nextSSEEvent(t, ch, "ai_sessions_removed")
+	if removed["machine_id"] != "m-rm" {
+		t.Fatalf("removal event for wrong machine: %v", removed)
+	}
+	// Nothing left to remove: no second announcement.
+	s.removeAISessions("m-rm")
+	select {
+	case frame := <-ch:
+		if strings.HasPrefix(string(frame), "event: ai_sessions_removed") {
+			t.Fatalf("duplicate removal announced: %s", frame)
+		}
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// Machine delete path.
+	s.seedTestMachine(t, "m-del2")
+	s.aiSessions.put("m-del2", []aisessions.Session{{ID: "01", Tool: "claude"}})
+	req := httptest.NewRequest(http.MethodDelete, "/api/machines/m-del2", nil)
+	req.Header.Set("Authorization", "Bearer "+admin)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete: %d %s", rec.Code, rec.Body.String())
+	}
+	if _, removed := nextSSEEvent(t, ch, "ai_sessions_removed"); removed["machine_id"] != "m-del2" {
+		t.Fatalf("delete removal event wrong: %v", removed)
+	}
+
+	// Admin switch.
+	if code, body := aiSessionsPatch(t, e, admin, `{"enabled":false}`); code != http.StatusOK {
+		t.Fatalf("disable: %d %s", code, body)
+	}
+	if _, cfg := nextSSEEvent(t, ch, "ai_sessions_config"); cfg["enabled"] != false {
+		t.Fatalf("config event should say disabled: %v", cfg)
+	}
+	if code, body := aiSessionsPatch(t, e, admin, `{"enabled":true}`); code != http.StatusOK {
+		t.Fatalf("enable: %d %s", code, body)
+	}
+	if _, cfg := nextSSEEvent(t, ch, "ai_sessions_config"); cfg["enabled"] != true {
+		t.Fatalf("config event should say enabled: %v", cfg)
+	}
+}
+
+func TestAISessionsReadIncludesHubClock(t *testing.T) {
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
+	admin := loginAndGetToken(t, e)
+	fixed := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	s.aiSessions.now = func() time.Time { return fixed }
+	_, _, body := aiSessionsGet(t, e, admin)
+	if !strings.Contains(body, `"now":"2026-09-05T12:00:00Z"`) {
+		t.Fatalf("response must carry the hub clock: %s", body)
+	}
+}

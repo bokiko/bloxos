@@ -25,7 +25,7 @@ import {
   ArrowRight,
   GitBranch,
   Boxes,
-  Settings,
+  Settings, Bot
 } from "lucide-react";
 
 interface CommandPaletteProps {
@@ -122,6 +122,13 @@ export function CommandPalette({
               >
                 <GitBranch />
                 <span>Agent versions</span>
+              </Command.Item>
+              <Command.Item
+                value="ai sessions claude codex kimi coding"
+                onSelect={() => runCommand(() => router.push("/sessions"))}
+              >
+                <Bot />
+                <span>AI Sessions</span>
               </Command.Item>
               {onOpenAlerts && (
                 <Command.Item

@@ -738,7 +738,7 @@ func (s *Server) handleDeleteMachine(c echo.Context) error {
 	machineLatencyMu.Lock()
 	delete(machineLatency, id)
 	machineLatencyMu.Unlock()
-	s.aiSessions.remove(id)
+	s.removeAISessions(id)
 
 	log.Printf("machine deleted: %s (%s)", hostname, id)
 	return c.JSON(http.StatusOK, map[string]string{"status": "deleted", "hostname": hostname})

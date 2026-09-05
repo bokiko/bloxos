@@ -18,9 +18,19 @@ import {
 import { readCache, clearCache, makeDebouncedWriter } from "@/lib/metrics-cache";
 import { parseServerTimestamp } from "@/lib/timestamps";
 
+/** Handler for a raw named SSE event's `data` string. */
+export type SSEEventHandler = (data: string) => void;
+
 interface SSEContextType {
   machines: MachineMetrics[];
   getMachine: (id: string) => MachineMetrics | undefined;
+  /**
+   * Subscribe to a named SSE event on the single shared EventSource. The
+   * subscription survives reconnects (listeners are re-attached to every
+   * new EventSource). Returns an unsubscribe function. Feature contexts
+   * (e.g. AI Sessions) use this instead of opening a second stream.
+   */
+  subscribe: (event: string, handler: SSEEventHandler) => () => void;
   connected: boolean;
   hasReceivedData: boolean;
   alertCount: number;
@@ -73,6 +83,53 @@ export function SSEProvider({ children }: { children: ReactNode }) {
   const connectRef = useRef<() => void>(() => {});
   // Generation counter to serialize overlapping async connect() calls.
   const connectSeqRef = useRef(0);
+  // Named-event subscriptions from feature contexts. Keyed by event name;
+  // each EventSource gets one DOM listener per name that fans out to the
+  // current handler set, so handlers can come and go without touching
+  // the connection.
+  const subscriptionsRef = useRef<Map<string, Set<SSEEventHandler>>>(new Map());
+  const attachedRef = useRef<WeakMap<EventSource, Set<string>>>(new WeakMap());
+
+  const attachSubscription = useCallback((es: EventSource, event: string) => {
+    let attached = attachedRef.current.get(es);
+    if (!attached) {
+      attached = new Set();
+      attachedRef.current.set(es, attached);
+    }
+    if (attached.has(event)) return;
+    attached.add(event);
+    es.addEventListener(event, (e) => {
+      if (!mountedRef.current) return;
+      const handlers = subscriptionsRef.current.get(event);
+      if (!handlers) return;
+      for (const h of handlers) {
+        try {
+          h((e as MessageEvent).data);
+        } catch {
+          // a misbehaving subscriber must not break the stream
+        }
+      }
+    });
+  }, []);
+
+  const subscribe = useCallback(
+    (event: string, handler: SSEEventHandler) => {
+      let handlers = subscriptionsRef.current.get(event);
+      if (!handlers) {
+        handlers = new Set();
+        subscriptionsRef.current.set(event, handlers);
+      }
+      handlers.add(handler);
+      if (esRef.current) attachSubscription(esRef.current, event);
+      return () => {
+        const set = subscriptionsRef.current.get(event);
+        if (!set) return;
+        set.delete(handler);
+        if (set.size === 0) subscriptionsRef.current.delete(event);
+      };
+    },
+    [attachSubscription],
+  );
 
   // Phase 7: localStorage-backed cache for instant rehydration on reload.
   const userIDRef = useRef<string | null>(null);
@@ -151,6 +208,9 @@ export function SSEProvider({ children }: { children: ReactNode }) {
       return;
     }
     esRef.current = es;
+    for (const event of subscriptionsRef.current.keys()) {
+      attachSubscription(es, event);
+    }
 
     es.onopen = () => {
       if (!mountedRef.current) return;
@@ -306,7 +366,7 @@ export function SSEProvider({ children }: { children: ReactNode }) {
       backoffRef.current = Math.min(backoffRef.current * 2, 30000);
       reconnectTimer.current = setTimeout(() => connectRef.current(), delay);
     };
-  }, [disconnect]);
+  }, [disconnect, attachSubscription]);
 
   useEffect(() => {
     connectRef.current = () => {
@@ -424,6 +484,7 @@ export function SSEProvider({ children }: { children: ReactNode }) {
       value={{
         machines,
         getMachine,
+        subscribe,
         connected,
         hasReceivedData,
         alertCount,

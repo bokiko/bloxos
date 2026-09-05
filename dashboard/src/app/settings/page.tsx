@@ -7,6 +7,7 @@
 // 10), and Branding (Phase 10, admin only).
 
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { ChevronLeft } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import {
@@ -19,11 +20,23 @@ import { ThemeSettings } from "@/components/settings/ThemeSettings";
 import { BrandingSettings } from "@/components/settings/BrandingSettings";
 import { ProfileSettings } from "@/components/settings/ProfileSettings";
 import { PreferencesSettings } from "@/components/settings/PreferencesSettings";
+import { AISessionsSettings } from "@/components/settings/AISessionsSettings";
+
+const SETTINGS_TABS = ["profile", "preferences", "theme", "branding", "ai-sessions"] as const;
+type SettingsTab = (typeof SETTINGS_TABS)[number];
 
 export default function SettingsPage() {
   const { hasScope } = useAuth();
+  const searchParams = useSearchParams();
   const canEditBranding = hasScope("branding.admin");
-  const defaultTab = "profile";
+  const canManageAISessions = hasScope("fleet.admin");
+  const requested = searchParams.get("tab") as SettingsTab | null;
+  const defaultTab: SettingsTab =
+    requested && SETTINGS_TABS.includes(requested) &&
+    (requested !== "branding" || canEditBranding) &&
+    (requested !== "ai-sessions" || canManageAISessions)
+      ? requested
+      : "profile";
 
   return (
     <div className="min-h-screen bg-blox-bg">
@@ -43,7 +56,7 @@ export default function SettingsPage() {
         <section className="mb-8">
           <h1 className="text-2xl font-bold tracking-tight text-blox-text">Settings</h1>
           <p className="text-sm text-blox-muted mt-1">
-            Personal preferences and (for admins) instance branding.
+            Personal preferences and (for admins) instance branding and monitoring.
           </p>
         </section>
 
@@ -53,6 +66,7 @@ export default function SettingsPage() {
             <TabsTrigger value="preferences">Preferences</TabsTrigger>
             <TabsTrigger value="theme">Theme</TabsTrigger>
             {canEditBranding && <TabsTrigger value="branding">Branding</TabsTrigger>}
+            {canManageAISessions && <TabsTrigger value="ai-sessions">AI Sessions</TabsTrigger>}
           </TabsList>
 
           <TabsContent value="profile" className="mt-6">
@@ -70,6 +84,12 @@ export default function SettingsPage() {
           {canEditBranding && (
             <TabsContent value="branding" className="mt-6">
               <BrandingSettings />
+            </TabsContent>
+          )}
+
+          {canManageAISessions && (
+            <TabsContent value="ai-sessions" className="mt-6">
+              <AISessionsSettings />
             </TabsContent>
           )}
         </Tabs>

@@ -8,6 +8,7 @@ import { BrandingProvider } from "@/contexts/BrandingContext";
 import { PreferencesProvider } from "@/contexts/PreferencesContext";
 import { VersionsProvider } from "@/contexts/VersionsContext";
 import { InventoryProvider } from "@/contexts/InventoryContext";
+import { AISessionsProvider } from "@/contexts/AISessionsContext";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Geist, Geist_Mono } from "next/font/google";
@@ -106,9 +107,13 @@ export default function RootLayout({
                   <SSEProvider>
                     <VersionsProvider>
                       <InventoryProvider>
-                        <TooltipProvider>
-                          <ToastProvider>{children}</ToastProvider>
-                        </TooltipProvider>
+                        {/* AI Sessions rides the shared SSE stream (subscribe)
+                            and bootstraps from GET on every reconnect. */}
+                        <AISessionsProvider>
+                          <TooltipProvider>
+                            <ToastProvider>{children}</ToastProvider>
+                          </TooltipProvider>
+                        </AISessionsProvider>
                       </InventoryProvider>
                     </VersionsProvider>
                   </SSEProvider>

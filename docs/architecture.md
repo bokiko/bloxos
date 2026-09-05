@@ -163,6 +163,17 @@ is deleted, and expire lazily after 90s without a report. `GET
 in `hub_settings` and defaults to enabled when no row exists. Disabling clears
 all snapshots and tells agents to stop.
 
+Dashboards get live updates on the existing `/api/events` stream: `ai_sessions`
+carries one machine's sanitized snapshot (the same shape as a GET entry),
+`ai_sessions_removed` names a machine whose socket went away or was deleted,
+and `ai_sessions_config` announces the switch. The dashboard's
+`AISessionsContext` bootstraps from GET on every SSE (re)connect and applies
+those deltas through the SSE provider's `subscribe` hook; there is no second
+stream and no polling. The GET response includes the hub clock (`now`) so the
+client ages `received_at` without depending on clock agreement. Surfaces: a
+cell in the fleet pulse strip, `/sessions`, an "AI Sessions" tab on each
+agent machine, and an admin-only switch under Settings.
+
 ## Update Flow
 
 The hub hashes the configured agent binaries and announces the expected SHA to

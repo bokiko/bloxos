@@ -106,7 +106,7 @@ func (s *Server) unregisterAgentConnection(machineID string, agent *ConnectedAge
 		s.markOffline(machineID)
 		// Live sessions only: a machine that is no longer connected has no
 		// sessions to show.
-		s.aiSessions.remove(machineID)
+		s.removeAISessions(machineID)
 	}
 }
 

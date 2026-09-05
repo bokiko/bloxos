@@ -2,15 +2,18 @@
 
 import { useMemo } from "react";
 import { motion } from "framer-motion";
+import { useRouter } from "next/navigation";
 import { useSSE } from "@/contexts/SSEContext";
+import { useAISessions } from "@/contexts/AISessionsContext";
 import type { MachineMetrics } from "@/lib/demo-data";
-import { Cpu, MemoryStick, Thermometer, AlertTriangle, Activity, WifiOff } from "lucide-react";
+import { summarize } from "@/lib/ai-sessions";
+import { Cpu, MemoryStick, Thermometer, AlertTriangle, Activity, WifiOff, Bot } from "lucide-react";
 import { classifyMachine } from "@/components/StatusBadge";
 
 /* ============================================================================
  * FleetPulse — top-of-page health strip.
  *
- * One hero cell (FLEET) + four supporting cells (CPU / RAM / GPU / ALERTS).
+ * One hero cell (FLEET) + five supporting cells (CPU / RAM / GPU / AI / ALERTS).
  * Every cell uses the same locked anatomy via <StatCell>:
  *
  *     ┌───────────────────────────────────────┐
@@ -99,6 +102,9 @@ interface FleetPulseProps {
 export function FleetPulse({ onAlertsClick }: FleetPulseProps) {
   const { machines, alertCount, alerts, connected, hasReceivedData } = useSSE();
   const stats = useMemo(() => computeStats(machines), [machines]);
+  const router = useRouter();
+  const ai = useAISessions();
+  const aiTotals = useMemo(() => summarize(ai.machines.values()), [ai.machines]);
 
   // Fleet severity = aggregate of the worst state present.
   const fleetSeverity: Severity =
@@ -126,7 +132,7 @@ export function FleetPulse({ onAlertsClick }: FleetPulseProps) {
       <div className="border-b border-border-subtle bg-surface-base">
         <div className="max-w-[1600px] mx-auto px-4 sm:px-6 py-3">
           <StatRow>
-            {Array.from({ length: 5 }).map((_, i) => (
+            {Array.from({ length: 6 }).map((_, i) => (
               <StatCell
                 key={i}
                 label="…"
@@ -242,7 +248,41 @@ export function FleetPulse({ onAlertsClick }: FleetPulseProps) {
             />
           )}
 
-          {/* 5 · ALERTS ─────────────────────────────────────────────── */}
+          {/* 5 · AI SESSIONS ─────────────────────────────────────────── */}
+          <StatCell
+            label="AI Sessions"
+            icon={<Bot className="h-3 w-3" />}
+            severity="neutral"
+            onClick={() => router.push("/sessions")}
+            className="hidden md:flex"
+            primary={
+              ai.enabled === false ? (
+                <span className="metric-value text-2xl text-text-disabled">off</span>
+              ) : !ai.hasLoaded ? (
+                <span className="metric-value text-2xl text-text-disabled">—</span>
+              ) : (
+                <span className="inline-flex items-baseline gap-1.5">
+                  <span className="metric-value text-2xl text-text-primary">{aiTotals.sessions}</span>
+                  <span className="metric-unit text-xs">
+                    on {aiTotals.machines} machine{aiTotals.machines === 1 ? "" : "s"}
+                  </span>
+                </span>
+              )
+            }
+            context={
+              <span className="metric-figure text-text-tertiary text-[11px]">
+                {ai.enabled === false
+                  ? "disabled by admin"
+                  : !ai.hasLoaded
+                    ? "loading"
+                    : aiTotals.sessions === 0
+                      ? "no coding sessions"
+                      : "running now · live"}
+              </span>
+            }
+          />
+
+          {/* 6 · ALERTS ─────────────────────────────────────────────── */}
           <StatCell
             label="Alerts"
             icon={<AlertTriangle className="h-3 w-3" />}
@@ -284,14 +324,15 @@ export function FleetPulse({ onAlertsClick }: FleetPulseProps) {
 }
 
 /* ============================================================================
- * Layout — asymmetric grid. Hero claims 5fr, four supporting cells share
- * 4fr each (totaling 16fr → 21fr). On mobile the row collapses to 2-col.
+ * Layout — asymmetric grid. Hero claims 5fr, supporting cells 3fr each. On
+ * mobile the row collapses to 2-col; the AI cell hides below md so the
+ * strip never exceeds one row of five on tablets.
  * ============================================================================ */
 
 function StatRow({ children }: { children: React.ReactNode }) {
   return (
     <div
-      className="grid grid-cols-2 sm:grid-cols-[5fr_3fr_3fr_3fr_3fr] gap-px overflow-hidden rounded-lg bg-border-subtle ring-1 ring-border-subtle"
+      className="grid grid-cols-2 sm:grid-cols-[5fr_3fr_3fr_3fr_3fr] md:grid-cols-[5fr_3fr_3fr_3fr_3fr_3fr] gap-px overflow-hidden rounded-lg bg-border-subtle ring-1 ring-border-subtle"
     >
       {children}
     </div>
