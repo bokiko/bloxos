@@ -1024,14 +1024,12 @@ func TestAISessionsSSERemovalAndConfigBroadcasts(t *testing.T) {
 	if removed["machine_id"] != "m-rm" {
 		t.Fatalf("removal event for wrong machine: %v", removed)
 	}
-	// Nothing left to remove: no second announcement.
+	// A second call to removeAISessions still broadcasts removal to ensure
+	// dashboards get the removal even if the store was lazily evicted earlier.
 	s.removeAISessions("m-rm")
-	select {
-	case frame := <-ch:
-		if strings.HasPrefix(string(frame), "event: ai_sessions_removed") {
-			t.Fatalf("duplicate removal announced: %s", frame)
-		}
-	case <-time.After(100 * time.Millisecond):
+	_, removed = nextSSEEvent(t, ch, "ai_sessions_removed")
+	if removed["machine_id"] != "m-rm" {
+		t.Fatalf("second removal event for wrong machine: %v", removed)
 	}
 
 	// Machine delete path.
