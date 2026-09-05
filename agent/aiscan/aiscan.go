@@ -125,6 +125,11 @@ var toolTokens = map[string]string{
 	"kimi":        aisessions.ToolKimi,
 	"kimi-cli":    aisessions.ToolKimi, // pip/uv distribution name
 	"kimi_cli":    aisessions.ToolKimi, // python -m kimi_cli
+	// Kimi Code CLI (kimi-cli >= 1.50, e.g. `uvx --from kimi-cli kimi`) runs
+	// as uv's python3.12 but rewrites its comm and its single argv element
+	// to exactly "Kimi Code". Observed live; matched as one exact token, so
+	// "Kimi Code Helper" or "Kimi Coder" still do not match.
+	"kimi code": aisessions.ToolKimi,
 }
 
 // entryTokens are script basenames that say nothing about the tool; the
