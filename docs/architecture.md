@@ -134,7 +134,11 @@ Agent side, `agent/aiscan` is the pure classifier and reducer (tested on every
 platform); `agent/ai_sessions.go` reads the process table through gopsutil and
 sends an `ai_sessions` frame with the 30s metrics cadence. Classification is an
 exact match on the executable name, `argv[0]`, or the script/module an
-interpreter is running; substrings never match. Wrapper scripts and self-
+interpreter is running; substrings never match. The whitelist holds only
+tokens observed live — for example Kimi Code CLI 1.50 (`uvx --from kimi-cli
+kimi`) runs as uv's `python3.12` but renames its comm and sole argv element to
+`Kimi Code`, which is matched as one exact token; the `uv`/`uvx` launcher and
+the interpreter path are never matched on their own. Wrapper scripts and self-
 spawned children collapse into one session. Argv and the full cwd are consumed
 in the reducer and discarded.
 

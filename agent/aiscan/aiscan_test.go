@@ -22,6 +22,12 @@ func TestClassifyAIToolPositives(t *testing.T) {
 		{"codex", []string{"codex", "-m", "gpt-5-codex"}, aisessions.ToolCodex},
 		{"codex.exe", nil, aisessions.ToolCodex},
 		{"kimi", []string{"/home/u/.local/bin/kimi"}, aisessions.ToolKimi},
+		// Kimi Code CLI 1.50 (uvx --from kimi-cli kimi): the python3.12 child
+		// renames comm and its only argv element to exactly "Kimi Code".
+		{"Kimi Code", []string{"Kimi Code"}, aisessions.ToolKimi},
+		{"Kimi Code", nil, aisessions.ToolKimi},
+		{"KIMI CODE", []string{"kimi code"}, aisessions.ToolKimi},
+		{"Kimi Code", []string{"Kimi Code", "--model", "kimi-k2"}, aisessions.ToolKimi},
 		// Name is the interpreter; the script decides.
 		{"node", []string{"node", "/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js"}, aisessions.ToolClaude},
 		{"node", []string{"/usr/bin/node", "--max-old-space-size=4096", "/usr/local/bin/claude"}, aisessions.ToolClaude},
@@ -60,6 +66,21 @@ func TestClassifyAIToolNegatives(t *testing.T) {
 		{"xcodex", nil},
 		{"kimi-desktop", nil},
 		{"kimidb", nil},
+		// "Kimi Code" is one exact token; longer or shorter names are not it.
+		{"Kimi Code Helper", []string{"Kimi Code Helper"}},
+		{"Kimi Code Helper", nil},
+		{"Kimi Coder", []string{"Kimi Coder"}},
+		{"Kimi Codex", nil},
+		{"Code", []string{"Code"}},
+		{"Kimi  Code", []string{"Kimi  Code"}},
+		// The uv/uvx launcher and tmux that spawn Kimi Code are not sessions;
+		// only the renamed child is. Neither uv nor python is matched broadly.
+		{"uv", []string{"/home/u/.local/bin/uv", "tool", "uvx", "--from", "kimi-cli", "kimi"}},
+		{"uvx", []string{"uvx", "--from", "kimi-cli", "kimi"}},
+		{"tmux: server", []string{"tmux", "new-session", "-d", "-s", "bloxos-eval-kimi", "-c", "/home/u/p", "uvx --from kimi-cli kimi"}},
+		{"python3.12", []string{"/home/u/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/bin/python3.12"}},
+		{"python3.12", []string{"python3.12", "kimi_code_helper.py"}},
+		{"bash", []string{"bash", "-c", "Kimi Code"}},
 		// A tool name appearing as an ARGUMENT to something else is not a session.
 		{"bash", []string{"bash", "-c", "claude -p 'summarize this'"}},
 		{"grep", []string{"grep", "-r", "claude", "."}},
@@ -109,6 +130,8 @@ func TestModelFromArgv(t *testing.T) {
 		// -m is codex's short flag only; for other tools it is not a model.
 		{"claude", []string{"claude", "-m", "opus"}, aisessions.Unknown()},
 		{"kimi", []string{"kimi", "-m", "kimi-k2"}, aisessions.Unknown()},
+		{"Kimi Code", []string{"Kimi Code"}, aisessions.Unknown()},
+		{"Kimi Code", []string{"Kimi Code", "--model", "kimi-k2"}, exact("kimi-k2")},
 		// Regression: an interpreter's -m module flag is never a model.
 		{"python3", []string{"python3", "-m", "kimi_cli"}, aisessions.Unknown()},
 		{"python3", []string{"python3", "-m", "kimi_cli", "--model", "kimi-k2"}, exact("kimi-k2")},
@@ -149,6 +172,8 @@ func TestClassifyEntryIndex(t *testing.T) {
 		{"node", []string{"node", "--flag", "/x/@anthropic-ai/claude-code/cli.js", "--model", "opus"}, 2},
 		{"python3", []string{"python3", "-m", "kimi_cli", "--model", "k"}, 2},
 		{"python3", []string{"python3", "--", "/home/u/.local/bin/kimi"}, 2},
+		{"Kimi Code", []string{"Kimi Code"}, 0},
+		{"Kimi Code", nil, -1},
 	}
 	for _, c := range cases {
 		_, entry, ok := classify(c.name, c.argv)
@@ -277,6 +302,59 @@ func TestBuildAISessionsCollapsesWrapperTrees(t *testing.T) {
 	}{{11, 2}, {13, 4}} {
 		if _, present := ids[aisessions.SessionID(pid.pid, pid.start)]; present {
 			t.Errorf("pid %d should have collapsed into its ancestor", pid.pid)
+		}
+	}
+}
+
+// TestBuildAISessionsKimiCodeRenamedProcess replays the process tree observed
+// for Kimi Code CLI 1.50 (tmux -> uv -> python3.12 renamed to "Kimi Code"):
+// exactly one Kimi session, attributed to the renamed child, and nothing from
+// the launcher chain, interpreter path, tmux session name, home directory or
+// user reaches the wire.
+func TestBuildAISessionsKimiCodeRenamedProcess(t *testing.T) {
+	const (
+		username = "alice"
+		home     = "/home/" + username
+		project  = home + "/ai-sessions-eval/demo-project"
+	)
+	procs := []Process{
+		{PID: 311813, PPID: 1, Name: "tmux: server",
+			Argv: []string{"tmux", "new-session", "-d", "-s", "bloxos-eval-kimi", "-c", project, "uvx --from kimi-cli kimi"},
+			Cwd:  home, Username: username, StartMS: 1_760_000_000_000},
+		{PID: 311814, PPID: 311813, Name: "uv",
+			Argv: []string{home + "/.local/bin/uv", "tool", "uvx", "--from", "kimi-cli", "kimi"},
+			Cwd:  project, Username: username, StartMS: 1_760_000_000_001},
+		{PID: 311954, PPID: 311814, Name: "Kimi Code",
+			Argv: []string{"Kimi Code"},
+			Cwd:  project, Username: username, StartMS: 1_760_000_000_002},
+	}
+	sc := NewScanner()
+	sessions := sc.Build(procs, time.Now())
+	if len(sessions) != 1 {
+		t.Fatalf("got %d sessions %+v, want exactly 1", len(sessions), sessions)
+	}
+	s := sessions[0]
+	if s.Tool != aisessions.ToolKimi || s.ID != aisessions.SessionID(311954, 1_760_000_000_002) {
+		t.Errorf("session = %+v, want kimi attributed to the renamed child", s)
+	}
+	if s.Project.Value != "demo-project" || s.Project.Source != aisessions.SourceCwd {
+		t.Errorf("project = %+v, want basename demo-project from cwd", s.Project)
+	}
+	if s.Model != aisessions.Unknown() {
+		t.Errorf("model = %+v, want unknown (no --model flag)", s.Model)
+	}
+	msg := aisessions.Sanitize(aisessions.Message{Type: aisessions.MessageType, MachineID: "m", Schema: aisessions.SchemaVersion, Sessions: sessions})
+	wire, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(wire)
+	for _, forbidden := range []string{
+		"Kimi Code", "uvx", "uv ", "kimi-cli", "python", "cpython", "tmux", "bloxos-eval-kimi",
+		"/home/", username, "ai-sessions-eval", "311954", "311814",
+	} {
+		if strings.Contains(out, forbidden) {
+			t.Errorf("wire payload leaks %q:\n%s", forbidden, out)
 		}
 	}
 }
