@@ -27,6 +27,16 @@ func TestProjectFromDir(t *testing.T) {
 		// Basename equal to the username anywhere is withheld.
 		{"/srv/alice", "alice", "", false},
 		{"/srv/ALICE", "alice", "", false},
+		// Domain-qualified usernames (Windows DOMAIN\user, COMPUTER\user)
+		{`C:\work\alice`, `DOMAIN\alice`, "", false},
+		{`C:\work\alice`, `COMPUTER\alice`, "", false},
+		{`C:\work\Alice`, `domain\ALICE`, "", false},
+		{"/home/bob/projects/bob", "COMPANY/bob", "", false},
+		{`C:\work\alice`, `DOMAIN\bob`, "alice", true},
+		// user@DOMAIN format
+		{"/srv/alice", "alice@COMPANY", "", false},
+		{"/srv/Alice", "alice@domain.com", "", false},
+		{"/srv/alice", "bob@company.com", "alice", true},
 		// Root / top-level / degenerate.
 		{"/", "", "", false},
 		{"/root", "root", "", false},

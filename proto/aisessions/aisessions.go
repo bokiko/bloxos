@@ -157,7 +157,7 @@ func ProjectFromDir(dir, username string) (Attr, bool) {
 		}
 	}
 	base := parts[len(parts)-1]
-	if username != "" && strings.EqualFold(base, username) {
+	if username != "" && strings.EqualFold(base, normalizeUsername(username)) {
 		return Unknown(), false
 	}
 	name, ok := cleanProjectName(base)
@@ -165,6 +165,20 @@ func ProjectFromDir(dir, username string) (Attr, bool) {
 		return Unknown(), false
 	}
 	return Attr{Value: name, Source: SourceCwd, Confidence: ConfidenceExact}, true
+}
+
+// normalizeUsername extracts the account name from domain-qualified usernames
+// (DOMAIN\alice, COMPUTER\alice, or user@DOMAIN) for privacy checks.
+func normalizeUsername(username string) string {
+	// Handle DOMAIN\user or COMPUTER\user (Windows)
+	if idx := strings.LastIndexAny(username, "\\/"); idx >= 0 {
+		username = username[idx+1:]
+	}
+	// Handle user@DOMAIN
+	if idx := strings.IndexByte(username, '@'); idx >= 0 {
+		username = username[:idx]
+	}
+	return username
 }
 
 // ModelFromFlag derives the model attribute from the value of an explicit
