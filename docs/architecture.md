@@ -111,6 +111,69 @@ It uses:
 With `NEXT_PUBLIC_HUB_URL` unset, the dashboard uses same-origin API calls,
 which is the intended Caddy-backed production mode.
 
+## AI Sessions
+
+AI Sessions is read-only, live-only visibility into which supported AI coding
+tools (Claude Code, Codex, Kimi) are running on each agent machine.
+
+The wire contract lives in `proto/aisessions` and is shared by both sides so
+the whitelist and sanitization rules cannot drift. A session carries an opaque
+id, the tool, the process start time, and three attributes — project, model,
+activity — each as `{value, source, confidence}`:
+
+- `project` is the working directory's **basename** only, withheld when the
+  directory is the filesystem root, a top-level directory, a home directory,
+  or named after the OS user.
+- `model` is set only from an explicit `--model` (or Codex `-m`) flag among
+  the tool's own arguments. A full id is `exact`; an alias such as `opus` is
+  `inferred`. It is never read from the environment.
+- `activity` is `active`/`idle` inferred from CPU time between two scans, or
+  `unknown` on the first scan. It is never reported as exact.
+
+Agent side, `agent/aiscan` is the pure classifier and reducer (tested on every
+platform); `agent/ai_sessions.go` reads the process table through gopsutil and
+sends an `ai_sessions` frame with the 30s metrics cadence. Classification is an
+exact match on the executable name, `argv[0]`, or the script/module an
+interpreter is running; substrings never match. Wrapper scripts and self-
+spawned children collapse into one session. Argv and the full cwd are consumed
+in the reducer and discarded.
+
+Scanning is gated. After registration the hub sends `ai_sessions_config`
+carrying the admin switch, and broadcasts changes to every connected agent. The
+hub keeps the switch and a per-process monotonic revision as one cached pair;
+every frame is built from a single atomic snapshot of it and carries `rev`.
+The registration send and a toggle broadcast run on independent goroutines, so
+once an agent has applied a decision on its current connection it accepts only
+a strictly greater revision, so neither a delayed stale frame nor a duplicate
+or forged equal-revision frame can flip the gate; a hub restart is safe because
+the gate resets on every connection. An agent scans only after hearing "enabled" on its current
+connection — so an agent talking to an older hub never scans — and
+`BLOXOS_AI_SESSIONS=0` in the agent's environment is a hard local opt-out no
+hub setting can override.
+Agents built before the feature route the config frame through their command
+handler, which ignores frames without a command id.
+
+Hub side, `hub/ai_sessions.go` keeps one in-memory snapshot per machine, keyed
+by the identity the socket authenticated as (the frame's own `machine_id` is
+ignored) and accepted only from the registered connection. Every frame is
+re-sanitized. Snapshots are removed when the socket unregisters or the machine
+is deleted, and expire lazily after 90s without a report. `GET
+/api/ai-sessions` (fleet.read) returns the live view; `PATCH
+/api/ai-sessions/settings` (fleet.admin) flips the switch, which is persisted
+in `hub_settings` and defaults to enabled when no row exists. Disabling clears
+all snapshots and tells agents to stop.
+
+Dashboards get live updates on the existing `/api/events` stream: `ai_sessions`
+carries one machine's sanitized snapshot (the same shape as a GET entry),
+`ai_sessions_removed` names a machine whose socket went away or was deleted,
+and `ai_sessions_config` announces the switch. The dashboard's
+`AISessionsContext` bootstraps from GET on every SSE (re)connect and applies
+those deltas through the SSE provider's `subscribe` hook; there is no second
+stream and no polling. The GET response includes the hub clock (`now`) so the
+client ages `received_at` without depending on clock agreement. Surfaces: a
+cell in the fleet pulse strip, `/sessions`, an "AI Sessions" tab on each
+agent machine, and an admin-only switch under Settings.
+
 ## Update Flow
 
 The hub hashes the configured agent binaries and announces the expected SHA to

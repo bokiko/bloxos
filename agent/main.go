@@ -602,6 +602,10 @@ func runAgent(machineID string) (authOutcome, error) {
 	// Mutex for concurrent writes to WebSocket.
 	var writeMu sync.Mutex
 
+	// AI Sessions scanning stays off until this hub says otherwise on this
+	// connection (an older hub never will).
+	aiGate.Reset()
+
 	// Liveness: require a hub frame (data or pong) within pongWait, and refresh
 	// the deadline whenever one arrives. A silently dead TCP connection now
 	// surfaces within ~pongWait instead of hanging on the OS keepalive (~2h).
@@ -693,6 +697,10 @@ func runAgent(machineID string) (authOutcome, error) {
 				// flow in its own goroutine internally.
 				handleAgentVersion(msg)
 
+			case aiSessionsConfigType:
+				// Admin switch for AI Sessions reporting (see ai_sessions.go).
+				handleAISessionsConfig(conn, &writeMu, machineID, msg)
+
 			default:
 				// Anything else is a command (restart_service, refresh_metrics, etc.)
 				go handleCommand(conn, &writeMu, msg)
@@ -761,6 +769,7 @@ func sendAll(conn *websocket.Conn, mu *sync.Mutex, machineID string) error {
 	}
 	sendServices(conn, mu, machineID)
 	sendContainers(conn, mu, machineID)
+	sendAISessions(conn, mu, machineID)
 	return nil
 }
 

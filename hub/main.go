@@ -307,6 +307,10 @@ func (s *Server) registerRoutes(e *echo.Echo) {
 
 	api.GET("/api/inventory", s.handleInventory)
 
+	// AI Sessions (read-only live metadata) + admin feature switch.
+	api.GET("/api/ai-sessions", s.handleListAISessions)
+	api.PATCH("/api/ai-sessions/settings", s.handleUpdateAISessionsSettings)
+
 	api.GET("/api/api-machines", s.handleListAPIMachines)
 	api.POST("/api/api-machines", s.handleCreateAPIMachine)
 	api.PATCH("/api/api-machines/:id", s.handleUpdateAPIMachine)
@@ -734,6 +738,7 @@ func (s *Server) handleDeleteMachine(c echo.Context) error {
 	machineLatencyMu.Lock()
 	delete(machineLatency, id)
 	machineLatencyMu.Unlock()
+	s.removeAISessions(id)
 
 	log.Printf("machine deleted: %s (%s)", hostname, id)
 	return c.JSON(http.StatusOK, map[string]string{"status": "deleted", "hostname": hostname})

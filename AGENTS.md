@@ -39,6 +39,16 @@ Fleet management dashboard for AI machines. Go hub + agent, Next.js dashboard.
   trusted provisioning path.
 - The signature may come from a detached `<binary>.sig` produced offline, in
   which case the hub holds no private key — do not assume the hub signs.
+- **AI Sessions is metadata-only monitoring.** Agents report which supported
+  AI coding tools (Claude Code, Codex, Kimi) are running, reduced to the
+  contract in `proto/aisessions`: opaque id, tool, start time, project
+  **basename**, an explicitly-flagged model, and an inferred activity state,
+  each with its source and confidence. Never add prompts, responses,
+  transcripts, tool commands/output, environment variables, full argv, full
+  paths, or the OS username to that contract. The hub keeps live snapshots
+  only (no history) and re-sanitizes every frame. The admin switch defaults
+  to on; disabling it stops agent-side scanning via the `ai_sessions_config`
+  frame, and `BLOXOS_AI_SESSIONS=0` on an agent is a hard local opt-out.
 - Credentials NEVER committed — use env vars or local config
 - Dark mode is the default UI theme
 - Caddy TLS uses RSA-2048 keys, not ECDSA. Do not change without testing on stock Windows PowerShell 5.1.

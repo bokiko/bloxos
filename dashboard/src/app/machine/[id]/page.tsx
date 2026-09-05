@@ -13,6 +13,8 @@ import { RebootModal } from "@/components/RebootModal";
 import { MetricCharts } from "@/components/MetricCharts";
 import { HardwareCard, type HardwareInfo } from "@/components/HardwareCard";
 import { MachineNotes } from "@/components/MachineNotes";
+import { AISessionsPanel } from "@/components/AISessionsPanel";
+import { useAISessions } from "@/contexts/AISessionsContext";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -27,13 +29,13 @@ import {
   Activity, Zap, Terminal as TerminalIcon, RotateCcw,
   Lock, Unlock, X, Maximize2, Minimize2, Wifi, BarChart3, Trash2,
   LayoutDashboard, Box, Container as ContainerIcon, StickyNote, KeyRound,
-  RefreshCw, Copy, Check,
+  RefreshCw, Copy, Check, Bot,
 } from "lucide-react";
 import { HUB_URL, getAuthHeaders } from "@/lib/session";
 import { useAuth } from "@/contexts/AuthContext";
 
-type DetailTab = "overview" | "services" | "containers" | "metrics" | "notes" | "terminal";
-const DETAIL_TABS: readonly DetailTab[] = ["overview", "services", "containers", "metrics", "notes", "terminal"] as const;
+type DetailTab = "overview" | "services" | "containers" | "metrics" | "ai-sessions" | "notes" | "terminal";
+const DETAIL_TABS: readonly DetailTab[] = ["overview", "services", "containers", "metrics", "ai-sessions", "notes", "terminal"] as const;
 function parseTab(raw: string | null): DetailTab {
   return DETAIL_TABS.includes(raw as DetailTab) ? (raw as DetailTab) : "overview";
 }
@@ -147,6 +149,8 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
   } | null>(null);
   const [reenrollCopied, setReenrollCopied] = useState<"command" | "sha" | null>(null);
   const { hasScope, authFetch } = useAuth();
+  const aiSessions = useAISessions();
+  const aiSessionCount = aiSessions.enabled === false ? 0 : (aiSessions.getMachine(id)?.sessions.length ?? 0);
   const canDelete = hasScope("fleet.admin");
   const canControl = hasScope("fleet.control");
   const router = useRouter();
@@ -783,6 +787,15 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
               <BarChart3 className="w-4 h-4" />
               Metrics
             </TabsTrigger>
+            {!isAPIMachine && (
+              <TabsTrigger value="ai-sessions" className="px-4 py-1.5 gap-1.5 text-sm">
+                <Bot className="w-4 h-4" />
+                AI Sessions
+                {aiSessionCount > 0 && (
+                  <span className="ml-1 text-[10px] font-mono tabular-nums text-blox-muted">{aiSessionCount}</span>
+                )}
+              </TabsTrigger>
+            )}
             <TabsTrigger value="notes" className="px-4 py-1.5 gap-1.5 text-sm">
               <StickyNote className="w-4 h-4" />
               Notes
@@ -976,6 +989,14 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
               <MetricCharts machineId={id} hasGpu={hasGpu} />
             </motion.div>
           </TabsContent>
+
+          {!isAPIMachine && (
+            <TabsContent value="ai-sessions" className="mt-6">
+              <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}>
+                <AISessionsPanel machineId={id} />
+              </motion.div>
+            </TabsContent>
+          )}
 
           <TabsContent value="notes" className="mt-6">
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}>

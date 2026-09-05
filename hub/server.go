@@ -20,6 +20,11 @@ type Server struct {
 	// Serializes agent authentication/registration with credential revocation.
 	agentAuthMu sync.RWMutex
 
+	// Latest AI Sessions snapshot per connected machine, and the cached
+	// feature switch with its revision (see ai_sessions.go).
+	aiSessions    *aiSessionStore
+	aiSessionsCfg aiSessionsConfig
+
 	// Tracks background work this server spawned, so a caller can wait for
 	// it to finish before tearing the server down. See goTracked/Shutdown.
 	//
@@ -36,8 +41,9 @@ type Server struct {
 // newServer returns a Server backed by db with an empty agent registry.
 func newServer(db *sql.DB) *Server {
 	return &Server{
-		db:     db,
-		agents: make(map[string]*ConnectedAgent),
+		db:         db,
+		agents:     make(map[string]*ConnectedAgent),
+		aiSessions: newAISessionStore(),
 	}
 }
 
