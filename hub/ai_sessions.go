@@ -271,13 +271,12 @@ func broadcastAISessionsConfigSSE(enabled bool) {
 	broadcastSSE(sseFrame("ai_sessions_config", map[string]bool{"enabled": enabled}))
 }
 
-// removeAISessions drops a machine's snapshot and tells dashboards, but only
-// announces when there was something to drop, so an unrelated disconnect
-// does not spray events.
+// removeAISessions drops a machine's snapshot and tells dashboards. Always
+// broadcasts the removal, even if the store had no entry, to ensure stale
+// sessions lazily evicted by live() are also removed from dashboards.
 func (s *Server) removeAISessions(machineID string) {
-	if s.aiSessions.removeIfPresent(machineID) {
-		broadcastAISessionsRemoved(machineID)
-	}
+	s.aiSessions.remove(machineID)
+	broadcastAISessionsRemoved(machineID)
 }
 
 // --- ingest (agent WebSocket) ---
@@ -293,16 +292,27 @@ func (s *Server) ingestAISessions(machineID string, agent *ConnectedAgent, raw [
 	if machineID == "" || !s.isRegisteredConnection(machineID, agent) {
 		return
 	}
-	if !s.aiSessionsEnabled() {
-		s.aiSessions.remove(machineID)
-		return
-	}
 	var msg aisessions.Message
 	if err := json.Unmarshal(raw, &msg); err != nil {
 		log.Printf("invalid ai_sessions JSON from %s: %v", machineID, err)
 		return
 	}
 	clean := aisessions.Sanitize(msg)
+	// Serialize the enabled check and store+broadcast together against the
+	// disable path to prevent races where a concurrent disable clears the
+	// store but this ingest still publishes a fresh snapshot.
+	c := &s.aiSessionsCfg
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.loaded {
+		c.enabled = s.loadAISessionsEnabled()
+		c.rev = 1
+		c.loaded = true
+	}
+	if !c.enabled {
+		s.aiSessions.remove(machineID)
+		return
+	}
 	receivedAt := s.aiSessions.putAt(machineID, clean.Sessions)
 	s.broadcastAISessionsView(s.aiSessionsMachineView(machineID, clean.Sessions, receivedAt))
 }

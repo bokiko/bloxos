@@ -149,14 +149,16 @@ export function AISessionsProvider({ children }: { children: ReactNode }) {
         const view = JSON.parse(data) as AISessionsMachineView;
         if (!view || typeof view.machine_id !== "string" || !view.machine_id) return;
         const localNow = Date.now();
+        // Invalidate in-flight GET so it doesn't overwrite this newer SSE.
+        refreshSeqRef.current++;
         setMachines((prev) => {
           const next = new Map(prev);
           // A freshly received event is, by construction, "now" on the hub.
           next.set(view.machine_id, viewToMachine(view, localNow, localNow));
           return next;
         });
-        // Anything arriving means the feature is on.
-        setEnabledState((e) => (e === false ? true : e ?? true));
+        // Do NOT infer enabled=true from snapshot events. Trust only
+        // ai_sessions_config SSE and GET /api/ai-sessions for the switch.
       } catch {
         // ignore malformed frames
       }
@@ -165,6 +167,8 @@ export function AISessionsProvider({ children }: { children: ReactNode }) {
       try {
         const msg = JSON.parse(data) as { machine_id?: string };
         if (!msg?.machine_id) return;
+        // Invalidate in-flight GET so it doesn't overwrite this removal.
+        refreshSeqRef.current++;
         setMachines((prev) => {
           if (!prev.has(msg.machine_id!)) return prev;
           const next = new Map(prev);
@@ -179,6 +183,8 @@ export function AISessionsProvider({ children }: { children: ReactNode }) {
       try {
         const msg = JSON.parse(data) as { enabled?: boolean };
         if (typeof msg?.enabled !== "boolean") return;
+        // Invalidate in-flight GET so it doesn't overwrite this config change.
+        refreshSeqRef.current++;
         setEnabledState(msg.enabled);
         if (!msg.enabled) setMachines(new Map());
       } catch {
