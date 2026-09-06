@@ -93,6 +93,27 @@ func TestAgentDownloadURLAppendsOSQuery(t *testing.T) {
 	}
 }
 
+// TestAgentDownloadURLForArchAppendsArchQuery pins the query the Linux
+// self-updater sends: both os and arch, so the hub can pick the build for
+// this CPU. The arch-less form must be byte-identical to before, since the
+// Windows updater and the transport probe still use it.
+func TestAgentDownloadURLForArchAppendsArchQuery(t *testing.T) {
+	got, err := agentDownloadURLForArch("wss://hub.example.com:4000/ws/agent", "linux", "arm64")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := "https://hub.example.com:4000/download/agent?arch=arm64&os=linux"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	got, err = agentDownloadURLForArch("wss://hub.example.com:4000/ws/agent", "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := "https://hub.example.com:4000/download/agent"; got != want {
+		t.Fatalf("arch-less form = %q, want %q", got, want)
+	}
+}
+
 func TestAgentDownloadURLRejectsMalformed(t *testing.T) {
 	for _, raw := range []string{
 		"",

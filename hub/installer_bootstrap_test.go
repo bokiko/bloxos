@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -13,11 +15,15 @@ import (
 )
 
 type installerTokenResponse struct {
-	Command        string `json:"command"`
-	WindowsCommand string `json:"windows_command"`
-	CAURL          string `json:"ca_url"`
-	CASHA256       string `json:"ca_sha256"`
-	ExpiresAt      string `json:"expires_at"`
+	Token           string `json:"token"`
+	Command         string `json:"command"`
+	AdvancedCommand string `json:"advanced_command"`
+	JoinURL         string `json:"join_url"`
+	JoinPin         string `json:"join_pin"`
+	WindowsCommand  string `json:"windows_command"`
+	CAURL           string `json:"ca_url"`
+	CASHA256        string `json:"ca_sha256"`
+	ExpiresAt       string `json:"expires_at"`
 }
 
 func createInstallerToken(t *testing.T, publicURL, host, caPath string) installerTokenResponse {
@@ -68,10 +74,10 @@ func assertOrdered(t *testing.T, body string, needles ...string) {
 
 func TestInstallerCommandsUsePublicURLAndReturnTypedBootstrapFields(t *testing.T) {
 	got := createInstallerToken(t, "https://hub.public.example", "evil.example", testCAFile(t))
-	if got.Command == "" || got.WindowsCommand == "" || got.ExpiresAt == "" || got.CAURL == "" || got.CASHA256 == "" {
+	if got.Command == "" || got.AdvancedCommand == "" || got.JoinURL == "" || got.WindowsCommand == "" || got.ExpiresAt == "" || got.CAURL == "" || got.CASHA256 == "" {
 		t.Fatalf("incomplete token response: %+v", got)
 	}
-	for name, command := range map[string]string{"linux": got.Command, "windows": got.WindowsCommand} {
+	for name, command := range map[string]string{"linux": got.Command, "linux advanced": got.AdvancedCommand, "windows": got.WindowsCommand} {
 		if strings.Contains(command, "evil.example") || !strings.Contains(command, "hub.public.example") {
 			t.Fatalf("%s command did not use PUBLIC_URL exclusively: %q", name, command)
 		}
@@ -84,23 +90,23 @@ func TestInstallerCommandsUsePublicURLAndReturnTypedBootstrapFields(t *testing.T
 			t.Fatalf("Windows paste-block curl invocation lacks --ssl-revoke-best-effort: %s", line)
 		}
 	}
-	if !strings.Contains(got.WindowsCommand, got.CASHA256) || !strings.Contains(got.Command, got.CASHA256) {
+	if !strings.Contains(got.WindowsCommand, got.CASHA256) || !strings.Contains(got.AdvancedCommand, got.CASHA256) {
 		t.Fatal("CA fingerprint is not literal in both paste blocks")
 	}
 }
 
 func TestLinuxPasteBlockVerifiesCABeforeInstallerFetchAndExec(t *testing.T) {
 	got := createInstallerToken(t, "https://hub.public.example", "ignored.example", testCAFile(t))
-	assertOrdered(t, got.Command,
+	assertOrdered(t, got.AdvancedCommand,
 		"sha256sum",
 		"CA fingerprint mismatch",
 		"/install.sh",
 		"bash \"$INSTALLER\"",
 	)
-	if strings.Contains(got.Command, "install.sh | bash") || strings.Contains(got.Command, "curl -fsSLk https://hub.public.example/install.sh") {
-		t.Fatalf("Linux command still executes an unverified network pipe: %q", got.Command)
+	if strings.Contains(got.AdvancedCommand, "install.sh | bash") || strings.Contains(got.AdvancedCommand, "curl -fsSLk https://hub.public.example/install.sh") {
+		t.Fatalf("Linux command still executes an unverified network pipe: %q", got.AdvancedCommand)
 	}
-	if !strings.Contains(got.Command, "Existing CA fingerprint mismatch") || !strings.Contains(got.Command, "sudo install") {
+	if !strings.Contains(got.AdvancedCommand, "Existing CA fingerprint mismatch") || !strings.Contains(got.AdvancedCommand, "sudo install") {
 		t.Fatal("Linux command does not reuse matching CA / stop on mismatching CA")
 	}
 }
@@ -115,10 +121,10 @@ func TestPublicTrustedHTTPSAndHTTPCommandsDoNotFetchLocalCA(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := createInstallerToken(t, tc.url, "evil.example", filepath.Join(t.TempDir(), "missing.crt"))
-			if got.CAURL != "" || got.CASHA256 != "" || strings.Contains(got.Command, "/download/ca.crt") || strings.Contains(got.WindowsCommand, "/download/ca.crt") {
+			if got.CAURL != "" || got.CASHA256 != "" || got.JoinPin != "" || strings.Contains(got.AdvancedCommand, "/download/ca.crt") || strings.Contains(got.WindowsCommand, "/download/ca.crt") {
 				t.Fatalf("system-trust/direct-HTTP command unexpectedly bootstraps local CA: %+v", got)
 			}
-			if strings.HasPrefix(tc.url, "http://") && (!strings.Contains(got.Command, "unencrypted") || !strings.Contains(got.WindowsCommand, "unencrypted")) {
+			if strings.HasPrefix(tc.url, "http://") && (!strings.Contains(got.AdvancedCommand, "unencrypted") || !strings.Contains(got.WindowsCommand, "unencrypted")) {
 				t.Fatal("direct HTTP command does not state its transport limitation")
 			}
 		})
@@ -244,7 +250,7 @@ func TestLinuxInstallerConsumesPasteBlockCAContract(t *testing.T) {
 
 	// Outer -> inner: the paste block hands install.sh exactly these CA variables.
 	provided := map[string]bool{}
-	for _, m := range regexp.MustCompile(`\b(BLOXOS_[A-Z0-9_]+)=`).FindAllStringSubmatch(got.Command, -1) {
+	for _, m := range regexp.MustCompile(`\b(BLOXOS_[A-Z0-9_]+)=`).FindAllStringSubmatch(got.AdvancedCommand, -1) {
 		provided[m[1]] = true
 	}
 	for _, want := range []string{"BLOXOS_HUB", "BLOXOS_TOKEN", "BLOXOS_CA_CERT", "BLOXOS_CA_SHA256"} {
@@ -272,13 +278,85 @@ func TestLinuxInstallerConsumesPasteBlockCAContract(t *testing.T) {
 		`CA fingerprint mismatch at $CA_PATH`,
 		`CA_CURL_ARGS+=(--cacert "$CA_PATH")`,
 		`AGENT_CA_ENV="Environment=\"BLOXOS_CA_CERT=$CA_PATH\""`,
-		`curl_fetch "${HUB_HTTP}/download/agent?arch=${ARCH}" "${CA_CURL_ARGS[@]}"`,
+		`DOWNLOAD_URL="${HUB_HTTP}/download/agent?os=linux&arch=${ARCH}"`,
+		`curl_fetch_status "$DOWNLOAD_URL" "${CA_CURL_ARGS[@]}" -o /tmp/bloxos-agent`,
 		"[Service]",
 		"${AGENT_CA_ENV}",
 		"ExecStart=/usr/local/bin/bloxos-agent",
 	)
 
 	// The served script must at least parse.
+	if bash, err := exec.LookPath("bash"); err == nil {
+		path := filepath.Join(t.TempDir(), "install.sh")
+		if err := os.WriteFile(path, []byte(script), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := exec.Command(bash, "-n", path).CombinedOutput(); err != nil {
+			t.Fatalf("bash -n install.sh: %v\n%s", err, out)
+		}
+	}
+}
+
+// TestLinuxInstallerRequestsArchAndVerifiesELF pins the installer's side of
+// per-architecture delivery. The failure it prevents happened live: an
+// x86_64 host installed the arm64 agent a single-arch hub served it and
+// crash-looped under systemd with "Exec format error". The script must ask
+// for the host's architecture, stop on a non-200 download — printing the
+// hub's explanation — before anything on the system is touched, refuse an
+// ELF whose e_machine is not the host's, and carry a per-arch expected SHA
+// for each build the hub serves.
+func TestLinuxInstallerRequestsArchAndVerifiesELF(t *testing.T) {
+	e, _ := setupTestServer(t)
+	withAgentBinaryState(t)
+	amd64Path := useGeneratedTestBinaryForArch(t, "linux", "amd64")
+	arm64Path := useGeneratedTestBinaryForArch(t, "linux", "arm64")
+	recomputeAgentBinarySHA()
+	req := httptest.NewRequest(http.MethodGet, "/install.sh", nil)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("install.sh status=%d: %s", rec.Code, rec.Body.String())
+	}
+	script := rec.Body.String()
+
+	// Detect, request, fail closed on the hub's answer, check the ELF, check
+	// the SHA — all before the first sudo that writes to the system.
+	assertOrdered(t, script,
+		`x86_64)  ARCH="amd64"; ELF_MACHINE_WANT="3e00" ;;`,
+		`aarch64) ARCH="arm64"; ELF_MACHINE_WANT="b700" ;;`,
+		`DOWNLOAD_URL="${HUB_HTTP}/download/agent?os=linux&arch=${ARCH}"`,
+		`HTTP_STATUS=$(curl_fetch_status "$DOWNLOAD_URL"`,
+		`if [[ "$HTTP_STATUS" != "200" ]]; then`,
+		`echo "Hub response: $(cat /tmp/bloxos-agent)" >&2`,
+		`ELF_MACHINE=$(od -An -tx1 -j18 -N2 /tmp/bloxos-agent | tr -d ' \n')`,
+		`if [[ "$ELF_MAGIC" != "7f454c46" || "$ELF_MACHINE" != "$ELF_MACHINE_WANT" ]]; then`,
+		`amd64) EXPECTED_AGENT_SHA256="$EXPECTED_AGENT_SHA256_AMD64" ;;`,
+		`arm64) EXPECTED_AGENT_SHA256="$EXPECTED_AGENT_SHA256_ARM64" ;;`,
+		`Agent binary fingerprint mismatch`,
+		`sudo mkdir -p /etc/bloxos`,
+		`sudo install -o root -g root -m 0755 /tmp/bloxos-agent /usr/local/bin/bloxos-agent`,
+	)
+	if idx := strings.Index(script, `if [[ "$HTTP_STATUS" != "200" ]]; then`); strings.Contains(script[:idx], "sudo tee") || strings.Contains(script[:idx], "sudo install") || strings.Contains(script[:idx], "sudo mkdir") {
+		t.Fatal("install.sh writes to the system before the download status is checked")
+	}
+
+	// Each architecture's advertised SHA is the hash of that architecture's
+	// binary — the same digest /download/agent?arch= serves.
+	for arch, path := range map[string]string{"AMD64": amd64Path, "ARM64": arm64Path} {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256(body)
+		want := `EXPECTED_AGENT_SHA256_` + arch + `="` + hex.EncodeToString(sum[:]) + `"`
+		if !strings.Contains(script, want) {
+			t.Fatalf("install.sh does not advertise %s", want)
+		}
+	}
+	if strings.Contains(script, "__EXPECTED_AGENT_SHA256") {
+		t.Fatal("install.sh still contains an unrendered SHA placeholder")
+	}
+
 	if bash, err := exec.LookPath("bash"); err == nil {
 		path := filepath.Join(t.TempDir(), "install.sh")
 		if err := os.WriteFile(path, []byte(script), 0o644); err != nil {
