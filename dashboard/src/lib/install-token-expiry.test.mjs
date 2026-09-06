@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { installTokenMinutesRemaining } from "./install-token-expiry.ts";
+import { installTokenMinutesRemaining } from "./install-token-expiry.mjs";
 
 test("install countdown never exceeds the 15-minute lifetime", () => {
   for (const remainingMs of [900_000, 900_001, 930_000, 3_600_000]) {

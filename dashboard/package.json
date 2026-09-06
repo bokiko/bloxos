@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "test": "node --experimental-strip-types --test src/lib/install-token-expiry.test.mjs",
+    "test": "node --test src/lib/install-token-expiry.test.mjs",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",

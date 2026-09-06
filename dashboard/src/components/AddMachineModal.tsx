@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { HUB_URL, getStoredToken } from "@/lib/session";
-import { installTokenMinutesRemaining } from "@/lib/install-token-expiry";
+import { installTokenMinutesRemaining } from "@/lib/install-token-expiry.mjs";
 
 interface AddMachineModalProps {
   open: boolean;
