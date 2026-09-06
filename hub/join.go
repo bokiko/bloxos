@@ -280,15 +280,23 @@ func linuxJoinScript(httpBase, wsBase, token, caURL, caSHA256 string) string {
 	return "#!/bin/bash\n" + buildLinuxInstallCommand(httpBase, wsBase, token, caURL, caSHA256) + "\n"
 }
 
+// joinTokenInfo holds the mint-time binding values and script for a usable
+// join token. All fields are populated only when the token is usable.
+type joinTokenInfo struct {
+	MintTimeScript   string
+	MintTimeHTTPBase string
+	MintTimeCASHA256 string
+}
+
 // joinCodeUsable reports whether code is an unexpired, unconsumed, unbound
-// install token. It reads the same row the enrollment transactions consume
-// (consumeTokenAndStoreCredential sets used = TRUE only when the durable
-// credential is stored), so a link goes dead at exactly the moment a retry
-// could no longer succeed, and never before. Any failure is "not usable";
-// the code is not logged.
-func (s *Server) joinCodeUsable(code string) bool {
+// install token with stored mint-time binding values. It reads the same row
+// the enrollment transactions consume (consumeTokenAndStoreCredential sets used
+// = TRUE only when the durable credential is stored), so a link goes dead at
+// exactly the moment a retry could no longer succeed, and never before. Any
+// failure is "not usable"; the code is not logged.
+func (s *Server) joinCodeUsable(code string) (bool, joinTokenInfo) {
 	if code == "" || len(code) > 128 {
-		return false
+		return false, joinTokenInfo{}
 	}
 	h := sha256.Sum256([]byte(code))
 	tokenHash := hex.EncodeToString(h[:])
@@ -296,40 +304,93 @@ func (s *Server) joinCodeUsable(code string) bool {
 	var expiresAt string
 	var used bool
 	var targetMachineID sql.NullString
-	err := s.db.QueryRow(`SELECT expires_at, used, target_machine_id FROM tokens WHERE token_hash = ?`, tokenHash).
-		Scan(&expiresAt, &used, &targetMachineID)
+	var mintTimeScript, mintTimeHTTPBase, mintTimeCASHA256 sql.NullString
+	err := s.db.QueryRow(`SELECT expires_at, used, target_machine_id, mint_time_script, mint_time_http_base, mint_time_ca_sha256 FROM tokens WHERE token_hash = ?`, tokenHash).
+		Scan(&expiresAt, &used, &targetMachineID, &mintTimeScript, &mintTimeHTTPBase, &mintTimeCASHA256)
 	if err != nil {
 		if err != sql.ErrNoRows {
 			log.Printf("join: token lookup failed: %v", err)
 		}
-		return false
+		return false, joinTokenInfo{}
 	}
 	// A Windows re-enrollment token is bound to one machine and to
 	// install.ps1; it is not a Linux join code.
 	if used || targetMachineID.Valid {
-		return false
+		return false, joinTokenInfo{}
 	}
-	return checkTokenExpiry(expiresAt) == nil
+	// Tokens minted before the mint_time_script column was added have no
+	// stored script and cannot be served (they would have to rebuild from
+	// live config, which is exactly what this binding closes). They expire
+	// naturally (installTokenTTL = 15 minutes).
+	if !mintTimeScript.Valid || mintTimeScript.String == "" {
+		return false, joinTokenInfo{}
+	}
+	// mint_time_http_base is required for the config-drift check. Tokens
+	// minted before the binding columns were added have no stored base and
+	// cannot be served.
+	if !mintTimeHTTPBase.Valid || mintTimeHTTPBase.String == "" {
+		return false, joinTokenInfo{}
+	}
+	if checkTokenExpiry(expiresAt) != nil {
+		return false, joinTokenInfo{}
+	}
+	info := joinTokenInfo{
+		MintTimeScript:   mintTimeScript.String,
+		MintTimeHTTPBase: mintTimeHTTPBase.String,
+		MintTimeCASHA256: mintTimeCASHA256.String, // may be empty for http or publicly trusted https
+	}
+	return true, info
 }
 
-// handleJoinScript serves the Linux bootstrap for a usable join code.
-// Responses are plain text, never cached, and never sniffed into anything
-// else; the 404 is the same for every unusable code.
+// handleJoinScript serves the Linux bootstrap for a usable join code, after
+// verifying the current configuration matches the mint-time binding. If
+// PUBLIC_URL or the bootstrap CA have changed since mint, the join is rejected
+// with the same opaque 404 as any other unusable code, so an operator who
+// changes PUBLIC_URL or BLOXOS_CA_CERT after minting a securely pinned join
+// command cannot redirect agents to a different authority or CA.
+//
+// Responses are plain text, never cached, and never sniffed into anything else.
 func (s *Server) handleJoinScript(c echo.Context) error {
 	h := c.Response().Header()
 	h.Set("Cache-Control", "no-store")
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Referrer-Policy", "no-referrer")
 
-	if !s.joinCodeUsable(c.Param("code")) {
-		return c.String(http.StatusNotFound, joinUnavailableBody)
-	}
-	httpBase, wsBase := publicAndWebsocketBase()
-	if httpBase == "" {
+	// Check PUBLIC_URL before looking up the token: a hub with no PUBLIC_URL
+	// cannot serve join links at all, even ones minted before it was unset.
+	currentHTTPBase, _ := publicAndWebsocketBase()
+	if currentHTTPBase == "" {
 		// Tokens cannot be minted without PUBLIC_URL, so this only happens
 		// if it was unset between minting and use.
 		return c.String(http.StatusServiceUnavailable, "This hub has no PUBLIC_URL configured; join links are unavailable.\n")
 	}
-	caURL, caSHA256 := bootstrapCAFor(httpBase)
-	return c.String(http.StatusOK, linuxJoinScript(httpBase, wsBase, c.Param("code"), caURL, caSHA256))
+
+	usable, info := s.joinCodeUsable(c.Param("code"))
+	if !usable {
+		return c.String(http.StatusNotFound, joinUnavailableBody)
+	}
+
+	// Config-drift check: verify the current PUBLIC_URL and CA still match what
+	// was captured at mint. If they differ, reject the join — the command carries
+	// a pin for the mint-time cert and a URL for the mint-time hub, and serving
+	// a script with different values would either fail the pin check or redirect
+	// the agent to a different authority than what was authenticated at mint.
+	currentCAURL, currentCASHA256 := bootstrapCAFor(currentHTTPBase)
+	_ = currentCAURL // URL derivation is deterministic; SHA is the binding value
+
+	if currentHTTPBase != info.MintTimeHTTPBase {
+		// PUBLIC_URL has changed. The join command has the mint-time URL
+		// embedded, but if it somehow reaches this hub on the new URL, reject
+		// rather than serve a script that points to a different authority.
+		return c.String(http.StatusNotFound, joinUnavailableBody)
+	}
+	if currentCASHA256 != info.MintTimeCASHA256 {
+		// The bootstrap CA cert has changed. The join command has a pin for the
+		// mint-time leaf, and a script with a different CA would fail bootstrap
+		// or redirect the agent to trust a different CA than was pinned.
+		return c.String(http.StatusNotFound, joinUnavailableBody)
+	}
+
+	// Config matches mint-time binding: serve the stored script.
+	return c.String(http.StatusOK, info.MintTimeScript)
 }

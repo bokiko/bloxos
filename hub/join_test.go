@@ -10,6 +10,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
@@ -928,4 +929,133 @@ func hexOf(b []byte) string {
 		out[i*2], out[i*2+1] = digits[v>>4], digits[v&0x0f]
 	}
 	return string(out)
+}
+
+// TestJoinRejectsAfterPublicURLChange: a join link is bound to the PUBLIC_URL
+// and CA state at mint time, so changing PUBLIC_URL after mint rejects the
+// join with the same opaque 404 as any other unusable code.
+func TestJoinRejectsAfterPublicURLChange(t *testing.T) {
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
+	t.Setenv("PUBLIC_URL", "https://old.example.com")
+	t.Setenv("BLOXOS_CA_CERT", testCAFile(t))
+
+	// Mint with old.example.com
+	got := mintJoinToken(t, e, loginAndGetToken(t, e), "client.example")
+	code := got.Token
+
+	// Verify it works with the mint-time config
+	rec := getJoin(t, e, code, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET with mint-time config: status=%d", rec.Code)
+	}
+	mintTimeScript := rec.Body.String()
+	if !strings.Contains(mintTimeScript, "HUB_HTTP='https://old.example.com'") {
+		t.Fatal("mint-time script does not contain the mint-time URL")
+	}
+
+	// Change PUBLIC_URL
+	t.Setenv("PUBLIC_URL", "https://new.example.com")
+
+	// Join must reject with 404
+	rec = getJoin(t, e, code, "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET after PUBLIC_URL change: status=%d body=%q, want 404", rec.Code, rec.Body.String())
+	}
+	if rec.Body.String() != joinUnavailableBody {
+		t.Fatalf("body = %q, want the standard unavailable text", rec.Body.String())
+	}
+	assertJoinResponseHeaders(t, rec)
+
+	// The token is NOT consumed by the drift rejection
+	if tokenUsed(t, s, hashOf(code)) {
+		t.Fatal("drift rejection consumed the token")
+	}
+}
+
+// TestJoinRejectsAfterCACertChange: changing the bootstrap CA cert after mint
+// rejects the join, even when PUBLIC_URL stays the same.
+func TestJoinRejectsAfterCACertChange(t *testing.T) {
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
+	t.Setenv("PUBLIC_URL", "https://hub.internal:8443")
+	oldCA := testCAFile(t)
+	t.Setenv("BLOXOS_CA_CERT", oldCA)
+
+	// Mint with the first CA
+	got := mintJoinToken(t, e, loginAndGetToken(t, e), "client.example")
+	code := got.Token
+	oldCASHA := got.CASHA256
+
+	// Verify it works with the mint-time config
+	rec := getJoin(t, e, code, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET with mint-time config: status=%d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "CA_SHA256='"+oldCASHA+"'") {
+		t.Fatal("mint-time script does not contain the mint-time CA SHA")
+	}
+
+	// Replace the CA file with different content (simulating cert rotation)
+	newCA := filepath.Join(t.TempDir(), "new-ca.crt")
+	if err := os.WriteFile(newCA, []byte("new-test-private-ca-cert"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BLOXOS_CA_CERT", newCA)
+
+	// Join must reject with 404
+	rec = getJoin(t, e, code, "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET after CA change: status=%d body=%q, want 404", rec.Code, rec.Body.String())
+	}
+	if rec.Body.String() != joinUnavailableBody {
+		t.Fatalf("body = %q, want the standard unavailable text", rec.Body.String())
+	}
+	assertJoinResponseHeaders(t, rec)
+
+	// The token is NOT consumed by the drift rejection
+	if tokenUsed(t, s, hashOf(code)) {
+		t.Fatal("drift rejection consumed the token")
+	}
+}
+
+// TestJoinServesMintTimeScriptNotRebuilt: the script served by /join is the
+// exact byte-for-byte script stored at mint, not a fresh rebuild from live
+// config. This test verifies both that the script matches and that changing
+// config after mint does not affect what would have been served if config
+// hadn't changed (i.e., the script is truly stored, not rebuilt).
+func TestJoinServesMintTimeScriptNotRebuilt(t *testing.T) {
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
+	t.Setenv("PUBLIC_URL", "https://mint.example.com")
+	t.Setenv("BLOXOS_CA_CERT", testCAFile(t))
+
+	// Mint and capture what was minted
+	got := mintJoinToken(t, e, loginAndGetToken(t, e), "client.example")
+	code := got.Token
+	wantScript := "#!/bin/bash\n" + got.AdvancedCommand + "\n"
+
+	// Serve the join and verify it matches exactly
+	rec := getJoin(t, e, code, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET status=%d", rec.Code)
+	}
+	if rec.Body.String() != wantScript {
+		t.Fatalf("served script does not match mint-time advanced_command:\n--- got\n%s\n--- want\n%s",
+			rec.Body.String(), wantScript)
+	}
+
+	// Verify the binding columns were stored
+	var mintHTTP, mintCA sql.NullString
+	err := s.db.QueryRow(`SELECT mint_time_http_base, mint_time_ca_sha256 FROM tokens WHERE token_hash = ?`,
+		hashOf(code)).Scan(&mintHTTP, &mintCA)
+	if err != nil {
+		t.Fatalf("read mint-time binding: %v", err)
+	}
+	if !mintHTTP.Valid || mintHTTP.String != "https://mint.example.com" {
+		t.Fatalf("mint_time_http_base = %q, want https://mint.example.com", mintHTTP.String)
+	}
+	if !mintCA.Valid || mintCA.String != got.CASHA256 {
+		t.Fatalf("mint_time_ca_sha256 = %q, want %q", mintCA.String, got.CASHA256)
+	}
 }

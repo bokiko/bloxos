@@ -404,6 +404,25 @@ var migrations = []migration{
 			return err
 		},
 	},
+	{
+		description: "add mint_time_script and mint-time binding columns to tokens to bind join links to mint-time configuration",
+		apply: func(tx *sql.Tx) error {
+			stmts := []string{
+				`ALTER TABLE tokens ADD COLUMN mint_time_script TEXT`,
+				`ALTER TABLE tokens ADD COLUMN mint_time_http_base TEXT`,
+				`ALTER TABLE tokens ADD COLUMN mint_time_ca_sha256 TEXT`,
+			}
+			for _, s := range stmts {
+				if _, err := tx.Exec(s); err != nil {
+					if isDuplicateColumnErr(err) {
+						continue
+					}
+					return fmt.Errorf("migration stmt %q: %w", s, err)
+				}
+			}
+			return nil
+		},
+	},
 }
 
 // isDuplicateColumnErr returns true when SQLite rejects an ALTER TABLE ADD

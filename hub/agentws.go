@@ -153,7 +153,18 @@ func (s *Server) handleCreateToken(c echo.Context) error {
 	tokenHash := hex.EncodeToString(h[:])
 	expiresAt := time.Now().Add(installTokenTTL)
 
-	if _, err := s.db.Exec(`INSERT INTO tokens (token_hash, expires_at) VALUES (?, ?)`, tokenHash, expiresAt); err != nil {
+	// Bind the join link to the configuration captured at mint time: store the
+	// complete Linux bootstrap script built from the current PUBLIC_URL and CA
+	// state, plus the key binding values (httpBase and CA SHA-256). GET
+	// /join/<code> verifies the current config still matches these mint-time
+	// values and rejects if not, then serves the stored script, so a change to
+	// PUBLIC_URL or BLOXOS_CA_CERT after mint cannot redirect agents to a
+	// different authority or CA than what was authenticated at mint.
+	mintTimeScript := linuxJoinScript(httpBase, wsBase, token, caURL, caSHA256)
+
+	if _, err := s.db.Exec(
+		`INSERT INTO tokens (token_hash, expires_at, mint_time_script, mint_time_http_base, mint_time_ca_sha256) VALUES (?, ?, ?, ?, ?)`,
+		tokenHash, expiresAt, mintTimeScript, httpBase, caSHA256); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
