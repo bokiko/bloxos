@@ -25,20 +25,20 @@ func (s *Server) seedTokenValue(t *testing.T, raw string) string {
 	h := sha256.Sum256([]byte(raw))
 	tokenHash := hex.EncodeToString(h[:])
 	expiresAt := time.Now().Add(1 * time.Hour).Format("2006-01-02 15:04:05")
-	// Populate mint-time binding columns so join links work. Use the current
-	// PUBLIC_URL and CA state from the test environment. If PUBLIC_URL is not
-	// set, leave the columns NULL so the token is usable for WebSocket
-	// enrollment but not for /join (which requires PUBLIC_URL).
-	httpBase, wsBase := publicAndWebsocketBase()
-	var mintScript, mintHTTPBase, mintCASHA256 interface{}
+	// Populate mint-time binding columns so join links work, mirroring
+	// production: store the config binding only, never the script (which would
+	// embed the raw token). Use the current PUBLIC_URL and CA state. If
+	// PUBLIC_URL is not set, leave the columns NULL so the token is usable for
+	// WebSocket enrollment but not for /join (which requires PUBLIC_URL).
+	httpBase, _ := publicAndWebsocketBase()
+	var mintHTTPBase, mintCASHA256 interface{}
 	if httpBase != "" {
-		caURL, caSHA256 := bootstrapCAFor(httpBase)
-		mintScript = linuxJoinScript(httpBase, wsBase, raw, caURL, caSHA256)
+		_, caSHA256 := bootstrapCAFor(httpBase)
 		mintHTTPBase = httpBase
 		mintCASHA256 = caSHA256
 	}
-	if _, err := s.db.Exec(`INSERT INTO tokens (token_hash, expires_at, used, mint_time_script, mint_time_http_base, mint_time_ca_sha256) VALUES (?, ?, FALSE, ?, ?, ?)`,
-		tokenHash, expiresAt, mintScript, mintHTTPBase, mintCASHA256); err != nil {
+	if _, err := s.db.Exec(`INSERT INTO tokens (token_hash, expires_at, used, mint_time_http_base, mint_time_ca_sha256) VALUES (?, ?, FALSE, ?, ?)`,
+		tokenHash, expiresAt, mintHTTPBase, mintCASHA256); err != nil {
 		t.Fatalf("seed token %q: %v", raw, err)
 	}
 	return raw

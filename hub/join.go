@@ -280,10 +280,11 @@ func linuxJoinScript(httpBase, wsBase, token, caURL, caSHA256 string) string {
 	return "#!/bin/bash\n" + buildLinuxInstallCommand(httpBase, wsBase, token, caURL, caSHA256) + "\n"
 }
 
-// joinTokenInfo holds the mint-time binding values and script for a usable
-// join token. All fields are populated only when the token is usable.
+// joinTokenInfo holds the mint-time binding values for a usable join token.
+// The bootstrap script is not stored — it would embed the raw install token —
+// but rebuilt at serve time from these values plus the request token. Fields
+// are populated only when the token is usable.
 type joinTokenInfo struct {
-	MintTimeScript   string
 	MintTimeHTTPBase string
 	MintTimeCASHA256 string
 }
@@ -304,9 +305,9 @@ func (s *Server) joinCodeUsable(code string) (bool, joinTokenInfo) {
 	var expiresAt string
 	var used bool
 	var targetMachineID sql.NullString
-	var mintTimeScript, mintTimeHTTPBase, mintTimeCASHA256 sql.NullString
-	err := s.db.QueryRow(`SELECT expires_at, used, target_machine_id, mint_time_script, mint_time_http_base, mint_time_ca_sha256 FROM tokens WHERE token_hash = ?`, tokenHash).
-		Scan(&expiresAt, &used, &targetMachineID, &mintTimeScript, &mintTimeHTTPBase, &mintTimeCASHA256)
+	var mintTimeHTTPBase, mintTimeCASHA256 sql.NullString
+	err := s.db.QueryRow(`SELECT expires_at, used, target_machine_id, mint_time_http_base, mint_time_ca_sha256 FROM tokens WHERE token_hash = ?`, tokenHash).
+		Scan(&expiresAt, &used, &targetMachineID, &mintTimeHTTPBase, &mintTimeCASHA256)
 	if err != nil {
 		if err != sql.ErrNoRows {
 			log.Printf("join: token lookup failed: %v", err)
@@ -318,28 +319,43 @@ func (s *Server) joinCodeUsable(code string) (bool, joinTokenInfo) {
 	if used || targetMachineID.Valid {
 		return false, joinTokenInfo{}
 	}
-	// Tokens minted before the mint_time_script column was added have no
-	// stored script and cannot be served (they would have to rebuild from
-	// live config, which is exactly what this binding closes). They expire
+	// mint_time_http_base is the config binding the script is rebuilt from and
+	// the drift check compares against. Tokens minted before the binding
+	// columns were added have no stored base and cannot be served; they expire
 	// naturally (installTokenTTL = 15 minutes).
-	if !mintTimeScript.Valid || mintTimeScript.String == "" {
+	if !mintTimeHTTPBase.Valid || mintTimeHTTPBase.String == "" {
 		return false, joinTokenInfo{}
 	}
-	// mint_time_http_base is required for the config-drift check. Tokens
-	// minted before the binding columns were added have no stored base and
-	// cannot be served.
-	if !mintTimeHTTPBase.Valid || mintTimeHTTPBase.String == "" {
+	// mint_time_ca_sha256 must be present (bound), though an empty string is a
+	// valid binding — it is what a publicly trusted HTTPS or plain HTTP mint
+	// stores. A NULL means the binding was never recorded (a pre-binding row),
+	// so the token cannot be served.
+	if !mintTimeCASHA256.Valid {
 		return false, joinTokenInfo{}
 	}
 	if checkTokenExpiry(expiresAt) != nil {
 		return false, joinTokenInfo{}
 	}
 	info := joinTokenInfo{
-		MintTimeScript:   mintTimeScript.String,
 		MintTimeHTTPBase: mintTimeHTTPBase.String,
 		MintTimeCASHA256: mintTimeCASHA256.String, // may be empty for http or publicly trusted https
 	}
 	return true, info
+}
+
+// rebuildLinuxJoinScript reconstructs the mint-time bootstrap script from the
+// stored config binding plus the token supplied in the join request. It never
+// reads a stored script, so the raw install token is not persisted; the
+// derivations mirror publicAndWebsocketBase and bootstrapCAFor exactly, so the
+// output is byte-identical to what was minted.
+func rebuildLinuxJoinScript(httpBase, caSHA256, token string) string {
+	wsBase := strings.Replace(httpBase, "https://", "wss://", 1)
+	wsBase = strings.Replace(wsBase, "http://", "ws://", 1)
+	caURL := ""
+	if caSHA256 != "" {
+		caURL = httpBase + "/download/ca.crt"
+	}
+	return linuxJoinScript(httpBase, wsBase, token, caURL, caSHA256)
 }
 
 // handleJoinScript serves the Linux bootstrap for a usable join code, after
@@ -391,6 +407,8 @@ func (s *Server) handleJoinScript(c echo.Context) error {
 		return c.String(http.StatusNotFound, joinUnavailableBody)
 	}
 
-	// Config matches mint-time binding: serve the stored script.
-	return c.String(http.StatusOK, info.MintTimeScript)
+	// Config matches mint-time binding: rebuild the script from the stored
+	// binding and the token from the request path. The raw token was never
+	// stored; the rebuilt script is byte-identical to what was minted.
+	return c.String(http.StatusOK, rebuildLinuxJoinScript(info.MintTimeHTTPBase, info.MintTimeCASHA256, c.Param("code")))
 }

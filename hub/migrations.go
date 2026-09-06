@@ -423,6 +423,21 @@ var migrations = []migration{
 			return nil
 		},
 	},
+	{
+		// The mint_time_script column briefly stored the full bootstrap
+		// script, which embeds TOKEN='<raw install token>' — persisting the
+		// raw token at rest, which the token design otherwise avoids (rows key
+		// on token_hash). Scripts are now rebuilt at serve time from the
+		// mint-time config binding plus the token in the join request, so the
+		// column is no longer written. Clear any values an upgraded hub still
+		// holds. Valid tokens keep working: they are served from
+		// mint_time_http_base / mint_time_ca_sha256, which are untouched.
+		description: "scrub raw install tokens persisted in tokens.mint_time_script",
+		apply: func(tx *sql.Tx) error {
+			_, err := tx.Exec(`UPDATE tokens SET mint_time_script = NULL WHERE mint_time_script IS NOT NULL`)
+			return err
+		},
+	},
 }
 
 // isDuplicateColumnErr returns true when SQLite rejects an ALTER TABLE ADD

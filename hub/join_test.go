@@ -922,6 +922,78 @@ func TestPinDialOverrideConnectsElsewhereVerifiesPublicURLHost(t *testing.T) {
 	}
 }
 
+// TestJoinRebuildByteEquivalenceAcrossTransports: the rebuilt /join script is
+// byte-identical to the minted advanced_command for a publicly trusted HTTPS
+// hub (no CA binding) and for a plain-HTTP hub, not just the private-CA case.
+func TestJoinRebuildByteEquivalenceAcrossTransports(t *testing.T) {
+	for _, tc := range []struct {
+		name, publicURL string
+		setCA           bool
+	}{
+		{"public HTTPS, no CA", "https://public.example.com", false},
+		{"plain HTTP", "http://10.0.0.5:4000", false},
+		{"private CA", "https://hub.internal:8443", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, s := setupTestServer(t)
+			s.markCredentialsRotated(t)
+			t.Setenv("PUBLIC_URL", tc.publicURL)
+			if tc.setCA {
+				t.Setenv("BLOXOS_CA_CERT", testCAFile(t))
+			} else {
+				t.Setenv("BLOXOS_CA_CERT", filepath.Join(t.TempDir(), "absent.crt"))
+			}
+			got := mintJoinToken(t, e, loginAndGetToken(t, e), "client.example")
+			rec := getJoin(t, e, got.Token, "")
+			if rec.Code != http.StatusOK {
+				t.Fatalf("GET status=%d body=%q", rec.Code, rec.Body.String())
+			}
+			if want := "#!/bin/bash\n" + got.AdvancedCommand + "\n"; rec.Body.String() != want {
+				t.Fatalf("rebuilt script != minted advanced_command:\n--- got\n%s\n--- want\n%s", rec.Body.String(), want)
+			}
+			// The token must not be at rest, whatever the transport.
+			var mintScript sql.NullString
+			if err := s.db.QueryRow(`SELECT mint_time_script FROM tokens WHERE token_hash = ?`, hashOf(got.Token)).Scan(&mintScript); err != nil {
+				t.Fatalf("read row: %v", err)
+			}
+			if mintScript.Valid && mintScript.String != "" {
+				t.Fatalf("mint_time_script populated for %s", tc.name)
+			}
+		})
+	}
+}
+
+// TestJoinRejectsMissingBinding: a row whose binding columns are NULL (a
+// pre-binding token, or a partial/missing binding) is not served, even though
+// it is unexpired and unconsumed. An empty-string CA binding is still valid.
+func TestJoinRejectsMissingBinding(t *testing.T) {
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
+	t.Setenv("PUBLIC_URL", "https://hub.example.com")
+
+	insert := func(raw string, httpBase, caSHA any) {
+		h := sha256.Sum256([]byte(raw))
+		if _, err := s.db.Exec(
+			`INSERT INTO tokens (token_hash, expires_at, mint_time_http_base, mint_time_ca_sha256) VALUES (?, ?, ?, ?)`,
+			hexOf(h[:]), time.Now().Add(time.Hour).Format("2006-01-02 15:04:05"), httpBase, caSHA); err != nil {
+			t.Fatalf("seed %s: %v", raw, err)
+		}
+	}
+	insert("both-null", nil, nil)
+	insert("http-base-null", nil, "")
+	insert("ca-null", "https://hub.example.com", nil)
+	insert("empty-ca-ok", "https://hub.example.com", "") // valid: public TLS/HTTP binding
+
+	for _, code := range []string{"both-null", "http-base-null", "ca-null"} {
+		if rec := getJoin(t, e, code, ""); rec.Code != http.StatusNotFound {
+			t.Errorf("%s: status=%d, want 404 for a missing binding", code, rec.Code)
+		}
+	}
+	if rec := getJoin(t, e, "empty-ca-ok", ""); rec.Code != http.StatusOK {
+		t.Errorf("empty-ca-ok: status=%d, want 200 (empty CA binding is valid)", rec.Code)
+	}
+}
+
 func hexOf(b []byte) string {
 	const digits = "0123456789abcdef"
 	out := make([]byte, len(b)*2)
@@ -1019,43 +1091,120 @@ func TestJoinRejectsAfterCACertChange(t *testing.T) {
 	}
 }
 
-// TestJoinServesMintTimeScriptNotRebuilt: the script served by /join is the
-// exact byte-for-byte script stored at mint, not a fresh rebuild from live
-// config. This test verifies both that the script matches and that changing
-// config after mint does not affect what would have been served if config
-// hadn't changed (i.e., the script is truly stored, not rebuilt).
-func TestJoinServesMintTimeScriptNotRebuilt(t *testing.T) {
+// TestJoinRebuildsScriptAndStoresNoRawToken is the token-at-rest regression:
+// the served join script is rebuilt byte-for-byte from the stored config
+// binding plus the request token, and the raw install token appears in no
+// column of the tokens row. Only its SHA-256 (token_hash) is stored.
+func TestJoinRebuildsScriptAndStoresNoRawToken(t *testing.T) {
 	e, s := setupTestServer(t)
 	s.markCredentialsRotated(t)
 	t.Setenv("PUBLIC_URL", "https://mint.example.com")
 	t.Setenv("BLOXOS_CA_CERT", testCAFile(t))
 
-	// Mint and capture what was minted
 	got := mintJoinToken(t, e, loginAndGetToken(t, e), "client.example")
 	code := got.Token
 	wantScript := "#!/bin/bash\n" + got.AdvancedCommand + "\n"
 
-	// Serve the join and verify it matches exactly
+	// The rebuilt script is byte-identical to what was minted, and carries the
+	// token from the request path.
 	rec := getJoin(t, e, code, "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET status=%d", rec.Code)
 	}
 	if rec.Body.String() != wantScript {
-		t.Fatalf("served script does not match mint-time advanced_command:\n--- got\n%s\n--- want\n%s",
+		t.Fatalf("rebuilt script does not match mint-time advanced_command:\n--- got\n%s\n--- want\n%s",
 			rec.Body.String(), wantScript)
 	}
+	if !strings.Contains(rec.Body.String(), "TOKEN='"+code+"'") {
+		t.Fatal("rebuilt script does not carry the request token")
+	}
 
-	// Verify the binding columns were stored
-	var mintHTTP, mintCA sql.NullString
-	err := s.db.QueryRow(`SELECT mint_time_http_base, mint_time_ca_sha256 FROM tokens WHERE token_hash = ?`,
-		hashOf(code)).Scan(&mintHTTP, &mintCA)
-	if err != nil {
-		t.Fatalf("read mint-time binding: %v", err)
+	// Every stored column of the row must be free of the raw token. token_hash
+	// is its SHA-256; the binding columns are config only; mint_time_script
+	// must not be written.
+	var tokenHash string
+	var mintScript, mintHTTP, mintCA sql.NullString
+	if err := s.db.QueryRow(
+		`SELECT token_hash, mint_time_script, mint_time_http_base, mint_time_ca_sha256 FROM tokens WHERE token_hash = ?`,
+		hashOf(code)).Scan(&tokenHash, &mintScript, &mintHTTP, &mintCA); err != nil {
+		t.Fatalf("read token row: %v", err)
+	}
+	for name, val := range map[string]string{
+		"token_hash":          tokenHash,
+		"mint_time_script":    mintScript.String,
+		"mint_time_http_base": mintHTTP.String,
+		"mint_time_ca_sha256": mintCA.String,
+	} {
+		if strings.Contains(val, code) {
+			t.Fatalf("raw install token is persisted in column %s: %q", name, val)
+		}
+	}
+	if mintScript.Valid && mintScript.String != "" {
+		t.Fatalf("mint_time_script is populated (%q); the script must not be stored", mintScript.String)
 	}
 	if !mintHTTP.Valid || mintHTTP.String != "https://mint.example.com" {
 		t.Fatalf("mint_time_http_base = %q, want https://mint.example.com", mintHTTP.String)
 	}
 	if !mintCA.Valid || mintCA.String != got.CASHA256 {
 		t.Fatalf("mint_time_ca_sha256 = %q, want %q", mintCA.String, got.CASHA256)
+	}
+}
+
+// TestJoinScriptScrubMigrationClearsPersistedToken locks in the upgrade path:
+// a snapshot row that still holds a token-bearing mint_time_script (written by
+// the interim build) is cleared by the migration, while its config binding and
+// usability are preserved so the token keeps working.
+func TestJoinScriptScrubMigrationClearsPersistedToken(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { db.Close() })
+	if err := runMigrations(db); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+
+	// Simulate an interim-build row: mint_time_script embeds the raw token.
+	raw := "legacy-snapshot-token-abcdef"
+	h := sha256.Sum256([]byte(raw))
+	tokenHash := hexOf(h[:])
+	legacyScript := "#!/bin/bash\nTOKEN='" + raw + "'\n"
+	if _, err := db.Exec(
+		`INSERT INTO tokens (token_hash, expires_at, mint_time_script, mint_time_http_base, mint_time_ca_sha256) VALUES (?, ?, ?, ?, ?)`,
+		tokenHash, time.Now().Add(time.Hour).Format("2006-01-02 15:04:05"), legacyScript, "https://legacy.example.com", "deadbeef"); err != nil {
+		t.Fatalf("seed legacy row: %v", err)
+	}
+
+	// Re-apply only the final (scrub) migration by rewinding the version.
+	if _, err := db.Exec(`UPDATE schema_version SET version = ?`, len(migrations)-1); err != nil {
+		t.Fatalf("rewind schema_version: %v", err)
+	}
+	if err := runMigrations(db); err != nil {
+		t.Fatalf("re-run migrations: %v", err)
+	}
+
+	var mintScript, mintHTTP, mintCA sql.NullString
+	if err := db.QueryRow(
+		`SELECT mint_time_script, mint_time_http_base, mint_time_ca_sha256 FROM tokens WHERE token_hash = ?`,
+		tokenHash).Scan(&mintScript, &mintHTTP, &mintCA); err != nil {
+		t.Fatalf("read scrubbed row: %v", err)
+	}
+	if mintScript.Valid && mintScript.String != "" {
+		t.Fatalf("mint_time_script not scrubbed: %q", mintScript.String)
+	}
+	// The config binding survives, so the token remains usable and rebuildable.
+	if mintHTTP.String != "https://legacy.example.com" || mintCA.String != "deadbeef" {
+		t.Fatalf("binding columns altered by scrub: http=%q ca=%q", mintHTTP.String, mintCA.String)
+	}
+	s := &Server{db: db}
+	usable, info := s.joinCodeUsable(raw)
+	if !usable {
+		t.Fatal("migration stranded an unexpired token with a complete binding")
+	}
+	want := linuxJoinScript("https://legacy.example.com", "wss://legacy.example.com", raw,
+		"https://legacy.example.com/download/ca.crt", "deadbeef")
+	if got := rebuildLinuxJoinScript(info.MintTimeHTTPBase, info.MintTimeCASHA256, raw); got != want {
+		t.Fatal("migrated token no longer rebuilds the original bootstrap")
 	}
 }
