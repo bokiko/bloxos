@@ -62,6 +62,10 @@ type AgentVersionMessage struct {
 	// produced by the hub's update signing key.
 	Signature string `json:"signature,omitempty"`
 	SigAlg    string `json:"sig_alg,omitempty"`
+	// Release is the hub's advisory reading of the served binary's embedded
+	// release sequence. Unsigned; used only to refuse early. The value that
+	// counts is extracted from the downloaded bytes.
+	Release uint64 `json:"release,omitempty"`
 }
 
 // handleAgentVersion — Windows version. Same flow as Linux's
@@ -98,7 +102,7 @@ func handleAgentVersion(msg []byte) {
 		log.Printf("update: cannot resolve own path: %v", err)
 		return
 	}
-	if err := authorizeUpdate(hubURL, exe, runtime.GOOS, version.SHA256, version.Signature); err != nil {
+	if err := authorizeUpdate(hubURL, exe, runtime.GOOS, version.SHA256, version.Signature, version.Release); err != nil {
 		log.Printf("update: REFUSED — %v", err)
 		return
 	}
@@ -159,6 +163,24 @@ func performUpdateWindows(expectedSHA, signature string) error {
 	}
 	log.Printf("update: SHA verified (%s)", shortSHA(downloadedSHA))
 
+	// Downgrade protection. The SHA above proves these are the bytes the
+	// signature covers; the release sequence inside them is therefore
+	// authenticated too. Refuse anything at or below the floor that is not
+	// the floor's own build, then raise the floor durably BEFORE the marker
+	// is written, so a crash in between can only leave a higher floor —
+	// never a staged newer binary with an older floor. applyPendingUpdate
+	// repeats the check against the staged file at next boot.
+	candidate, err := verifyCandidateRelease(newPath, downloadedSHA)
+	if err != nil {
+		os.Remove(newPath)
+		return fmt.Errorf("downloaded binary rejected: %w", err)
+	}
+	if err := raiseReleaseFloor(currentReleaseFloorPath(), candidate); err != nil {
+		os.Remove(newPath)
+		return fmt.Errorf("cannot raise release floor to %d: %w", candidate.Release, err)
+	}
+	log.Printf("update: release floor raised to %d (%s)", candidate.Release, shortSHA(candidate.SHA))
+
 	// Snapshot current running exe to .prev before the swap so the helper
 	// (or a future Windows recovery script) can roll back.
 	if err := copyFile(exe, prevPath); err != nil {
@@ -170,7 +192,8 @@ func performUpdateWindows(expectedSHA, signature string) error {
 	// Write the pending marker so applyPendingUpdate, on next boot,
 	// picks up the swap.
 	now := time.Now().UTC().Format(time.RFC3339)
-	marker := fmt.Sprintf("source=%s\ntarget=%s\nat=%s\nsha256=%s\nsignature=%s\n", newPath, exe, now, expectedSHA, signature)
+	marker := fmt.Sprintf("source=%s\ntarget=%s\nat=%s\nsha256=%s\nsignature=%s\nrelease=%d\n",
+		newPath, exe, now, expectedSHA, signature, candidate.Release)
 	if err := os.WriteFile(markerPath, []byte(marker), 0644); err != nil {
 		os.Remove(newPath)
 		return fmt.Errorf("write pending marker: %w", err)
@@ -282,7 +305,10 @@ func validatePendingUpdate(exe, markerPath, newPath string) error {
 		return fmt.Errorf("staged binary failed signature verification: %w", err)
 	}
 
-	return nil
+	// Release floor, again, against the staged bytes: a replayed marker and
+	// .new after the floor moved on, or swapped staged bytes, are refused
+	// here and cleaned up by the caller. See checkStagedRelease.
+	return checkStagedRelease(newPath, downloadedSHA, pm.Release)
 }
 
 // buildHelperBatch returns the contents of the .bat we leave on disk.
@@ -432,10 +458,19 @@ func reportAgentVersion(conn *websocket.Conn, mu *sync.Mutex) {
 		log.Printf("update: failed to compute self SHA for reporting: %v", err)
 		return
 	}
+	floor, floorOK := releaseFloorStatus()
 	msg := map[string]interface{}{
 		"type":   "agent_running_version",
 		"sha256": sha,
 		"os":     runtime.GOOS,
+		// Release floor (protocol 2). release is this binary's embedded
+		// sequence; the floor is the highest accepted release and the build
+		// that set it. release_floor_ok=false means the floor is absent or
+		// corrupt and the agent will refuse every update until repaired.
+		"release":           agentEmbeddedRelease(),
+		"release_floor":     floor.Release,
+		"release_floor_sha": floor.SHA,
+		"release_floor_ok":  floorOK,
 		// Tells the hub this binary verifies signed announcements. Its
 		// absence is how the hub recognises a pre-signature agent.
 		"update_protocol": agentUpdateProtocol,
@@ -453,6 +488,7 @@ func reportAgentVersion(conn *websocket.Conn, mu *sync.Mutex) {
 		log.Printf("update: failed to report version: %v", err)
 		return
 	}
-	log.Printf("update: reported running version %s to hub (os=%s, update_protocol=%d, transport_ok=%v, key_pinned=%v)",
-		shortSHA(sha), runtime.GOOS, agentUpdateProtocol, selfUpdateTransportOK(), updateKeyPinned())
+	log.Printf("update: reported running version %s to hub (os=%s, update_protocol=%d, transport_ok=%v, key_pinned=%v, release=%d, floor=%d/%s, floor_ok=%v)",
+		shortSHA(sha), runtime.GOOS, agentUpdateProtocol, selfUpdateTransportOK(), updateKeyPinned(),
+		agentEmbeddedRelease(), floor.Release, shortSHA(floor.SHA), floorOK)
 }

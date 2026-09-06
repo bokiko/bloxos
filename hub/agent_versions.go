@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bokiko/bloxos/proto/updatesigning"
 	"github.com/gorilla/websocket"
 	"github.com/labstack/echo/v4"
 )
@@ -87,6 +88,11 @@ type agentVersionInfo struct {
 	// existed never reports it, and the zero value (false) is what makes
 	// that safe: absent must mean "not pinned", never "assume yes".
 	UpdateKeyPinned bool `json:"update_key_pinned"`
+	// Protocol 2 reports the durable anti-rollback floor, independent of keys.
+	Release         uint64 `json:"release"`
+	ReleaseFloor    uint64 `json:"release_floor"`
+	ReleaseFloorSHA string `json:"release_floor_sha"`
+	ReleaseFloorOK  bool   `json:"release_floor_ok"`
 	// UpdateBlockedReason explains, when UpdatePending is true, why the hub
 	// is not announcing the update. Empty means nothing is blocking it.
 	// Without this an operator cannot tell a rollout in progress from a
@@ -114,7 +120,11 @@ type agentVersionReport struct {
 	// KeyPinned is the agent's own answer to "do I have a usable pinned
 	// update key on disk". Meaningless when UpdateProtocol is 0. Absent
 	// (zero value false) on any agent that predates this field.
-	KeyPinned bool
+	KeyPinned       bool
+	Release         uint64
+	ReleaseFloor    uint64
+	ReleaseFloorSHA string
+	ReleaseFloorOK  bool
 }
 
 type rolloutFailure struct {
@@ -227,9 +237,10 @@ func recomputeBinaryForPlatform(platform agentPlatform) {
 		return
 	}
 	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
+	release, err := updatesigning.ExtractReleaseReader(io.TeeReader(f, h))
+	if err != nil {
 		_ = f.Close()
-		failAgentBinaryState(platform, resolved, fmt.Errorf("hash resolved path %s: %w", resolved.Path, err))
+		failAgentBinaryState(platform, resolved, fmt.Errorf("read release and hash at %s: %w", resolved.Path, err))
 		return
 	}
 	if err := f.Close(); err != nil {
@@ -238,7 +249,7 @@ func recomputeBinaryForPlatform(platform agentPlatform) {
 	}
 	sha := hex.EncodeToString(h.Sum(nil))
 
-	state := agentBinaryState{Path: resolved.Path, Source: resolved.Source, SHA: sha, Mtime: info.ModTime()}
+	state := agentBinaryState{Path: resolved.Path, Source: resolved.Source, SHA: sha, Mtime: info.ModTime(), Release: release}
 	previous := replaceAgentBinaryState(platform, state)
 	if previous.Path != state.Path || previous.Source != state.Source || previous.Error != "" {
 		log.Printf("version: %s agent binary resolved source=%s path=%s", platform, state.Source, state.Path)
@@ -329,11 +340,14 @@ func (s *Server) announceVersionToAgent(machineID string, agent *ConnectedAgent)
 		return
 	}
 
-	msg := map[string]string{
+	msg := map[string]interface{}{
 		"type":      "agent_version",
 		"sha256":    sha,
 		"signature": sig,
 		"sig_alg":   "ed25519",
+	}
+	if v.UpdateProtocol >= 2 {
+		msg["release"] = currentAgentBinaryStateFor(osName, v.Arch).Release
 	}
 	data, _ := json.Marshal(msg)
 
@@ -402,6 +416,9 @@ func announceDecision(report *agentVersionInfo, osName, sha string) (sig string,
 	// trip and removes the guess.
 	if report == nil {
 		return "", "the hub has not yet received agent_running_version from this agent"
+	}
+	if reason := releaseAnnounceBlocked(report, currentAgentBinaryStateFor(osName, arch), sha); reason != "" {
+		return "", reason
 	}
 
 	// Architecture. An agent that never reported its arch also never asks
@@ -646,6 +663,10 @@ func (s *Server) recordAgentRunningVersion(machineID string, report agentVersion
 		UpdateProtocol:    report.UpdateProtocol,
 		UpdateTransportOK: report.TransportOK,
 		UpdateKeyPinned:   report.KeyPinned,
+		Release:           report.Release,
+		ReleaseFloor:      report.ReleaseFloor,
+		ReleaseFloorSHA:   strings.ToLower(report.ReleaseFloorSHA),
+		ReleaseFloorOK:    report.ReleaseFloorOK,
 	}
 	agentRunningVersionsMu.Unlock()
 	log.Printf("rollout: agent reported running=%s expected=%s os=%s arch=%s proto=%d pending=%v machine=%s",
@@ -676,7 +697,10 @@ func (s *Server) recordAgentRunningVersion(machineID string, report agentVersion
 	if osName != "" && (!hadPrev || prev.OS != osName || prev.Arch != arch ||
 		prev.UpdateProtocol != report.UpdateProtocol ||
 		prev.UpdateTransportOK != report.TransportOK ||
-		prev.UpdateKeyPinned != report.KeyPinned) &&
+		prev.UpdateKeyPinned != report.KeyPinned ||
+		prev.Release != report.Release || prev.ReleaseFloor != report.ReleaseFloor ||
+		!strings.EqualFold(prev.ReleaseFloorSHA, report.ReleaseFloorSHA) ||
+		prev.ReleaseFloorOK != report.ReleaseFloorOK) &&
 		expectedSHA != "" && runningSHA != expectedSHA {
 		s.agentsMu.RLock()
 		agent, online := s.agents[machineID]
@@ -764,6 +788,8 @@ func (s *Server) handleListVersions(c echo.Context) error {
 		expected := announcedSHAForArch(v.OS, v.Arch)
 		v.UpdatePending = expected != "" && v.RunningSHA != expected
 		switch {
+		case v.UpdateProtocol >= 2 && !v.ReleaseFloorOK:
+			v.UpdateBlockedReason = "agent_release_floor_unreadable: the agent cannot use its update floor; repair its local state and restart the agent before updating"
 		case v.UpdatePending:
 			// Same policy announceVersionToAgent applies, so what the API
 			// reports and what the hub actually does cannot drift.

@@ -39,6 +39,15 @@ Fleet management dashboard for AI machines. Go hub + agent, Next.js dashboard.
   trusted provisioning path.
 - The signature may come from a detached `<binary>.sig` produced offline, in
   which case the hub holds no private key — do not assume the hub signs.
+- **Protocol-2 update rollback protection** keeps the same v1 signature format.
+  Its SHA authenticates the release marker inside the binary. Agents persist
+  a release number plus SHA floor before replacing the executable, reject
+  unnumbered/older builds, and accept the same number only for the same SHA.
+  Bump the source-controlled number and marker in `agent/release.go` for every
+  new agent release, including rebuilds with changed bytes. Never raise the
+  floor from unsigned announcement metadata, reset it on key rotation or
+  installer re-runs, or delete it in automatic `.prev` recovery. Protocol-1
+  binaries cannot enforce this floor, including a pre-migration `.prev`.
 - **AI Sessions is metadata-only monitoring.** Agents report which supported
   AI coding tools (Claude Code, Codex, Kimi) are running, reduced to the
   contract in `proto/aisessions`: opaque id, tool, start time, project
