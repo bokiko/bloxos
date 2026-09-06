@@ -1173,7 +1173,11 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 				// UpdateProtocol is absent (0) on every agent built before
 				// signature verification existed. The hub uses that to decide
 				// whether announcing an update to it is safe at all.
-				UpdateProtocol int `json:"update_protocol"`
+				UpdateProtocol  int    `json:"update_protocol"`
+				Release         uint64 `json:"release"`
+				ReleaseFloor    uint64 `json:"release_floor"`
+				ReleaseFloorSHA string `json:"release_floor_sha"`
+				ReleaseFloorOK  bool   `json:"release_floor_ok"`
 				// UpdateTransportOK is the agent's own answer to whether its
 				// BLOXOS_HUB permits self-update, computed from the URL it is
 				// actually connected to rather than guessed from PUBLIC_URL.
@@ -1191,12 +1195,16 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 			}
 			if versionMsg.SHA256 != "" && machineID != "" {
 				s.recordAgentRunningVersion(machineID, agentVersionReport{
-					RunningSHA:     versionMsg.SHA256,
-					OS:             versionMsg.OS,
-					Arch:           versionMsg.Arch,
-					UpdateProtocol: versionMsg.UpdateProtocol,
-					TransportOK:    versionMsg.UpdateTransportOK,
-					KeyPinned:      versionMsg.UpdateKeyPinned,
+					RunningSHA:      versionMsg.SHA256,
+					OS:              versionMsg.OS,
+					Arch:            versionMsg.Arch,
+					UpdateProtocol:  versionMsg.UpdateProtocol,
+					Release:         versionMsg.Release,
+					ReleaseFloor:    versionMsg.ReleaseFloor,
+					ReleaseFloorSHA: versionMsg.ReleaseFloorSHA,
+					ReleaseFloorOK:  versionMsg.ReleaseFloorOK,
+					TransportOK:     versionMsg.UpdateTransportOK,
+					KeyPinned:       versionMsg.UpdateKeyPinned,
 				})
 			}
 

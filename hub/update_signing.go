@@ -41,10 +41,10 @@ import (
  * unauthenticated route) can no longer be substituted by anything that is
  * not the hub, which together with the agent's transport gate closes the
  * network-path attack. Mode 1 additionally means a compromised hub cannot
- * forge a signature for a new, malicious binary — but it can still replay a
- * previously-signed release, vulnerable ones included, since neither mode
- * has downgrade/monotonicity protection yet. That is a separate gap, not
- * closed by either signing mode.
+ * forge a signature for a new, malicious binary. Protocol-2 agents also
+ * enforce a persistent release/hash floor against the sequence embedded in
+ * the signed binary; protocol-1 agents remain replayable until upgraded.
+ * A compromised signer can still forge a higher-numbered malicious release.
  *
  * The canonical message and key codecs live in the updatesigning package,
  * shared by the hub, agent, and offline signing tool.

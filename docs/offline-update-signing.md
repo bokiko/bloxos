@@ -12,11 +12,19 @@ the hub. The private Ed25519 key stays on the offline build host.
 ## Invariants
 
 - Build from a pinned, clean commit and record it with the artifact hashes.
+- For each new agent release, bump both the release number and matching marker
+  in `agent/release.go` before building. A rebuild that changes the binary SHA
+  also needs a new number; equal-number/different-SHA updates are refused by
+  protocol-2 agents. Use the same number across the platform builds of a release.
 - The signing input and private key remain on FAT-LOLO. Never copy the private
   key to the hub or print it in a terminal transcript.
 - `bloxos-sign` and both agents use `updatesigning.Message`; the signed bytes
   are `bloxos-agent-update:v1:<os>:<sha256>` after trimming and lowercasing the
   OS and SHA.
+- Protocol-2 agents extract the release number from the signed binary itself.
+  No extra sidecar, signing command, or onboarding step is required. Their local
+  release/SHA floor survives key rotation and installer re-runs. See
+  [update recovery](agent-update-recovery.md) for migration and recovery limits.
 - A detached signature is standard-base64 Ed25519 in `<binary>.sig`, with one
   trailing newline. The hub verifies it against the configured public key
   before announcing it.

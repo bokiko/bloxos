@@ -15,12 +15,27 @@ func TestParsePendingMarker(t *testing.T) {
 		content     string
 		expectedSHA string
 		expectedSig string
+		expectedRel uint64
 	}{
 		{
 			name:        "normal",
 			content:     "source=a\ntarget=b\nat=time\nsha256=123456\nsignature=base64pad==\n",
 			expectedSHA: "123456",
 			expectedSig: "base64pad==",
+		},
+		{
+			name:        "with release",
+			content:     "sha256=123456\nsignature=sig=\nrelease=42\n",
+			expectedSHA: "123456",
+			expectedSig: "sig=",
+			expectedRel: 42,
+		},
+		{
+			name:        "unparseable release reads as absent",
+			content:     "sha256=123456\nsignature=sig=\nrelease=forty-two\n",
+			expectedSHA: "123456",
+			expectedSig: "sig=",
+			expectedRel: 0,
 		},
 		{
 			name:        "different order with unknown fields",
@@ -56,6 +71,9 @@ func TestParsePendingMarker(t *testing.T) {
 			}
 			if pm.Signature != tt.expectedSig {
 				t.Errorf("expected signature %q, got %q", tt.expectedSig, pm.Signature)
+			}
+			if pm.Release != tt.expectedRel {
+				t.Errorf("expected release %d, got %d", tt.expectedRel, pm.Release)
 			}
 		})
 	}

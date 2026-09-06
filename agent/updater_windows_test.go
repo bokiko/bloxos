@@ -39,9 +39,14 @@ func TestCheckAndCleanPendingUpdate(t *testing.T) {
 	newPath := exe + ".new"
 	markerPath := exe + ".pending"
 
-	// Create dummy binary to generate valid references
-	validSHA := writeTestBinary(t, newPath, "dummy exe content")
+	// The staged binary carries release 6; the running build is release 5.
+	// performUpdateWindows raises the floor before writing the marker, so
+	// the floor a genuine pending update boots into already names the
+	// staged build.
+	stagedContent := "dummy exe content " + markerFor(t, 6)
+	validSHA := writeTestBinary(t, newPath, stagedContent)
 	validSig := signFor(t, priv, "windows", validSHA)
+	floorPath := bootFloorForTest(t, releaseFloor{5, floorSHAa}, &releaseFloor{6, validSHA})
 
 	tests := []struct {
 		name    string
@@ -51,10 +56,38 @@ func TestCheckAndCleanPendingUpdate(t *testing.T) {
 		{
 			name: "success - keeps files",
 			setup: func() {
-				writeTestBinary(t, newPath, "dummy exe content")
+				writeTestBinary(t, newPath, stagedContent)
 				writeTestMarker(t, markerPath, validSHA, validSig)
 			},
 			wantErr: false,
+		},
+		{
+			name: "success - marker from older agent without release",
+			setup: func() {
+				writeTestBinary(t, newPath, stagedContent)
+				writeTestMarker(t, markerPath, validSHA, validSig)
+			},
+			wantErr: false,
+		},
+		{
+			name: "replayed after floor moved on - deletes files",
+			setup: func() {
+				if err := writeReleaseFloor(floorPath, releaseFloor{7, floorSHAc}); err != nil {
+					t.Fatal(err)
+				}
+				writeTestBinary(t, newPath, stagedContent)
+				writeTestMarker(t, markerPath, validSHA, validSig)
+			},
+			wantErr: true,
+		},
+		{
+			name: "unnumbered staged binary - deletes files",
+			setup: func() {
+				content := "dummy exe content without a marker"
+				sha := writeTestBinary(t, newPath, content)
+				writeTestMarker(t, markerPath, sha, signFor(t, priv, "windows", sha))
+			},
+			wantErr: true,
 		},
 		{
 			name: "missing SHA - deletes files",
@@ -102,6 +135,11 @@ func TestCheckAndCleanPendingUpdate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			os.Remove(newPath)
 			os.Remove(markerPath)
+			// Each case starts from the floor a genuine pending update
+			// boots into; cases that move it do so inside setup.
+			if err := writeReleaseFloor(floorPath, releaseFloor{6, validSHA}); err != nil {
+				t.Fatal(err)
+			}
 			tt.setup()
 
 			err := checkAndCleanPendingUpdate(exe, markerPath, newPath)
