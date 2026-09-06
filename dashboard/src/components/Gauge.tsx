@@ -1,6 +1,7 @@
 "use client";
 
 import { RadialBarChart, RadialBar, ResponsiveContainer, PolarAngleAxis } from "recharts";
+import { gaugeReading } from "@/lib/gauge-data.mjs";
 
 export type GaugeVariant = "neutral" | "ok" | "warning" | "critical";
 
@@ -51,8 +52,8 @@ export function Gauge({
   size = "md",
   mode = "radial",
 }: GaugeProps) {
-  const clamped = Math.min(100, Math.max(0, value));
-  const v = variant ?? deriveVariant(clamped, thresholds);
+  const reading = gaugeReading(value);
+  const v = variant ?? (Number.isFinite(value) ? deriveVariant(value, thresholds) : "neutral");
   const color = getColor(v);
 
   const dimensions = {
@@ -61,7 +62,7 @@ export function Gauge({
     lg: { width: 180, height: 180, fontSize: "2.25rem", labelSize: "0.875rem" },
   }[size];
 
-  const data = [{ value: clamped, fill: color }];
+  const data = [{ value: reading.arc, fill: color }];
 
   const chartConfig = mode === "half" 
     ? {
@@ -108,7 +109,7 @@ export function Gauge({
             className="font-mono tabular-nums font-semibold text-text-primary"
             style={{ fontSize: dimensions.fontSize }}
           >
-            {clamped.toFixed(0)}
+            {reading.label}
             <span className="text-text-tertiary" style={{ fontSize: `${parseFloat(dimensions.fontSize) * 0.6}rem` }}>
               {unit}
             </span>

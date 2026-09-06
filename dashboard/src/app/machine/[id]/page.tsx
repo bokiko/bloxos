@@ -16,6 +16,7 @@ import { MachineNotes } from "@/components/MachineNotes";
 import { AISessionsPanel } from "@/components/AISessionsPanel";
 import { useAISessions } from "@/contexts/AISessionsContext";
 import { MachineGauges } from "@/components/MachineGauges";
+import { latestGPUs } from "@/lib/gauge-data.mjs";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -231,6 +232,7 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
 
     return {
       ...baseData,
+      gpus: latestGPUs(sseData.gpus, baseData.gpus),
       metrics: {
         cpu_percent: sseData.cpu_percent ?? baseData.metrics.cpu_percent,
         cpu_temp_c: sseData.cpu_temp_c ?? baseData.metrics.cpu_temp_c,
@@ -1238,4 +1240,3 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
     </motion.div>
   );
 }
-
