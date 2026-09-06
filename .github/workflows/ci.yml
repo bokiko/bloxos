@@ -45,10 +45,10 @@ jobs:
   hub-race:
     name: Hub Tests (race)
     runs-on: ubuntu-latest
-    # A hung race run would otherwise sit pending indefinitely rather than
-    # failing. The Go timeout is the lower of the two on purpose -- it dumps
-    # goroutine stacks, the Actions kill does not.
-    timeout-minutes: 15
+    # The full suite can exceed 10m on hosted runners with race-instrumented
+    # bcrypt setup. Allow headroom without disabling the hang guard. Keep Go's
+    # deadline below the job limit so failures include goroutine stacks.
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: hub
@@ -63,7 +63,7 @@ jobs:
           cache-dependency-path: hub/go.sum
 
       - name: Run hub tests with the race detector
-        run: go test -race -count=1 -timeout=10m ./...
+        run: go test -race -count=1 -timeout=15m ./...
 
   agent:
     name: Agent Tests
@@ -148,6 +148,9 @@ jobs:
 
       - name: Lint dashboard
         run: pnpm lint
+
+      - name: Test dashboard
+        run: pnpm test
 
       - name: Build dashboard
         run: pnpm build
