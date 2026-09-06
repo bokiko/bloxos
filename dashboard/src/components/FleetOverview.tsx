@@ -230,15 +230,6 @@ export function FleetOverview({ machines }: FleetOverviewProps) {
           thresholds: [78, 86] as [number, number],
         }
       );
-
-      if (metrics.totalPower > 0) {
-        base.push({
-          value: Math.min(100, (metrics.totalPower / 10) * 10), // Scale for display
-          label: "Fleet Power",
-          unit: "W",
-          thresholds: [700, 900] as [number, number],
-        });
-      }
     }
 
     if (metrics.diskPressure > 0) {
@@ -261,9 +252,22 @@ export function FleetOverview({ machines }: FleetOverviewProps) {
     <div className="space-y-6">
       {/* Gauge cluster */}
       <div className="bg-surface-raised border border-border-subtle rounded-xl p-6">
-        <h3 className="text-sm font-semibold text-text-primary mb-6 uppercase tracking-wider">
-          Fleet Health
-        </h3>
+        <div className="flex items-center justify-between mb-6">
+          <h3 className="text-sm font-semibold text-text-primary uppercase tracking-wider">
+            Fleet Health
+          </h3>
+          {metrics.hasGpu && metrics.totalPower > 0 && (
+            <div className="flex items-baseline gap-2 px-3 py-1.5 rounded-lg bg-surface-sunken border border-border-subtle">
+              <span className="text-xs text-text-tertiary uppercase tracking-wider font-medium">
+                Fleet Power
+              </span>
+              <span className="text-lg font-mono tabular-nums text-text-primary font-semibold">
+                {metrics.totalPower.toFixed(0)}
+              </span>
+              <span className="text-xs text-text-tertiary">W</span>
+            </div>
+          )}
+        </div>
         <GaugeCluster gauges={gauges} size="md" />
       </div>
 
