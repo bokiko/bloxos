@@ -180,6 +180,43 @@ export function MetricCharts({ machineId, hasGpu }: MetricChartsProps) {
             </ResponsiveContainer>
           </div>
 
+          {/* GPU Utilization Chart */}
+          {hasGpu && (
+            <div className="bg-blox-bg/50 border border-blox-border/50 rounded-xl p-4">
+              <h4 className="text-xs font-medium text-blox-text mb-3">GPU Utilization (%)</h4>
+              <ResponsiveContainer width="100%" height={180}>
+                <AreaChart data={gpuData}>
+                  <defs>
+                    <linearGradient id="gpuUtilGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#10b981" stopOpacity={0.25} />
+                      <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <XAxis
+                    dataKey="timestamp"
+                    tickFormatter={formatTime}
+                    tick={{ fontSize: 10, fill: "#6b6b80", fontFamily: "var(--font-mono)" }}
+                    axisLine={false}
+                    tickLine={false}
+                  />
+                  <YAxis
+                    domain={[0, 100]}
+                    tick={{ fontSize: 10, fill: "#6b6b80", fontFamily: "var(--font-mono)" }}
+                    axisLine={false}
+                    tickLine={false}
+                    width={30}
+                  />
+                  <Tooltip
+                    contentStyle={tooltipStyle}
+                    labelFormatter={formatTooltipLabel}
+                    formatter={(v) => [`${Number(v ?? 0).toFixed(1)}%`, "GPU Util"]}
+                  />
+                  <Area type="monotone" dataKey="gpu_util" stroke="#10b981" fill="url(#gpuUtilGrad)" strokeWidth={1.5} />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+
           {/* GPU Temp Chart */}
           {hasGpu && (
             <div className="bg-blox-bg/50 border border-blox-border/50 rounded-xl p-4">
