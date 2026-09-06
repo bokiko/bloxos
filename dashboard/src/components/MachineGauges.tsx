@@ -43,8 +43,8 @@ export function MachineGauges({ metrics, gpus }: MachineGaugesProps) {
       : 0;
 
   const hasMultiGpu = gpus && gpus.length > 1;
-  const hasSingleGpu =
-    (gpus && gpus.length === 1) ||
+  const hasGpu =
+    (gpus && gpus.length > 0) ||
     (!gpus && (metrics.gpu_temp > 0 || metrics.gpu_util_percent > 0));
 
   // Main gauges (always shown)
@@ -63,34 +63,46 @@ export function MachineGauges({ metrics, gpus }: MachineGaugesProps) {
     },
   ];
 
-  // Single GPU or aggregated GPU metrics
-  if (hasSingleGpu) {
-    const gpu = gpus?.[0];
-    const gpuUtil = gpu ? gpu.util_percent : metrics.gpu_util_percent ?? 0;
-    const gpuTemp = gpu ? gpu.temp_c : metrics.gpu_temp ?? 0;
-    const vramPct =
-      gpu && (gpu.mem_total_bytes ?? 0) > 0
-        ? ((gpu.mem_used_bytes ?? 0) / gpu.mem_total_bytes) * 100
-        : (metrics.gpu_vram_total_bytes ?? 0) > 0
-        ? ((metrics.gpu_vram_used_bytes ?? 0) / metrics.gpu_vram_total_bytes) * 100
-        : 0;
+  // GPU metrics - show main radials for any GPU configuration
+  if (hasGpu) {
+    let gpuUtil = 0;
+    let gpuTemp = 0;
+    let vramPct = 0;
+
+    if (gpus && gpus.length > 0) {
+      // For multi-GPU: use max utilization, max temp, max VRAM% across all GPUs
+      gpuUtil = Math.max(...gpus.map((g) => g.util_percent ?? 0));
+      gpuTemp = Math.max(...gpus.map((g) => g.temp_c ?? 0));
+      const vramPcts = gpus
+        .filter((g) => (g.mem_total_bytes ?? 0) > 0)
+        .map((g) => ((g.mem_used_bytes ?? 0) / g.mem_total_bytes) * 100);
+      vramPct = vramPcts.length > 0 ? Math.max(...vramPcts) : 0;
+    } else {
+      // Fallback to machine-level metrics
+      gpuUtil = metrics.gpu_util_percent ?? 0;
+      gpuTemp = metrics.gpu_temp ?? 0;
+      vramPct =
+        (metrics.gpu_vram_total_bytes ?? 0) > 0
+          ? ((metrics.gpu_vram_used_bytes ?? 0) / metrics.gpu_vram_total_bytes) * 100
+          : 0;
+    }
 
     mainGauges.push(
       {
         value: gpuUtil,
-        label: "GPU Util",
+        label: hasMultiGpu ? "Max GPU Util" : "GPU Util",
         unit: "%",
         thresholds: [70, 90] as [number, number],
       },
       {
         value: vramPct,
-        label: "VRAM",
+        label: hasMultiGpu ? "Max VRAM" : "VRAM",
         unit: "%",
         thresholds: [80, 95] as [number, number],
       },
       {
         value: gpuTemp,
-        label: "GPU Temp",
+        label: hasMultiGpu ? "Max GPU Temp" : "GPU Temp",
         unit: "°C",
         thresholds: [78, 86] as [number, number],
       }
@@ -109,8 +121,8 @@ export function MachineGauges({ metrics, gpus }: MachineGaugesProps) {
   return (
     <div className="space-y-6">
       {/* Main gauges */}
-      <div className="bg-blox-card border border-blox-border rounded-xl p-6">
-        <h3 className="text-xs font-medium text-blox-muted uppercase tracking-wider mb-6">
+      <div className="bg-surface-raised border border-border-subtle rounded-xl p-6">
+        <h3 className="text-xs font-medium text-text-secondary uppercase tracking-wider mb-6">
           Live Metrics
         </h3>
         <div className="flex flex-wrap items-center justify-center gap-6">
@@ -122,8 +134,8 @@ export function MachineGauges({ metrics, gpus }: MachineGaugesProps) {
 
       {/* Multi-GPU mini gauges */}
       {hasMultiGpu && (
-        <div className="bg-blox-card border border-blox-border rounded-xl p-5">
-          <h3 className="text-xs font-medium text-blox-muted uppercase tracking-wider mb-4">
+        <div className="bg-surface-raised border border-border-subtle rounded-xl p-5">
+          <h3 className="text-xs font-medium text-text-secondary uppercase tracking-wider mb-4">
             Per-GPU Metrics
           </h3>
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
@@ -136,34 +148,34 @@ export function MachineGauges({ metrics, gpus }: MachineGaugesProps) {
               return (
                 <div
                   key={gpu.index}
-                  className="bg-blox-bg/50 border border-blox-border/50 rounded-lg p-3"
+                  className="bg-surface-sunken border border-border-subtle rounded-lg p-3"
                 >
-                  <div className="text-[10px] font-mono text-blox-muted mb-2 uppercase tracking-wider">
+                  <div className="text-[10px] font-mono text-text-tertiary mb-2 uppercase tracking-wider">
                     GPU {gpu.index}
                   </div>
                   <div className="space-y-2">
                     <div className="flex justify-between items-baseline">
-                      <span className="text-[9px] text-blox-muted uppercase">Util</span>
-                      <span className="text-sm font-mono tabular-nums text-blox-text">
+                      <span className="text-[9px] text-text-tertiary uppercase">Util</span>
+                      <span className="text-sm font-mono tabular-nums text-text-primary">
                         {gpu.util_percent.toFixed(0)}%
                       </span>
                     </div>
                     <div className="flex justify-between items-baseline">
-                      <span className="text-[9px] text-blox-muted uppercase">VRAM</span>
-                      <span className="text-sm font-mono tabular-nums text-blox-text">
+                      <span className="text-[9px] text-text-tertiary uppercase">VRAM</span>
+                      <span className="text-sm font-mono tabular-nums text-text-primary">
                         {vramPct.toFixed(0)}%
                       </span>
                     </div>
                     <div className="flex justify-between items-baseline">
-                      <span className="text-[9px] text-blox-muted uppercase">Temp</span>
-                      <span className="text-sm font-mono tabular-nums text-blox-text">
+                      <span className="text-[9px] text-text-tertiary uppercase">Temp</span>
+                      <span className="text-sm font-mono tabular-nums text-text-primary">
                         {gpu.temp_c.toFixed(0)}°C
                       </span>
                     </div>
                     {gpu.power_watts > 0 && (
                       <div className="flex justify-between items-baseline">
-                        <span className="text-[9px] text-blox-muted uppercase">Power</span>
-                        <span className="text-sm font-mono tabular-nums text-blox-text">
+                        <span className="text-[9px] text-text-tertiary uppercase">Power</span>
+                        <span className="text-sm font-mono tabular-nums text-text-primary">
                           {gpu.power_watts.toFixed(0)}W
                         </span>
                       </div>

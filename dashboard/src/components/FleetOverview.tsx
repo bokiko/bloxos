@@ -57,7 +57,7 @@ function computeFleetMetrics(machines: MachineMetrics[]): FleetMetrics {
   let gpuCount = 0;
 
   for (const m of activeMachines) {
-    if ((m.cpu_percent ?? 0) > 0) {
+    if ((m.cpu_percent ?? 0) >= 0) {
       cpuSum += m.cpu_percent;
       cpuCount++;
     }

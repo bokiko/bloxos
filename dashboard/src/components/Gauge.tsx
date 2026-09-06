@@ -1,6 +1,6 @@
 "use client";
 
-import { RadialBarChart, RadialBar, ResponsiveContainer } from "recharts";
+import { RadialBarChart, RadialBar, ResponsiveContainer, PolarAngleAxis } from "recharts";
 
 export type GaugeVariant = "neutral" | "ok" | "warning" | "critical";
 
@@ -91,6 +91,7 @@ export function Gauge({
             cy={mode === "half" ? "100%" : "50%"}
             barSize={size === "sm" ? 8 : size === "lg" ? 14 : 10}
           >
+            <PolarAngleAxis type="number" domain={[0, 100]} tick={false} />
             <RadialBar
               dataKey="value"
               cornerRadius={4}
