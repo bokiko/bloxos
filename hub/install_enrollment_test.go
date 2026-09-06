@@ -18,13 +18,27 @@ import (
 
 // seedTokenValue inserts a valid (unused, unexpired) install token with the
 // given raw value and returns it. Complements seedValidToken, which always
-// inserts the same fixed token.
+// inserts the same fixed token. Populates mint-time binding columns if
+// PUBLIC_URL is set, so the token can be used with GET /join if needed.
 func (s *Server) seedTokenValue(t *testing.T, raw string) string {
 	t.Helper()
 	h := sha256.Sum256([]byte(raw))
 	tokenHash := hex.EncodeToString(h[:])
 	expiresAt := time.Now().Add(1 * time.Hour).Format("2006-01-02 15:04:05")
-	if _, err := s.db.Exec(`INSERT INTO tokens (token_hash, expires_at, used) VALUES (?, ?, FALSE)`, tokenHash, expiresAt); err != nil {
+	// Populate mint-time binding columns so join links work, mirroring
+	// production: store the config binding only, never the script (which would
+	// embed the raw token). Use the current PUBLIC_URL and CA state. If
+	// PUBLIC_URL is not set, leave the columns NULL so the token is usable for
+	// WebSocket enrollment but not for /join (which requires PUBLIC_URL).
+	httpBase, _ := publicAndWebsocketBase()
+	var mintHTTPBase, mintCASHA256 interface{}
+	if httpBase != "" {
+		_, caSHA256 := bootstrapCAFor(httpBase)
+		mintHTTPBase = httpBase
+		mintCASHA256 = caSHA256
+	}
+	if _, err := s.db.Exec(`INSERT INTO tokens (token_hash, expires_at, used, mint_time_http_base, mint_time_ca_sha256) VALUES (?, ?, FALSE, ?, ?)`,
+		tokenHash, expiresAt, mintHTTPBase, mintCASHA256); err != nil {
 		t.Fatalf("seed token %q: %v", raw, err)
 	}
 	return raw

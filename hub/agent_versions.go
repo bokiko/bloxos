@@ -50,6 +50,21 @@ type agentVersionInfo struct {
 	// ("linux", "windows"). Empty for legacy agents that predate
 	// per-platform tracking — those fall back to the linux SHA.
 	OS string `json:"os,omitempty"`
+	// Arch is the CPU architecture the hub believes this agent runs on, in
+	// GOARCH spelling ("amd64", "arm64"). Reported by the agent when it
+	// sends one; otherwise inferred from the machine's metrics OS string;
+	// otherwise empty, which announces the default (amd64) exactly as the
+	// hub did before it knew about architectures.
+	Arch string `json:"arch,omitempty"`
+	// ArchReported is whether Arch came from the agent itself. An agent
+	// that reports its arch also requests that arch on /download/agent; an
+	// agent that does not predates both and downloads the default build
+	// regardless of what the hub announces. That is why an inferred
+	// non-default Arch must be withheld rather than announced: announcing
+	// the arm64 SHA to a legacy arm64 agent makes it download amd64 bytes,
+	// which the SHA check then correctly rejects — and if the hub instead
+	// announced amd64, the agent would install a binary its CPU cannot run.
+	ArchReported bool `json:"arch_reported"`
 	// UpdateProtocol is the agent's self-update capability level. 0 means
 	// the agent never reported one, i.e. a binary built before signature
 	// verification existed, which cannot check what the hub announces.
@@ -87,6 +102,9 @@ type agentVersionInfo struct {
 type agentVersionReport struct {
 	RunningSHA string
 	OS         string
+	// Arch is the agent's runtime.GOARCH. Empty for any agent built before
+	// per-architecture delivery; such an agent downloads without ?arch=.
+	Arch string
 	// UpdateProtocol is 0 for any agent built before signature verification.
 	UpdateProtocol int
 	// TransportOK is the agent's own answer to "can I self-update over the
@@ -161,26 +179,43 @@ func reconnectMonitorLoop() {
 
 // recomputeAgentBinarySHA refreshes the cached SHA for every supported
 // platform's agent binary. Each platform is mtime-cached independently
-// — a Linux build kicking the Linux SHA does not reset the Windows
-// SHA (and vice-versa).
+// — a Linux amd64 build kicking that SHA does not reset the arm64 or
+// Windows SHA (and vice-versa).
 func recomputeAgentBinarySHA() {
-	recomputeBinaryFor("linux")
-	recomputeBinaryFor("windows")
+	for _, platform := range supportedAgentPlatforms {
+		recomputeBinaryForPlatform(platform)
+	}
 }
 
+// recomputeBinaryFor refreshes an OS's default-architecture binary. Kept for
+// pre-arch callers; per-arch paths use recomputeBinaryForArch.
 func recomputeBinaryFor(osName string) {
-	osName = normalizeAgentOS(osName)
-	resolved, err := resolveAgentBinaryFor(osName)
+	recomputeBinaryForArch(osName, defaultAgentArch)
+}
+
+// recomputeBinaryForArch refreshes one (os, arch). A platform the hub does
+// not build for has no state to refresh; the caller sees the reason through
+// currentAgentBinaryStateFor.
+func recomputeBinaryForArch(osName, arch string) {
+	platform, err := agentPlatformFor(osName, arch)
 	if err != nil {
-		failAgentBinaryState(osName, resolved, err)
+		return
+	}
+	recomputeBinaryForPlatform(platform)
+}
+
+func recomputeBinaryForPlatform(platform agentPlatform) {
+	resolved, err := resolveAgentBinaryFor(platform.OS, platform.Arch)
+	if err != nil {
+		failAgentBinaryState(platform, resolved, err)
 		return
 	}
 	info, err := os.Stat(resolved.Path)
 	if err != nil {
-		failAgentBinaryState(osName, resolved, fmt.Errorf("stat resolved path %s: %w", resolved.Path, err))
+		failAgentBinaryState(platform, resolved, fmt.Errorf("stat resolved path %s: %w", resolved.Path, err))
 		return
 	}
-	cached := currentAgentBinaryState(osName)
+	cached := currentAgentBinaryStateFor(platform.OS, platform.Arch)
 	if cached.Path == resolved.Path && cached.Source == resolved.Source &&
 		info.ModTime().Equal(cached.Mtime) && cached.SHA != "" && cached.Error == "" {
 		return
@@ -188,33 +223,33 @@ func recomputeBinaryFor(osName string) {
 
 	f, err := os.Open(resolved.Path)
 	if err != nil {
-		failAgentBinaryState(osName, resolved, fmt.Errorf("open resolved path %s: %w", resolved.Path, err))
+		failAgentBinaryState(platform, resolved, fmt.Errorf("open resolved path %s: %w", resolved.Path, err))
 		return
 	}
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
 		_ = f.Close()
-		failAgentBinaryState(osName, resolved, fmt.Errorf("hash resolved path %s: %w", resolved.Path, err))
+		failAgentBinaryState(platform, resolved, fmt.Errorf("hash resolved path %s: %w", resolved.Path, err))
 		return
 	}
 	if err := f.Close(); err != nil {
-		failAgentBinaryState(osName, resolved, fmt.Errorf("close resolved path %s: %w", resolved.Path, err))
+		failAgentBinaryState(platform, resolved, fmt.Errorf("close resolved path %s: %w", resolved.Path, err))
 		return
 	}
 	sha := hex.EncodeToString(h.Sum(nil))
 
 	state := agentBinaryState{Path: resolved.Path, Source: resolved.Source, SHA: sha, Mtime: info.ModTime()}
-	previous := replaceAgentBinaryState(osName, state)
+	previous := replaceAgentBinaryState(platform, state)
 	if previous.Path != state.Path || previous.Source != state.Source || previous.Error != "" {
-		log.Printf("version: %s agent binary resolved source=%s path=%s", osName, state.Source, state.Path)
+		log.Printf("version: %s agent binary resolved source=%s path=%s", platform, state.Source, state.Path)
 	}
 	for _, skipped := range resolved.Skipped {
-		log.Printf("version: %s agent binary candidate skipped: %s", osName, skipped)
+		log.Printf("version: %s agent binary candidate skipped: %s", platform, skipped)
 	}
 
 	if previous.SHA != "" && previous.SHA != sha {
 		log.Printf("version: %s agent binary changed (%s -> %s), update will propagate",
-			osName, versionShortSHA(previous.SHA), versionShortSHA(sha))
+			platform, versionShortSHA(previous.SHA), versionShortSHA(sha))
 		// Reset circuit breaker — a fresh build deserves a fresh rollout.
 		rolloutFailuresMu.Lock()
 		rolloutFailures = nil
@@ -234,16 +269,23 @@ func agentBinaryPath() string {
 }
 
 // agentBinaryPathFor returns the exact cached path whose bytes produced the
-// advertised SHA. Hashing, detached-signature lookup, and downloads all use
-// this state rather than resolving independently.
+// advertised SHA for an OS's default architecture. Hashing,
+// detached-signature lookup, and downloads all use this state rather than
+// resolving independently.
 func agentBinaryPathFor(osName string) string {
-	return currentAgentBinaryState(osName).Path
+	return agentBinaryPathForArch(osName, defaultAgentArch)
+}
+
+// agentBinaryPathForArch is agentBinaryPathFor for one (os, arch).
+func agentBinaryPathForArch(osName, arch string) string {
+	return currentAgentBinaryStateFor(osName, arch).Path
 }
 
 // announceVersionToAgent sends an "agent_version" frame to a connected agent,
 // unless rollout is paused or announceDecision withholds it. The SHA
 // announced is platform-specific: Windows agents get the Windows binary SHA,
-// Linux/unknown agents get the Linux SHA.
+// Linux agents get the SHA for the architecture the hub has recorded for
+// them (amd64 when none is known, matching the arch-less download).
 func (s *Server) announceVersionToAgent(machineID string, agent *ConnectedAgent) {
 	rolloutPausedMu.RLock()
 	paused := rolloutPaused
@@ -253,8 +295,16 @@ func (s *Server) announceVersionToAgent(machineID string, agent *ConnectedAgent)
 		return
 	}
 
+	// One read of the map, reused for the arch, the already-up-to-date
+	// check and the policy below. announceDecision takes no locks by
+	// design, so the caller is the only place that touches
+	// agentRunningVersionsMu.
+	agentRunningVersionsMu.RLock()
+	v, hadVersion := agentRunningVersions[machineID]
+	agentRunningVersionsMu.RUnlock()
+
 	osName := s.lookupAgentOS(machineID)
-	sha := announcedSHAFor(osName)
+	sha := announcedSHAForArch(osName, v.Arch)
 	if sha == "" {
 		return
 	}
@@ -265,12 +315,6 @@ func (s *Server) announceVersionToAgent(machineID string, agent *ConnectedAgent)
 	// announce (matching SHAs), so arming a 90s reconnect timer for a
 	// reconnect that will never come just trips the rollout circuit
 	// breaker on healthy fleets every time the hub restarts.
-	// One read of the map, reused for both the already-up-to-date check and
-	// the policy below. announceDecision takes no locks by design, so the
-	// caller is the only place that touches agentRunningVersionsMu.
-	agentRunningVersionsMu.RLock()
-	v, hadVersion := agentRunningVersions[machineID]
-	agentRunningVersionsMu.RUnlock()
 	if hadVersion && v.RunningSHA == sha {
 		return
 	}
@@ -333,11 +377,19 @@ func (s *Server) announceVersionToAgent(machineID string, agent *ConnectedAgent)
 // more exotic than a dashboard poll racing an agent reconnect. Codex found
 // it; keeping this function lock-free is what makes it unrepeatable.
 func announceDecision(report *agentVersionInfo, osName, sha string) (sig string, blockedBecause string) {
+	arch := defaultAgentArch
+	if report != nil && report.Arch != "" {
+		arch = report.Arch
+	}
 	if sha == "" {
 		if osName == "" {
 			return "", "the hub has not yet learned this agent's operating system"
 		}
-		return "", fmt.Sprintf("the hub is not serving a %s agent binary", osName)
+		platform := normalizeAgentOS(osName) + "/" + arch
+		if state := currentAgentBinaryStateFor(osName, arch); state.Error != "" {
+			return "", fmt.Sprintf("the hub is not serving a %s agent binary: %s", platform, state.Error)
+		}
+		return "", fmt.Sprintf("the hub is not serving a %s agent binary", platform)
 	}
 
 	// Nothing has been heard from this agent yet. announceVersionToAgent is
@@ -350,6 +402,21 @@ func announceDecision(report *agentVersionInfo, osName, sha string) (sig string,
 	// trip and removes the guess.
 	if report == nil {
 		return "", "the hub has not yet received agent_running_version from this agent"
+	}
+
+	// Architecture. An agent that never reported its arch also never asks
+	// for one on /download/agent, so whatever the hub announces, it fetches
+	// the default (amd64) build. On an amd64 host that is the right answer
+	// and announcing keeps today's fleet updating unchanged. On a host whose
+	// metrics say otherwise it is never right: announce arm64 and the agent
+	// downloads amd64 bytes it then rejects on SHA; announce amd64 and it
+	// installs a binary its CPU cannot execute, which is the systemd
+	// "Exec format error" crash loop. The only safe move is to withhold
+	// and say why, until the installer is re-run with an arch-aware agent.
+	if normalizeAgentOS(osName) == "linux" && !report.ArchReported && arch != defaultAgentArch {
+		return "", fmt.Sprintf("agent_arch_not_reported: this agent predates per-architecture updates and "+
+			"would download the %s build, but the machine reports %s; re-run the hub installer on this host",
+			defaultAgentArch, arch)
 	}
 
 	// Transport. This gates every agent, for two different reasons, and the
@@ -400,29 +467,60 @@ func announceDecision(report *agentVersionInfo, osName, sha string) (sig string,
 	// update to be had — announcing anyway would only arm the 90s
 	// reconnect-expectation timer for a reconnect that never comes, and trip
 	// the rollout circuit breaker on a healthy fleet.
-	sig = announcedSignatureFor(osName, sha)
+	sig = announcedSignatureForArch(osName, arch, sha)
 	if sig == "" {
 		if enabled, reason := updateSigningStatus(); !enabled {
 			return "", "the hub cannot sign updates: " + reason
 		}
-		return "", fmt.Sprintf("no valid signature is available for the %s agent binary the hub "+
-			"is serving — re-sign it, or check <binary>.sig is current", osName)
+		return "", fmt.Sprintf("no valid signature is available for the %s/%s agent binary the hub "+
+			"is serving — re-sign it, or check <binary>.sig is current", normalizeAgentOS(osName), arch)
 	}
 	return sig, ""
 }
 
-// announcedSHAFor returns the platform-specific SHA the hub will announce.
-// Unknown or empty OS values stay unannounced until the agent reports its OS;
-// sending the wrong platform's SHA would cause a perpetual update loop.
+// announcedSHAFor returns the SHA the hub will announce for an OS's default
+// architecture. Unknown or empty OS values stay unannounced until the agent
+// reports its OS; sending the wrong platform's SHA would cause a perpetual
+// update loop.
 func announcedSHAFor(osName string) string {
+	return announcedSHAForArch(osName, defaultAgentArch)
+}
+
+// announcedSHAForArch is announcedSHAFor for one (os, arch). An empty arch
+// means the default, which is what an agent that reports no arch downloads.
+// An architecture the hub does not serve yields "", so nothing is announced
+// and announceDecision reports why.
+func announcedSHAForArch(osName, arch string) string {
 	switch strings.ToLower(strings.TrimSpace(osName)) {
-	case "windows":
-		return currentAgentBinaryState("windows").SHA
-	case "linux":
-		return currentAgentBinaryState("linux").SHA
+	case "windows", "linux":
+		return currentAgentBinaryStateFor(osName, arch).SHA
 	default:
 		return ""
 	}
+}
+
+// lookupAgentArch infers a machine's CPU architecture from the OS string its
+// agent reported in metrics, for agents that predate the arch field in
+// agent_running_version. Two formats exist: "linux/arm64" from older
+// agents, and "ubuntu 24.04 (aarch64)" from host-info-reporting ones.
+// Returns "" when the string carries no recognisable architecture.
+func (s *Server) lookupAgentArch(machineID string) string {
+	osStr := strings.ToLower(s.lookupMetricsOS(machineID))
+	if osStr == "" {
+		return ""
+	}
+	if idx := indexByte(osStr, '/'); idx > 0 {
+		if arch, ok := normalizeAgentArch(osStr[idx+1:]); ok {
+			return arch
+		}
+	}
+	for _, spelling := range []string{"x86_64", "amd64", "aarch64", "arm64"} {
+		if strings.Contains(osStr, spelling) {
+			arch, _ := normalizeAgentArch(spelling)
+			return arch
+		}
+	}
+	return ""
 }
 
 // lookupAgentOS returns the recorded OS for a machine ("linux",
@@ -519,7 +617,18 @@ func (s *Server) recordAgentRunningVersion(machineID string, report agentVersion
 	if osName == "" {
 		osName = s.lookupAgentOS(machineID)
 	}
-	expectedSHA := announcedSHAFor(osName)
+	// The arch the agent reports wins; it is what its updater will request.
+	// A legacy agent reports none, so infer it from the metrics OS string —
+	// not to announce for it, but so announceDecision can refuse to send a
+	// legacy arm64 agent an update it would fetch as amd64.
+	arch := strings.ToLower(strings.TrimSpace(report.Arch))
+	archReported := arch != ""
+	if archReported {
+		arch, _ = normalizeAgentArch(arch)
+	} else {
+		arch = s.lookupAgentArch(machineID)
+	}
+	expectedSHA := announcedSHAForArch(osName, arch)
 
 	hostname := s.lookupVersionHostname(machineID)
 
@@ -532,13 +641,15 @@ func (s *Server) recordAgentRunningVersion(machineID string, report agentVersion
 		ReportedAt:        time.Now(),
 		UpdatePending:     expectedSHA != "" && runningSHA != expectedSHA,
 		OS:                osName,
+		Arch:              arch,
+		ArchReported:      archReported,
 		UpdateProtocol:    report.UpdateProtocol,
 		UpdateTransportOK: report.TransportOK,
 		UpdateKeyPinned:   report.KeyPinned,
 	}
 	agentRunningVersionsMu.Unlock()
-	log.Printf("rollout: agent reported running=%s expected=%s os=%s proto=%d pending=%v machine=%s",
-		versionShortSHA(runningSHA), versionShortSHA(expectedSHA), osName, report.UpdateProtocol,
+	log.Printf("rollout: agent reported running=%s expected=%s os=%s arch=%s proto=%d pending=%v machine=%s",
+		versionShortSHA(runningSHA), versionShortSHA(expectedSHA), osName, arch, report.UpdateProtocol,
 		expectedSHA != "" && runningSHA != expectedSHA, machineID)
 
 	if expectedSHA != "" && runningSHA == expectedSHA {
@@ -562,7 +673,7 @@ func (s *Server) recordAgentRunningVersion(machineID string, report agentVersion
 	// them — including an agent's installer finally getting re-run, which
 	// only changes UpdateKeyPinned — is exactly as much a reason to
 	// re-announce as learning the OS is.
-	if osName != "" && (!hadPrev || prev.OS != osName ||
+	if osName != "" && (!hadPrev || prev.OS != osName || prev.Arch != arch ||
 		prev.UpdateProtocol != report.UpdateProtocol ||
 		prev.UpdateTransportOK != report.TransportOK ||
 		prev.UpdateKeyPinned != report.KeyPinned) &&
@@ -650,12 +761,20 @@ func (s *Server) handleListVersions(c echo.Context) error {
 	for i := range versions {
 		v := &versions[i]
 		v.Hostname = s.lookupVersionHostname(v.MachineID)
-		expected := announcedSHAFor(v.OS)
+		expected := announcedSHAForArch(v.OS, v.Arch)
 		v.UpdatePending = expected != "" && v.RunningSHA != expected
-		if v.UpdatePending {
+		switch {
+		case v.UpdatePending:
 			// Same policy announceVersionToAgent applies, so what the API
 			// reports and what the hub actually does cannot drift.
 			_, v.UpdateBlockedReason = announceDecision(v, v.OS, expected)
+		case expected == "":
+			// No build is served for this agent's platform (unknown OS, or an
+			// architecture the hub does not carry). Nothing is pending, but it
+			// is not "up to date" either — surface why so the dashboard does
+			// not show a false green. announceDecision with an empty SHA
+			// returns exactly that reason.
+			_, v.UpdateBlockedReason = announceDecision(v, v.OS, "")
 		}
 	}
 
@@ -665,6 +784,18 @@ func (s *Server) handleListVersions(c echo.Context) error {
 	rolloutPausedMu.RUnlock()
 
 	signingEnabled, signingDisabledReason := updateSigningStatus()
+
+	// The pre-arch fields keep their meaning — "linux" is the amd64 (or
+	// legacy-path) binary, exactly what an arch-less download serves — so
+	// the Versions dashboard keeps working. agent_binaries_by_arch carries
+	// every platform the hub tracks.
+	byArch := map[string]map[string]agentBinaryState{}
+	for _, platform := range supportedAgentPlatforms {
+		if byArch[platform.OS] == nil {
+			byArch[platform.OS] = map[string]agentBinaryState{}
+		}
+		byArch[platform.OS][platform.Arch] = currentAgentBinaryStateFor(platform.OS, platform.Arch)
+	}
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"signing_enabled":         signingEnabled,
@@ -679,9 +810,10 @@ func (s *Server) handleListVersions(c echo.Context) error {
 			"linux":   linuxState,
 			"windows": windowsState,
 		},
-		"agents":         versions,
-		"rollout_paused": paused,
-		"pause_reason":   pauseReason,
+		"agent_binaries_by_arch": byArch,
+		"agents":                 versions,
+		"rollout_paused":         paused,
+		"pause_reason":           pauseReason,
 	})
 }
 

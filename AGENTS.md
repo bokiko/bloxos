@@ -49,6 +49,14 @@ Fleet management dashboard for AI machines. Go hub + agent, Next.js dashboard.
   only (no history) and re-sanitizes every frame. The admin switch defaults
   to on; disabling it stops agent-side scanning via the `ai_sessions_config`
   frame, and `BLOXOS_AI_SESSIONS=0` on an agent is a hard local opt-out.
+- **Join links** (`GET /join/<token>`, `hub/join.go`) reuse the 15-minute
+  install token as the code and serve the verbose Linux bootstrap. They are
+  never consumed by a GET — only `enrollment_committed` consumes the token —
+  and every unusable code gets the same 404. Behind a private CA the short
+  command pins the SPKI of the leaf the hub verified at mint time
+  (`curl -k --pinnedpubkey`); the hub refuses to mint if it cannot obtain a
+  trustworthy pin. Never emit an unpinned `-k`, a `| bash`, or a
+  Host-derived authority, and keep join codes out of logs.
 - Credentials NEVER committed — use env vars or local config
 - Dark mode is the default UI theme
 - Caddy TLS uses RSA-2048 keys, not ECDSA. Do not change without testing on stock Windows PowerShell 5.1.

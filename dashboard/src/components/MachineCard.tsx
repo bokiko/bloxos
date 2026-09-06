@@ -296,7 +296,17 @@ export function MachineCard({ machine, onDelete, onEdit, onRefresh }: MachineCar
               <span>{machine.latency_ms} ms</span>
             </>
           )}
-          {versionInfo && versionInfo.update_pending && (
+          {versionInfo && versionInfo.update_blocked_reason ? (
+            <>
+              <span className="text-border-strong" aria-hidden>·</span>
+              <span
+                className="inline-flex items-center gap-1 rounded-sm px-1 py-0 bg-status-critical-tint text-status-critical font-medium"
+                title={versionInfo.update_blocked_reason}
+              >
+                update withheld
+              </span>
+            </>
+          ) : versionInfo && versionInfo.update_pending ? (
             <>
               <span className="text-border-strong" aria-hidden>·</span>
               <span
@@ -306,7 +316,7 @@ export function MachineCard({ machine, onDelete, onEdit, onRefresh }: MachineCar
                 update pending
               </span>
             </>
-          )}
+          ) : null}
         </div>
       </motion.div>
     </div>

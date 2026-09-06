@@ -127,25 +127,58 @@ func (s *Server) handleCreateToken(c echo.Context) error {
 		})
 	}
 
+	// Everything the join command needs is settled before the token row
+	// exists, so a hub that cannot produce a trustworthy command mints
+	// nothing: no token, no link, no fallback to an unauthenticated fetch.
+	httpBase, wsBase := publicAndWebsocketBase()
+	publicURL, err := parsePublicURL(httpBase)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+	caURL, caSHA256 := bootstrapCAFor(httpBase)
+	joinPin := ""
+	if caSHA256 != "" {
+		joinPin, err = joinPinForPrivateCA(c.Request().Context(), publicURL)
+		if err != nil {
+			log.Printf("token_create: refusing to mint, cannot pin the hub's TLS key for the join command: %v", err)
+			return c.JSON(http.StatusServiceUnavailable, map[string]string{
+				"error": "cannot generate an install command: " + err.Error() +
+					". The hub must be able to reach PUBLIC_URL over TLS with a certificate issued by BLOXOS_CA_CERT.",
+			})
+		}
+	}
+
 	token := uuid.New().String()
 	h := sha256.Sum256([]byte(token))
 	tokenHash := hex.EncodeToString(h[:])
-	expiresAt := time.Now().Add(15 * time.Minute)
+	expiresAt := time.Now().Add(installTokenTTL)
 
-	_, err := s.db.Exec(`INSERT INTO tokens (token_hash, expires_at) VALUES (?, ?)`, tokenHash, expiresAt)
-	if err != nil {
+	// Bind the join link to the configuration captured at mint time: store the
+	// key binding values (httpBase and CA SHA-256) only. The raw install token
+	// is never persisted — the row keys on token_hash, and GET /join/<code>
+	// receives the token in the request path — so the served script is rebuilt
+	// at serve time from these stored values plus the request token. GET
+	// verifies the current config still matches the mint-time binding and
+	// rejects if not, so a change to PUBLIC_URL or BLOXOS_CA_CERT after mint
+	// cannot redirect agents to a different authority or CA than what was
+	// authenticated at mint.
+	if _, err := s.db.Exec(
+		`INSERT INTO tokens (token_hash, expires_at, mint_time_http_base, mint_time_ca_sha256) VALUES (?, ?, ?, ?)`,
+		tokenHash, expiresAt, httpBase, caSHA256); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
-	httpBase, wsBase := publicAndWebsocketBase()
-	caURL, caSHA256 := bootstrapCAFor(httpBase)
+	joinURL := joinURLFor(httpBase, token)
 	return c.JSON(http.StatusOK, installTokenResponse{
-		Token:          token,
-		Command:        buildLinuxInstallCommand(httpBase, wsBase, token, caURL, caSHA256),
-		WindowsCommand: buildWindowsInstallCommand(httpBase, wsBase, token, caURL, caSHA256, false),
-		CAURL:          caURL,
-		CASHA256:       caSHA256,
-		ExpiresAt:      expiresAt.Format(time.RFC3339),
+		Token:           token,
+		Command:         buildLinuxJoinCommand(joinURL, joinPin),
+		AdvancedCommand: buildLinuxInstallCommand(httpBase, wsBase, token, caURL, caSHA256),
+		JoinURL:         joinURL,
+		JoinPin:         joinPin,
+		WindowsCommand:  buildWindowsInstallCommand(httpBase, wsBase, token, caURL, caSHA256, false),
+		CAURL:           caURL,
+		CASHA256:        caSHA256,
+		ExpiresAt:       expiresAt.Format(time.RFC3339),
 	})
 }
 
@@ -221,11 +254,12 @@ set -euo pipefail
 
 echo "=== BloxOS Agent Installer ==="
 
-# Detect architecture.
+# Detect architecture. ELF_MACHINE_WANT is the little-endian e_machine the
+# downloaded binary must carry for this CPU (x86-64 = 0x3e, AArch64 = 0xb7).
 ARCH=$(uname -m)
 case "$ARCH" in
-  x86_64)  ARCH="amd64" ;;
-  aarch64) ARCH="arm64" ;;
+  x86_64)  ARCH="amd64"; ELF_MACHINE_WANT="3e00" ;;
+  aarch64) ARCH="arm64"; ELF_MACHINE_WANT="b700" ;;
   *) echo "Unsupported architecture: $ARCH"; exit 1 ;;
 esac
 
@@ -247,6 +281,19 @@ curl_fetch() {
     curl --proto '=https' --tlsv1.2 -fsSL "$@" "$url"
   else
     curl -fsSL "$@" "$url"
+  fi
+}
+
+# Like curl_fetch, but prints the HTTP status instead of failing on it, so a
+# hub that has no binary for this architecture can explain itself: with -f
+# the 404 body (which names the arch and the path the hub looked at) is lost.
+curl_fetch_status() {
+  local url="$1"
+  shift
+  if [[ "$url" == https://* ]]; then
+    curl --proto '=https' --tlsv1.2 -sSL -w '%{http_code}' "$@" "$url"
+  else
+    curl -sSL -w '%{http_code}' "$@" "$url"
   fi
 }
 
@@ -279,14 +326,46 @@ if [[ -n "$CA_PATH" || -n "$CA_SHA256" ]]; then
   AGENT_CA_ENV="Environment=\"BLOXOS_CA_CERT=$CA_PATH\""
 fi
 
-# Download agent binary.
+# Download the agent binary for this CPU. Nothing on the system has been
+# touched yet, so a hub without a binary for this architecture fails the
+# install here, with the hub's own explanation, rather than after a
+# service has been written.
 echo "Downloading agent binary..."
-curl_fetch "${HUB_HTTP}/download/agent?arch=${ARCH}" "${CA_CURL_ARGS[@]}" -o /tmp/bloxos-agent
+DOWNLOAD_URL="${HUB_HTTP}/download/agent?os=linux&arch=${ARCH}"
+HTTP_STATUS=$(curl_fetch_status "$DOWNLOAD_URL" "${CA_CURL_ARGS[@]}" -o /tmp/bloxos-agent) || HTTP_STATUS="000"
+if [[ "$HTTP_STATUS" != "200" ]]; then
+  echo "Agent download failed (HTTP ${HTTP_STATUS}) for arch=${ARCH}: ${DOWNLOAD_URL}" >&2
+  if [[ -s /tmp/bloxos-agent ]]; then
+    echo "Hub response: $(cat /tmp/bloxos-agent)" >&2
+  fi
+  echo "Nothing was installed." >&2
+  rm -f /tmp/bloxos-agent
+  exit 1
+fi
 chmod +x /tmp/bloxos-agent
 
+# Refuse a binary built for another CPU before anything is installed. An
+# arm64 ELF on an x86_64 host (or the reverse) passes every other check and
+# then crash-loops under systemd with "Exec format error". e_machine is the
+# little-endian 16-bit field at ELF offset 18.
+ELF_MAGIC=$(od -An -tx1 -N4 /tmp/bloxos-agent | tr -d ' \n')
+ELF_MACHINE=$(od -An -tx1 -j18 -N2 /tmp/bloxos-agent | tr -d ' \n')
+if [[ "$ELF_MAGIC" != "7f454c46" || "$ELF_MACHINE" != "$ELF_MACHINE_WANT" ]]; then
+  echo "Downloaded agent is not a ${ARCH} Linux ELF binary (magic=${ELF_MAGIC:-none} e_machine=${ELF_MACHINE:-none}, want e_machine=${ELF_MACHINE_WANT})." >&2
+  echo "The hub at ${HUB_HTTP} served a binary for a different CPU architecture. Nothing was installed." >&2
+  rm -f /tmp/bloxos-agent
+  exit 1
+fi
+
 # Verify the downloaded binary against the SHA-256 the hub computed for the
-# binary it serves. Provides integrity even over a plain-HTTP LAN download.
-EXPECTED_AGENT_SHA256="__EXPECTED_AGENT_SHA256__"
+# binary it serves for this architecture. Provides integrity even over a
+# plain-HTTP LAN download.
+EXPECTED_AGENT_SHA256_AMD64="__EXPECTED_AGENT_SHA256_AMD64__"
+EXPECTED_AGENT_SHA256_ARM64="__EXPECTED_AGENT_SHA256_ARM64__"
+case "$ARCH" in
+  amd64) EXPECTED_AGENT_SHA256="$EXPECTED_AGENT_SHA256_AMD64" ;;
+  arm64) EXPECTED_AGENT_SHA256="$EXPECTED_AGENT_SHA256_ARM64" ;;
+esac
 if [[ -n "$EXPECTED_AGENT_SHA256" ]]; then
   ACTUAL_AGENT_SHA=$(sha256sum /tmp/bloxos-agent | awk '{print $1}')
   if [[ "$ACTUAL_AGENT_SHA" != "$EXPECTED_AGENT_SHA256" ]]; then
@@ -420,16 +499,29 @@ sudo systemctl restart bloxos-agent
 echo "=== BloxOS Agent installed and running ==="
 echo "Check status: systemctl status bloxos-agent"
 `
-	// Pin the hash of the binary the hub actually serves. recompute is
+	// Pin the hash of each binary the hub actually serves. The script picks
+	// the one for the CPU it runs on; the hub cannot know that yet. An
+	// architecture the hub has no binary for gets an empty hash, and its
+	// download 404s before the hash is ever consulted. recompute is
 	// mtime-cached, so this is cheap on the hot path.
-	recomputeBinaryFor("linux")
-	linuxState := currentAgentBinaryState("linux")
-	if linuxState.Error != "" || linuxState.SHA == "" {
+	var available int
+	var failures []string
+	for _, arch := range supportedArchesFor("linux") {
+		recomputeBinaryForArch("linux", arch)
+		state := currentAgentBinaryStateFor("linux", arch)
+		if state.Error != "" || state.SHA == "" {
+			failures = append(failures, "linux/"+arch+": "+state.Error)
+			state.SHA = ""
+		} else {
+			available++
+		}
+		script = strings.ReplaceAll(script, "__EXPECTED_AGENT_SHA256_"+strings.ToUpper(arch)+"__", state.SHA)
+	}
+	if available == 0 {
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{
-			"error": "Linux agent binary unavailable: " + linuxState.Error,
+			"error": "Linux agent binary unavailable: " + strings.Join(failures, "; "),
 		})
 	}
-	script = strings.ReplaceAll(script, "__EXPECTED_AGENT_SHA256__", linuxState.SHA)
 	script = strings.ReplaceAll(script, "__UPDATE_PUBKEY__", updateSigningPublicKeyBase64())
 	return c.String(http.StatusOK, script)
 }
@@ -498,8 +590,11 @@ func bootstrapCAFor(httpBase string) (caURL string, caSHA256 string) {
 
 func handleDownloadAgent(c echo.Context) error {
 	// The target OS is detected from either the explicit ?os= query parameter
-	// or the User-Agent string. Resolution itself is centralized: recompute
-	// hashes a trusted path and the handler serves that exact cached path.
+	// or the User-Agent string. The architecture comes from ?arch= (GOARCH
+	// or uname -m spelling); absent means amd64, which is what every
+	// installer and self-updater that predates the parameter expects.
+	// Resolution itself is centralized: recompute hashes a trusted path and
+	// the handler serves that exact cached path.
 	osName := strings.ToLower(strings.TrimSpace(c.QueryParam("os")))
 	if osName == "" {
 		ua := strings.ToLower(c.Request().UserAgent())
@@ -508,23 +603,35 @@ func handleDownloadAgent(c echo.Context) error {
 		}
 	}
 	osName = normalizeAgentOS(osName)
-	recomputeBinaryFor(osName)
-	state := currentAgentBinaryState(osName)
+	requestedArch := strings.TrimSpace(c.QueryParam("arch"))
+	platform, err := agentPlatformFor(osName, requestedArch)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{
+			"error": fmt.Sprintf("no %s agent binary for arch=%q: %v", osName, requestedArch, err),
+			"os":    osName,
+			"arch":  requestedArch,
+		})
+	}
+	recomputeBinaryForPlatform(platform)
+	state := currentAgentBinaryStateFor(platform.OS, platform.Arch)
 	if state.Error != "" || state.Path == "" || state.SHA == "" {
 		reason := state.Error
 		if reason == "" {
 			reason = "no trusted binary is available"
 		}
-		return c.JSON(http.StatusServiceUnavailable, map[string]string{
-			"error":  fmt.Sprintf("agent binary for os=%s unavailable: %s", osName, reason),
-			"os":     osName,
+		// 404 rather than 503: the hub is up and serving other platforms;
+		// this one has no binary. The message names the architecture and,
+		// through the resolver error, every path the hub looked at.
+		return c.JSON(http.StatusNotFound, map[string]string{
+			"error":  fmt.Sprintf("no %s agent binary is available for arch=%s: %s", platform.OS, platform.Arch, reason),
+			"os":     platform.OS,
+			"arch":   platform.Arch,
 			"source": state.Source,
 		})
 	}
 
-	arch := c.QueryParam("arch")
 	log.Printf("agent download: os=%s arch=%s source=%s path=%s sha=%s",
-		osName, arch, state.Source, state.Path, versionShortSHA(state.SHA))
+		platform.OS, platform.Arch, state.Source, state.Path, versionShortSHA(state.SHA))
 	return c.File(state.Path)
 }
 
@@ -1058,6 +1165,11 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 				Type   string `json:"type"`
 				SHA256 string `json:"sha256"`
 				OS     string `json:"os"`
+				// Arch is the agent's runtime.GOARCH. Absent on every agent
+				// built before per-architecture delivery; those download
+				// without ?arch= and get the amd64 build, so the hub must
+				// not announce any other architecture's SHA to them.
+				Arch string `json:"arch"`
 				// UpdateProtocol is absent (0) on every agent built before
 				// signature verification existed. The hub uses that to decide
 				// whether announcing an update to it is safe at all.
@@ -1081,6 +1193,7 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 				s.recordAgentRunningVersion(machineID, agentVersionReport{
 					RunningSHA:     versionMsg.SHA256,
 					OS:             versionMsg.OS,
+					Arch:           versionMsg.Arch,
 					UpdateProtocol: versionMsg.UpdateProtocol,
 					TransportOK:    versionMsg.UpdateTransportOK,
 					KeyPinned:      versionMsg.UpdateKeyPinned,

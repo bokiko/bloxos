@@ -19,6 +19,7 @@ In production, Caddy normally fronts both local services:
 - `/api/*` -> hub
 - `/ws/*` -> hub
 - `/install.sh`, `/install.ps1` -> hub-generated installers
+- `/join/*` -> hub-generated Linux bootstrap for a live install token (one-line onboarding)
 - `/download/*` -> hub agent binaries and CA certificate
 - everything else -> dashboard
 
@@ -80,6 +81,36 @@ created or updated the machine row as online; if the enrollment never commits,
 that row is marked offline when the socket disconnects. An agent that fails to
 save and drops the connection can retry with the same token. Later reconnects
 prefer the durable secret.
+
+### One-line Linux onboarding
+
+`POST /api/tokens` returns the Linux install as one short line, `command`,
+which fetches `join_url` (`GET /join/<token>`) and runs it once; the complete
+verbose bootstrap it fetches is returned as `advanced_command` and is what the
+endpoint serves byte for byte. The join code is the install token itself: the
+same 15-minute expiry, and consumed only when `enrollment_committed` stores the
+durable credential, never by a GET, so an interrupted install can re-run the
+same line until it commits. Unknown, expired, consumed and Windows-bound codes
+all receive one identical plain-text 404 (`no-store`, `nosniff`), and the code
+is redacted from the request log. The hub's authority is always `PUBLIC_URL`,
+never the request Host, and minting still requires it.
+
+The command is `bash -c 's=$(curl ...) && bash -c "$s"'`: the script is
+downloaded whole before anything runs, and a failed fetch exits non-zero with
+curl's message and runs nothing. Behind publicly trusted TLS the fetch is plain
+verified `curl -fsS`. Behind a private CA (the Caddy internal CA in `docker/`)
+the hub verifies, at mint time and against `BLOXOS_CA_CERT`, the leaf
+certificate `PUBLIC_URL` presents, and the command carries `curl -k
+--pinnedpubkey sha256//<SPKI>` for that leaf: `-k` because the new machine
+cannot verify the chain yet, the pin because that is what authenticates the
+download instead. If the hub cannot obtain a pin it trusts — `PUBLIC_URL`
+unreachable from the hub, chain not issued by the configured CA, leaf expiring
+within the token window — `/api/tokens` returns 503 and mints nothing. Caddy
+re-keys its internal leaves on renewal (12-hour lifetime), so a command copied
+shortly before a renewal fails with curl exit 90 and must be regenerated. Over
+`http://` the command is plain and the served bootstrap prints the existing
+unencrypted-transport warning, exactly as before. `join_pin` exposes the pin
+for display. The Windows command is unchanged.
 
 The hub and the agent binaries it serves are a coupled deployment: build and
 deploy them from the same commit. Agents built from source since commit
@@ -220,19 +251,48 @@ valid `(os, sha)` pair remains valid indefinitely ([#145]).
 ### Resolving served agent binaries
 
 A single resolver supplies the path used to hash, find the detached `.sig`, and
-serve `/download/agent`. Linux and Windows resolve independently. An explicit
-`BLOXOS_AGENT_BINARY` or `BLOXOS_AGENT_BINARY_WINDOWS` is authoritative: it
-must be absolute and trusted, and a missing or rejected configured path fails
-closed without falling through. Without an override, each platform checks its
-root-owned system default under `/usr/local/lib/bloxos/`, then a sibling of the
-running hub executable. Resolution never depends on the process working
-directory.
+serve `/download/agent`. It is keyed by platform: Linux amd64, Linux arm64 and
+Windows amd64 resolve independently. An explicit override is authoritative: it
+must be absolute and trusted, and a missing or rejected configured path (which
+now includes a path whose ELF architecture is not the one requested) fails
+closed without falling through. `BLOXOS_AGENT_BINARY` names the Linux amd64
+binary; `BLOXOS_AGENT_BINARY_ARM64` the Linux arm64 binary;
+`BLOXOS_AGENT_BINARY_WINDOWS` the Windows binary. Without an override, Linux
+checks `/usr/local/lib/bloxos/linux/<arch>/bloxos-agent`, then the shared
+pre-architecture locations — the legacy `/usr/local/lib/bloxos/linux/bloxos-agent`
+and a sibling of the running hub executable — for every architecture, plus, for
+a non-default arch, an operator-set `BLOXOS_AGENT_BINARY` ahead of the packaged
+default. The shared locations are ELF-arch-verified: a native source build (for
+example `go build` on an arm64 host, wired through the shipped systemd unit)
+leaves that host's binary at the legacy path and it resolves for that
+architecture, while a request for a different architecture is refused rather
+than handed the wrong CPU's bytes. Windows checks its system default, then a
+hub sibling. Resolution never depends on the process working directory.
+
+`/download/agent` takes `os` and `arch` (GOARCH or `uname -m` spelling). A
+request without `arch` is served the amd64 build, which is what every
+installer and self-updater that predates the parameter expects. An
+architecture the hub has no binary for answers 404 with a message naming the
+architecture and the paths the resolver checked; the served `install.sh`
+requests the host's architecture, stops there before touching the system, and
+also refuses any ELF whose `e_machine` does not match the host CPU.
+
+Agents report `arch` in `agent_running_version`, and the hub announces the SHA
+for that architecture's build, withholding with an `update_blocked_reason` when
+it has none. An agent that reports no architecture also downloads without
+`arch`, so it is announced the amd64 SHA as before — unless the machine's
+metrics say it is not amd64, in which case the hub withholds
+(`agent_arch_not_reported`) rather than hand it a binary its CPU cannot run.
+The hub reads the pinned leaf by connecting to PUBLIC_URL; where that address is not reachable from inside the hub process (the Compose stack, where Caddy is a separate service), `BLOXOS_PIN_DIAL_ADDR` aims only the dial at the internal proxy (`caddy:443`) while SNI and verification stay on PUBLIC_URL against the configured CA. The signed update message is unchanged (`bloxos-agent-update:v1:<os>:<sha256>`);
+the SHA is already per-architecture.
 
 The resolver canonicalizes the path and requires the binary plus every ancestor
 to be root-owned and not group/other-writable. The API and Versions dashboard
 show the selected path, source, SHA, mtime, or platform-specific resolution
-error. A failure clears only that platform's advertised SHA, so one missing
-artifact cannot leave a stale digest or disable the other platform.
+error; `/api/versions` keeps its per-OS fields (Linux meaning amd64) and adds
+`agent_binaries_by_arch`. A failure clears only that platform's advertised SHA,
+so one missing artifact cannot leave a stale digest or disable another
+platform.
 
 Deploying this resolver requires a coupled live migration, not a hub-only
 upgrade. Before restarting the updated hub, place the currently served Linux

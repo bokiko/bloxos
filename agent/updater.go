@@ -118,9 +118,45 @@ func handleAgentVersion(msg []byte) {
 	}()
 }
 
-// performUpdate runs the full update flow. On success, never returns —
-// os.Exit(0)s after the binary swap. On any failure, returns an error
-// and the agent continues running on the old binary.
+// elfMachineForGOARCH maps this build's GOARCH to the ELF e_machine its
+// binaries carry: x86-64 = 0x3e, AArch64 = 0xb7.
+var elfMachineForGOARCH = map[string]uint16{"amd64": 0x3e, "arm64": 0xb7}
+
+// verifyDownloadedELFArch refuses a downloaded binary whose ELF architecture
+// is not this agent's. The hub selects the build by ?arch and (after the
+// resolver fix) never serves mislabeled bytes, and the SHA is
+// per-architecture, so this is defense in depth: a hub or topology mistake
+// that would otherwise install a wrong-CPU binary and crash-loop the service
+// under systemd ("Exec format error") becomes a refused update that leaves the
+// running agent untouched.
+func verifyDownloadedELFArch(path string) error {
+	want, ok := elfMachineForGOARCH[runtime.GOARCH]
+	if !ok {
+		// Fail closed, matching the hub: this agent build is for an
+		// architecture the update path does not verify, so do not install.
+		return fmt.Errorf("unsupported architecture %q", runtime.GOARCH)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	var hdr [20]byte
+	if _, err := io.ReadFull(f, hdr[:]); err != nil {
+		return fmt.Errorf("read ELF header: %w", err)
+	}
+	if hdr[0] != 0x7f || hdr[1] != 'E' || hdr[2] != 'L' || hdr[3] != 'F' {
+		return fmt.Errorf("not an ELF binary")
+	}
+	if hdr[4] != 2 || hdr[5] != 1 || hdr[6] != 1 {
+		return fmt.Errorf("not a 64-bit little-endian current-version ELF binary")
+	}
+	if machine := uint16(hdr[18]) | uint16(hdr[19])<<8; machine != want {
+		return fmt.Errorf("binary is for e_machine 0x%02x, not %s (0x%02x)", machine, runtime.GOARCH, want)
+	}
+	return nil
+}
+
 func performUpdate(expectedSHA string) error {
 	exe, err := os.Executable()
 	if err != nil {
@@ -152,6 +188,11 @@ func performUpdate(expectedSHA string) error {
 			shortSHA(expectedSHA), shortSHA(downloadedSHA))
 	}
 	log.Printf("update: SHA verified (%s)", shortSHA(downloadedSHA))
+
+	if err := verifyDownloadedELFArch(newPath); err != nil {
+		os.Remove(newPath)
+		return fmt.Errorf("downloaded binary rejected: %w", err)
+	}
 
 	if err := os.Chmod(newPath, 0755); err != nil {
 		os.Remove(newPath)
@@ -185,12 +226,16 @@ func performUpdate(expectedSHA string) error {
 	return nil // unreachable
 }
 
-// downloadAgentBinary fetches /download/agent from the hub URL.
+// downloadAgentBinary fetches /download/agent?os=linux&arch=<GOARCH> from
+// the hub URL. Asking for this CPU's architecture explicitly is what keeps a
+// hub that serves several from handing an x86_64 host an arm64 build (or the
+// reverse), which passes the SHA check the hub announced for it and then
+// crash-loops under systemd with "Exec format error".
 // Reuses the agent's TLS configuration so the download inherits CA pinning.
 // agentDownloadURL refuses plaintext transports, so this is also the
 // second line of the transport gate applied in handleAgentVersion.
 func downloadAgentBinary(destPath string) error {
-	downloadURL, err := agentDownloadURL(hubURL, "")
+	downloadURL, err := agentDownloadURLForArch(hubURL, runtime.GOOS, runtime.GOARCH)
 	if err != nil {
 		return err
 	}
@@ -305,6 +350,11 @@ func reportAgentVersion(conn *websocket.Conn, mu *sync.Mutex) {
 		"type":   "agent_running_version",
 		"sha256": sha,
 		"os":     runtime.GOOS,
+		// The CPU architecture this binary was built for, which is also what
+		// downloadAgentBinary requests. The hub announces the SHA for this
+		// architecture's build, and withholds when it has none. Its absence
+		// is how the hub recognises an agent that downloads without ?arch=.
+		"arch": runtime.GOARCH,
 		// Tells the hub this binary verifies signed announcements. Its
 		// absence is how the hub recognises a pre-signature agent.
 		"update_protocol": agentUpdateProtocol,
@@ -322,6 +372,6 @@ func reportAgentVersion(conn *websocket.Conn, mu *sync.Mutex) {
 		log.Printf("update: failed to report version: %v", err)
 		return
 	}
-	log.Printf("update: reported running version %s to hub (os=%s, update_protocol=%d, transport_ok=%v, key_pinned=%v)",
-		shortSHA(sha), runtime.GOOS, agentUpdateProtocol, selfUpdateTransportOK(), updateKeyPinned())
+	log.Printf("update: reported running version %s to hub (os=%s, arch=%s, update_protocol=%d, transport_ok=%v, key_pinned=%v)",
+		shortSHA(sha), runtime.GOOS, runtime.GOARCH, agentUpdateProtocol, selfUpdateTransportOK(), updateKeyPinned())
 }

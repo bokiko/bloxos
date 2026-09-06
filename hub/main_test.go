@@ -158,6 +158,7 @@ func setupTestServer(t *testing.T) (*echo.Echo, *Server) {
 	// t.Cleanup is LIFO, and background work must drain while the database
 	// it queries is still open.
 	t.Cleanup(func() { s.Shutdown(2 * time.Second) })
+	stubJoinPinResolver(t)
 	s.seedTestAdmin(t)
 	jwtSecret = []byte("test-secret-key-for-smoke-tests")
 	rateLimiter = NewRateLimiter()
@@ -210,6 +211,7 @@ func setupEmptyTestServer(t *testing.T) (*echo.Echo, *Server) {
 	// t.Cleanup is LIFO, and background work must drain while the database
 	// it queries is still open.
 	t.Cleanup(func() { s.Shutdown(2 * time.Second) })
+	stubJoinPinResolver(t)
 
 	e := echo.New()
 	e.HideBanner = true
@@ -848,7 +850,12 @@ func TestCreateTokenIncludesCABootstrapForHTTPS(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
-	command, _ := resp["command"].(string)
+	// The short command fetches the join link with the hub's verified key
+	// pinned; the verbose bootstrap lives in advanced_command.
+	if short, _ := resp["command"].(string); !strings.Contains(short, "--pinnedpubkey sha256//") || !strings.Contains(short, "/join/") {
+		t.Fatalf("expected a pinned join command behind a private CA, got %q", short)
+	}
+	command, _ := resp["advanced_command"].(string)
 	if !strings.Contains(command, "CA_URL='https://bloxos.example/download/ca.crt'") {
 		t.Fatalf("expected command to pin the CA URL, got %q", command)
 	}
@@ -1407,12 +1414,19 @@ func (s *Server) seedValidToken(t *testing.T) string {
 // sendMetricsMsg sends a metrics message with the given machine_id and reads back any response.
 func sendMetricsMsg(t *testing.T, conn *websocket.Conn, machineID string) {
 	t.Helper()
+	sendMetricsMsgWithOS(t, conn, machineID, "linux/amd64")
+}
+
+// sendMetricsMsgWithOS is sendMetricsMsg with an explicit metrics OS string,
+// which is what the hub infers a legacy agent's architecture from.
+func sendMetricsMsgWithOS(t *testing.T, conn *websocket.Conn, machineID, osStr string) {
+	t.Helper()
 	metrics := map[string]interface{}{
 		"type":             "metrics",
 		"machine_id":       machineID,
 		"hostname":         "test-host",
 		"ip":               "10.0.0.1",
-		"os":               "linux/amd64",
+		"os":               osStr,
 		"cpu_percent":      25.0,
 		"ram_used_bytes":   1073741824,
 		"ram_total_bytes":  4294967296,

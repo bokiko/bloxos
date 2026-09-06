@@ -379,10 +379,19 @@ func (v agentVersionInfo) transportPermitsUpdate() bool {
 // announced SHA for the given OS. Empty means the hub cannot authorise an
 // update for that platform and should not announce one.
 func announcedSignatureFor(osName, sha string) string {
+	return announcedSignatureForArch(osName, defaultAgentArch, sha)
+}
+
+// announcedSignatureForArch is announcedSignatureFor for one (os, arch). The
+// detached .sig is looked up beside that architecture's binary; the signed
+// message itself stays bloxos-agent-update:v1:<os>:<sha256> — the SHA is
+// already per-architecture, and every deployed agent verifies exactly that
+// message, so the format does not change.
+func announcedSignatureForArch(osName, arch, sha string) string {
 	if sha == "" {
 		return ""
 	}
-	if sig := detachedSignatureFor(agentBinaryPathFor(osName), osName, sha); sig != "" {
+	if sig := detachedSignatureFor(agentBinaryPathForArch(osName, arch), osName, sha); sig != "" {
 		return sig
 	}
 	return signAgentRelease(osName, sha)
