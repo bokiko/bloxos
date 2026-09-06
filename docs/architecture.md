@@ -253,16 +253,21 @@ valid `(os, sha)` pair remains valid indefinitely ([#145]).
 A single resolver supplies the path used to hash, find the detached `.sig`, and
 serve `/download/agent`. It is keyed by platform: Linux amd64, Linux arm64 and
 Windows amd64 resolve independently. An explicit override is authoritative: it
-must be absolute and trusted, and a missing or rejected configured path fails
-closed without falling through. `BLOXOS_AGENT_BINARY` keeps its original
-meaning and names the Linux amd64 binary; `BLOXOS_AGENT_BINARY_ARM64` names the
-Linux arm64 binary; `BLOXOS_AGENT_BINARY_WINDOWS` the Windows binary. Without an
-override, Linux checks `/usr/local/lib/bloxos/linux/<arch>/bloxos-agent`. Only
-amd64 then falls back to the legacy `/usr/local/lib/bloxos/linux/bloxos-agent`
-and to a sibling of the running hub executable, because every deployment that
-populated those did so with an amd64 build; an arm64 request never falls
-through to them. Windows checks its system default, then a hub sibling.
-Resolution never depends on the process working directory.
+must be absolute and trusted, and a missing or rejected configured path (which
+now includes a path whose ELF architecture is not the one requested) fails
+closed without falling through. `BLOXOS_AGENT_BINARY` names the Linux amd64
+binary; `BLOXOS_AGENT_BINARY_ARM64` the Linux arm64 binary;
+`BLOXOS_AGENT_BINARY_WINDOWS` the Windows binary. Without an override, Linux
+checks `/usr/local/lib/bloxos/linux/<arch>/bloxos-agent`, then the shared
+pre-architecture locations — the legacy `/usr/local/lib/bloxos/linux/bloxos-agent`
+and a sibling of the running hub executable — for every architecture, plus, for
+a non-default arch, an operator-set `BLOXOS_AGENT_BINARY` ahead of the packaged
+default. The shared locations are ELF-arch-verified: a native source build (for
+example `go build` on an arm64 host, wired through the shipped systemd unit)
+leaves that host's binary at the legacy path and it resolves for that
+architecture, while a request for a different architecture is refused rather
+than handed the wrong CPU's bytes. Windows checks its system default, then a
+hub sibling. Resolution never depends on the process working directory.
 
 `/download/agent` takes `os` and `arch` (GOARCH or `uname -m` spelling). A
 request without `arch` is served the amd64 build, which is what every
@@ -278,7 +283,7 @@ it has none. An agent that reports no architecture also downloads without
 `arch`, so it is announced the amd64 SHA as before — unless the machine's
 metrics say it is not amd64, in which case the hub withholds
 (`agent_arch_not_reported`) rather than hand it a binary its CPU cannot run.
-The signed update message is unchanged (`bloxos-agent-update:v1:<os>:<sha256>`);
+The hub reads the pinned leaf by connecting to PUBLIC_URL; where that address is not reachable from inside the hub process (the Compose stack, where Caddy is a separate service), `BLOXOS_PIN_DIAL_ADDR` aims only the dial at the internal proxy (`caddy:443`) while SNI and verification stay on PUBLIC_URL against the configured CA. The signed update message is unchanged (`bloxos-agent-update:v1:<os>:<sha256>`);
 the SHA is already per-architecture.
 
 The resolver canonicalizes the path and requires the binary plus every ancestor

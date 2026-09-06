@@ -49,9 +49,11 @@ function timeSince(iso: string | undefined): string {
 
 function AgentBinaryCard({
   platform,
+  testId,
   binary,
 }: {
-  platform: "Linux" | "Windows";
+  platform: string;
+  testId: string;
   binary: AgentBinaryInfo;
 }) {
   const available = Boolean(binary.sha) && !binary.error;
@@ -63,7 +65,7 @@ function AgentBinaryCard({
           ? "border-blox-border bg-blox-card"
           : "border-red-500/20 bg-red-500/5"
       }`}
-      data-testid={`agent-binary-${platform.toLowerCase()}`}
+      data-testid={`agent-binary-${testId}`}
     >
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.1em] text-blox-muted/70 font-medium">
@@ -133,6 +135,33 @@ export default function VersionsPage() {
         },
       }
     : null;
+
+  // Per-architecture cards from a per-arch hub (clear CPU labels); legacy
+  // two-card fallback for older hubs, whose "Linux" binary is whatever the
+  // hub serves without an arch key — its CPU is not reported, so the card
+  // stays unlabeled. A platform the hub has no binary for still renders a
+  // card — its error names the missing build.
+  const binaryCards: { key: string; label: string; binary: AgentBinaryInfo }[] = [];
+  if (data) {
+    if (data.agent_binaries_by_arch) {
+      const byArch = data.agent_binaries_by_arch;
+      const linuxArches: [string, string][] = [
+        ["amd64", "Linux · x86-64"],
+        ["arm64", "Linux · ARM64"],
+      ];
+      for (const [arch, label] of linuxArches) {
+        const binary = byArch.linux?.[arch];
+        if (binary) binaryCards.push({ key: `linux-${arch}`, label, binary });
+      }
+      const windows = byArch.windows?.amd64;
+      if (windows) binaryCards.push({ key: "windows-amd64", label: "Windows · x86-64", binary: windows });
+    } else if (binaries) {
+      binaryCards.push(
+        { key: "linux", label: "Linux", binary: binaries.linux },
+        { key: "windows", label: "Windows", binary: binaries.windows }
+      );
+    }
+  }
 
   useEffect(() => {
     refresh();
@@ -238,10 +267,16 @@ export default function VersionsPage() {
               >
                 Served agent binaries
               </h2>
-              <div className="grid gap-3 md:grid-cols-2">
-                <AgentBinaryCard platform="Linux" binary={binaries!.linux} />
-                <AgentBinaryCard platform="Windows" binary={binaries!.windows} />
+              <div className={`grid gap-3 ${data.agent_binaries_by_arch ? "md:grid-cols-3" : "md:grid-cols-2"}`}>
+                {binaryCards.map((card) => (
+                  <AgentBinaryCard key={card.key} platform={card.label} testId={card.key} binary={card.binary} />
+                ))}
               </div>
+              {!data.agent_binaries_by_arch && (
+                <p className="text-[11px] text-blox-muted mt-2">
+                  Per-CPU details are unavailable from this hub version.
+                </p>
+              )}
             </section>
 
             {/* Hub binary status card */}
@@ -320,6 +355,9 @@ export default function VersionsPage() {
                       Hostname
                     </TableHead>
                     <TableHead className="text-blox-muted text-[11px] uppercase tracking-[0.06em] font-medium">
+                      Platform
+                    </TableHead>
+                    <TableHead className="text-blox-muted text-[11px] uppercase tracking-[0.06em] font-medium">
                       Running SHA
                     </TableHead>
                     <TableHead className="text-blox-muted text-[11px] uppercase tracking-[0.06em] font-medium">
@@ -340,7 +378,7 @@ export default function VersionsPage() {
                   {data.agents.length === 0 ? (
                     <TableRow>
                       <TableCell
-                        colSpan={6}
+                        colSpan={7}
                         className="text-center py-8 text-blox-muted text-xs"
                       >
                         No agents have reported their version yet
@@ -359,17 +397,31 @@ export default function VersionsPage() {
                           <TableCell className="text-xs font-medium text-blox-text">
                             {agent.hostname}
                           </TableCell>
+                          <TableCell
+                            className="text-xs text-blox-muted font-mono"
+                            title={
+                              !agent.arch
+                                ? "Architecture not reported for this agent"
+                                : !agent.arch_reported
+                                  ? "Architecture inferred from host metrics, not reported by the agent"
+                                  : undefined
+                            }
+                          >
+                            {agent.os
+                              ? `${agent.os}/${agent.arch || "unknown"}`
+                              : "—"}
+                          </TableCell>
                           <TableCell className="text-xs text-blox-muted font-mono tabular-nums">
                             {shortSHA(agent.running_sha)}
                           </TableCell>
                           <TableCell>
-                            {agent.update_pending && agent.update_blocked_reason ? (
+                            {agent.update_blocked_reason ? (
                               <Badge
                                 variant="outline"
                                 className="border-red-500/30 bg-red-500/10 text-red-400 text-[10px]"
                               >
                                 <AlertTriangle className="w-2.5 h-2.5 mr-1" />
-                                Withheld
+                                {agent.update_pending ? "Withheld" : "Unavailable"}
                               </Badge>
                             ) : agent.update_pending ? (
                               <Badge

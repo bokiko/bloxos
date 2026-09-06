@@ -45,6 +45,13 @@ RUN apk add --no-cache ca-certificates \
 COPY --from=build --chown=root:root --chmod=0755 /out/bloxos-hub /usr/local/bin/bloxos-hub
 COPY --from=build --chown=root:root --chmod=0755 /out/linux/amd64/bloxos-agent /usr/local/lib/bloxos/linux/amd64/bloxos-agent
 COPY --from=build --chown=root:root --chmod=0755 /out/linux/arm64/bloxos-agent /usr/local/lib/bloxos/linux/arm64/bloxos-agent
+# Backward compatibility: the pre-per-architecture image populated this path,
+# and an existing BLOXOS_AGENT_BINARY may still point at it explicitly. Keep it
+# as a root-owned regular copy of the amd64 build — a separate COPY, not a
+# symlink, because the trusted-binary resolver rejects a symlinked final path.
+# amd64 requests resolve it; the resolver's ELF arch check keeps it away from
+# arm64 requests.
+COPY --from=build --chown=root:root --chmod=0755 /out/linux/amd64/bloxos-agent /usr/local/lib/bloxos/linux/bloxos-agent
 COPY --from=build --chown=root:root --chmod=0755 /out/windows/bloxos-agent.exe /usr/local/lib/bloxos/windows/bloxos-agent.exe
 # State lives in one volume: bloxos.db in the working directory, secrets,
 # setup token and signing key under $HOME/.bloxos.

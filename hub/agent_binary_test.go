@@ -117,22 +117,30 @@ func TestResolveLinuxAgentBinaryPerArch(t *testing.T) {
 	amd64Default := filepath.Join(linuxAgentBinaryDir, archAMD64, "bloxos-agent")
 	arm64Default := filepath.Join(linuxAgentBinaryDir, archARM64, "bloxos-agent")
 
-	resolverAccepting := func(present ...string) agentBinaryResolver {
+	// files maps an existing path to the architecture its ELF actually is, so
+	// the injected validate reports presence and archMatch reports the real
+	// architecture without any bytes on disk.
+	resolverOver := func(files map[string]string) agentBinaryResolver {
 		return agentBinaryResolver{
 			executablePath: func() (string, error) { return exe, nil },
 			validate: func(path string) (string, error) {
-				for _, p := range present {
-					if path == p {
-						return path, nil
-					}
+				if _, ok := files[path]; ok {
+					return path, nil
 				}
 				return "", os.ErrNotExist
+			},
+			archMatch: func(path, arch string) error {
+				if files[path] == arch {
+					return nil
+				}
+				return fmt.Errorf("%s is a %s binary, not %s", path, files[path], arch)
 			},
 		}
 	}
 
-	// Both per-arch defaults present: each arch gets its own.
-	r := resolverAccepting(amd64Default, arm64Default, linuxAgentBinaryDefault)
+	// Both per-arch defaults present: each arch gets its own; the legacy path
+	// (amd64) never diverts a non-amd64 request.
+	r := resolverOver(map[string]string{amd64Default: "amd64", arm64Default: "arm64", linuxAgentBinaryDefault: "amd64"})
 	for arch, want := range map[string]string{"amd64": amd64Default, "arm64": arm64Default, "aarch64": arm64Default, "x86_64": amd64Default, "": amd64Default} {
 		got, err := r.resolve("linux", arch)
 		if err != nil {
@@ -143,40 +151,31 @@ func TestResolveLinuxAgentBinaryPerArch(t *testing.T) {
 		}
 	}
 
-	// Only the legacy path present: it serves amd64 (what it always held)
-	// and nothing else.
-	r = resolverAccepting(linuxAgentBinaryDefault)
+	// Only the legacy path present, holding amd64 (the classic amd64 source
+	// or systemd install): it serves amd64, and an arm64 request is refused
+	// rather than handed amd64 bytes.
+	r = resolverOver(map[string]string{linuxAgentBinaryDefault: "amd64"})
 	got, err := r.resolve("linux", "amd64")
 	if err != nil || got.Path != linuxAgentBinaryDefault || got.Source != "system-default-legacy" {
 		t.Fatalf("legacy amd64 resolution = %+v, %v; want legacy path", got, err)
 	}
-	_, err = r.resolve("linux", "arm64")
-	if err == nil {
-		t.Fatal("arm64 request resolved from the legacy amd64 path")
-	}
-	for _, want := range []string{"linux/arm64", arm64Default} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("arm64 error = %v, want it to name %q", err, want)
-		}
-	}
-	if strings.Contains(err.Error(), linuxAgentBinaryDefault) || strings.Contains(err.Error(), "hub-executable-directory") {
-		t.Fatalf("arm64 error = %v; the legacy locations must not even be candidates", err)
+	if _, err := r.resolve("linux", "arm64"); err == nil {
+		t.Fatal("arm64 request resolved from the legacy amd64 binary")
 	}
 
 	// An unsupported architecture is refused by name, before any lookup.
-	_, err = r.resolve("linux", "riscv64")
-	if err == nil || !strings.Contains(err.Error(), "riscv64") || !strings.Contains(err.Error(), "amd64, arm64") {
+	if _, err := r.resolve("linux", "riscv64"); err == nil || !strings.Contains(err.Error(), "riscv64") || !strings.Contains(err.Error(), "amd64, arm64") {
 		t.Fatalf("riscv64 error = %v, want the arch named and the supported list", err)
 	}
 	if _, err := r.resolve("windows", "arm64"); err == nil || !strings.Contains(err.Error(), "windows") {
 		t.Fatalf("windows/arm64 error = %v, want refusal (Windows is amd64-only)", err)
 	}
 
-	// BLOXOS_AGENT_BINARY keeps its pre-arch meaning: amd64 only. It must
-	// not redirect an arm64 request, and BLOXOS_AGENT_BINARY_ARM64 must be
-	// authoritative for arm64 the way the Windows override is for Windows.
+	// BLOXOS_AGENT_BINARY stays amd64-authoritative: an amd64 binary there is
+	// served for amd64 and must not divert an arm64 request, which falls to
+	// the arm64 default instead.
 	t.Setenv("BLOXOS_AGENT_BINARY", "/srv/override/amd64/bloxos-agent")
-	r = resolverAccepting("/srv/override/amd64/bloxos-agent", arm64Default)
+	r = resolverOver(map[string]string{"/srv/override/amd64/bloxos-agent": "amd64", arm64Default: "arm64"})
 	if got, err := r.resolve("linux", "amd64"); err != nil || got.Source != "environment:BLOXOS_AGENT_BINARY" {
 		t.Fatalf("amd64 with override = %+v, %v", got, err)
 	}
@@ -186,6 +185,144 @@ func TestResolveLinuxAgentBinaryPerArch(t *testing.T) {
 	t.Setenv("BLOXOS_AGENT_BINARY_ARM64", filepath.Join(t.TempDir(), "missing-arm64"))
 	if _, err := r.resolve("linux", "arm64"); err == nil || !strings.Contains(err.Error(), "BLOXOS_AGENT_BINARY_ARM64") {
 		t.Fatalf("arm64 with missing override = %v, want fail-closed on the configured path", err)
+	}
+}
+
+// TestResolveLegacyNativeArm64SourceInstall is the Codex P1 regression: a
+// native arm64 `go build` leaves an arm64 binary at the legacy path and the
+// shipped systemd unit sets BLOXOS_AGENT_BINARY to it. arm64 must resolve that
+// binary; amd64 must fail closed rather than receive arm64 bytes mislabeled.
+func TestResolveLegacyNativeArm64SourceInstall(t *testing.T) {
+	legacy := linuxAgentBinaryDefault
+	t.Setenv("BLOXOS_AGENT_BINARY", legacy)
+	t.Setenv("BLOXOS_AGENT_BINARY_ARM64", "")
+	exe := filepath.Join(t.TempDir(), "bloxos-hub")
+	if err := os.WriteFile(exe, []byte("hub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r := agentBinaryResolver{
+		executablePath: func() (string, error) { return exe, nil },
+		validate: func(path string) (string, error) {
+			if path == legacy {
+				return legacy, nil
+			}
+			return "", os.ErrNotExist
+		},
+		archMatch: func(path, arch string) error {
+			if path == legacy && arch == archARM64 {
+				return nil
+			}
+			return fmt.Errorf("%s is not %s", path, arch)
+		},
+	}
+	got, err := r.resolve("linux", "arm64")
+	if err != nil || got.Path != legacy {
+		t.Fatalf("arm64 source install = %+v, %v; want the legacy arm64 binary served", got, err)
+	}
+	if _, err := r.resolve("linux", "amd64"); err == nil || !strings.Contains(err.Error(), "BLOXOS_AGENT_BINARY") {
+		t.Fatalf("amd64 with an arm64 BLOXOS_AGENT_BINARY = %v, want fail-closed", err)
+	}
+}
+
+// TestResolveExplicitArm64OverrideWrongArch: BLOXOS_AGENT_BINARY_ARM64 that
+// points at an amd64 binary fails closed for arm64 and does not disturb amd64.
+func TestResolveExplicitArm64OverrideWrongArch(t *testing.T) {
+	arm64Env := filepath.Join(t.TempDir(), "arm64-agent") // actually amd64 bytes
+	amd64Default := filepath.Join(linuxAgentBinaryDir, archAMD64, "bloxos-agent")
+	t.Setenv("BLOXOS_AGENT_BINARY", "")
+	t.Setenv("BLOXOS_AGENT_BINARY_ARM64", arm64Env)
+	exe := filepath.Join(t.TempDir(), "bloxos-hub")
+	if err := os.WriteFile(exe, []byte("hub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r := agentBinaryResolver{
+		executablePath: func() (string, error) { return exe, nil },
+		validate: func(path string) (string, error) {
+			if path == arm64Env || path == amd64Default {
+				return path, nil
+			}
+			return "", os.ErrNotExist
+		},
+		archMatch: func(path, arch string) error {
+			if arch == archAMD64 { // both known paths are amd64 bytes
+				return nil
+			}
+			return fmt.Errorf("%s is a amd64 binary, not %s", path, arch)
+		},
+	}
+	if _, err := r.resolve("linux", "arm64"); err == nil || !strings.Contains(err.Error(), "BLOXOS_AGENT_BINARY_ARM64") {
+		t.Fatalf("arm64 override with amd64 bytes = %v, want fail-closed naming the env", err)
+	}
+	if got, err := r.resolve("linux", "amd64"); err != nil || got.Path != amd64Default {
+		t.Fatalf("amd64 = %+v, %v; must be unaffected by the arm64 misconfiguration", got, err)
+	}
+}
+
+// TestResolveRejectsRelativeOverride: an override resolved against the process
+// working directory is never intended; it fails closed before any filesystem
+// access.
+func TestResolveRejectsRelativeOverride(t *testing.T) {
+	t.Setenv("BLOXOS_AGENT_BINARY", "relative/bloxos-agent")
+	r := agentBinaryResolver{
+		executablePath: func() (string, error) { t.Fatal("must not reach defaults"); return "", nil },
+		validate:       func(string) (string, error) { t.Fatal("must not validate a relative override"); return "", nil },
+		archMatch:      func(string, string) error { return nil },
+	}
+	got, err := r.resolve("linux", "amd64")
+	if err == nil || !strings.Contains(err.Error(), "must be an absolute path") {
+		t.Fatalf("relative override = %v, want absolute-path rejection", err)
+	}
+	if got.Source != "environment:BLOXOS_AGENT_BINARY" {
+		t.Fatalf("failed resolution source = %q, want the env source preserved", got.Source)
+	}
+}
+
+// TestVerifyELFArch covers the arch check on real header bytes: matching CPU,
+// wrong CPU, 32-bit class, big-endian data, bad version, non-ELF text,
+// truncated, unknown requested arch, and a missing file.
+func TestVerifyELFArch(t *testing.T) {
+	header := func(class, data, version byte, machine uint16) []byte {
+		b := make([]byte, 64)
+		b[0], b[1], b[2], b[3] = 0x7f, 'E', 'L', 'F'
+		b[4], b[5], b[6] = class, data, version
+		b[18], b[19] = byte(machine), byte(machine>>8) // little-endian
+		return b
+	}
+	write := func(b []byte) string {
+		p := filepath.Join(t.TempDir(), "bin")
+		if err := os.WriteFile(p, b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	amd64ELF := header(2, 1, 1, 0x3e)
+	arm64ELF := header(2, 1, 1, 0xb7)
+
+	if err := verifyELFArch(write(amd64ELF), archAMD64); err != nil {
+		t.Fatalf("amd64 ELF as amd64: %v", err)
+	}
+	if err := verifyELFArch(write(arm64ELF), archARM64); err != nil {
+		t.Fatalf("arm64 ELF as arm64: %v", err)
+	}
+	for _, tc := range []struct {
+		name, arch, wantSub string
+		bytes               []byte
+	}{
+		{"arm64 bytes as amd64", archAMD64, "arm64", arm64ELF},
+		{"amd64 bytes as arm64", archARM64, "amd64", amd64ELF},
+		{"32-bit class", archAMD64, "64-bit", header(1, 1, 1, 0x3e)},
+		{"big-endian data", archAMD64, "little-endian", header(2, 2, 1, 0x3e)},
+		{"bad version", archAMD64, "version", header(2, 1, 0, 0x3e)},
+		{"non-ELF text", archAMD64, "not an ELF", []byte("#!/bin/sh\necho hello world\n")},
+		{"truncated", archAMD64, "ELF header", []byte{0x7f, 'E', 'L', 'F', 2, 1, 1}},
+		{"unknown requested arch", "riscv64", "unsupported architecture", amd64ELF},
+	} {
+		if err := verifyELFArch(write(tc.bytes), tc.arch); err == nil || !strings.Contains(err.Error(), tc.wantSub) {
+			t.Errorf("%s: err = %v, want it to mention %q", tc.name, err, tc.wantSub)
+		}
+	}
+	if err := verifyELFArch(filepath.Join(t.TempDir(), "nope"), archAMD64); err == nil {
+		t.Fatal("missing file accepted")
 	}
 }
 

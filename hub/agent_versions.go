@@ -763,10 +763,18 @@ func (s *Server) handleListVersions(c echo.Context) error {
 		v.Hostname = s.lookupVersionHostname(v.MachineID)
 		expected := announcedSHAForArch(v.OS, v.Arch)
 		v.UpdatePending = expected != "" && v.RunningSHA != expected
-		if v.UpdatePending {
+		switch {
+		case v.UpdatePending:
 			// Same policy announceVersionToAgent applies, so what the API
 			// reports and what the hub actually does cannot drift.
 			_, v.UpdateBlockedReason = announceDecision(v, v.OS, expected)
+		case expected == "":
+			// No build is served for this agent's platform (unknown OS, or an
+			// architecture the hub does not carry). Nothing is pending, but it
+			// is not "up to date" either — surface why so the dashboard does
+			// not show a false green. announceDecision with an empty SHA
+			// returns exactly that reason.
+			_, v.UpdateBlockedReason = announceDecision(v, v.OS, "")
 		}
 	}
 

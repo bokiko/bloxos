@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -12,10 +13,12 @@ import (
 )
 
 const (
-	// linuxAgentBinaryDefault is the pre-arch system default. It predates
-	// per-architecture delivery, and every deployment that populated it did
-	// so with an amd64 build, so it is treated as amd64 and only ever
-	// resolved for amd64 requests — an arm64 request never falls back to it.
+	// linuxAgentBinaryDefault is the pre-arch system default, still populated
+	// by the hub image for backward compatibility. It predates per-architecture
+	// delivery, so its architecture is whatever was built there — amd64 on the
+	// classic install, or the host's arch on a native source build. It is a
+	// candidate for every architecture, and resolve() serves it only for the
+	// architecture its ELF actually is.
 	linuxAgentBinaryDefault = "/usr/local/lib/bloxos/linux/bloxos-agent"
 	// linuxAgentBinaryDir is the parent of the per-architecture system
 	// defaults: <dir>/<arch>/bloxos-agent. Dockerfile.hub populates both.
@@ -64,6 +67,12 @@ type agentBinaryState struct {
 type agentBinaryResolver struct {
 	executablePath func() (string, error)
 	validate       func(string) (string, error)
+	// archMatch verifies that the binary at path is built for arch (Linux
+	// ELF e_machine). nil disables the check — used by unit tests that inject
+	// a fake validate over paths that do not exist on disk. Production sets
+	// it to verifyELFArch so a binary is only ever served for the
+	// architecture it actually is.
+	archMatch func(path, arch string) error
 }
 
 var (
@@ -86,7 +95,64 @@ func productionAgentBinaryResolver() agentBinaryResolver {
 	return agentBinaryResolver{
 		executablePath: os.Executable,
 		validate:       validateTrustedAgentBinary,
+		archMatch:      verifyELFArch,
 	}
+}
+
+// elfMachineByArch maps a GOARCH to the ELF e_machine value its binaries
+// carry: x86-64 = 0x3e, AArch64 = 0xb7.
+var elfMachineByArch = map[string]uint16{archAMD64: 0x3e, archARM64: 0xb7}
+
+func elfMachineName(m uint16) string {
+	for arch, want := range elfMachineByArch {
+		if want == m {
+			return arch
+		}
+	}
+	return fmt.Sprintf("e_machine=0x%02x", m)
+}
+
+// verifyELFArch reports whether the binary at path is a 64-bit little-endian
+// Linux ELF built for arch. It reads only the 20-byte ELF identification plus
+// e_machine, so it is cheap on the resolution hot path. Supported agent builds
+// (Go linux/amd64 and linux/arm64) are always ELF64, two's-complement
+// little-endian, current version; anything else is refused rather than
+// guessed. The check is what lets the shared, pre-architecture paths
+// (BLOXOS_AGENT_BINARY, the legacy default, a hub sibling) be candidates for
+// any architecture without ever handing a request another architecture's
+// bytes: an arm64 binary left there by a native source build resolves for
+// arm64 and is refused for amd64, and vice versa.
+func verifyELFArch(path, arch string) error {
+	want, ok := elfMachineByArch[arch]
+	if !ok {
+		return fmt.Errorf("unsupported architecture %q", arch)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	var hdr [20]byte
+	if _, err := io.ReadFull(f, hdr[:]); err != nil {
+		return fmt.Errorf("read ELF header of %s: %w", path, err)
+	}
+	if hdr[0] != 0x7f || hdr[1] != 'E' || hdr[2] != 'L' || hdr[3] != 'F' {
+		return fmt.Errorf("%s is not an ELF binary", path)
+	}
+	if hdr[4] != 2 { // EI_CLASS: ELFCLASS64
+		return fmt.Errorf("%s is not a 64-bit ELF binary", path)
+	}
+	if hdr[5] != 1 { // EI_DATA: ELFDATA2LSB
+		return fmt.Errorf("%s is not a little-endian ELF binary", path)
+	}
+	if hdr[6] != 1 { // EI_VERSION: EV_CURRENT
+		return fmt.Errorf("%s has an unsupported ELF version", path)
+	}
+	machine := uint16(hdr[18]) | uint16(hdr[19])<<8
+	if machine != want {
+		return fmt.Errorf("%s is a %s binary, not %s", path, elfMachineName(machine), arch)
+	}
+	return nil
 }
 
 func normalizeAgentOS(osName string) string {
@@ -141,9 +207,11 @@ func supportedArchesFor(osName string) []string {
 	return arches
 }
 
-// agentBinaryEnvName is the override variable for a platform. BLOXOS_AGENT_BINARY
-// keeps its pre-arch meaning — the Linux amd64 binary — so existing service
-// files and .env files keep working unchanged.
+// agentBinaryEnvName is the per-arch override variable for a platform.
+// BLOXOS_AGENT_BINARY is the amd64 override, so existing service and .env files
+// keep working unchanged; on a non-amd64 host it is also consulted as an
+// ELF-verified fallback (see candidatesFor), which is how a native source
+// build is honored.
 func agentBinaryEnvName(platform agentPlatform) string {
 	switch {
 	case platform.OS == "windows":
@@ -155,35 +223,66 @@ func agentBinaryEnvName(platform agentPlatform) string {
 	}
 }
 
-// defaultCandidates lists, in order, where the hub looks when no override is
-// set. Only Linux amd64 has legacy fallbacks: the pre-arch system default
-// and a sibling of the hub executable were both populated with amd64 builds
-// before the hub knew about architectures, and serving either to an arm64
-// request is exactly the "Exec format error" crash loop this exists to stop.
-func (r agentBinaryResolver) defaultCandidates(platform agentPlatform) ([]agentBinaryResolution, error) {
+// agentBinaryCandidate is one location the resolver will try. Env names an
+// explicit override variable; a candidate with Env set is authoritative — if
+// it is present but unusable (missing, untrusted, or the wrong architecture)
+// resolution fails closed rather than falling through.
+type agentBinaryCandidate struct {
+	Path   string
+	Source string
+	Env    string
+}
+
+// candidatesFor lists, in order, where the hub looks for a platform's binary.
+// The per-arch override (BLOXOS_AGENT_BINARY for amd64, BLOXOS_AGENT_BINARY_ARM64
+// for arm64, BLOXOS_AGENT_BINARY_WINDOWS for Windows) is authoritative when
+// set. Otherwise Linux tries the per-arch system default, then the shared
+// pre-architecture locations — the legacy default, a hub-executable sibling,
+// and (for a non-default arch) the pre-arch BLOXOS_AGENT_BINARY. Those shared
+// locations are candidates for every architecture now, because a native source
+// build (go build on an arm64 host) leaves that host's binary there; the ELF
+// arch check in resolve() is what stops any of them from being served to a
+// different architecture.
+func (r agentBinaryResolver) candidatesFor(platform agentPlatform) ([]agentBinaryCandidate, error) {
 	if platform.OS == "windows" {
+		if v := strings.TrimSpace(os.Getenv("BLOXOS_AGENT_BINARY_WINDOWS")); v != "" {
+			return []agentBinaryCandidate{{Path: v, Source: "environment:BLOXOS_AGENT_BINARY_WINDOWS", Env: "BLOXOS_AGENT_BINARY_WINDOWS"}}, nil
+		}
 		executable, err := r.hubExecutableDir()
 		if err != nil {
 			return nil, err
 		}
-		return []agentBinaryResolution{
+		return []agentBinaryCandidate{
 			{Path: windowsAgentBinaryDefault, Source: "system-default"},
 			{Path: filepath.Join(executable, "bloxos-agent.exe"), Source: "hub-executable-directory"},
 		}, nil
 	}
-	candidates := []agentBinaryResolution{
-		{Path: filepath.Join(linuxAgentBinaryDir, platform.Arch, "bloxos-agent"), Source: "system-default"},
+
+	perArchEnv := agentBinaryEnvName(platform)
+	if v := strings.TrimSpace(os.Getenv(perArchEnv)); v != "" {
+		return []agentBinaryCandidate{{Path: v, Source: "environment:" + perArchEnv, Env: perArchEnv}}, nil
 	}
+
+	var candidates []agentBinaryCandidate
 	if platform.Arch != defaultAgentArch {
-		return candidates, nil
+		// A non-default arch has no dedicated pre-arch override variable, so
+		// the pre-arch BLOXOS_AGENT_BINARY is where an operator points a native
+		// source build (go build on an arm64 host, wired through the shipped
+		// systemd unit). Honor it ahead of the packaged per-arch default so an
+		// explicit operator choice wins. Non-authoritative and ELF-gated: a
+		// wrong architecture just skips to the next candidate.
+		if v := strings.TrimSpace(os.Getenv("BLOXOS_AGENT_BINARY")); v != "" {
+			candidates = append(candidates, agentBinaryCandidate{Path: v, Source: "environment:BLOXOS_AGENT_BINARY (arch-verified)"})
+		}
 	}
+	candidates = append(candidates, agentBinaryCandidate{Path: filepath.Join(linuxAgentBinaryDir, platform.Arch, "bloxos-agent"), Source: "system-default"})
 	executable, err := r.hubExecutableDir()
 	if err != nil {
 		return nil, err
 	}
 	return append(candidates,
-		agentBinaryResolution{Path: linuxAgentBinaryDefault, Source: "system-default-legacy"},
-		agentBinaryResolution{Path: filepath.Join(executable, "bloxos-agent"), Source: "hub-executable-directory"},
+		agentBinaryCandidate{Path: linuxAgentBinaryDefault, Source: "system-default-legacy"},
+		agentBinaryCandidate{Path: filepath.Join(executable, "bloxos-agent"), Source: "hub-executable-directory"},
 	), nil
 }
 
@@ -208,32 +307,36 @@ func (r agentBinaryResolver) resolve(osName, arch string) (agentBinaryResolution
 	if err != nil {
 		return agentBinaryResolution{}, err
 	}
-	envName := agentBinaryEnvName(platform)
-	if configured := strings.TrimSpace(os.Getenv(envName)); configured != "" {
-		resolution := agentBinaryResolution{Path: filepath.Clean(configured), Source: "environment:" + envName}
-		if !filepath.IsAbs(configured) {
-			return resolution, fmt.Errorf("%s=%q must be an absolute path", envName, configured)
-		}
-		path, err := r.validate(configured)
-		if err != nil {
-			return resolution, fmt.Errorf("%s=%q is unusable: %w", envName, configured, err)
-		}
-		resolution.Path = path
-		return resolution, nil
-	}
-
-	candidates, err := r.defaultCandidates(platform)
+	candidates, err := r.candidatesFor(platform)
 	if err != nil {
 		return agentBinaryResolution{}, err
 	}
 
 	var failures []string
 	for _, candidate := range candidates {
+		if candidate.Env != "" && !filepath.IsAbs(candidate.Path) {
+			// Reject a relative override before touching the filesystem: an
+			// explicit override resolved against the process working directory
+			// is never what an operator means and must fail closed.
+			return agentBinaryResolution{Path: filepath.Clean(candidate.Path), Source: candidate.Source},
+				fmt.Errorf("%s=%q must be an absolute path", candidate.Env, candidate.Path)
+		}
 		path, err := r.validate(candidate.Path)
+		if err == nil && r.archMatch != nil && platform.OS == "linux" {
+			err = r.archMatch(path, platform.Arch)
+		}
 		if err == nil {
-			candidate.Path = path
-			candidate.Skipped = append([]string(nil), failures...)
-			return candidate, nil
+			return agentBinaryResolution{
+				Path:    path,
+				Source:  candidate.Source,
+				Skipped: append([]string(nil), failures...),
+			}, nil
+		}
+		if candidate.Env != "" {
+			// Explicit override present but unusable: fail closed, do not fall
+			// through to a default that could be a different architecture.
+			return agentBinaryResolution{Path: filepath.Clean(candidate.Path), Source: candidate.Source},
+				fmt.Errorf("%s=%q is unusable: %w", candidate.Env, candidate.Path, err)
 		}
 		failures = append(failures, fmt.Sprintf("%s %s: %v", candidate.Source, candidate.Path, err))
 	}

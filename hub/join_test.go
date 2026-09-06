@@ -828,6 +828,99 @@ func TestPinPresentedLeafSPKI(t *testing.T) {
 	})
 }
 
+// TestPinDialAddress pins the dial-target override: default is PUBLIC_URL's
+// host:port, BLOXOS_PIN_DIAL_ADDR replaces only that, and a malformed value
+// fails closed rather than being ignored.
+func TestPinDialAddress(t *testing.T) {
+	mustURL := func(raw string) *url.URL {
+		u, err := url.Parse(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return u
+	}
+	t.Run("defaults to PUBLIC_URL host:port", func(t *testing.T) {
+		t.Setenv(pinDialAddrEnv, "")
+		if got, err := pinDialAddress(mustURL("https://hub.example")); err != nil || got != "hub.example:443" {
+			t.Fatalf("got %q err %v", got, err)
+		}
+		if got, _ := pinDialAddress(mustURL("https://hub.example:8443")); got != "hub.example:8443" {
+			t.Fatalf("explicit port: %q", got)
+		}
+	})
+	t.Run("override replaces only the dial target", func(t *testing.T) {
+		t.Setenv(pinDialAddrEnv, "caddy:443")
+		if got, err := pinDialAddress(mustURL("https://127.0.0.1")); err != nil || got != "caddy:443" {
+			t.Fatalf("got %q err %v", got, err)
+		}
+	})
+	t.Run("rejects a malformed override", func(t *testing.T) {
+		for _, bad := range []string{"https://caddy:443", "caddy", "caddy/", ":443", "caddy:"} {
+			t.Setenv(pinDialAddrEnv, bad)
+			if _, err := pinDialAddress(mustURL("https://hub.example")); err == nil {
+				t.Errorf("override %q accepted", bad)
+			}
+		}
+	})
+}
+
+// TestPinDialOverrideConnectsElsewhereVerifiesPublicURLHost is the Compose
+// case: the connection goes to an address other than PUBLIC_URL, but the
+// certificate is still verified against PUBLIC_URL's hostname and the
+// configured CA. Proves a wrong dial target cannot downgrade trust.
+func TestPinDialOverrideConnectsElsewhereVerifiesPublicURLHost(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Cert valid for the DNS name "hub.internal", served on a 127.0.0.1 port.
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(time.Now().UnixNano()),
+		Subject:               pkix.Name{CommonName: "hub.internal"},
+		NotBefore:             time.Now().Add(-time.Minute),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		DNSNames:              []string{"hub.internal"},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Errorf("the pin resolver sent an HTTP request")
+	}))
+	srv.TLS = &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}}
+	srv.StartTLS()
+	defer srv.Close()
+
+	pu, err := url.Parse("https://hub.internal") // does not resolve; only the override is reachable
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(pinDialAddrEnv, strings.TrimPrefix(srv.URL, "https://"))
+	got, err := pinPresentedLeafSPKI(context.Background(), pu, pemOf(cert))
+	if err != nil {
+		t.Fatalf("resolve with dial override: %v", err)
+	}
+	if got != spkiPinOf(cert) {
+		t.Fatalf("pin = %q, want %q", got, spkiPinOf(cert))
+	}
+
+	// The same leaf under a PUBLIC_URL host it is not valid for must fail,
+	// even though the dial still reaches it — verification is not bypassed.
+	wrong, _ := url.Parse("https://other.invalid")
+	if _, err := pinPresentedLeafSPKI(context.Background(), wrong, pemOf(cert)); err == nil {
+		t.Fatal("expected verification failure for a host the cert does not cover")
+	}
+}
+
 func hexOf(b []byte) string {
 	const digits = "0123456789abcdef"
 	out := make([]byte, len(b)*2)

@@ -21,6 +21,12 @@ export interface AgentVersionInfo {
   update_key_pinned: boolean;
   update_transport_ok: boolean;
   update_protocol: number;
+  /** OS the hub believes this agent runs on ("linux"/"windows"). Older hubs omit it. */
+  os?: string;
+  /** CPU architecture in GOARCH spelling; empty/omitted means it is not known. */
+  arch?: string;
+  /** Whether arch came from the agent itself (vs inferred from metrics). */
+  arch_reported?: boolean;
 }
 
 export interface AgentBinaryInfo {
@@ -44,6 +50,12 @@ export interface VersionsResponse {
     linux: AgentBinaryInfo;
     windows: AgentBinaryInfo;
   };
+  /**
+   * Per-(os, arch) served-binary state: linux has amd64 and arm64, windows
+   * has amd64. Present on per-architecture hubs; older hubs omit it, in
+   * which case agent_binaries carries the legacy, architecture-unspecified states.
+   */
+  agent_binaries_by_arch?: Record<string, Record<string, AgentBinaryInfo>>;
   agents: AgentVersionInfo[];
   rollout_paused: boolean;
   pause_reason: string;

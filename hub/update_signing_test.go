@@ -1019,10 +1019,11 @@ func TestArm64AgentOnAmd64OnlyHubGetsNoAnnounce(t *testing.T) {
 	}
 	var resp struct {
 		Agents []struct {
-			MachineID     string `json:"machine_id"`
-			Arch          string `json:"arch"`
-			ArchReported  bool   `json:"arch_reported"`
-			UpdatePending bool   `json:"update_pending"`
+			MachineID           string `json:"machine_id"`
+			Arch                string `json:"arch"`
+			ArchReported        bool   `json:"arch_reported"`
+			UpdatePending       bool   `json:"update_pending"`
+			UpdateBlockedReason string `json:"update_blocked_reason"`
 		} `json:"agents"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
@@ -1039,6 +1040,12 @@ func TestArm64AgentOnAmd64OnlyHubGetsNoAnnounce(t *testing.T) {
 		}
 		if a.UpdatePending {
 			t.Fatal("update_pending is true with no arm64 binary to update to")
+		}
+		// Not pending, but not "up to date" either: the API must carry a
+		// reason so the dashboard does not show a false green for a platform
+		// the hub serves no build for.
+		if !strings.Contains(a.UpdateBlockedReason, "linux/arm64") {
+			t.Fatalf("update_blocked_reason = %q, want it to name the missing linux/arm64 binary", a.UpdateBlockedReason)
 		}
 	}
 	if !found {

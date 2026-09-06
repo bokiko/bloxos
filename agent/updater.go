@@ -118,9 +118,45 @@ func handleAgentVersion(msg []byte) {
 	}()
 }
 
-// performUpdate runs the full update flow. On success, never returns —
-// os.Exit(0)s after the binary swap. On any failure, returns an error
-// and the agent continues running on the old binary.
+// elfMachineForGOARCH maps this build's GOARCH to the ELF e_machine its
+// binaries carry: x86-64 = 0x3e, AArch64 = 0xb7.
+var elfMachineForGOARCH = map[string]uint16{"amd64": 0x3e, "arm64": 0xb7}
+
+// verifyDownloadedELFArch refuses a downloaded binary whose ELF architecture
+// is not this agent's. The hub selects the build by ?arch and (after the
+// resolver fix) never serves mislabeled bytes, and the SHA is
+// per-architecture, so this is defense in depth: a hub or topology mistake
+// that would otherwise install a wrong-CPU binary and crash-loop the service
+// under systemd ("Exec format error") becomes a refused update that leaves the
+// running agent untouched.
+func verifyDownloadedELFArch(path string) error {
+	want, ok := elfMachineForGOARCH[runtime.GOARCH]
+	if !ok {
+		// Fail closed, matching the hub: this agent build is for an
+		// architecture the update path does not verify, so do not install.
+		return fmt.Errorf("unsupported architecture %q", runtime.GOARCH)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	var hdr [20]byte
+	if _, err := io.ReadFull(f, hdr[:]); err != nil {
+		return fmt.Errorf("read ELF header: %w", err)
+	}
+	if hdr[0] != 0x7f || hdr[1] != 'E' || hdr[2] != 'L' || hdr[3] != 'F' {
+		return fmt.Errorf("not an ELF binary")
+	}
+	if hdr[4] != 2 || hdr[5] != 1 || hdr[6] != 1 {
+		return fmt.Errorf("not a 64-bit little-endian current-version ELF binary")
+	}
+	if machine := uint16(hdr[18]) | uint16(hdr[19])<<8; machine != want {
+		return fmt.Errorf("binary is for e_machine 0x%02x, not %s (0x%02x)", machine, runtime.GOARCH, want)
+	}
+	return nil
+}
+
 func performUpdate(expectedSHA string) error {
 	exe, err := os.Executable()
 	if err != nil {
@@ -152,6 +188,11 @@ func performUpdate(expectedSHA string) error {
 			shortSHA(expectedSHA), shortSHA(downloadedSHA))
 	}
 	log.Printf("update: SHA verified (%s)", shortSHA(downloadedSHA))
+
+	if err := verifyDownloadedELFArch(newPath); err != nil {
+		os.Remove(newPath)
+		return fmt.Errorf("downloaded binary rejected: %w", err)
+	}
 
 	if err := os.Chmod(newPath, 0755); err != nil {
 		os.Remove(newPath)

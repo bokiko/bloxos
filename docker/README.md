@@ -140,7 +140,7 @@ The agent binaries are root-owned and read-only at
 `/usr/local/lib/bloxos/linux/amd64/bloxos-agent`,
 `/usr/local/lib/bloxos/linux/arm64/bloxos-agent` and
 `/usr/local/lib/bloxos/windows/bloxos-agent.exe`, which are the resolver's
-default paths, so no `BLOXOS_AGENT_BINARY*` setting is needed. For a private
+default paths, so no `BLOXOS_AGENT_BINARY*` setting is needed. The Compose file sets `BLOXOS_PIN_DIAL_ADDR=caddy:443` so the hub can read the TLS certificate it pins into one-line join commands: PUBLIC_URL routes to Caddy from outside, but to the hub's own loopback from inside its container, so the pin handshake is aimed at the Caddy service while SNI and verification still use PUBLIC_URL. For a private
 CA, mount the CA certificate and point `BLOXOS_CA_CERT` at it. Back up the
 `/data` volume; losing the update-signing key strands agent self-update.
 

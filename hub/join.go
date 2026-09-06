@@ -47,6 +47,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -91,49 +92,87 @@ func pinPresentedLeafSPKI(ctx context.Context, publicURL *url.URL, caPEM []byte)
 	if host == "" {
 		return "", fmt.Errorf("PUBLIC_URL has no host")
 	}
-	port := publicURL.Port()
-	if port == "" {
-		port = "443"
-	}
 	roots := x509.NewCertPool()
 	if !roots.AppendCertsFromPEM(caPEM) {
 		return "", fmt.Errorf("the bootstrap CA file holds no PEM certificate the hub can verify PUBLIC_URL with")
 	}
-	hostPort := net.JoinHostPort(host, port)
+	dialAddr, err := pinDialAddress(publicURL)
+	if err != nil {
+		return "", err
+	}
 
 	ctx, cancel := context.WithTimeout(ctx, joinPinDialTimeout)
 	defer cancel()
 	dialer := &tls.Dialer{
 		NetDialer: &net.Dialer{Timeout: joinPinDialTimeout},
 		Config: &tls.Config{
-			// ServerName may be an IP literal; Go then sends no SNI and
-			// verifies against the certificate's IP SANs, which is what
-			// Caddy's default_sni deployment presents for IP HUB_HOSTs.
+			// SNI and verification always use PUBLIC_URL's hostname against
+			// the configured CA, even when BLOXOS_PIN_DIAL_ADDR sends the TCP
+			// connection somewhere else (Compose: caddy:443). host may be an
+			// IP literal; Go then sends no SNI and verifies against the
+			// certificate's IP SANs, which is what Caddy's default_sni
+			// deployment presents for IP HUB_HOSTs. A wrong dial target
+			// cannot downgrade trust — it can only fail the handshake.
 			ServerName: host,
 			RootCAs:    roots,
 			MinVersion: tls.VersionTLS12,
 		},
 	}
-	rawConn, err := dialer.DialContext(ctx, "tcp", hostPort)
+	rawConn, err := dialer.DialContext(ctx, "tcp", dialAddr)
 	if err != nil {
-		return "", fmt.Errorf("TLS handshake with %s using the configured CA failed: %w", hostPort, err)
+		return "", fmt.Errorf("TLS handshake with %s (verifying SNI %q) using the configured CA failed: %w", dialAddr, host, err)
 	}
 	defer rawConn.Close()
 	conn, ok := rawConn.(*tls.Conn)
 	if !ok {
-		return "", fmt.Errorf("TLS dial to %s returned a non-TLS connection", hostPort)
+		return "", fmt.Errorf("TLS dial to %s returned a non-TLS connection", dialAddr)
 	}
 	state := conn.ConnectionState()
 	if len(state.PeerCertificates) == 0 {
-		return "", fmt.Errorf("%s presented no certificate", hostPort)
+		return "", fmt.Errorf("%s presented no certificate", dialAddr)
 	}
 	leaf := state.PeerCertificates[0]
 	if remaining := time.Until(leaf.NotAfter); remaining < installTokenTTL {
 		return "", fmt.Errorf("the certificate %s presents expires at %s, before a join command minted now would; wait for it to renew",
-			hostPort, leaf.NotAfter.UTC().Format(time.RFC3339))
+			dialAddr, leaf.NotAfter.UTC().Format(time.RFC3339))
 	}
 	sum := sha256.Sum256(leaf.RawSubjectPublicKeyInfo)
 	return base64.StdEncoding.EncodeToString(sum[:]), nil
+}
+
+// pinDialAddrEnv optionally overrides the TCP address the pin handshake
+// connects to, without changing what is verified. The hub computes the join
+// pin by connecting to its own PUBLIC_URL, but in some topologies the public
+// address is not reachable from inside the hub process: in the Compose stack
+// Caddy is a separate service, so PUBLIC_URL (which routes to Caddy from a
+// browser or agent) resolves to the hub's own loopback from inside the hub
+// container. Set this to the internal reverse-proxy address (Compose:
+// "caddy:443") so the handshake reaches the proxy while SNI and certificate
+// verification still use PUBLIC_URL's hostname against the configured CA.
+const pinDialAddrEnv = "BLOXOS_PIN_DIAL_ADDR"
+
+// pinDialAddress is the host:port the pin handshake dials. It defaults to
+// PUBLIC_URL's host and port; BLOXOS_PIN_DIAL_ADDR overrides only the dial
+// target. The override is operator/deployment configuration, never derived
+// from a request, and it does not affect verification.
+func pinDialAddress(publicURL *url.URL) (string, error) {
+	host := publicURL.Hostname()
+	port := publicURL.Port()
+	if port == "" {
+		port = "443"
+	}
+	override := strings.TrimSpace(os.Getenv(pinDialAddrEnv))
+	if override == "" {
+		return net.JoinHostPort(host, port), nil
+	}
+	if strings.Contains(override, "://") || strings.Contains(override, "/") {
+		return "", fmt.Errorf("%s=%q must be host:port, not a URL", pinDialAddrEnv, override)
+	}
+	h, p, err := net.SplitHostPort(override)
+	if err != nil || h == "" || p == "" {
+		return "", fmt.Errorf("%s=%q must be host:port", pinDialAddrEnv, override)
+	}
+	return net.JoinHostPort(h, p), nil
 }
 
 // parsePublicURL validates the operator's PUBLIC_URL as the base of a join

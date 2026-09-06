@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useEffect, useRef } from "react";
-import { Copy, Check, Terminal, ArrowLeft, ChevronRight } from "lucide-react";
+import { Copy, Check, Terminal, ArrowLeft, ChevronRight, AlertTriangle } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -396,6 +396,7 @@ function CodeBlock({
 }
 
 /** Collapsed-by-default disclosure. Native details/summary: keyboard and screen-reader accessible as is. */
+
 function Disclosure({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <details className="group rounded-xl border border-blox-border bg-blox-bg/60">
@@ -442,6 +443,37 @@ function CAFingerprint({
 
 /* ─── Command Display ──────────────────────────────────────────── */
 
+/**
+ * The bootstrap's transport, taken from what the hub itself returned — the
+ * join URL when present, otherwise the URL embedded in the command text for
+ * older hubs. The dashboard's own origin is deliberately never used to guess:
+ * the hub may be reached by the new machine over a different scheme than the
+ * operator's browser uses.
+ */
+function bootstrapTransport(resp: TokenResponse, os: OSChoice): "http" | "https" | null {
+  const text =
+    os === "windows" ? resp.windows_command : (resp.join_url ?? resp.command);
+  const match = text.match(/https?:\/\//);
+  if (!match) return null;
+  return match[0] === "http://" ? "http" : "https";
+}
+
+/** Visible, no interaction required: shown before the command whenever the hub is plaintext. */
+function HttpBootstrapWarning() {
+  return (
+    <div
+      role="alert"
+      className="flex items-start gap-2 rounded-lg border border-blox-amber/40 bg-blox-amber/10 px-3 py-2 text-[11px] text-blox-amber leading-relaxed"
+    >
+      <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+      <span>
+        This hub uses unencrypted HTTP. Only use this command on an isolated test network; use HTTPS for other
+        installations.
+      </span>
+    </div>
+  );
+}
+
 function CommandDisplay({
   os,
   resp,
@@ -482,10 +514,13 @@ function CommandDisplay({
     </p>
   );
 
+  const transport = bootstrapTransport(resp, os);
+
   if (os === "windows") {
     return (
       <>
         {header}
+        {transport === "http" && <HttpBootstrapWarning />}
         <CodeBlock
           text={resp.windows_command}
           label="Run in elevated PowerShell on Windows"
@@ -520,6 +555,7 @@ function CommandDisplay({
   return (
     <>
       {header}
+      {transport === "http" && <HttpBootstrapWarning />}
       <CodeBlock
         text={resp.command}
         copyLabel="Copy"
