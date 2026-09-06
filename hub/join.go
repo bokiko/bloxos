@@ -376,9 +376,9 @@ func (s *Server) handleJoinScript(c echo.Context) error {
 	// cannot serve join links at all, even ones minted before it was unset.
 	currentHTTPBase, _ := publicAndWebsocketBase()
 	if currentHTTPBase == "" {
-		// Tokens cannot be minted without PUBLIC_URL, so this only happens
-		// if it was unset between minting and use.
-		return c.String(http.StatusServiceUnavailable, "This hub has no PUBLIC_URL configured; join links are unavailable.\n")
+		// Missing configuration makes every link unavailable. Preserve the
+		// same opaque response as all other unusable codes.
+		return c.String(http.StatusNotFound, joinUnavailableBody)
 	}
 
 	usable, info := s.joinCodeUsable(c.Param("code"))

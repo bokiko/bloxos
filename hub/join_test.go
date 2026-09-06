@@ -525,11 +525,18 @@ func TestJoinMethodAndAuthorityHandling(t *testing.T) {
 func TestJoinRequiresPublicURLAtMintAndAtServe(t *testing.T) {
 	e, s := setupTestServer(t)
 	s.markCredentialsRotated(t)
+	t.Setenv("PUBLIC_URL", "https://hub.example")
 	code := s.seedTokenValue(t, "nopublic-code-6f7a8b9c")
 	t.Setenv("PUBLIC_URL", "")
-	rec := getJoin(t, e, code, "hub.example")
-	if rec.Code != http.StatusServiceUnavailable || strings.Contains(rec.Body.String(), "hub.example") {
-		t.Fatalf("serving without PUBLIC_URL: status=%d body=%q", rec.Code, rec.Body.String())
+	for _, candidate := range []string{code, "unknown-code"} {
+		rec := getJoin(t, e, candidate, "hub.example")
+		if rec.Code != http.StatusNotFound || rec.Body.String() != joinUnavailableBody {
+			t.Fatalf("serving without PUBLIC_URL: status=%d body=%q", rec.Code, rec.Body.String())
+		}
+		assertJoinResponseHeaders(t, rec)
+	}
+	if tokenUsed(t, s, hashOf(code)) {
+		t.Fatal("missing PUBLIC_URL consumed the token")
 	}
 	for _, bad := range []string{"ftp://hub.example", "https://user:pw@hub.example", "https://hub.example/?x=1", "hub.example"} {
 		t.Setenv("PUBLIC_URL", bad)
