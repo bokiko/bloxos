@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { HUB_URL, getStoredToken } from "@/lib/session";
+import { installTokenMinutesRemaining } from "@/lib/install-token-expiry";
 
 interface AddMachineModalProps {
   open: boolean;
@@ -243,7 +244,7 @@ function useExpiry(expiresAt: string) {
   const at = new Date(expiresAt);
   const valid = !Number.isNaN(at.getTime());
   const remainingMs = valid ? at.getTime() - now : 0;
-  const minutes = Math.max(0, Math.ceil(remainingMs / 60_000));
+  const minutes = installTokenMinutesRemaining(remainingMs);
   const sameDay = valid && at.toDateString() === new Date(now).toDateString();
   const localTime = !valid
     ? expiresAt

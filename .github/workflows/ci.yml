@@ -149,5 +149,8 @@ jobs:
       - name: Lint dashboard
         run: pnpm lint
 
+      - name: Test dashboard
+        run: pnpm test
+
       - name: Build dashboard
         run: pnpm build
