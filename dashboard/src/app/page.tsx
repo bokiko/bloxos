@@ -43,6 +43,7 @@ import { FleetPulse } from "@/components/FleetPulse";
 import { NeedsAttention } from "@/components/NeedsAttention";
 import { UserMenu } from "@/components/UserMenu";
 import { BrandedHeader } from "@/components/BrandedHeader";
+import { FleetOverview } from "@/components/FleetOverview";
 
 type SortOption = "name" | "status" | "cpu" | "gpu_temp";
 type StatusFilter = "all" | "live" | "warning" | "critical" | "offline" | "stale";
@@ -475,6 +476,13 @@ export default function Home() {
 
       {/* Needs-Attention stripe — only renders when problems exist */}
       <NeedsAttention machines={machines} />
+
+      {/* Fleet Overview — gauges and resource attribution */}
+      {machines.length > 0 && hasReceivedData && (
+        <div className="max-w-[1600px] mx-auto px-4 sm:px-6 pt-6">
+          <FleetOverview machines={machines} />
+        </div>
+      )}
 
       {/* Degraded connection banner — surfaces SSE disconnect inline so it isn't
           easy to miss behind the small wifi icon in the header. */}

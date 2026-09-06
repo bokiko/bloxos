@@ -1,6 +1,7 @@
 "use client";
 
 import type { MachineMetrics } from "@/lib/demo-data";
+import { METRICS_STALE_MS } from "@/lib/fleet-metrics.mjs";
 
 /* ============================================================================
  * Fleet status — 5 intent states.
@@ -19,7 +20,6 @@ import type { MachineMetrics } from "@/lib/demo-data";
 export type MachineStatus = "live" | "stale" | "warning" | "critical" | "offline";
 
 const OFFLINE_MS = 120_000;
-const STALE_MS = 30_000;
 
 const TH = {
   cpuWarn: 75,
@@ -62,7 +62,7 @@ export function classifyMachine(m: MachineMetrics): MachineClassification {
   if (diskPct >= TH.diskWarn) return { status: "warning", reason: `Disk ${diskPct.toFixed(0)}%` };
   if (gpuT >= TH.gpuWarn) return { status: "warning", reason: `GPU ${gpuT.toFixed(0)}°C` };
 
-  if (age > STALE_MS) return { status: "stale" };
+  if (age > METRICS_STALE_MS) return { status: "stale" };
   return { status: "live" };
 }
 

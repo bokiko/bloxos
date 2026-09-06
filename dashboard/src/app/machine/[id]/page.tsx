@@ -15,6 +15,8 @@ import { HardwareCard, type HardwareInfo } from "@/components/HardwareCard";
 import { MachineNotes } from "@/components/MachineNotes";
 import { AISessionsPanel } from "@/components/AISessionsPanel";
 import { useAISessions } from "@/contexts/AISessionsContext";
+import { MachineGauges } from "@/components/MachineGauges";
+import { latestGPUs } from "@/lib/gauge-data.mjs";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -230,6 +232,7 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
 
     return {
       ...baseData,
+      gpus: latestGPUs(sseData.gpus, baseData.gpus),
       metrics: {
         cpu_percent: sseData.cpu_percent ?? baseData.metrics.cpu_percent,
         cpu_temp_c: sseData.cpu_temp_c ?? baseData.metrics.cpu_temp_c,
@@ -813,6 +816,13 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
 
           {/* Overview — system panel, plus GPU only when a GPU is present */}
           <TabsContent value="overview" className="mt-6">
+            {/* Live gauges */}
+            {metrics && (
+              <div className="mb-6">
+                <MachineGauges metrics={metrics} gpus={data?.gpus} />
+              </div>
+            )}
+
             <div className={`grid grid-cols-1 gap-6 ${hasGpu ? "lg:grid-cols-2" : ""}`}>
               <motion.div
                 initial={{ opacity: 0, y: 10 }}
@@ -1230,4 +1240,3 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
     </motion.div>
   );
 }
-
