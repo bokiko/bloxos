@@ -1,6 +1,6 @@
 module github.com/bokiko/bloxos/hub
 
-go 1.25.0
+go 1.26.0
 
 replace github.com/bokiko/bloxos/proto => ../proto
 
@@ -10,7 +10,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/labstack/echo/v4 v4.15.4
-	golang.org/x/crypto v0.55.0
+	golang.org/x/crypto v0.56.0
 	modernc.org/sqlite v1.57.0
 )
 
