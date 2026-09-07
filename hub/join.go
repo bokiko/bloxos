@@ -412,5 +412,7 @@ func (s *Server) handleJoinScript(c echo.Context) error {
 	// Config matches mint-time binding: rebuild the script from the stored
 	// binding and the token from the request path. The raw token was never
 	// stored; the rebuilt script is byte-identical to what was minted.
-	return c.String(http.StatusOK, rebuildLinuxJoinScript(info.MintTimeHTTPBase, info.MintTimeCASHA256, c.Param("code")))
+	// Rebuild from the normalized origin so a legacy binding stored with a
+	// trailing slash cannot put "//install.sh" back into the served script.
+	return c.String(http.StatusOK, rebuildLinuxJoinScript(strings.TrimRight(info.MintTimeHTTPBase, "/"), info.MintTimeCASHA256, c.Param("code")))
 }

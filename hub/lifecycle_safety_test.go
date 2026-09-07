@@ -996,5 +996,40 @@ func TestFreshEnrollmentVersionReportHeldUntilCommit(t *testing.T) {
 	}
 }
 
+// TestPowerCommitUnderBarrierPerformsNoSocketWrite: the part of power
+// ingestion that runs under the ingestion barrier must commit and hand back
+// the ACK bytes without touching the socket. A registered agent with no
+// connection at all proves it: any write attempt would fail or panic.
+func TestPowerCommitUnderBarrierPerformsNoSocketWrite(t *testing.T) {
+	_, s := setupTestServer(t)
+	s.seedTestMachine(t, "machine-P")
+	agent := &ConnectedAgent{MachineID: "machine-P"} // Conn nil on purpose
+	s.agentsMu.Lock()
+	s.agents["machine-P"] = agent
+	s.agentsMu.Unlock()
+	defer func() {
+		s.agentsMu.Lock()
+		delete(s.agents, "machine-P")
+		s.agentsMu.Unlock()
+	}()
+
+	start, end := nowWindowMS()
+	raw, err := json.Marshal(powerBatch("stream-1", 1, powerBucket(1, start, end, 100, 200, 30, 30)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ack, err := s.commitPowerHistoryFrame("machine-P", agent, raw)
+	if err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if !strings.Contains(string(ack), `"through":1`) && !strings.Contains(string(ack), `"through": 1`) {
+		t.Fatalf("unexpected ack %s", ack)
+	}
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM power_history_records WHERE machine_id = ?`, "machine-P").Scan(&n); err != nil || n != 1 {
+		t.Fatalf("commit did not persist (n=%d err=%v)", n, err)
+	}
+}
+
 // Keep echo imported for route-level helpers used above.
 var _ = echo.New

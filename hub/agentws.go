@@ -1333,12 +1333,28 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 			// and registered socket; ACK only after the contiguous prefix
 			// commits. Never mutates live gpu_metrics — old agents that never
 			// send this frame are unaffected.
+			// Commit under the barrier, ACK outside it: a socket write can
+			// block for as long as the peer stops reading, and nothing that
+			// can block on the network may hold the barrier (machine deletion
+			// takes its write side before it can even close this socket).
+			var ack []byte
 			var powerErr error
-			if !s.ingestFrame(machineID, agent, registered, func() { powerErr = s.ingestPowerHistory(machineID, agent, msg) }) {
+			if !s.ingestFrame(machineID, agent, registered, func() { ack, powerErr = s.commitPowerHistoryFrame(machineID, agent, msg) }) {
 				return nil
 			}
 			if powerErr != nil {
 				log.Printf("power history from %s: %v", machineID, powerErr)
+			}
+			if ack != nil {
+				agent.WriteMu.Lock()
+				_ = ws.SetWriteDeadline(time.Now().Add(10 * time.Second))
+				err := ws.WriteMessage(websocket.TextMessage, ack)
+				_ = ws.SetWriteDeadline(time.Time{})
+				agent.WriteMu.Unlock()
+				if err != nil {
+					log.Printf("power history ack to %s: %v", machineID, err)
+					return nil
+				}
 			}
 
 		case "command_response":

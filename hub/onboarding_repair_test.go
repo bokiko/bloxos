@@ -271,6 +271,10 @@ func TestJoinDriftCheckToleratesLegacyTrailingSlashBinding(t *testing.T) {
 	if jrec.Code != http.StatusOK {
 		t.Fatalf("legacy-binding join rejected: %d %s", jrec.Code, jrec.Body.String())
 	}
+	body := jrec.Body.String()
+	if strings.Contains(body, "4000//") || !strings.Contains(body, "HUB_HTTP='http://127.0.0.1:4000'") {
+		t.Fatalf("served script rebuilt from the raw legacy binding: %s", body)
+	}
 }
 
 // TestInstallScriptsRunAsRootWithoutSudo: both generated scripts define the
