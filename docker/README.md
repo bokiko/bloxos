@@ -61,10 +61,9 @@ Operations:
   images `docker compose pull && docker compose up -d`. The hub and the
   agents it serves come from the same commit; connected agents that have
   pinned the update key self-update.
-- Back up the `bloxos-data` volume (database, secrets, setup token,
-  update-signing key) and the `caddy-data` volume (the CA). Losing the
-  signing key strands agent self-update; losing the CA invalidates the
-  certificate every enrolled agent pinned, and each must be re-enrolled.
+- Use the [consistent backup and clean restore procedure](../docs/backup-restore.md)
+  for the database, secrets, signing key and Caddy CA/configuration. Do not copy
+  only the live SQLite file or delete volumes to repair a failed upgrade.
 - Root certificate for browsers:
   `docker compose exec caddy cat /data/caddy/pki/authorities/local/root.crt`.
 - Logs: `docker compose logs -f hub`.
@@ -76,8 +75,10 @@ a disposable Linux host with Docker, systemd, and passwordless sudo it
 brings the stack up, completes setup through the API, mints an install
 token, runs the generated Linux command on that same host so it enrolls as
 an agent, asserts the machine is online with the CA pinned, then removes
-the agent and the stack. CI runs it on pull requests that touch the
-container files and before publishing images on a tag. Locally:
+the agent and the stack. It also backs up and restores the initialized hub
+with its original state/identity into a temporary network-isolated project.
+CI runs it on source/container changes, and tags must pass both smoke and the
+full CI suite on their exact commit before publishing images. Locally:
 
 ```bash
 SMOKE_CONFIRM_DISPOSABLE=1 HUB_HOST=<this host's IP> scripts/smoke/compose-enroll.sh
