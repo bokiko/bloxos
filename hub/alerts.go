@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -89,6 +91,22 @@ func (s *Server) alertEvalLoop() {
 }
 
 func (s *Server) evaluateAlerts() {
+	s.evaluateAlertsAt(time.Now())
+}
+
+type alertPendingCondition struct {
+	since    time.Time
+	observed time.Time
+	rule     AlertRule
+}
+
+// Missing/stale readings are unknown, not recovery and not zero. Duration
+// counts only a continuously observed condition, not a gap or hub downtime.
+func (s *Server) evaluateAlertsAt(now time.Time) {
+	var notifications []string
+	defer func() { sendTelegramBatch(notifications) }()
+	s.alertEvalMu.Lock()
+	defer s.alertEvalMu.Unlock()
 	// Get all enabled rules.
 	rules, err := s.getAlertRules(true)
 	if err != nil {
@@ -98,15 +116,16 @@ func (s *Server) evaluateAlerts() {
 
 	// Get all machines with latest metrics.
 	rows, err := s.db.Query(`
-		SELECT m.id, m.hostname, m.last_seen,
-			COALESCE(met.cpu_percent, 0),
-			COALESCE(met.ram_used_bytes, 0), COALESCE(met.ram_total_bytes, 0),
-			COALESCE(met.disk_used_bytes, 0), COALESCE(met.disk_total_bytes, 0),
+		SELECT m.id, m.hostname, m.last_seen, m.status, met.timestamp, COALESCE(ap.poll_interval_secs, 0),
+			met.cpu_percent,
+			met.ram_used_bytes, met.ram_total_bytes,
+			met.disk_used_bytes, met.disk_total_bytes,
 			COALESCE(met.gpu_temp, 0)
 		FROM machines m
+		LEFT JOIN api_machines ap ON m.id = 'api-' || ap.id AND ap.enabled = TRUE
 		LEFT JOIN (
 			SELECT machine_id, cpu_percent, ram_used_bytes, ram_total_bytes,
-				disk_used_bytes, disk_total_bytes, gpu_temp,
+				disk_used_bytes, disk_total_bytes, gpu_temp, timestamp,
 				ROW_NUMBER() OVER (PARTITION BY machine_id ORDER BY timestamp DESC) as rn
 			FROM metrics
 		) met ON met.machine_id = m.id AND met.rn = 1
@@ -121,60 +140,95 @@ func (s *Server) evaluateAlerts() {
 		id             string
 		hostname       string
 		lastSeen       *string
-		cpuPercent     float64
-		ramUsedBytes   int64
-		ramTotalBytes  int64
-		diskUsedBytes  int64
-		diskTotalBytes int64
+		status         string
+		metricTime     *string
+		pollInterval   int
+		cpuPercent     sql.NullFloat64
+		ramUsedBytes   sql.NullInt64
+		ramTotalBytes  sql.NullInt64
+		diskUsedBytes  sql.NullInt64
+		diskTotalBytes sql.NullInt64
 		gpuTemp        float64
 	}
 
 	var machines []machineMetrics
 	for rows.Next() {
 		var m machineMetrics
-		if err := rows.Scan(&m.id, &m.hostname, &m.lastSeen, &m.cpuPercent,
+		if err := rows.Scan(&m.id, &m.hostname, &m.lastSeen, &m.status, &m.metricTime, &m.pollInterval, &m.cpuPercent,
 			&m.ramUsedBytes, &m.ramTotalBytes, &m.diskUsedBytes, &m.diskTotalBytes, &m.gpuTemp); err != nil {
 			continue
 		}
 		machines = append(machines, m)
 	}
+	if err := rows.Err(); err != nil {
+		log.Printf("alert eval: reading machines: %v", err)
+		return
+	}
+	rows.Close()
 
 	// Pre-fetch all active alerts once to avoid one SELECT per (rule×machine)
 	// in the inner loop. Active alerts are a small set; the cross product is not.
-	active := map[string]string{} // key: ruleID+"|"+machineID → alertID
-	if alertRows, err := s.db.Query(`SELECT rule_id, machine_id, id FROM alerts WHERE status = 'active'`); err == nil {
+	active := map[string][]string{} // key: ruleID+"|"+machineID → unresolved IDs
+	if alertRows, err := s.db.Query(`SELECT rule_id, machine_id, id FROM alerts WHERE status IN ('active', 'acknowledged')`); err == nil {
 		for alertRows.Next() {
 			var ruleID, machineID, alertID string
 			if alertRows.Scan(&ruleID, &machineID, &alertID) == nil {
-				active[ruleID+"|"+machineID] = alertID
+				key := ruleID + "|" + machineID
+				active[key] = append(active[key], alertID)
 			}
 		}
+		readErr := alertRows.Err()
 		alertRows.Close()
+		if readErr != nil {
+			return
+		}
+	} else {
+		log.Printf("alert eval: reading unresolved alerts: %v", err)
+		return // Query failure must never be interpreted as no open incident.
 	}
 
+	// Failed database reads are not observations of missing sensors. Preserve
+	// prior timing on an aborted pass; the next valid pass still enforces
+	// the 90-second continuity bound and resets genuinely missing data.
+	nextPending := make(map[string]alertPendingCondition)
+	defer func() { s.alertPending = nextPending }()
 	for _, rule := range rules {
 		for _, m := range machines {
+			key := rule.ID + "|" + m.id
+			freshFor := 120 * time.Second
+			// Native agents tick every 30s. API pollers legitimately tick up
+			// to once/hour: allow their configured cadence plus one eval tick,
+			// otherwise a normal polling gap breaks every longer duration.
+			if m.pollInterval > 90 && m.pollInterval <= 3600 {
+				freshFor = time.Duration(m.pollInterval+30) * time.Second
+			}
+			if rule.Metric != "machine_offline" && (m.status != "online" || !alertReadingFresh(m.lastSeen, now, freshFor) || !alertReadingFresh(m.metricTime, now, freshFor)) {
+				continue
+			}
 			var metricValue float64
 			var triggered bool
 			var msg string
 
 			switch rule.Metric {
 			case "cpu":
-				metricValue = m.cpuPercent
+				if !m.cpuPercent.Valid {
+					continue
+				}
+				metricValue = m.cpuPercent.Float64
 				triggered = compareValue(metricValue, rule.Operator, rule.Threshold)
 				msg = fmt.Sprintf("CPU is %.0f%% (threshold: %.0f%%)", metricValue, rule.Threshold)
 			case "ram":
-				if m.ramTotalBytes == 0 {
+				if !m.ramUsedBytes.Valid || !m.ramTotalBytes.Valid || m.ramTotalBytes.Int64 <= 0 {
 					continue // No RAM data yet, skip to avoid false triggers.
 				}
-				metricValue = float64(m.ramUsedBytes) / float64(m.ramTotalBytes) * 100
+				metricValue = float64(m.ramUsedBytes.Int64) / float64(m.ramTotalBytes.Int64) * 100
 				triggered = compareValue(metricValue, rule.Operator, rule.Threshold)
 				msg = fmt.Sprintf("RAM is %.0f%% (threshold: %.0f%%)", metricValue, rule.Threshold)
 			case "disk":
-				if m.diskTotalBytes == 0 {
+				if !m.diskUsedBytes.Valid || !m.diskTotalBytes.Valid || m.diskTotalBytes.Int64 <= 0 {
 					continue // No disk data yet, skip to avoid false triggers.
 				}
-				metricValue = float64(m.diskUsedBytes) / float64(m.diskTotalBytes) * 100
+				metricValue = float64(m.diskUsedBytes.Int64) / float64(m.diskTotalBytes.Int64) * 100
 				triggered = compareValue(metricValue, rule.Operator, rule.Threshold)
 				msg = fmt.Sprintf("Disk is %.0f%% (threshold: %.0f%%)", metricValue, rule.Threshold)
 			case "gpu_temp":
@@ -188,33 +242,49 @@ func (s *Server) evaluateAlerts() {
 				if m.lastSeen == nil {
 					continue
 				}
-				lastSeenTime, err := time.Parse("2006-01-02 15:04:05", *m.lastSeen)
+				lastSeenTime, err := parseAlertTimestamp(*m.lastSeen)
 				if err != nil {
-					// Try with timezone.
-					lastSeenTime, err = time.Parse(time.RFC3339, *m.lastSeen)
-					if err != nil {
-						continue
-					}
+					continue
 				}
-				offlineSecs := time.Since(lastSeenTime).Seconds()
-				triggered = offlineSecs > rule.Threshold
+				offlineSecs := now.Sub(lastSeenTime).Seconds()
+				if m.pollInterval >= 30 && m.pollInterval <= 3600 {
+					// A scheduled polling gap is not downtime. API machines
+					// become overdue only after the next poll was expected.
+					offlineSecs = max(0, offlineSecs-float64(m.pollInterval))
+				}
+				triggered = compareValue(offlineSecs, rule.Operator, rule.Threshold)
 				msg = fmt.Sprintf("Machine offline for %.0fs (threshold: %.0fs)", offlineSecs, rule.Threshold)
 			default:
 				continue
 			}
 
 			// Look up existing active alert using the pre-fetched map.
-			existingID, hasActive := active[rule.ID+"|"+m.id]
+			existingIDs := active[key]
+			hasActive := len(existingIDs) != 0
+			if triggered && !hasActive && rule.DurationSecs > 0 {
+				pending, ok := s.alertPending[key]
+				if !ok || pending.rule != rule || now.Before(pending.observed) || now.Sub(pending.observed) > 90*time.Second {
+					pending = alertPendingCondition{since: now, rule: rule}
+				}
+				pending.observed = now
+				nextPending[key] = pending
+				if now.Sub(pending.since).Seconds() < float64(rule.DurationSecs) {
+					continue
+				}
+			}
 
 			if triggered && !hasActive {
 				// Create new alert.
 				alertID := uuid.New().String()
-				_, err := s.db.Exec(`INSERT INTO alerts (id, rule_id, machine_id, message, severity) VALUES (?, ?, ?, ?, ?)`,
-					alertID, rule.ID, m.id, msg, rule.Severity)
+				result, err := s.db.Exec(`INSERT INTO alerts (id, rule_id, machine_id, message, severity) SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM machines WHERE id = ?)`,
+					alertID, rule.ID, m.id, msg, rule.Severity, m.id)
 				if err != nil {
 					log.Printf("alert eval: error creating alert: %v", err)
 					continue
 				}
+				if count, _ := result.RowsAffected(); count == 0 {
+					continue
+				} // Machine deleted during evaluation.
 				log.Printf("ALERT [%s] %s on %s: %s", rule.Severity, rule.Name, m.hostname, msg)
 
 				// Send SSE.
@@ -230,7 +300,7 @@ func (s *Server) evaluateAlerts() {
 				broadcastAlertSSE(alert)
 
 				// Send Telegram.
-				sendTelegram(fmt.Sprintf("BloxOS Alert\n\nMachine: %s\nSeverity: %s\n%s",
+				notifications = append(notifications, fmt.Sprintf("BloxOS Alert\n\nMachine: %s\nSeverity: %s\n%s",
 					m.hostname, rule.Severity, msg))
 
 			} else if triggered && hasActive {
@@ -242,7 +312,7 @@ func (s *Server) evaluateAlerts() {
 				// dashboard with one alert event per machine per 30s. The
 				// dashboard picks up the refreshed message on next reload
 				// or fetch of /api/alerts.
-				_, err := s.db.Exec(`UPDATE alerts SET message = ? WHERE id = ?`, msg, existingID)
+				_, err := s.db.Exec(`UPDATE alerts SET message = ? WHERE rule_id = ? AND machine_id = ? AND status IN ('active', 'acknowledged')`, msg, rule.ID, m.id)
 				if err != nil {
 					log.Printf("alert eval: error refreshing alert message: %v", err)
 					continue
@@ -250,28 +320,50 @@ func (s *Server) evaluateAlerts() {
 
 			} else if !triggered && hasActive {
 				// Resolve the alert.
-				_, err := s.db.Exec(`UPDATE alerts SET status = 'resolved', resolved_at = CURRENT_TIMESTAMP WHERE id = ?`, existingID)
+				_, err := s.db.Exec(`UPDATE alerts SET status = 'resolved', resolved_at = CURRENT_TIMESTAMP WHERE rule_id = ? AND machine_id = ? AND status IN ('active', 'acknowledged')`, rule.ID, m.id)
 				if err != nil {
 					log.Printf("alert eval: error resolving alert: %v", err)
 					continue
 				}
 				log.Printf("RESOLVED: %s on %s", rule.Name, m.hostname)
 
-				alert := Alert{
-					ID:        existingID,
-					RuleID:    &rule.ID,
-					MachineID: m.id,
-					Message:   msg,
-					Severity:  rule.Severity,
-					Status:    "resolved",
-					Hostname:  m.hostname,
+				for _, existingID := range existingIDs {
+					alert := Alert{
+						ID:        existingID,
+						RuleID:    &rule.ID,
+						MachineID: m.id,
+						Message:   msg,
+						Severity:  rule.Severity,
+						Status:    "resolved",
+						Hostname:  m.hostname,
+					}
+					broadcastAlertSSE(alert)
 				}
-				broadcastAlertSSE(alert)
 
-				sendTelegram(fmt.Sprintf("Resolved: %s on %s is back to normal", rule.Name, m.hostname))
+				notifications = append(notifications, fmt.Sprintf("Resolved: %s on %s is back to normal", rule.Name, m.hostname))
 			}
 		}
 	}
+}
+
+func parseAlertTimestamp(value string) (time.Time, error) {
+	var lastErr error
+	for _, layout := range []string{time.RFC3339Nano, "2006-01-02 15:04:05.999999999", "2006-01-02 15:04:05.999999999 -0700 MST", "2006-01-02 15:04:05.999999999-07:00"} {
+		parsed, err := time.Parse(layout, value)
+		if err == nil {
+			return parsed, nil
+		}
+		lastErr = err
+	}
+	return time.Time{}, lastErr
+}
+
+func alertReadingFresh(value *string, now time.Time, freshFor time.Duration) bool {
+	if value == nil {
+		return false
+	}
+	stamp, err := parseAlertTimestamp(*value)
+	return err == nil && now.Sub(stamp) >= -30*time.Second && now.Sub(stamp) <= freshFor
 }
 
 func compareValue(value float64, operator string, threshold float64) bool {
@@ -312,7 +404,7 @@ func (s *Server) getAlertRules(enabledOnly bool) ([]AlertRule, error) {
 	if rules == nil {
 		rules = []AlertRule{}
 	}
-	return rules, nil
+	return rules, rows.Err()
 }
 
 func broadcastAlertSSE(alert Alert) {
@@ -346,26 +438,47 @@ func buildTelegramPayload(chatID, text string) ([]byte, error) {
 	})
 }
 
-func sendTelegram(text string) {
+func sendTelegramBatch(messages []string) {
 	if telegramToken == "" || telegramChatID == "" {
 		return
 	}
-	body, err := buildTelegramPayload(telegramChatID, text)
-	if err != nil {
-		log.Printf("telegram payload error: %v", err)
-		return
-	}
+	// One budget for the complete batch, after all DB/SSE transitions, not
+	// N independent unbounded waits and not N fire-and-forget goroutines.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client := &http.Client{Timeout: 5 * time.Second}
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", telegramToken)
-	resp, err := http.Post(url, "application/json", bytes.NewReader(body))
+	for _, text := range messages {
+		if ctx.Err() != nil {
+			break
+		}
+		if err := deliverTelegram(ctx, client, url, telegramChatID, text); err != nil {
+			// Do not log url.Error: its URL contains the bot credential.
+			log.Printf("telegram delivery failed; alert remains in dashboard")
+		}
+	}
+}
+
+func deliverTelegram(ctx context.Context, client *http.Client, url, chatID, text string) error {
+	body, err := buildTelegramPayload(chatID, text)
 	if err != nil {
-		log.Printf("telegram send error: %v", err)
-		return
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		b, _ := io.ReadAll(resp.Body)
-		log.Printf("telegram API error %d: %s", resp.StatusCode, string(b))
+		return fmt.Errorf("telegram status %d", resp.StatusCode)
 	}
+	_, err = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	return err
 }
 
 // --- Alert REST API ---

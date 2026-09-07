@@ -407,7 +407,7 @@ func (s *Server) runCleanup() {
 	}
 
 	// Delete resolved alerts older than 30 days.
-	res, err = s.db.Exec(`DELETE FROM alerts WHERE status != 'active' AND triggered_at < datetime('now', '-30 days')`)
+	res, err = s.db.Exec(`DELETE FROM alerts WHERE status = 'resolved' AND triggered_at < datetime('now', '-30 days')`)
 	if err == nil {
 		n, _ := res.RowsAffected()
 		total += n
