@@ -6,16 +6,23 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"sync"
 
+	"github.com/gorilla/websocket"
 	"golang.org/x/sys/windows/registry"
 )
 
+// errKilledBySignal is Linux-only in effect. On Windows a self-restart is
+// scheduled through the SCM helper and never reaches the argv path, and
+// reboot/shutdown are the OS's own; there is no process-group signal death to
+// interpret, so a command's error is always reported as-is.
+func errKilledBySignal(err error) bool { return false }
+
 // configureCommand is the Windows counterpart to the Linux process-group hook.
-// Windows commands (sc.exe / docker.exe / shutdown.exe) don't fork long-lived
-// child trees the way a Linux service manager can, and CommandContext already
-// kills the child on timeout, so no extra process-group handling is needed.
-// The argv (including restart_service as two discrete sc.exe calls — no cmd.exe
-// string interpolation) comes from commandPlanFor.
+// Windows commands (docker.exe / shutdown.exe) don't fork long-lived child
+// trees the way a Linux service manager can, and CommandContext already kills
+// the child on timeout, so no extra process-group handling is needed. Service
+// commands do not go through argv at all; see service_control_windows.go.
 func configureCommand(cmd *exec.Cmd) {}
 
 // platformSupportsTerminal reports whether the current platform supports
@@ -24,7 +31,7 @@ func platformSupportsTerminal() bool { return false }
 
 // handleStartTerminalPlatform is a no-op on Windows. The hub-side gating
 // in main.go already responds to start_terminal commands with an error.
-func handleStartTerminalPlatform(cmd Command, rawMsg []byte) {
+func handleStartTerminalPlatform(conn *websocket.Conn, mu *sync.Mutex, cmd Command, rawMsg []byte) {
 	// Intentionally no-op; gated by platformSupportsTerminal.
 }
 

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -110,31 +111,71 @@ func runBounded(key string, timeout time.Duration, fn func(ctx context.Context) 
 	}
 }
 
-// commandPlan returns the argv steps to execute for a command on this host.
-func commandPlan(cmdType, target string) ([][]string, error) {
-	return commandPlanFor(runtime.GOOS, cmdType, target)
+// commandSeversOwnConnection reports whether a command, once it runs, is
+// expected to terminate this agent — so a child killed by a signal as the
+// process group goes down is a successful teardown, not a failure. It mirrors
+// the hub's commandMayDisconnectAgent for the Linux agent's own unit. Windows
+// service self-restart never reaches this path (it is scheduled through a
+// detached helper in service_control_windows.go) and errKilledBySignal is a
+// no-op there, so the Linux unit names are harmless on Windows.
+func commandSeversOwnConnection(cmdType, target string) bool {
+	switch cmdType {
+	case "reboot", "shutdown":
+		return true
+	case "restart_service", "stop_service":
+		return target == "bloxos-agent" || target == "bloxos-agent.service"
+	}
+	return false
 }
 
-// commandPlanFor returns the argv steps for a command type on the given GOOS.
-// It is pure argv construction (no OS-specific calls), so it is unit-testable
-// on any platform. Every step is a discrete argv slice executed without a
-// shell, so a validated target can never be interpreted as shell syntax.
-//
-// Windows restart_service is two steps (sc.exe stop, then sc.exe start) run as
-// separate argv commands rather than a "cmd.exe /C stop & start" string — no
-// shell interpolation, injection-proof by construction.
+// shouldSuppressTeardownReply reports whether the outcome of a command should
+// be left unreported so the hub's disconnect grace yields the truthful 202
+// "sent, unconfirmed". True only when the command severs this agent's own
+// connection, its child died by a teardown signal (SIGTERM/SIGKILL), and the
+// context did not fire — an ordinary status-code failure or a timeout is still
+// reported. handleCommand and its tests both go through this one predicate.
+func shouldSuppressTeardownReply(cmdType, target string, ctxErr, runErr error) bool {
+	return runErr != nil && ctxErr == nil &&
+		commandSeversOwnConnection(cmdType, target) && errKilledBySignal(runErr)
+}
+
+// commandPlan returns the argv steps to execute for a command on this host.
+func commandPlan(cmdType, target string) ([][]string, error) {
+	return commandPlanForIdentity(runtime.GOOS, runningAsRoot(), cmdType, target)
+}
+
+// runningAsRoot reports whether this process already has root, in which case
+// the Linux plans must not go through sudo: the generated systemd unit runs
+// the agent as root, and hosts onboarded as root may not have sudo installed
+// at all (the install path no longer requires it), so a sudo prefix there
+// fails every control with "executable file not found".
+func runningAsRoot() bool {
+	return runtime.GOOS != "windows" && os.Geteuid() == 0
+}
+
+// commandPlanFor returns the unprivileged (sudo-prefixed on Linux) plan for a
+// command type on the given GOOS. See commandPlanForIdentity.
 func commandPlanFor(goos, cmdType, target string) ([][]string, error) {
+	return commandPlanForIdentity(goos, false, cmdType, target)
+}
+
+// errServiceViaSCM is returned for Windows service commands, which are
+// executed through the service control manager (service_control_windows.go)
+// rather than as argv steps: sc.exe stop returns while the service is still
+// STOP_PENDING, so "sc.exe stop; sc.exe start" raced the stop.
+var errServiceViaSCM = fmt.Errorf("windows service commands are executed through the service control manager, not argv")
+
+// commandPlanForIdentity returns the argv steps for a command type on the
+// given GOOS, dropping the sudo prefix on Linux when the caller already runs
+// as root. It is pure argv construction (no OS-specific calls), so it is
+// unit-testable on any platform. Every step is a discrete argv slice executed
+// without a shell, so a validated target can never be interpreted as shell
+// syntax.
+func commandPlanForIdentity(goos string, root bool, cmdType, target string) ([][]string, error) {
 	if goos == "windows" {
 		switch cmdType {
-		case "restart_service":
-			return [][]string{
-				{"sc.exe", "stop", target},
-				{"sc.exe", "start", target},
-			}, nil
-		case "stop_service":
-			return [][]string{{"sc.exe", "stop", target}}, nil
-		case "start_service":
-			return [][]string{{"sc.exe", "start", target}}, nil
+		case "restart_service", "stop_service", "start_service":
+			return nil, errServiceViaSCM
 		case "restart_container":
 			return [][]string{{"docker.exe", "restart", target}}, nil
 		case "start_container":
@@ -148,24 +189,29 @@ func commandPlanFor(goos, cmdType, target string) ([][]string, error) {
 		}
 	}
 
+	var argv []string
 	switch cmdType {
 	case "restart_service":
-		return [][]string{{"sudo", "systemctl", "restart", target}}, nil
+		argv = []string{"systemctl", "restart", target}
 	case "stop_service":
-		return [][]string{{"sudo", "systemctl", "stop", target}}, nil
+		argv = []string{"systemctl", "stop", target}
 	case "start_service":
-		return [][]string{{"sudo", "systemctl", "start", target}}, nil
+		argv = []string{"systemctl", "start", target}
 	case "restart_container":
-		return [][]string{{"sudo", "docker", "restart", target}}, nil
+		argv = []string{"docker", "restart", target}
 	case "start_container":
-		return [][]string{{"sudo", "docker", "start", target}}, nil
+		argv = []string{"docker", "start", target}
 	case "reboot":
-		return [][]string{{"sudo", "reboot"}}, nil
+		argv = []string{"reboot"}
 	case "shutdown":
-		return [][]string{{"sudo", "shutdown", "-h", "now"}}, nil
+		argv = []string{"shutdown", "-h", "now"}
 	default:
 		return nil, fmt.Errorf("unknown command type: %s", cmdType)
 	}
+	if !root {
+		argv = append([]string{"sudo"}, argv...)
+	}
+	return [][]string{argv}, nil
 }
 
 // runCommandPlan executes each step's argv in order under ctx, concatenating
