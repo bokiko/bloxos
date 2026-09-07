@@ -12,12 +12,19 @@ test("accepted is not completed, and HTTP errors cannot claim acceptance", () =>
 });
 
 test("bulk results distinguish sent, completed, offline and missing replies", () => {
-  assert.equal(bulkCommandFeedback(true, { results: [{ accepted: true }] }, 1).type, "info");
-  assert.equal(bulkCommandFeedback(true, { results: [{ success: true }] }, 1).type, "success");
-  const partial = bulkCommandFeedback(true, { results: [{ accepted: true }, { error: "offline" }] }, 3);
+  assert.equal(bulkCommandFeedback(true, { results: [{ accepted: true }] }, 1, "restart_service").type, "info");
+  assert.equal(bulkCommandFeedback(true, { results: [{ success: true }] }, 1, "restart_service").type, "success");
+  const partial = bulkCommandFeedback(true, { results: [{ accepted: true }, { error: "offline" }] }, 3, "restart_service");
   assert.equal(partial.type, "error");
   assert.match(partial.message, /0 completed, 1 sent \(unconfirmed\), 2 failed/);
-  assert.equal(bulkCommandFeedback(false, {}, 2).type, "error");
+  assert.equal(bulkCommandFeedback(false, {}, 2, "restart_service").type, "error");
+});
+
+test("single reboot acknowledgement is informational, not completed recovery", () => {
+  const feedback = commandFeedback(true, { success: true }, "Reboot command acknowledged by host", "reboot");
+  assert.equal(feedback.type, "info");
+  assert.match(feedback.message, /recovery is unconfirmed/);
+  assert.equal(commandFeedback(true, { success: false, error: "denied" }, "Reboot", "reboot").type, "error");
 });
 
 test("bulk reboot acknowledgements never claim completed recovery", () => {

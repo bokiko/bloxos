@@ -34,7 +34,7 @@ export function RebootModal({ hostname, machineId, hubUrl, onClose }: RebootModa
         body: JSON.stringify({ type: "reboot", target: "" }),
       });
       const data = await res.json();
-      const feedback = commandFeedback(res.ok, data, `Reboot command acknowledged by ${hostname}`);
+      const feedback = commandFeedback(res.ok, data, `Reboot command acknowledged by ${hostname}`, "reboot");
       addToast(feedback.type, feedback.message);
     } catch (err) {
       addToast("error", `Network error: ${err instanceof Error ? err.message : "unknown"}`);

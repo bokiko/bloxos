@@ -1,10 +1,13 @@
 // A command that disconnects its own agent cannot report completion. Keep
 // "sent" distinct from "succeeded", including partial bulk failures.
-export function commandFeedback(httpOK, data, completedMessage) {
+export function commandFeedback(httpOK, data, completedMessage, commandType) {
   if (httpOK && data?.accepted === true) {
     return { type: "info", message: data.output || "Request sent; completion is not confirmed." };
   }
   if (httpOK && data?.success === true) {
+    if (commandType === "reboot") {
+      return { type: "info", message: `${completedMessage}. Reboot/recovery is unconfirmed; check machine status.` };
+    }
     return { type: "success", message: completedMessage };
   }
   return { type: "error", message: `Failed: ${data?.error || data?.output || "unknown error"}` };
