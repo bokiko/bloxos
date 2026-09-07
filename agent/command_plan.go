@@ -40,6 +40,11 @@ var (
 // from an earlier tick.
 var errCollectorBusy = fmt.Errorf("collector still running from an earlier tick")
 
+// runBoundedBeforeWaitHook, when set by a test, runs after the worker has
+// been started and before the caller waits on it, so a test can pin the
+// ordering in which the result and the deadline become ready.
+var runBoundedBeforeWaitHook func(ctx context.Context)
+
 // runCollector runs argv and returns its stdout, holding the caller for at
 // most collectorTimeout. On timeout the child is sent the kill signal (as a
 // process group where configureCommand supports it) and an error is returned
@@ -73,22 +78,34 @@ func runBounded(key string, timeout time.Duration, fn func(ctx context.Context) 
 	}
 	done := make(chan result, 1)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	// cancel belongs to the caller, not the worker: if the worker cancelled
+	// after publishing its result, ctx.Done and done would both be ready and
+	// the select below could report a timeout for a command that succeeded.
+	defer cancel()
 	go func() {
-		defer func() {
-			collectorInflightMu.Lock()
-			delete(collectorInflight, key)
-			collectorInflightMu.Unlock()
-			cancel()
-		}()
 		out, err := fn(ctx)
+		// Clear the gate before publishing so that a caller who has just
+		// received this result can run the same command again immediately.
+		collectorInflightMu.Lock()
+		delete(collectorInflight, key)
+		collectorInflightMu.Unlock()
 		done <- result{out, err}
 	}()
+	if runBoundedBeforeWaitHook != nil {
+		runBoundedBeforeWaitHook(ctx)
+	}
 	select {
 	case r := <-done:
 		return r.out, r.err
 	case <-ctx.Done():
-		// The goroutine keeps waiting (and holds the inflight mark) until
-		// fn returns; cancel() there releases the timer.
+		// The deadline expired. A result that landed at the same instant
+		// still wins; otherwise the goroutine keeps waiting (and holds the
+		// inflight mark) until fn returns.
+		select {
+		case r := <-done:
+			return r.out, r.err
+		default:
+		}
 		return nil, fmt.Errorf("%s: timed out after %s", strings.Fields(key)[0], timeout)
 	}
 }

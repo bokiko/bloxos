@@ -146,6 +146,33 @@ func TestRunBoundedReturnsWhenWaitCannotAndDoesNotStack(t *testing.T) {
 	}
 }
 
+// TestRunBoundedFastSuccessNeverReportsTimeout: a function that returns
+// promptly must be reported as a success every time, and the very next call
+// for the same key must run rather than be refused as busy. The pinned
+// subtest holds the caller until the deadline has fired, which is exactly
+// the state the old worker-side cancel() produced after publishing a
+// result: both select arms ready, and roughly half the calls "timed out".
+func TestRunBoundedFastSuccessNeverReportsTimeout(t *testing.T) {
+	quick := func(context.Context) ([]byte, error) { return []byte("fast"), nil }
+	run := func(t *testing.T, iterations int, timeout time.Duration) {
+		for i := 0; i < iterations; i++ {
+			out, err := runBounded("fast-collector", timeout, quick)
+			if err != nil {
+				t.Fatalf("iteration %d: fast collector reported %v", i, err)
+			}
+			if string(out) != "fast" {
+				t.Fatalf("iteration %d: unexpected output %q", i, out)
+			}
+		}
+	}
+	t.Run("free-running", func(t *testing.T) { run(t, 500, 50*time.Millisecond) })
+	t.Run("result-and-deadline-both-ready", func(t *testing.T) {
+		runBoundedBeforeWaitHook = func(ctx context.Context) { <-ctx.Done() }
+		defer func() { runBoundedBeforeWaitHook = nil }()
+		run(t, 50, 20*time.Millisecond)
+	})
+}
+
 func waitUntilCleared(t *testing.T, timeout time.Duration, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
