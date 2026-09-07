@@ -8,7 +8,13 @@ on:
       - ".dockerignore"
       - "docker/**"
       - "scripts/smoke/**"
+      - "scripts/backup-compose.sh"
+      - "hub/**"
+      - "agent/**"
+      - "proto/**"
+      - "dashboard/**"
       - ".github/workflows/docker.yml"
+      - ".github/workflows/ci.yml"
   push:
     tags: ["v*"]
   workflow_dispatch:
@@ -25,6 +31,13 @@ env:
   DASHBOARD_IMAGE: ghcr.io/${{ github.repository_owner }}/bloxos-dashboard
 
 jobs:
+  # A release tag must pass the same full suite as a PR, at the tag's exact
+  # commit. A green older main/PR run does not validate a new tagged tree.
+  verify-release:
+    name: Release verification
+    if: startsWith(github.ref, 'refs/tags/v')
+    uses: ./.github/workflows/ci.yml
+
   # Builds both images for the runner's platform and enrolls the runner as an
   # agent through the Compose stack (scripts/smoke/compose-enroll.sh). Gates
   # publishing and checks container-related pull requests.
@@ -65,7 +78,7 @@ jobs:
   # behind the default tags.
   publish:
     name: Publish images
-    needs: smoke
+    needs: [smoke, verify-release]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
