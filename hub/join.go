@@ -394,7 +394,9 @@ func (s *Server) handleJoinScript(c echo.Context) error {
 	currentCAURL, currentCASHA256 := bootstrapCAFor(currentHTTPBase)
 	_ = currentCAURL // URL derivation is deterministic; SHA is the binding value
 
-	if currentHTTPBase != info.MintTimeHTTPBase {
+	// Tokens minted before origin normalization may carry a trailing slash;
+	// compare origins, not spellings.
+	if currentHTTPBase != strings.TrimRight(info.MintTimeHTTPBase, "/") {
 		// PUBLIC_URL has changed. The join command has the mint-time URL
 		// embedded, but if it somehow reaches this hub on the new URL, reject
 		// rather than serve a script that points to a different authority.

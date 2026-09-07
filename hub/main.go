@@ -416,14 +416,17 @@ func (s *Server) runCleanup() {
 		}
 	}
 
-	// Delete expired tokens.
-	res, err = s.db.Exec(`DELETE FROM tokens WHERE expires_at < datetime('now')`)
-	if err == nil {
-		n, _ := res.RowsAffected()
+	// Delete expired tokens. Compared in Go, not SQL: rows written by older
+	// hubs hold the driver's local-offset text, which SQLite's date functions
+	// cannot parse and a text comparison against UTC mis-orders by offset
+	// (fresh tokens were deleted west of UTC and stale ones kept east of it).
+	if n, err := s.deleteExpiredTokens(time.Now()); err == nil {
 		total += n
 		if n > 0 {
 			log.Printf("cleanup: deleted %d expired tokens", n)
 		}
+	} else {
+		log.Printf("cleanup: expired tokens: %v", err)
 	}
 
 	// Delete closed terminal sessions older than 30 days.
