@@ -493,6 +493,9 @@ func nextRejectedPendingSecret(current string, sel credentialSelection, outcome 
 }
 
 func connectLoop(machineID string) {
+	// Power history collects offline as well; boot it once, off this goroutine.
+	startPowerHistory()
+
 	backoff := time.Second
 	maxBackoff := 60 * time.Second
 
@@ -701,6 +704,12 @@ func runAgent(machineID string) (authOutcome, error) {
 				// Admin switch for AI Sessions reporting (see ai_sessions.go).
 				handleAISessionsConfig(conn, &writeMu, machineID, msg)
 
+			case powerAckType:
+				// Hub committed a contiguous prefix of power-history buckets
+				// (see power_history.go). Non-blocking hand-off to the journal
+				// worker; never touches disk on this goroutine.
+				handlePowerHistoryAck(msg)
+
 			default:
 				// Anything else is a command (restart_service, refresh_metrics, etc.)
 				go handleCommand(conn, &writeMu, msg)
@@ -770,6 +779,7 @@ func sendAll(conn *websocket.Conn, mu *sync.Mutex, machineID string) error {
 	sendServices(conn, mu, machineID)
 	sendContainers(conn, mu, machineID)
 	sendAISessions(conn, mu, machineID)
+	sendPowerHistory(conn, mu)
 	return nil
 }
 

@@ -147,7 +147,7 @@ export function FleetOverview({ machines }: FleetOverviewProps) {
           {metrics.hasGpu && metrics.totalPower > 0 && (
             <div className="flex items-baseline gap-2 px-3 py-1.5 rounded-lg bg-surface-sunken border border-border-subtle">
               <span className="text-xs text-text-tertiary uppercase tracking-wider font-medium">
-                Fleet Power
+                Fleet GPU Power
               </span>
               <span className="text-lg font-mono tabular-nums text-text-primary font-semibold">
                 {metrics.totalPower.toFixed(0)}

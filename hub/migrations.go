@@ -438,6 +438,61 @@ var migrations = []migration{
 			return err
 		},
 	},
+	{
+		// Power history — 30s component power buckets reported by agents.
+		// Deliberately separate from legacy gpu_metrics: different shape,
+		// different retention, stream/seq identity. Stream state (high-water,
+		// retained_from, degraded) lives apart from chart rows so 24h row
+		// pruning never resets dedupe or ack state. The AUTOINCREMENT id is
+		// the durable delta-read cursor: assigned at ingestion, strictly
+		// monotonic, never reused after pruning (SQLite guarantees this via
+		// sqlite_sequence), so a late backfill is delivered by arrival order,
+		// not measurement time.
+		description: "create power_history_records, power_history_stream_state, power_history_gaps",
+		apply: func(tx *sql.Tx) error {
+			_, err := tx.Exec(`
+			CREATE TABLE IF NOT EXISTS power_history_records (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				machine_id TEXT NOT NULL,
+				stream_id TEXT NOT NULL,
+				seq INTEGER NOT NULL,
+				start_unix_ms INTEGER NOT NULL,
+				end_unix_ms INTEGER NOT NULL,
+				expected_samples INTEGER NOT NULL,
+				payload TEXT NOT NULL,
+				received_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+				UNIQUE (machine_id, stream_id, seq),
+				FOREIGN KEY (machine_id) REFERENCES machines(id)
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_power_history_records_window
+				ON power_history_records(machine_id, end_unix_ms);
+
+			CREATE TABLE IF NOT EXISTS power_history_stream_state (
+				machine_id TEXT NOT NULL,
+				stream_id TEXT NOT NULL,
+				acked_through INTEGER NOT NULL DEFAULT 0,
+				max_seen_seq INTEGER NOT NULL DEFAULT 0,
+				retained_from INTEGER NOT NULL DEFAULT 0,
+				degraded BOOLEAN NOT NULL DEFAULT FALSE,
+				updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+				PRIMARY KEY (machine_id, stream_id),
+				FOREIGN KEY (machine_id) REFERENCES machines(id)
+			);
+
+			CREATE TABLE IF NOT EXISTS power_history_gaps (
+				machine_id TEXT NOT NULL,
+				stream_id TEXT NOT NULL,
+				from_seq INTEGER NOT NULL,
+				through_seq INTEGER NOT NULL,
+				recorded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+				PRIMARY KEY (machine_id, stream_id, from_seq),
+				FOREIGN KEY (machine_id) REFERENCES machines(id)
+			);
+			`)
+			return err
+		},
+	},
 }
 
 // isDuplicateColumnErr returns true when SQLite rejects an ALTER TABLE ADD

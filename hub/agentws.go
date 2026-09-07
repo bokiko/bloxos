@@ -15,9 +15,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bokiko/bloxos/proto/aisessions"
+	"github.com/bokiko/bloxos/proto/powerhistory"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/labstack/echo/v4"
@@ -25,9 +27,10 @@ import (
 
 // ConnectedAgent tracks a live WebSocket connection from an agent.
 type ConnectedAgent struct {
-	MachineID string
-	Conn      *websocket.Conn
-	WriteMu   sync.Mutex
+	MachineID  string
+	Conn       *websocket.Conn
+	WriteMu    sync.Mutex
+	powerIssue atomic.Uint32 // current connection's bounded history diagnostic
 }
 
 // wsMessageWriter is exactly gorilla/websocket's (*Conn).WriteMessage
@@ -1204,6 +1207,15 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 			// Read-only AI tool session metadata. Bound to the authenticated
 			// machine and to the registered socket; see ingestAISessions.
 			s.ingestAISessions(machineID, agent, msg)
+
+		case powerhistory.BatchType:
+			// Durable 30s power buckets. Bound to the authenticated machine
+			// and registered socket; ACK only after the contiguous prefix
+			// commits. Never mutates live gpu_metrics — old agents that never
+			// send this frame are unaffected.
+			if err := s.ingestPowerHistory(machineID, agent, msg); err != nil {
+				log.Printf("power history from %s: %v", machineID, err)
+			}
 
 		case "command_response":
 			var resp CommandResponse

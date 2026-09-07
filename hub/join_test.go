@@ -1183,8 +1183,19 @@ func TestJoinScriptScrubMigrationClearsPersistedToken(t *testing.T) {
 		t.Fatalf("seed legacy row: %v", err)
 	}
 
-	// Re-apply only the final (scrub) migration by rewinding the version.
-	if _, err := db.Exec(`UPDATE schema_version SET version = ?`, len(migrations)-1); err != nil {
+	// Locate the scrub explicitly so appending future migrations cannot
+	// silently stop this test from exercising token cleanup.
+	scrubMigrationIndex := -1
+	for i, migration := range migrations {
+		if migration.description == "scrub raw install tokens persisted in tokens.mint_time_script" {
+			scrubMigrationIndex = i
+			break
+		}
+	}
+	if scrubMigrationIndex < 0 {
+		t.Fatal("token scrub migration not found")
+	}
+	if _, err := db.Exec(`UPDATE schema_version SET version = ?`, scrubMigrationIndex); err != nil {
 		t.Fatalf("rewind schema_version: %v", err)
 	}
 	if err := runMigrations(db); err != nil {

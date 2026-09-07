@@ -174,7 +174,7 @@ export function MachineGauges({ metrics, gpus }: MachineGaugesProps) {
                     </div>
                     {gpu.power_watts > 0 && (
                       <div className="flex justify-between items-baseline">
-                        <span className="text-[9px] text-text-tertiary uppercase">Power</span>
+                        <span className="text-[9px] text-text-tertiary uppercase">GPU power</span>
                         <span className="text-sm font-mono tabular-nums text-text-primary">
                           {gpu.power_watts.toFixed(0)}W
                         </span>
