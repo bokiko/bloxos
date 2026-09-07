@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/labstack/echo/v4"
+	"time"
 )
 
 type UserRole string
@@ -41,6 +42,9 @@ const authClaimsContextKey = "auth_claims"
 type requestAuthClaims struct {
 	UserID   string
 	Username string
+	// ExpiresAt is the token's exp claim, zero when the token carries none.
+	// Long-lived handlers (the event stream) re-check it after the handshake.
+	ExpiresAt time.Time
 }
 
 var roleScopes = map[UserRole][]string{
@@ -124,25 +128,25 @@ var routeScopeRequirements = map[string]string{
 	routeScopeKey(http.MethodDelete, "/api/users/:id"):                         scopeUsersAdmin,
 
 	// Phase 10 — branding (admin) and per-user theme prefs.
-	routeScopeKey(http.MethodPatch, "/api/branding"):                           scopeBrandingAdmin,
-	routeScopeKey(http.MethodPost, "/api/branding/logo"):                       scopeBrandingAdmin,
-	routeScopeKey(http.MethodPost, "/api/branding/favicon"):                    scopeBrandingAdmin,
-	routeScopeKey(http.MethodDelete, "/api/branding/:kind"):                    scopeBrandingAdmin,
-	routeScopeKey(http.MethodGet, "/api/me/theme"):                             scopeAuthSelf,
-	routeScopeKey(http.MethodPatch, "/api/me/theme"):                           scopeAuthSelf,
+	routeScopeKey(http.MethodPatch, "/api/branding"):        scopeBrandingAdmin,
+	routeScopeKey(http.MethodPost, "/api/branding/logo"):    scopeBrandingAdmin,
+	routeScopeKey(http.MethodPost, "/api/branding/favicon"): scopeBrandingAdmin,
+	routeScopeKey(http.MethodDelete, "/api/branding/:kind"): scopeBrandingAdmin,
+	routeScopeKey(http.MethodGet, "/api/me/theme"):          scopeAuthSelf,
+	routeScopeKey(http.MethodPatch, "/api/me/theme"):        scopeAuthSelf,
 
 	// Phase 11 — per-user workflow personalization. All ten routes are
 	// "self-only" — every authenticated user can read/write their own row.
-	routeScopeKey(http.MethodGet, "/api/me/preferences"):                       scopeAuthSelf,
-	routeScopeKey(http.MethodPatch, "/api/me/preferences"):                     scopeAuthSelf,
-	routeScopeKey(http.MethodPost, "/api/me/avatar"):                           scopeAuthSelf,
-	routeScopeKey(http.MethodDelete, "/api/me/avatar"):                         scopeAuthSelf,
-	routeScopeKey(http.MethodGet, "/api/users/:user_id/avatar"):                scopeAuthSelf,
-	routeScopeKey(http.MethodPost, "/api/me/pinned/:machine_id"):               scopeAuthSelf,
-	routeScopeKey(http.MethodDelete, "/api/me/pinned/:machine_id"):             scopeAuthSelf,
-	routeScopeKey(http.MethodGet, "/api/me/filters"):                           scopeAuthSelf,
-	routeScopeKey(http.MethodPost, "/api/me/filters"):                          scopeAuthSelf,
-	routeScopeKey(http.MethodDelete, "/api/me/filters/:id"):                    scopeAuthSelf,
+	routeScopeKey(http.MethodGet, "/api/me/preferences"):           scopeAuthSelf,
+	routeScopeKey(http.MethodPatch, "/api/me/preferences"):         scopeAuthSelf,
+	routeScopeKey(http.MethodPost, "/api/me/avatar"):               scopeAuthSelf,
+	routeScopeKey(http.MethodDelete, "/api/me/avatar"):             scopeAuthSelf,
+	routeScopeKey(http.MethodGet, "/api/users/:user_id/avatar"):    scopeAuthSelf,
+	routeScopeKey(http.MethodPost, "/api/me/pinned/:machine_id"):   scopeAuthSelf,
+	routeScopeKey(http.MethodDelete, "/api/me/pinned/:machine_id"): scopeAuthSelf,
+	routeScopeKey(http.MethodGet, "/api/me/filters"):               scopeAuthSelf,
+	routeScopeKey(http.MethodPost, "/api/me/filters"):              scopeAuthSelf,
+	routeScopeKey(http.MethodDelete, "/api/me/filters/:id"):        scopeAuthSelf,
 }
 
 func (s *Server) permissionMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
@@ -181,10 +185,11 @@ func (s *Server) permissionMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 	}
 }
 
-func setAuthClaimsOnContext(c echo.Context, userID, username string) {
+func setAuthClaimsOnContext(c echo.Context, userID, username string, expiresAt time.Time) {
 	c.Set(authClaimsContextKey, requestAuthClaims{
-		UserID:   userID,
-		Username: username,
+		UserID:    userID,
+		Username:  username,
+		ExpiresAt: expiresAt,
 	})
 }
 
@@ -235,15 +240,15 @@ func roleHasScope(role UserRole, requiredScope string) bool {
 
 // publicAPIRoutes lists the /api/* endpoints that are served without RBAC enforcement.
 var publicAPIRoutes = map[string]struct{}{
-	routeScopeKey(http.MethodPost, "/api/auth/login"):       {},
-	routeScopeKey(http.MethodGet, "/api/setup/status"):      {},
-	routeScopeKey(http.MethodPost, "/api/setup"):            {},
+	routeScopeKey(http.MethodPost, "/api/auth/login"):  {},
+	routeScopeKey(http.MethodGet, "/api/setup/status"): {},
+	routeScopeKey(http.MethodPost, "/api/setup"):       {},
 	// Phase 10 — branding metadata + image bytes are public so the
 	// dashboard can fetch them before authentication (login screen,
 	// document.title, favicon). Writes still require branding.admin.
-	routeScopeKey(http.MethodGet, "/api/branding"):          {},
-	routeScopeKey(http.MethodGet, "/api/branding/logo"):     {},
-	routeScopeKey(http.MethodGet, "/api/branding/favicon"):  {},
+	routeScopeKey(http.MethodGet, "/api/branding"):         {},
+	routeScopeKey(http.MethodGet, "/api/branding/logo"):    {},
+	routeScopeKey(http.MethodGet, "/api/branding/favicon"): {},
 }
 
 // auditRBACRouteCoverage verifies every protected /api/* route registered on e has a
