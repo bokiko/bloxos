@@ -287,6 +287,7 @@ func (s *Server) registerRoutes(e *echo.Echo) {
 	api.GET("/api/machines/:id/notes", s.handleGetMachineNotes)
 	api.PUT("/api/machines/:id/notes", s.handleSetMachineNotes)
 	api.GET("/api/machines/:id/metrics/history", s.handleMetricsHistory)
+	api.GET("/api/machines/:id/power/history", s.handlePowerHistory)
 	api.DELETE("/api/machines/:id/credential", s.handleRevokeAgentCredential)
 	api.POST("/api/machines/:id/windows-re-enrollment", s.handleWindowsReenrollment)
 	api.DELETE("/api/machines/:id", s.handleDeleteMachine)
@@ -426,6 +427,14 @@ func (s *Server) runCleanup() {
 		if n > 0 {
 			log.Printf("cleanup: deleted %d old terminal sessions", n)
 		}
+	}
+
+	// Prune 24h power-history chart rows (stream high-water state is kept).
+	if n, err := s.prunePowerHistory(time.Now()); err != nil {
+		log.Printf("cleanup: power history prune: %v", err)
+	} else if n > 0 {
+		total += n
+		log.Printf("cleanup: pruned %d power history rows", n)
 	}
 
 	log.Printf("cleanup complete: %d total rows removed", total)
@@ -722,7 +731,7 @@ func (s *Server) handleDeleteMachine(c echo.Context) error {
 	}
 	defer tx.Rollback()
 
-	tables := []string{"metrics", "gpu_metrics", "services", "containers", "alerts", "terminal_sessions", "agent_credentials"}
+	tables := []string{"metrics", "gpu_metrics", "services", "containers", "alerts", "terminal_sessions", "agent_credentials", "power_history_records", "power_history_stream_state", "power_history_gaps"}
 	for _, table := range tables {
 		if _, err := tx.Exec("DELETE FROM "+table+" WHERE machine_id = ?", id); err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to delete " + table})
@@ -2434,7 +2443,7 @@ func (s *Server) handleDeleteAPIMachine(c echo.Context) error {
 	tx, err := s.db.Begin()
 	if err == nil {
 		// Note: table names are hardcoded constants, not user input — safe from SQL injection
-		for _, table := range []string{"metrics", "gpu_metrics", "services", "containers", "alerts"} {
+		for _, table := range []string{"metrics", "gpu_metrics", "services", "containers", "alerts", "power_history_records", "power_history_stream_state", "power_history_gaps"} {
 			tx.Exec("DELETE FROM "+table+" WHERE machine_id = ?", machineID)
 		}
 		tx.Exec("DELETE FROM machines WHERE id = ?", machineID)

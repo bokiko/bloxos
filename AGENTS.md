@@ -67,6 +67,13 @@ Fleet management dashboard for AI machines. Go hub + agent, Next.js dashboard.
   trustworthy pin. Never emit an unpinned `-k`, a `| bash`, or a
   Host-derived authority, and keep join codes out of logs.
 - Credentials NEVER committed — use env vars or local config
+- **Power history is component telemetry, not wall power.** Keep legacy
+  instantaneous `power_watts` separate from the 30-second mean and sampled peak
+  in `proto/powerhistory`. Missing sensors are unavailable, not zero. GPU-total
+  peaks require complete simultaneous readings; never sum per-device maxima.
+  The local journal is isolated from credentials and CA/update-key files. Only
+  durable windows are replayed, the authenticated socket supplies machine
+  identity, and the hub ACKs after commit. See `docs/power-history.md`.
 - Dark mode is the default UI theme
 - Caddy TLS uses RSA-2048 keys, not ECDSA. Do not change without testing on stock Windows PowerShell 5.1.
 

@@ -11,6 +11,7 @@ import { ServicePanel, Service } from "@/components/ServicePanel";
 import { ContainerPanel, Container } from "@/components/ContainerPanel";
 import { RebootModal } from "@/components/RebootModal";
 import { MetricCharts } from "@/components/MetricCharts";
+import { PowerHistory } from "@/components/PowerHistory";
 import { HardwareCard, type HardwareInfo } from "@/components/HardwareCard";
 import { MachineNotes } from "@/components/MachineNotes";
 import { AISessionsPanel } from "@/components/AISessionsPanel";
@@ -948,7 +949,7 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
                             <div className="flex items-center justify-between py-2 border-t border-blox-border/50">
                               <div className="flex items-center gap-2">
                                 <Zap className="w-3.5 h-3.5 text-blox-muted" />
-                                <span className="text-xs text-blox-muted">Power</span>
+                                <span className="text-xs text-blox-muted">GPU power</span>
                               </div>
                               <span className="text-xs text-blox-text tabular-nums font-mono">
                                 {(gpu.power_watts ?? 0).toFixed(0)} W
@@ -997,6 +998,7 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
               className="bg-blox-card border border-blox-border rounded-xl p-5"
             >
               <MetricCharts machineId={id} hasGpu={hasGpu} />
+              {!isAPIMachine && <PowerHistory key={id} machineId={id} />}
             </motion.div>
           </TabsContent>
 
