@@ -289,11 +289,18 @@ func TestSCMSelfRestartViaDetachedHelper(t *testing.T) {
 		}
 		time.Sleep(scmPollInterval)
 	}
-	logText, err := os.ReadFile(restartHelperLogPath())
-	if err != nil {
-		t.Fatalf("helper log missing: %v", err)
-	}
-	if !strings.Contains(string(logText), name+" restarted") {
-		t.Fatalf("helper log does not record the restart:\n%s", logText)
+	// The helper writes its final line after its own RUNNING poll, which
+	// can lag the pid change observed above by a poll interval.
+	logDeadline := time.Now().Add(15 * time.Second)
+	for {
+		logText, _ := os.ReadFile(restartHelperLogPath())
+		if strings.Contains(string(logText), name+" restarted") {
+			t.Logf("helper log:\n%s", logText)
+			return
+		}
+		if time.Now().After(logDeadline) {
+			t.Fatalf("helper log does not record the restart:\n%s", logText)
+		}
+		time.Sleep(scmPollInterval)
 	}
 }
