@@ -35,7 +35,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v4
       - name: Build hub image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile.hub
@@ -44,7 +44,7 @@ jobs:
           cache-from: type=gha,scope=hub
           cache-to: type=gha,scope=hub,mode=max
       - name: Build dashboard image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile.dashboard
@@ -82,7 +82,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Push hub image by digest
         id: hub
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile.hub
@@ -94,7 +94,7 @@ jobs:
           cache-from: type=gha,scope=hub
       - name: Push dashboard image by digest
         id: dashboard
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile.dashboard
