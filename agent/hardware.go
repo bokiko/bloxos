@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -264,16 +263,16 @@ func skipInterface(name string) bool {
  * ============================================================================ */
 
 var (
-	reCPUNoise        = regexp.MustCompile(`\(R\)|\(TM\)|CPU|Processor|@.*$|[0-9]+-Core`)
-	reSpaces          = regexp.MustCompile(`\s+`)
-	reRyzenThreadrip  = regexp.MustCompile(`Ryzen\s+(?:Threadripper\s+)?([A-Z0-9 ]+?)\s+([0-9A-Z]+)`)
-	reRyzenSimple     = regexp.MustCompile(`Ryzen\s+(\d+)\s+([0-9A-Z]+)`)
-	reXeonNamed       = regexp.MustCompile(`Xeon\s+([A-Za-z]+)\s+([0-9A-Z-]+)`)
-	reXeonNumeric     = regexp.MustCompile(`Xeon\s+([A-Z]?\d{4,}\w*)`)
-	reCorePattern     = regexp.MustCompile(`Core\s+(i[3579]|m[3579]|Ultra\s+\d+)\s*-?\s*([0-9A-Z]+)`)
-	reEPYC            = regexp.MustCompile(`EPYC\s+([0-9A-Z-]+)`)
-	reAtom            = regexp.MustCompile(`Atom\s+([A-Z]?\d+\w*)`)
-	reAppleSilicon    = regexp.MustCompile(`(M\d+(?:\s+\w+)?)`)
+	reCPUNoise       = regexp.MustCompile(`\(R\)|\(TM\)|CPU|Processor|@.*$|[0-9]+-Core`)
+	reSpaces         = regexp.MustCompile(`\s+`)
+	reRyzenThreadrip = regexp.MustCompile(`Ryzen\s+(?:Threadripper\s+)?([A-Z0-9 ]+?)\s+([0-9A-Z]+)`)
+	reRyzenSimple    = regexp.MustCompile(`Ryzen\s+(\d+)\s+([0-9A-Z]+)`)
+	reXeonNamed      = regexp.MustCompile(`Xeon\s+([A-Za-z]+)\s+([0-9A-Z-]+)`)
+	reXeonNumeric    = regexp.MustCompile(`Xeon\s+([A-Z]?\d{4,}\w*)`)
+	reCorePattern    = regexp.MustCompile(`Core\s+(i[3579]|m[3579]|Ultra\s+\d+)\s*-?\s*([0-9A-Z]+)`)
+	reEPYC           = regexp.MustCompile(`EPYC\s+([0-9A-Z-]+)`)
+	reAtom           = regexp.MustCompile(`Atom\s+([A-Z]?\d+\w*)`)
+	reAppleSilicon   = regexp.MustCompile(`(M\d+(?:\s+\w+)?)`)
 )
 
 // parseCPUFamilyAndModel extracts a human-readable family and model number
@@ -477,15 +476,15 @@ func collectRAMModules() (modules []RAMModule, totalSlots, populatedSlots int, m
 	if runtime.GOOS != "linux" {
 		return nil, 0, 0, 0
 	}
-	out, err := exec.Command("dmidecode", "--type", "17").Output()
+	out, err := runCollector("dmidecode", "--type", "17")
 	if err != nil {
-		out, err = exec.Command("sudo", "-n", "dmidecode", "--type", "17").Output()
+		out, err = runCollector("sudo", "-n", "dmidecode", "--type", "17")
 		if err != nil {
 			return nil, 0, 0, 0
 		}
 	}
 
-	if maxOut, err := exec.Command("dmidecode", "--type", "16").Output(); err == nil {
+	if maxOut, err := runCollector("dmidecode", "--type", "16"); err == nil {
 		maxBytes = parseDmiType16MaxCapacity(string(maxOut))
 	}
 
@@ -615,7 +614,7 @@ func collectGPUDevices() []GPUDevice {
 	if runtime.GOOS != "linux" {
 		return nil
 	}
-	out, err := exec.Command("lspci", "-mm").Output()
+	out, err := runCollector("lspci", "-mm")
 	if err != nil {
 		return nil
 	}
@@ -682,7 +681,7 @@ func collectPCIDevices() []PCIDevice {
 	if runtime.GOOS != "linux" {
 		return nil
 	}
-	out, err := exec.Command("lspci", "-mm").Output()
+	out, err := runCollector("lspci", "-mm")
 	if err != nil {
 		return nil
 	}

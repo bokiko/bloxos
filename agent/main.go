@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"os/user"
 	"path/filepath"
 	"regexp"
@@ -997,8 +996,8 @@ func handleCommand(conn *websocket.Conn, mu *sync.Mutex, msg []byte) {
 func sendServices(conn *websocket.Conn, mu *sync.Mutex, machineID string) {
 	hostname, _ := os.Hostname()
 
-	out, err := exec.Command("systemctl", "list-units", "--type=service",
-		"--state=active,inactive,failed", "--no-pager", "--no-legend").Output()
+	out, err := runCollector("systemctl", "list-units", "--type=service",
+		"--state=active,inactive,failed", "--no-pager", "--no-legend")
 	if err != nil {
 		log.Printf("service discovery error: %v", err)
 		return
@@ -1071,12 +1070,12 @@ func isInterestingService(name string) bool {
 func sendContainers(conn *websocket.Conn, mu *sync.Mutex, machineID string) {
 	hostname, _ := os.Hostname()
 
-	if err := exec.Command("docker", "info").Run(); err != nil {
+	if _, err := runCollector("docker", "info"); err != nil {
 		return
 	}
 
-	out, err := exec.Command("docker", "ps", "-a", "--format",
-		"{{.ID}}\t{{.Names}}\t{{.Status}}\t{{.Image}}").Output()
+	out, err := runCollector("docker", "ps", "-a", "--format",
+		"{{.ID}}\t{{.Names}}\t{{.Status}}\t{{.Image}}")
 	if err != nil {
 		log.Printf("docker discovery error: %v", err)
 		return
@@ -1187,13 +1186,20 @@ type nvPower struct {
 	InstPowerDraw string `xml:"instant_power_draw"`
 }
 
+// resolveNvidiaSmi is the nvidia-smi locator; a variable so tests can point
+// it at a synthetic collector.
+var resolveNvidiaSmi = resolveNvidiaSmiPath
+
 func collectGPUMetrics() []GPUInfo {
-	smiPath := resolveNvidiaSmiPath()
+	smiPath := resolveNvidiaSmi()
 	if smiPath == "" {
 		return nil
 	}
-	out, err := exec.Command(smiPath, "-x", "-q").Output()
+	// A hung nvidia-smi (GPU off the bus) must report "no GPU data", not
+	// zeros, and must not hold the connection loop: see runCollector.
+	out, err := runCollector(smiPath, "-x", "-q")
 	if err != nil {
+		log.Printf("nvidia-smi unavailable: %v", err)
 		return nil
 	}
 
