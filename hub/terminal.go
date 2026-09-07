@@ -366,6 +366,15 @@ func (s *Server) handleTerminalWS(c echo.Context) error {
 	}
 
 	session.mu.Lock()
+	if role == "agent" && session.FailReason != "" {
+		// The agent already refused this session; a late agent socket must
+		// not start a relay that would write to the browser concurrently
+		// with the refusal being delivered.
+		session.mu.Unlock()
+		log.Printf("terminal %s: agent connected after refusing the session; rejecting", sessionID)
+		ws.Close()
+		return nil
+	}
 	if role == "agent" {
 		session.AgentWS = ws
 		log.Printf("terminal %s: agent connected", sessionID)

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -149,5 +150,38 @@ func TestTerminalRefusalIgnoredWhenNotOwnerOrAlreadyRelaying(t *testing.T) {
 	}
 	if !sessionExists(sid) {
 		t.Fatal("session removed by an ignored response")
+	}
+}
+
+// TestTerminalRefusalRejectsLateAgentSocket: once a session is failed, an
+// agent socket for it is closed rather than registered, so no relay can
+// start and write to the browser concurrently with the refusal.
+func TestTerminalRefusalRejectsLateAgentSocket(t *testing.T) {
+	e, s := setupTestServer(t)
+	server := httptest.NewServer(e)
+	defer server.Close()
+	sid := "refusal-late-agent-session"
+	session := seedRefusalSession(t, s, sid, "machine-refusal")
+	resp := CommandResponse{Type: "command_response", ID: terminalCommandIDPrefix + sid[:terminalCommandIDChars], Error: "refused"}
+	if !s.failTerminalSessionFromAgent("machine-refusal", resp) {
+		t.Fatal("refusal was not routed to the session")
+	}
+
+	h := http.Header{}
+	h.Set("X-Bloxos-Terminal-Token", "tok-"+sid)
+	conn, _, err := dialWSWithHeader(t, server, "/ws/terminal/"+sid+"?role=agent", h)
+	if err != nil {
+		t.Fatalf("agent dial: %v", err)
+	}
+	defer conn.Close()
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, _, err := conn.ReadMessage(); err == nil {
+		t.Fatal("late agent socket was kept open")
+	}
+	session.mu.Lock()
+	agentWS := session.AgentWS
+	session.mu.Unlock()
+	if agentWS != nil {
+		t.Fatal("late agent socket was registered on a failed session")
 	}
 }
