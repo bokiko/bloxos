@@ -20,6 +20,11 @@ type Server struct {
 	// Serializes agent authentication/registration with credential revocation.
 	agentAuthMu sync.RWMutex
 
+	// Alert evaluations are serialized; pending duration state is bounded by
+	// currently observable enabled rule/machine pairs and resets on restart.
+	alertEvalMu  sync.Mutex
+	alertPending map[string]alertPendingCondition
+
 	// Latest AI Sessions snapshot per connected machine, and the cached
 	// feature switch with its revision (see ai_sessions.go).
 	aiSessions    *aiSessionStore
