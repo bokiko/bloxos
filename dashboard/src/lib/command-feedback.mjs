@@ -14,6 +14,9 @@ export function commandFeedback(httpOK, data, completedMessage, commandType) {
 }
 
 export function bulkCommandFeedback(httpOK, data, expectedCount, commandType) {
+  if (!httpOK) {
+    return { type: "error", message: "Bulk request failed; completion is unknown. Check machine status before retrying." };
+  }
   const results = Array.isArray(data?.results) ? data.results : [];
   const accepted = results.filter(r => r.accepted === true).length;
   const succeeded = results.filter(r => !r.accepted && r.success === true).length;
@@ -22,7 +25,7 @@ export function bulkCommandFeedback(httpOK, data, expectedCount, commandType) {
     ? `${succeeded} acknowledged (reboot/recovery unconfirmed)`
     : `${succeeded} completed`;
   const failed = Math.max(expectedCount, results.length) - accepted - succeeded;
-  if (!httpOK || failed > 0 || results.length === 0) {
+  if (failed > 0 || results.length === 0) {
     return { type: "error", message: `${acknowledged}, ${accepted} sent (unconfirmed), ${failed || expectedCount} failed. Check machine status before retrying.` };
   }
   return {

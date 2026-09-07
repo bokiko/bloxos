@@ -38,3 +38,12 @@ test("bulk reboot acknowledgements never claim completed recovery", () => {
   assert.doesNotMatch(mixed.message, /completed/);
   assert.equal(bulkCommandFeedback(true, { results: [{ success: true }] }, 1, "restart_service").type, "success");
 });
+
+test("non-2xx bulk replies cannot claim acceptance or completion from their body", () => {
+  for (const command of ["reboot", "restart_service"]) {
+    const feedback = bulkCommandFeedback(false, { results: [{ accepted: true }, { success: true }] }, 2, command);
+    assert.equal(feedback.type, "error");
+    assert.match(feedback.message, /completion is unknown/);
+    assert.doesNotMatch(feedback.message, /sent|acknowledged|completed/);
+  }
+});

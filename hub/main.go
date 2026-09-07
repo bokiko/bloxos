@@ -541,6 +541,15 @@ const maxBulkCommandTargets = 100
 // throughput on the common case (most targets reply in <1s).
 const bulkCommandConcurrency = 20
 
+// Bulk cancellation results distinguish the two truthful outcomes when the
+// requesting client goes away mid-fan-out. A command that never reached the
+// socket is reported as unsent; one already written to the agent may or may
+// not run, and its result says so rather than claiming either way.
+const (
+	bulkCanceledUnsentError = "request canceled; command not sent"
+	bulkCanceledSentError   = "request canceled; completion unknown"
+)
+
 func (s *Server) handleBulkCommand(c echo.Context) error {
 	var body struct {
 		MachineIDs []string `json:"machine_ids"`
@@ -564,9 +573,21 @@ func (s *Server) handleBulkCommand(c echo.Context) error {
 		Error     string `json:"error"`
 	}
 
+	// The request context is captured once: the client going away (tab
+	// closed, dashboard navigated, proxy timeout) must stop the fan-out
+	// from dispatching reboots and restarts that nobody asked to finish.
+	// Every stage between "target chosen" and "bytes on the wire" rechecks
+	// it, and the result records truthfully whether the command was sent.
+	ctx := c.Request().Context()
+
 	var results []BulkResult
 	var mu sync.Mutex
 	var wg sync.WaitGroup
+	addResult := func(r BulkResult) {
+		mu.Lock()
+		results = append(results, r)
+		mu.Unlock()
+	}
 	// Buffered channel acts as a counting semaphore. Acquire BEFORE
 	// spawning the goroutine so the for-loop itself blocks once
 	// bulkCommandConcurrency goroutines are in flight — that bounds
@@ -574,8 +595,21 @@ func (s *Server) handleBulkCommand(c echo.Context) error {
 	sem := make(chan struct{}, bulkCommandConcurrency)
 
 	for _, mid := range body.MachineIDs {
+		// Once canceled, no further target may be dispatched. The explicit
+		// Err() check precedes the select because select picks randomly
+		// among ready cases, and a freed semaphore slot must never win
+		// over a cancellation that already happened.
+		if ctx.Err() != nil {
+			addResult(BulkResult{MachineID: mid, Error: bulkCanceledUnsentError})
+			continue
+		}
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			addResult(BulkResult{MachineID: mid, Error: bulkCanceledUnsentError})
+			continue
+		}
 		wg.Add(1)
-		sem <- struct{}{}
 		go func(machineID string) {
 			defer wg.Done()
 			defer func() { <-sem }()
@@ -587,9 +621,16 @@ func (s *Server) handleBulkCommand(c echo.Context) error {
 			result := BulkResult{MachineID: machineID}
 			if !ok {
 				result.Error = "agent not connected"
-				mu.Lock()
-				results = append(results, result)
-				mu.Unlock()
+				addResult(result)
+				return
+			}
+
+			// Recheck before taking on a waiter: a target that acquired its
+			// slot just as the client vanished must not register state it
+			// would only tear down again.
+			if ctx.Err() != nil {
+				result.Error = bulkCanceledUnsentError
+				addResult(result)
 				return
 			}
 
@@ -612,15 +653,25 @@ func (s *Server) handleBulkCommand(c echo.Context) error {
 			}
 			cmdData, _ := json.Marshal(cmd)
 			agent.WriteMu.Lock()
+			// Final recheck with the write lock held. WriteMu is contended
+			// by version announcements and other command handlers, so a
+			// goroutine can sit here well after the client canceled; the
+			// decision to write must be made after the wait, not before it.
+			if ctx.Err() != nil {
+				agent.WriteMu.Unlock()
+				result.Error = bulkCanceledUnsentError
+				addResult(result)
+				return
+			}
 			err := agent.Conn.WriteMessage(websocket.TextMessage, cmdData)
 			agent.WriteMu.Unlock()
 			if err != nil {
 				result.Error = "failed to send command"
-				mu.Lock()
-				results = append(results, result)
-				mu.Unlock()
+				addResult(result)
 				return
 			}
+			// From here the command is on the wire: cancellation can only
+			// report the outcome as unknown, never pretend it was unsent.
 
 			mayDisconnect := commandMayDisconnectAgent(s.lookupAgentOS(machineID), body.Type, body.Target)
 			wait := 15 * time.Second
@@ -641,13 +692,11 @@ func (s *Server) handleBulkCommand(c echo.Context) error {
 				} else {
 					result.Error = "timeout"
 				}
-			case <-c.Request().Context().Done():
-				result.Error = "request canceled; completion unknown"
+			case <-ctx.Done():
+				result.Error = bulkCanceledSentError
 			}
 
-			mu.Lock()
-			results = append(results, result)
-			mu.Unlock()
+			addResult(result)
 		}(mid)
 	}
 
@@ -1189,6 +1238,14 @@ func (s *Server) handleCommand(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 	}
 
+	// Captured once; rechecked before the waiter exists and again with the
+	// write lock held, so a client that already went away cannot have a
+	// reboot or restart dispatched on its behalf.
+	ctx := c.Request().Context()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	cmdID := "cmd-" + uuid.New().String()[:8]
 
 	respCh := make(chan CommandResponse, 1)
@@ -1209,11 +1266,19 @@ func (s *Server) handleCommand(c echo.Context) error {
 	}
 	cmdData, _ := json.Marshal(cmd)
 	agent.WriteMu.Lock()
+	// WriteMu may have been held by another writer for as long as the
+	// client was willing to wait; decide to write only after acquiring it.
+	if err := ctx.Err(); err != nil {
+		agent.WriteMu.Unlock()
+		return err
+	}
 	err := agent.Conn.WriteMessage(websocket.TextMessage, cmdData)
 	agent.WriteMu.Unlock()
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to send command to agent"})
 	}
+	// The command is on the wire from here; a later cancellation reports
+	// the outcome as unknown rather than pretending it was never sent.
 
 	mayDisconnect := commandMayDisconnectAgent(s.lookupAgentOS(machineID), req.Type, req.Target)
 	wait := 10 * time.Second
@@ -1236,8 +1301,8 @@ func (s *Server) handleCommand(c echo.Context) error {
 			"id":    cmdID,
 			"error": "timeout waiting for agent response",
 		})
-	case <-c.Request().Context().Done():
-		return c.Request().Context().Err()
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
