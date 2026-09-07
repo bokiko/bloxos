@@ -33,6 +33,33 @@ type ConnectedAgent struct {
 	powerIssue atomic.Uint32 // current connection's bounded history diagnostic
 }
 
+// agentIngestTestHook, when set by a test, runs inside the ingestion barrier
+// before the registration check, so a test can hold a frame mid-write and
+// prove deletion cannot interleave with it.
+var agentIngestTestHook func(machineID string)
+
+// ingestFrame runs write under the ingestion barrier's read side. Machine
+// deletion takes the write side around registry removal and row deletion,
+// so a frame is either fully persisted before the delete or refused after
+// it: once inside, a registered connection that no longer owns its registry
+// entry (displaced by a newer socket, or its machine deleted) is refused,
+// whatever it had already read. Writes before registration (a fresh
+// enrollment's first metrics frame) are allowed here; deletion excludes
+// those through the auth writer lock instead. write must not take
+// agentAuthMu, ingestMu, or wait on another connection.
+func (s *Server) ingestFrame(machineID string, agent *ConnectedAgent, registered bool, write func()) bool {
+	s.ingestMu.RLock()
+	defer s.ingestMu.RUnlock()
+	if agentIngestTestHook != nil {
+		agentIngestTestHook(machineID)
+	}
+	if registered && !s.isRegisteredConnection(machineID, agent) {
+		return false
+	}
+	write()
+	return true
+}
+
 // wsMessageWriter is exactly gorilla/websocket's (*Conn).WriteMessage
 // signature, factored out so writeLockedTo is testable against a fake
 // writer instead of a live network connection.
@@ -679,6 +706,12 @@ func bearerToken(header string) string {
 // descriptor) open indefinitely. It is a var so tests can shorten it.
 var agentAuthWindow = 30 * time.Second
 
+// agentHandshakeTestHook, when set by a test, runs after a durable
+// credential has been validated and immediately before the connection is
+// registered, while the auth read lock is still held. It lets a test pause
+// a handshake at exactly that point to prove deletion cannot interleave.
+var agentHandshakeTestHook func(machineID string)
+
 // agentIdleTimeout bounds the gap between frames once an agent is established.
 // Agents push metrics every 30s and ping on the same cadence, so a silently
 // dead TCP connection is dropped within this window instead of lingering until
@@ -808,6 +841,11 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 
 	var machineID string
 	agent := &ConnectedAgent{Conn: ws}
+	// registered flips to true once this connection owns the registry entry
+	// for machineID. From then on, losing that entry (a displacing reconnect
+	// or machine deletion) means this socket must stop ingesting: its frames
+	// would otherwise write rows for a machine that is being removed.
+	registered := false
 	// Single owner of connection cleanup. Every return from this point on —
 	// whether the read loop exits normally, or one of the many
 	// post-registration failure paths below returns early (a failed confirm
@@ -825,6 +863,17 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 	// Fresh enrollment issued on this connection but not yet committed: the
 	// token stays unused and no credential exists until enrollment_committed.
 	var freshPendingTokenHash, freshPendingSecretHash string
+	// Hardware reported by a fresh enrollment before it commits. Inventory
+	// writes require a committed, registered identity, but the agent sends
+	// its hardware snapshot once per connect right after its first metrics
+	// frame, which for a first enrollment is before enrollment_committed.
+	// Hold it and apply it at the commit point so first enrollment keeps
+	// its inventory without ever writing under an uncommitted identity.
+	var pendingHardwareInfo []byte
+	// Same for the agent's version report: it is sent once per connect and
+	// would otherwise create a /api/versions entry for an enrollment that may
+	// never commit.
+	var pendingVersionReport *agentVersionReport
 	defer func() {
 		s.unregisterAgentConnection(machineID, agent)
 		// A fresh enrollment that never committed was never registered, so
@@ -847,7 +896,11 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 	var stagedPendingSecretHash string
 	if secretMachineID != "" && !dualCredentialTargetedReenroll {
 		machineID = secretMachineID
+		if agentHandshakeTestHook != nil {
+			agentHandshakeTestHook(machineID)
+		}
 		s.registerAgentConnection(machineID, agent)
+		registered = true
 		completeAuth()
 		ws.SetReadDeadline(time.Now().Add(agentIdleTimeout))
 		log.Printf("agent authenticated via secret: machine_id=%s", machineID)
@@ -915,6 +968,15 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 			log.Printf("rejecting cross-machine frame: authed=%s claimed=%s type=%s",
 				machineID, envelope.MachineID, envelope.Type)
 			continue
+		}
+
+		// A registered connection that no longer owns its registry entry has
+		// been displaced by a newer socket or its machine has been deleted.
+		// Either way nothing it sends may be persisted any more; the socket
+		// is being closed by whoever took the entry, so leave now.
+		if registered && !s.isRegisteredConnection(machineID, agent) {
+			log.Printf("agent %s: connection no longer registered; stopping ingestion", machineID)
+			return nil
 		}
 
 		switch envelope.Type {
@@ -1054,6 +1116,7 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 					log.Printf("agent awaiting enrollment commit: %s (%s)", m.Hostname, machineID)
 				} else {
 					s.registerAgentConnection(machineID, agent)
+					registered = true
 					completeAuth()
 					ws.SetReadDeadline(time.Now().Add(agentIdleTimeout))
 					log.Printf("agent registered: %s (%s)", m.Hostname, machineID)
@@ -1065,43 +1128,53 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 			// regardless of what the payload claimed.
 			m.MachineID = machineID
 
-			// Calculate latency from sent_at.
-			if m.SentAt != "" {
-				sentTime, err := time.Parse(time.RFC3339Nano, m.SentAt)
-				if err == nil {
-					latencyMs := time.Since(sentTime).Milliseconds()
-					if latencyMs < 0 {
-						latencyMs = 0
+			// Persistence, the latency cache and the dashboard broadcast all
+			// stay inside one barrier section, so a delete's machine_removed
+			// event (emitted under the barrier's write side) is always the last
+			// event dashboards see for this machine and no per-machine state
+			// is repopulated afterwards; a late frame can never re-add the card.
+			if !s.ingestFrame(machineID, agent, registered, func() {
+				// Calculate latency from sent_at.
+				if m.SentAt != "" {
+					sentTime, err := time.Parse(time.RFC3339Nano, m.SentAt)
+					if err == nil {
+						latencyMs := time.Since(sentTime).Milliseconds()
+						if latencyMs < 0 {
+							latencyMs = 0
+						}
+						machineLatencyMu.Lock()
+						machineLatency[m.MachineID] = latencyMs
+						machineLatencyMu.Unlock()
 					}
-					machineLatencyMu.Lock()
-					machineLatency[m.MachineID] = latencyMs
-					machineLatencyMu.Unlock()
 				}
+
+				s.upsertMachine(m)
+				s.storeMetrics(m)
+
+				// Enrich the metrics broadcast with latency.
+				machineLatencyMu.RLock()
+				lat := machineLatency[m.MachineID]
+				machineLatencyMu.RUnlock()
+
+				// Inject latency_ms by appending before the closing '}' to avoid
+				// a full JSON unmarshal+marshal round-trip on the hot path.
+				var enrichedData []byte
+				if i := bytes.LastIndexByte(msg, '}'); i >= 0 {
+					suffix := strconv.AppendInt([]byte(",\"latency_ms\":"), lat, 10)
+					suffix = append(suffix, '}')
+					enrichedData = append(append([]byte(nil), msg[:i]...), suffix...)
+				} else {
+					// Malformed JSON — fall back to unmarshal/marshal.
+					enriched := make(map[string]interface{})
+					json.Unmarshal(msg, &enriched)
+					enriched["latency_ms"] = lat
+					enrichedData, _ = json.Marshal(enriched)
+				}
+				broadcastSSE(enrichedData)
+			}) {
+				log.Printf("agent %s: metrics refused, connection no longer registered", machineID)
+				return nil
 			}
-
-			s.upsertMachine(m)
-			s.storeMetrics(m)
-
-			// Enrich the metrics broadcast with latency.
-			machineLatencyMu.RLock()
-			lat := machineLatency[m.MachineID]
-			machineLatencyMu.RUnlock()
-
-			// Inject latency_ms by appending before the closing '}' to avoid
-			// a full JSON unmarshal+marshal round-trip on the hot path.
-			var enrichedData []byte
-			if i := bytes.LastIndexByte(msg, '}'); i >= 0 {
-				suffix := strconv.AppendInt([]byte(",\"latency_ms\":"), lat, 10)
-				suffix = append(suffix, '}')
-				enrichedData = append(append([]byte(nil), msg[:i]...), suffix...)
-			} else {
-				// Malformed JSON — fall back to unmarshal/marshal.
-				enriched := make(map[string]interface{})
-				json.Unmarshal(msg, &enriched)
-				enriched["latency_ms"] = lat
-				enrichedData, _ = json.Marshal(enriched)
-			}
-			broadcastSSE(enrichedData)
 
 		case "services":
 			var sm ServicesMessage
@@ -1109,13 +1182,16 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 				log.Printf("invalid services JSON: %v", err)
 				continue
 			}
-			mid := machineID
-			if mid == "" {
-				mid = sm.MachineID
+			if !registered {
+				log.Printf("rejecting services frame before enrollment is committed (claimed %s)", sm.MachineID)
+				continue
 			}
-			s.upsertServices(mid, sm.Services)
-			framed := []byte(fmt.Sprintf("event: services\ndata: %s\n\n", msg))
-			broadcastSSE(framed)
+			if !s.ingestFrame(machineID, agent, registered, func() {
+				s.upsertServices(machineID, sm.Services)
+				broadcastSSE([]byte(fmt.Sprintf("event: services\ndata: %s\n\n", msg)))
+			}) {
+				return nil
+			}
 
 		case "containers":
 			var cm ContainersMessage
@@ -1123,13 +1199,16 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 				log.Printf("invalid containers JSON: %v", err)
 				continue
 			}
-			mid := machineID
-			if mid == "" {
-				mid = cm.MachineID
+			if !registered {
+				log.Printf("rejecting containers frame before enrollment is committed (claimed %s)", cm.MachineID)
+				continue
 			}
-			s.upsertContainers(mid, cm.Containers)
-			framed := []byte(fmt.Sprintf("event: containers\ndata: %s\n\n", msg))
-			broadcastSSE(framed)
+			if !s.ingestFrame(machineID, agent, registered, func() {
+				s.upsertContainers(machineID, cm.Containers)
+				broadcastSSE([]byte(fmt.Sprintf("event: containers\ndata: %s\n\n", msg)))
+			}) {
+				return nil
+			}
 
 		case "hardware_info":
 			// Static hardware snapshot — store the raw JSON as-is so adding
@@ -1148,16 +1227,23 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 				log.Printf("invalid hardware_info JSON: %v", err)
 				continue
 			}
-			mid := machineID
-			if mid == "" {
-				mid = hw.MachineID
+			// Identity comes from the socket, never from the payload, and
+			// inventory is written only for a committed, registered agent.
+			// Honouring the payload's machine_id here would let any
+			// install-token holder rewrite another machine's inventory
+			// without ever enrolling. A fresh enrollment that has identity
+			// but is not yet committed has its snapshot held until commit.
+			if !registered {
+				if machineID != "" && freshPendingTokenHash != "" {
+					pendingHardwareInfo = append([]byte(nil), msg...)
+					log.Printf("holding hardware_info for %s until enrollment commits", machineID)
+				} else {
+					log.Printf("rejecting hardware_info frame before enrollment is committed (claimed %s)", hw.MachineID)
+				}
+				continue
 			}
-			if _, err := s.db.Exec(`
-				INSERT INTO machines (id, hostname, status, hardware_info)
-				VALUES (?, '', 'offline', ?)
-				ON CONFLICT(id) DO UPDATE SET hardware_info = excluded.hardware_info
-			`, mid, string(msg)); err != nil {
-				log.Printf("store hardware_info: %v", err)
+			if !s.ingestFrame(machineID, agent, registered, func() { s.storeHardwareInfo(machineID, msg) }) {
+				return nil
 			}
 
 		case "agent_running_version":
@@ -1197,7 +1283,7 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 				continue
 			}
 			if versionMsg.SHA256 != "" && machineID != "" {
-				s.recordAgentRunningVersion(machineID, agentVersionReport{
+				report := agentVersionReport{
 					RunningSHA:      versionMsg.SHA256,
 					OS:              versionMsg.OS,
 					Arch:            versionMsg.Arch,
@@ -1208,21 +1294,59 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 					ReleaseFloorOK:  versionMsg.ReleaseFloorOK,
 					TransportOK:     versionMsg.UpdateTransportOK,
 					KeyPinned:       versionMsg.UpdateKeyPinned,
-				})
+				}
+				if !registered {
+					// A fresh enrollment reports its version before it commits;
+					// hold it so an aborted enrollment leaves no phantom entry
+					// and a committed one keeps its initial report.
+					if freshPendingTokenHash != "" {
+						pendingVersionReport = &report
+					} else {
+						log.Printf("rejecting agent_running_version before enrollment is committed for %s", machineID)
+					}
+					continue
+				}
+				if !s.ingestFrame(machineID, agent, registered, func() {
+					s.recordAgentRunningVersion(machineID, report)
+				}) {
+					return nil
+				}
 			}
 
 		case aisessions.MessageType:
 			// Read-only AI tool session metadata. Bound to the authenticated
 			// machine and to the registered socket; see ingestAISessions.
-			s.ingestAISessions(machineID, agent, msg)
+			if !s.ingestFrame(machineID, agent, registered, func() { s.ingestAISessions(machineID, agent, msg) }) {
+				return nil
+			}
 
 		case powerhistory.BatchType:
 			// Durable 30s power buckets. Bound to the authenticated machine
 			// and registered socket; ACK only after the contiguous prefix
 			// commits. Never mutates live gpu_metrics — old agents that never
 			// send this frame are unaffected.
-			if err := s.ingestPowerHistory(machineID, agent, msg); err != nil {
-				log.Printf("power history from %s: %v", machineID, err)
+			// Commit under the barrier, ACK outside it: a socket write can
+			// block for as long as the peer stops reading, and nothing that
+			// can block on the network may hold the barrier (machine deletion
+			// takes its write side before it can even close this socket).
+			var ack []byte
+			var powerErr error
+			if !s.ingestFrame(machineID, agent, registered, func() { ack, powerErr = s.commitPowerHistoryFrame(machineID, agent, msg) }) {
+				return nil
+			}
+			if powerErr != nil {
+				log.Printf("power history from %s: %v", machineID, powerErr)
+			}
+			if ack != nil {
+				agent.WriteMu.Lock()
+				_ = ws.SetWriteDeadline(time.Now().Add(10 * time.Second))
+				err := ws.WriteMessage(websocket.TextMessage, ack)
+				_ = ws.SetWriteDeadline(time.Time{})
+				agent.WriteMu.Unlock()
+				if err != nil {
+					log.Printf("power history ack to %s: %v", machineID, err)
+					return nil
+				}
 			}
 
 		case "command_response":
@@ -1277,8 +1401,23 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 				// deadline. Registration spawns the announce writer, so the
 				// confirmation below must go through the per-agent lock.
 				s.registerAgentConnection(machineID, agent)
+				registered = true
 				completeAuth()
 				ws.SetReadDeadline(time.Now().Add(agentIdleTimeout))
+				if pendingHardwareInfo != nil {
+					held := pendingHardwareInfo
+					pendingHardwareInfo = nil
+					if !s.ingestFrame(machineID, agent, registered, func() { s.storeHardwareInfo(machineID, held) }) {
+						return nil
+					}
+				}
+				if pendingVersionReport != nil {
+					held := *pendingVersionReport
+					pendingVersionReport = nil
+					if !s.ingestFrame(machineID, agent, registered, func() { s.recordAgentRunningVersion(machineID, held) }) {
+						return nil
+					}
+				}
 				confirmMsg, _ := json.Marshal(map[string]string{"type": "enrollment_confirmed", "secret_sha256": confirmedHash})
 				if err := agent.writeLocked(websocket.TextMessage, confirmMsg); err != nil {
 					log.Printf("committed fresh enrollment for %s but failed to send enrollment_confirmed: %v — closing connection", machineID, err)
@@ -1816,4 +1955,18 @@ func (s *Server) generateFirstRunToken() {
 		return
 	}
 	log.Printf("First-run token written to %s (expires in 1 hour)", tokenFile)
+}
+
+// storeHardwareInfo persists a raw hardware_info frame for a committed
+// machine. UPSERT (defense-in-depth): if the row does not exist yet, a plain
+// UPDATE would silently affect 0 rows and the snapshot would be lost; the
+// placeholder hostname is overwritten by the next metrics upsert.
+func (s *Server) storeHardwareInfo(machineID string, raw []byte) {
+	if _, err := s.db.Exec(`
+		INSERT INTO machines (id, hostname, status, hardware_info)
+		VALUES (?, '', 'offline', ?)
+		ON CONFLICT(id) DO UPDATE SET hardware_info = excluded.hardware_info
+	`, machineID, string(raw)); err != nil {
+		log.Printf("store hardware_info: %v", err)
+	}
 }

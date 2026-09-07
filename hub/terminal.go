@@ -362,6 +362,12 @@ func (s *Server) terminalRelay(sessionID string, session *TerminalSession) {
 	session.mu.Unlock()
 
 	done := make(chan struct{})
+	// Three goroutines (inactivity timer, browser reader, agent reader) all
+	// end the relay. A check-then-close select is not atomic: two of them can
+	// both see the channel open and the second close panics the process,
+	// which cleanupTerminalSession makes likely by closing both sockets
+	// back to back. One shared once-function is the only safe shape.
+	endRelay := sync.OnceFunc(func() { close(done) })
 
 	// Inactivity timeout goroutine: close session after 30 minutes of no traffic.
 	go func() {
@@ -377,11 +383,7 @@ func (s *Server) terminalRelay(sessionID string, session *TerminalSession) {
 				session.mu.Unlock()
 				if idle > 30*time.Minute {
 					log.Printf("terminal %s: closing due to inactivity (%s)", sessionID, idle.Truncate(time.Second))
-					select {
-					case <-done:
-					default:
-						close(done)
-					}
+					endRelay()
 					return
 				}
 			}
@@ -389,13 +391,7 @@ func (s *Server) terminalRelay(sessionID string, session *TerminalSession) {
 	}()
 
 	go func() {
-		defer func() {
-			select {
-			case <-done:
-			default:
-				close(done)
-			}
-		}()
+		defer endRelay()
 		for {
 			msgType, msg, err := browserWS.ReadMessage()
 			if err != nil {
@@ -413,13 +409,7 @@ func (s *Server) terminalRelay(sessionID string, session *TerminalSession) {
 	}()
 
 	go func() {
-		defer func() {
-			select {
-			case <-done:
-			default:
-				close(done)
-			}
-		}()
+		defer endRelay()
 		for {
 			msgType, msg, err := agentWS.ReadMessage()
 			if err != nil {
