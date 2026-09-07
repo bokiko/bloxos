@@ -1,7 +1,7 @@
 "use client";
 
 import type { MachineMetrics } from "@/lib/demo-data";
-import { METRICS_STALE_MS } from "@/lib/fleet-metrics.mjs";
+import { METRICS_STALE_MS, OFFLINE_MS } from "@/lib/fleet-metrics.mjs";
 
 /* ============================================================================
  * Fleet status — 5 intent states.
@@ -18,8 +18,6 @@ import { METRICS_STALE_MS } from "@/lib/fleet-metrics.mjs";
  * ============================================================================ */
 
 export type MachineStatus = "live" | "stale" | "warning" | "critical" | "offline";
-
-const OFFLINE_MS = 120_000;
 
 const TH = {
   cpuWarn: 75,

@@ -3,6 +3,7 @@
 import { useState, useMemo } from "react";
 import { Box, RotateCcw, Play, Loader2 } from "lucide-react";
 import { useToast } from "./Toast";
+import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { getStoredToken } from "@/lib/session";
 
@@ -48,6 +49,10 @@ function ContainerActions({
 }) {
   const [loading, setLoading] = useState(false);
   const { addToast } = useToast();
+  // Viewers keep the read-only list; container controls require
+  // fleet.control (the hub enforces the same scope).
+  const { hasScope } = useAuth();
+  const canControl = hasScope("fleet.control");
 
   async function runCommand(type: string) {
     setLoading(true);
@@ -76,6 +81,10 @@ function ContainerActions({
 
   if (loading) {
     return <Loader2 className="w-3.5 h-3.5 text-blox-blue animate-spin" />;
+  }
+
+  if (!canControl) {
+    return null;
   }
 
   if (container.status === "running") {

@@ -7,6 +7,10 @@ export function hasGpuData(machine) {
 
 export const METRICS_STALE_MS = 30_000;
 
+// OFFLINE_MS is the shared no-heartbeat cutoff (fleet classifyMachine and the
+// machine detail page both use it — do not fork the threshold).
+export const OFFLINE_MS = 120_000;
+
 /** @param {number | undefined} lastSeen @param {number} now */
 export function isFreshMetrics(lastSeen, now) {
   return Number.isFinite(lastSeen) && lastSeen > 0 && now - lastSeen <= METRICS_STALE_MS;

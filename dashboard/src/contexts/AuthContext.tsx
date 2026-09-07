@@ -145,6 +145,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const hasScope = useCallback((scope: string) => scopes.includes(scope), [scopes]);
 
+  // Cross-tab logout: when another tab removes the token, clear this tab's
+  // auth state immediately (dispatchAuthChanged drives the SSE/cache purge
+  // and the /login redirect) instead of showing the last fleet data until
+  // the next API call happens to 401.
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === "bloxos_token" && e.newValue === null) {
+        logout();
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [logout]);
+
   const authFetch = useCallback(async (url: string, init?: RequestInit): Promise<Response> => {
     const currentToken = localStorage.getItem("bloxos_token");
     const headers = new Headers(init?.headers);

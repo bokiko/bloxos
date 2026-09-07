@@ -135,8 +135,12 @@ export function SSEProvider({ children }: { children: ReactNode }) {
   const userIDRef = useRef<string | null>(null);
   const cacheWriterRef = useRef<((machines: MachineMetrics[]) => void) | null>(null);
   const cacheFlushRef = useRef<(() => void) | null>(null);
+  const cacheCancelRef = useRef<(() => void) | null>(null);
 
   const updateUserID = useCallback(() => {
+    // A pending debounced write from the previous user must never fire into
+    // the new user's session (or resurrect a cache cleared on logout).
+    cacheCancelRef.current?.();
     const token = getStoredToken();
     if (!token) {
       userIDRef.current = null;
@@ -148,9 +152,10 @@ export function SSEProvider({ children }: { children: ReactNode }) {
     } catch {
       userIDRef.current = null;
     }
-    const [writer, flush] = makeDebouncedWriter(userIDRef.current);
+    const [writer, flush, cancel] = makeDebouncedWriter(userIDRef.current);
     cacheWriterRef.current = writer;
     cacheFlushRef.current = flush;
+    cacheCancelRef.current = cancel;
   }, []);
 
   const disconnect = useCallback((clearData = false) => {
@@ -330,6 +335,25 @@ export function SSEProvider({ children }: { children: ReactNode }) {
       }
     });
 
+    // machine_removed is additive (hubs before Unit A never send it): a
+    // deleted machine disappears from the fleet immediately instead of
+    // lingering until the next full reload.
+    es.addEventListener("machine_removed", (event) => {
+      if (!mountedRef.current) return;
+      try {
+        const msg = JSON.parse(event.data);
+        if (!msg.machine_id || typeof msg.machine_id !== "string") return;
+        setMachineMap((prev) => {
+          if (!prev.has(msg.machine_id)) return prev;
+          const next = new Map(prev);
+          next.delete(msg.machine_id);
+          return next;
+        });
+      } catch {
+        // ignore
+      }
+    });
+
     es.addEventListener("alert_count", (event) => {
       if (!mountedRef.current) return;
       try {
@@ -423,11 +447,16 @@ export function SSEProvider({ children }: { children: ReactNode }) {
         updateUserID();
         connectRef.current();
       } else {
-        // Logout — clear this user's cache so the next user doesn't
-        // see leftover machine data on a shared browser.
+        // Logout — cancel any pending debounced write FIRST so it cannot
+        // resurrect the cache we are about to clear, then clear this user's
+        // cache so the next user doesn't see leftover machine data on a
+        // shared browser.
+        cacheCancelRef.current?.();
         clearCache(userIDRef.current);
         userIDRef.current = null;
         cacheWriterRef.current = null;
+        cacheFlushRef.current = null;
+        cacheCancelRef.current = null;
         disconnect(true);
       }
     };

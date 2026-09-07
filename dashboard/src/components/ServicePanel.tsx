@@ -3,6 +3,7 @@
 import { useState, useMemo } from "react";
 import { Layers, RotateCcw, Play, Square, Loader2 } from "lucide-react";
 import { useToast } from "./Toast";
+import { useAuth } from "@/contexts/AuthContext";
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent,
   DropdownMenuItem, DropdownMenuSeparator,
@@ -48,6 +49,11 @@ function ServiceActions({
 }) {
   const [loading, setLoading] = useState(false);
   const { addToast } = useToast();
+  // Viewers keep the read-only list; service controls require fleet.control
+  // (the hub enforces the same scope — this only removes guaranteed-failing
+  // affordances).
+  const { hasScope } = useAuth();
+  const canControl = hasScope("fleet.control");
 
   async function runCommand(type: string) {
     setLoading(true);
@@ -73,6 +79,10 @@ function ServiceActions({
 
   if (loading) {
     return <Loader2 className="w-3.5 h-3.5 text-blox-blue animate-spin" />;
+  }
+
+  if (!canControl) {
+    return null;
   }
 
   if (service.status === "inactive") {
