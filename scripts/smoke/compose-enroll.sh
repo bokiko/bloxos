@@ -107,4 +107,23 @@ curl -sk "$HUB/api/machines" -H "Authorization: Bearer $JWT" | grep -q '"status"
 sudo test -s /etc/bloxos/agent-secret || fail "agent has no durable secret; enrollment did not commit"
 sudo test -s /etc/bloxos/agent-update.pub || fail "update key not pinned"
 
-echo "SMOKE PASS: agent enrolled through the Compose stack at $HUB"
+echo "== self-restart feedback (disposable agent only)"
+MACHINE_ID="$(curl --cacert /etc/bloxos/ca.crt -fsS "$HUB/api/machines" -H "Authorization: Bearer $JWT" | json 'd[0]["id"]')"
+OLD_PID="$(systemctl show bloxos-agent -p MainPID --value)"
+RESTART_REPLY="$(mktemp)"
+RESTART_STATUS="$(curl --cacert /etc/bloxos/ca.crt -sS --max-time 6 -o "$RESTART_REPLY" -w '%{http_code}' \
+  -X POST "$HUB/api/machines/$MACHINE_ID/command" -H "Authorization: Bearer $JWT" -H 'Content-Type: application/json' \
+  -d '{"type":"restart_service","target":"bloxos-agent"}')"
+[[ "$RESTART_STATUS" == 202 ]] || fail "self-restart returned $RESTART_STATUS, expected 202 (sent, unconfirmed)"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d.get("accepted") is True and d.get("success") is False' "$RESTART_REPLY" \
+  || fail "self-restart was incorrectly reported as completed"
+rm -f "$RESTART_REPLY"
+for _ in $(seq 1 30); do
+  NEW_PID="$(systemctl show bloxos-agent -p MainPID --value)"
+  [[ "$NEW_PID" != 0 && "$NEW_PID" != "$OLD_PID" ]] && [[ "$(systemctl is-active bloxos-agent)" == active ]] && break
+  sleep 1
+done
+[[ "$NEW_PID" != 0 && "$NEW_PID" != "$OLD_PID" ]] || fail "agent did not restart"
+[[ "$(systemctl is-active bloxos-agent)" == active ]] || fail "restarted agent not active"
+
+echo "SMOKE PASS: agent enrolled through the Compose stack at $HUB; self-restart returned 202 and a new active agent process"
