@@ -57,11 +57,12 @@ type agentBinaryResolution struct {
 }
 
 type agentBinaryState struct {
-	Path   string    `json:"path"`
-	Source string    `json:"source"`
-	SHA    string    `json:"sha"`
-	Mtime  time.Time `json:"mtime"`
-	Error  string    `json:"error"`
+	Release uint64    `json:"release"`
+	Path    string    `json:"path"`
+	Source  string    `json:"source"`
+	SHA     string    `json:"sha"`
+	Mtime   time.Time `json:"mtime"`
+	Error   string    `json:"error"`
 }
 
 type agentBinaryResolver struct {

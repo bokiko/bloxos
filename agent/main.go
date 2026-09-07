@@ -363,6 +363,11 @@ func main() {
 		log.Printf("using install token for initial enrollment")
 	}
 
+	// Establish the release floor from the binary that is actually running,
+	// before any connection and before Windows applies a pending update.
+	// Never fatal: a broken floor disables self-update, not the agent.
+	seedReleaseFloorAtBoot()
+
 	runPlatformAgent()
 }
 

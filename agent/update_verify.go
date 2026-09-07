@@ -43,7 +43,16 @@ import (
 // into a binary that is already deployed; the hub uses the absence of this
 // field to decide whether announcing to that agent is safe at all. See
 // legacyBootstrapAllowed in hub/update_signing.go.
-const agentUpdateProtocol = 1
+//
+// Version 2 additionally means "this binary enforces a persistent release
+// floor" (release_floor.go): it reads the release sequence embedded in a
+// downloaded binary and refuses anything older than, or a different build
+// of, the highest release it has accepted. The signature format is unchanged
+// — the sequence is inside the bytes the v1 signature already covers. A v2
+// agent reports release, release_floor, release_floor_sha and
+// release_floor_ok so the hub can withhold, with a reason, an announcement
+// the agent is certain to refuse.
+const agentUpdateProtocol = 2
 
 // defaultUpdatePublicKeyPathLinux is where the hub-generated install.sh pins
 // the key. Windows pins it next to the agent executable instead.
@@ -153,10 +162,22 @@ func verifyAnnouncedRelease(exePath, osName, sha256hex, sigB64 string) error {
 
 // authorizeUpdate is the single gate every self-update must clear before any
 // bytes are fetched: the transport must be one an off-host attacker cannot
-// tamper with, and the announced SHA must be signed by the pinned key.
-func authorizeUpdate(rawHubURL, exePath, osName, sha256hex, sigB64 string) error {
+// tamper with, the announced SHA must be signed by the pinned key, and the
+// release floor must be usable. advisoryRelease is the hub's unsigned hint
+// of the served binary's release sequence; it can only refuse early (a
+// download that would fail the floor anyway), never admit anything — the
+// authoritative check reads the sequence out of the downloaded bytes in
+// verifyCandidateRelease.
+func authorizeUpdate(rawHubURL, exePath, osName, sha256hex, sigB64 string, advisoryRelease uint64) error {
 	if _, err := agentDownloadURL(rawHubURL, ""); err != nil {
 		return err
 	}
-	return verifyAnnouncedRelease(exePath, osName, sha256hex, sigB64)
+	if err := verifyAnnouncedRelease(exePath, osName, sha256hex, sigB64); err != nil {
+		return err
+	}
+	floor, err := loadReleaseFloorForUpdate()
+	if err != nil {
+		return err
+	}
+	return checkAdvisoryRelease(floor, advisoryRelease, sha256hex)
 }

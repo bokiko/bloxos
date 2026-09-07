@@ -177,7 +177,7 @@ func TestAuthorizeUpdateRejectsPlaintextTransport(t *testing.T) {
 	sig := signFor(t, priv, "linux", testSHA)
 
 	err := authorizeUpdate("ws://hub.example.com:4000/ws/agent", "/usr/local/bin/bloxos-agent",
-		"linux", testSHA, sig)
+		"linux", testSHA, sig, 0)
 	if err == nil {
 		t.Fatal("authorizeUpdate accepted a plaintext hub with a valid signature")
 	}
@@ -193,7 +193,7 @@ func TestAuthorizeUpdateRequiresPinnedKey(t *testing.T) {
 	t.Setenv("BLOXOS_UPDATE_PUBKEY_PATH", missing)
 
 	err := authorizeUpdate("wss://hub.example.com:4000/ws/agent", "/usr/local/bin/bloxos-agent",
-		"linux", testSHA, "")
+		"linux", testSHA, "", 0)
 	if err == nil {
 		t.Fatal("authorizeUpdate proceeded with no pinned key")
 	}
@@ -210,7 +210,7 @@ func TestAuthorizeUpdateRejectsForeignSigner(t *testing.T) {
 	pinKey(t, pub)
 
 	err := authorizeUpdate("wss://hub.example.com:4000/ws/agent", "/usr/local/bin/bloxos-agent",
-		"linux", testSHA, signFor(t, attacker, "linux", testSHA))
+		"linux", testSHA, signFor(t, attacker, "linux", testSHA), 0)
 	if err == nil {
 		t.Fatal("authorizeUpdate accepted a signature from an unpinned key")
 	}
@@ -222,10 +222,74 @@ func TestAuthorizeUpdateRejectsForeignSigner(t *testing.T) {
 func TestAuthorizeUpdateHappyPath(t *testing.T) {
 	pub, priv := newTestKey(t)
 	pinKey(t, pub)
+	bootFloorForTest(t, releaseFloor{5, floorSHAa}, nil)
 
 	if err := authorizeUpdate("wss://hub.example.com:4000/ws/agent", "/usr/local/bin/bloxos-agent",
-		"linux", testSHA, signFor(t, priv, "linux", testSHA)); err != nil {
+		"linux", testSHA, signFor(t, priv, "linux", testSHA), 0); err != nil {
 		t.Fatalf("authorizeUpdate rejected a valid update: %v", err)
+	}
+	// A truthful advisory at or above the floor changes nothing.
+	if err := authorizeUpdate("wss://hub.example.com:4000/ws/agent", "/usr/local/bin/bloxos-agent",
+		"linux", testSHA, signFor(t, priv, "linux", testSHA), 6); err != nil {
+		t.Fatalf("authorizeUpdate rejected a valid update with a higher advisory: %v", err)
+	}
+}
+
+// A signed, TLS-carried announcement is still refused when the release floor
+// was never established (or failed) at boot: the agent cannot prove the
+// candidate is not a downgrade, so it must not fetch it.
+func TestAuthorizeUpdateRequiresUsableReleaseFloor(t *testing.T) {
+	pub, priv := newTestKey(t)
+	pinKey(t, pub)
+	resetReleaseFloorStateForTest()
+	t.Cleanup(resetReleaseFloorStateForTest)
+
+	err := authorizeUpdate("wss://hub.example.com:4000/ws/agent", "/usr/local/bin/bloxos-agent",
+		"linux", testSHA, signFor(t, priv, "linux", testSHA), 0)
+	if err == nil {
+		t.Fatal("authorizeUpdate proceeded without a release floor")
+	}
+	if !strings.Contains(err.Error(), "release floor") {
+		t.Fatalf("error = %v, want the release-floor refusal", err)
+	}
+}
+
+// The hub's advisory release is refuse-only: below the floor (or the floor's
+// release with another SHA) skips the download, but it never admits anything
+// on its own — the higher-advisory case above still goes on to the
+// post-download extraction.
+func TestAuthorizeUpdateRefusesOnAdvisoryBelowFloor(t *testing.T) {
+	pub, priv := newTestKey(t)
+	pinKey(t, pub)
+	bootFloorForTest(t, releaseFloor{5, floorSHAa}, nil)
+
+	err := authorizeUpdate("wss://hub.example.com:4000/ws/agent", "/usr/local/bin/bloxos-agent",
+		"linux", testSHA, signFor(t, priv, "linux", testSHA), 4)
+	if err == nil || !strings.Contains(err.Error(), "downgrade") {
+		t.Fatalf("error = %v, want the downgrade refusal", err)
+	}
+	// Same release, but the announced SHA is not the build the floor pins.
+	err = authorizeUpdate("wss://hub.example.com:4000/ws/agent", "/usr/local/bin/bloxos-agent",
+		"linux", testSHA, signFor(t, priv, "linux", testSHA), 5)
+	if err == nil || !strings.Contains(err.Error(), "different build") {
+		t.Fatalf("error = %v, want the same-release-different-build refusal", err)
+	}
+}
+
+// The transport and signature gates run before the floor is consulted, so a
+// forged or plaintext announcement never reaches floor logic — and a floor
+// problem is never reported in place of the more fundamental refusal.
+func TestAuthorizeUpdateSignatureBeforeFloor(t *testing.T) {
+	pub, _ := newTestKey(t)
+	_, attacker := newTestKey(t)
+	pinKey(t, pub)
+	resetReleaseFloorStateForTest()
+	t.Cleanup(resetReleaseFloorStateForTest)
+
+	err := authorizeUpdate("wss://hub.example.com:4000/ws/agent", "/usr/local/bin/bloxos-agent",
+		"linux", testSHA, signFor(t, attacker, "linux", testSHA), 0)
+	if err == nil || !strings.Contains(err.Error(), "does not verify") {
+		t.Fatalf("error = %v, want the signature refusal first", err)
 	}
 }
 
