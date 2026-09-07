@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { commandFeedback, bulkCommandFeedback } from "./command-feedback.mjs";
+import { readFileSync } from "node:fs";
+import { commandFeedback, bulkCommandFeedback, selectionAfterBulkAttempt } from "./command-feedback.mjs";
 
 test("accepted is not completed, and HTTP errors cannot claim acceptance", () => {
   assert.equal(commandFeedback(true, { accepted: true }, "Restarted").type, "info");
@@ -45,5 +46,41 @@ test("non-2xx bulk replies cannot claim acceptance or completion from their body
     assert.equal(feedback.type, "error");
     assert.match(feedback.message, /completion is unknown/);
     assert.doesNotMatch(feedback.message, /sent|acknowledged|completed/);
+  }
+});
+
+test("finished bulk attempts clear exactly the attempted machines, never silently retryable", () => {
+  // Mixed accepted/failed: every attempted id is removed so an explicit
+  // retry cannot resend to already-processed machines.
+  const mixed = selectionAfterBulkAttempt(["a", "b", "c"], ["a", "b"]);
+  assert.deepEqual([...mixed], ["c"]);
+  // Interrupted/unknown completion: same clearing (the attempt may have
+  // reached some machines; the user must re-select explicitly).
+  const interrupted = selectionAfterBulkAttempt(["a", "b"], ["a", "b"]);
+  assert.equal(interrupted.size, 0);
+  // Selections made while the request was in flight are preserved.
+  const inflight = selectionAfterBulkAttempt(["a", "b", "new-during-flight"], ["a", "b"]);
+  assert.deepEqual([...inflight], ["new-during-flight"]);
+  // Attempted ids that are no longer selected cannot delete unrelated ones,
+  // and neither input is mutated.
+  const before = new Set(["x", "y"]);
+  const attempted = ["a", "b", "x"];
+  const unselected = selectionAfterBulkAttempt(before, attempted);
+  assert.deepEqual([...unselected], ["y"]);
+  assert.deepEqual([...before], ["x", "y"]);
+});
+
+test("both bulk handlers clear the attempted snapshot in finally", () => {
+  // Source-shape guard for the P2 fix: each bulk handler must subtract the
+  // attempted snapshot inside its finally block (every outcome), and reset
+  // the loading flag there. Catches a regression that reintroduces
+  // conditional clearing (which made mixed/interrupted attempts retryable).
+  const src = readFileSync(new URL("../app/page.tsx", import.meta.url), "utf8");
+  for (const name of ["handleBulkReboot", "handleBulkRestart"]) {
+    const m = src.match(new RegExp("const " + name + " = useCallback\\(async[\\s\\S]*?\\}, \\["));
+    assert.ok(m, `${name} not found`);
+    assert.match(m[0], /finally \{[\s\S]*?selectionAfterBulkAttempt\(prev, attempted\)/, `${name} must clear the attempted snapshot in finally`);
+    assert.match(m[0], /finally \{[\s\S]*?setBulkLoading\(false\)/, `${name} must reset loading in finally`);
+    assert.doesNotMatch(m[0], /if \(feedback\.type !== "error"\) setSelected/, `${name} must not clear selection conditionally`);
   }
 });

@@ -33,3 +33,16 @@ export function bulkCommandFeedback(httpOK, data, expectedCount, commandType) {
     message: `${acknowledged}, ${accepted} sent${accepted ? " (completion unconfirmed; check machine status)" : ""}.`,
   };
 }
+
+// A finished bulk attempt — completed, partially failed, or interrupted with
+// unknown completion — clears exactly the attempted machines from the
+// selection, so a subsequent batch does not implicitly reuse those targets.
+// Selections made while the request was in flight are preserved.
+export function selectionAfterBulkAttempt(current, attempted) {
+  const done = new Set(attempted);
+  const next = new Set();
+  for (const id of current) {
+    if (!done.has(id)) next.add(id);
+  }
+  return next;
+}
