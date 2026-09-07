@@ -285,13 +285,15 @@ func TestApplyTerminalCredentials_NilUserRefused(t *testing.T) {
 // same reason, even when it was named explicitly.
 func TestApplyTerminalCredentials_RootUserRefused(t *testing.T) {
 	stubGroupIDs(t, []string{"0"}, nil)
-	bashCmd := exec.Command("/bin/true")
-	termUser := &user.User{Uid: "0", Gid: "0", Username: "root", HomeDir: "/root"}
-	if err := applyTerminalCredentials(bashCmd, termUser); err == nil {
-		t.Fatal("root user must be refused")
-	}
-	if bashCmd.SysProcAttr != nil {
-		t.Errorf("SysProcAttr was set for root: %+v", bashCmd.SysProcAttr)
+	for _, uid := range []string{"0", "00", "+0"} {
+		bashCmd := exec.Command("/bin/true")
+		termUser := &user.User{Uid: uid, Gid: "0", Username: "root", HomeDir: "/root"}
+		if err := applyTerminalCredentials(bashCmd, termUser); err == nil {
+			t.Fatalf("uid %q must be refused", uid)
+		}
+		if bashCmd.SysProcAttr != nil {
+			t.Errorf("SysProcAttr was set for uid %q: %+v", uid, bashCmd.SysProcAttr)
+		}
 	}
 }
 

@@ -5,7 +5,9 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -70,6 +72,23 @@ type testServiceHandler struct {
 
 func (h *testServiceHandler) Execute(args []string, r <-chan svc.ChangeRequest, changes chan<- svc.Status) (bool, uint32) {
 	changes <- svc.Status{State: svc.StartPending}
+	if h.mode == "pending-update" && len(args) > 0 {
+		// The production sequence from applyPendingUpdate, minus the
+		// signature checks: while START_PENDING, write the helper beside the
+		// executable, spawn it detached and exit. The restarted (replaced)
+		// binary finds no marker and runs as an ordinary service.
+		exe, _ := os.Executable()
+		marker := exe + ".pending"
+		if _, err := os.Stat(marker); err == nil {
+			helperPath := filepath.Join(filepath.Dir(exe), "bloxos-agent-update-helper.bat")
+			helper := buildHelperBatch(exe, exe+".new", marker, args[0])
+			if err := os.WriteFile(helperPath, []byte(helper), 0o755); err == nil {
+				if err := spawnDetachedHelper(helperPath); err == nil {
+					os.Exit(0)
+				}
+			}
+		}
+	}
 	changes <- svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptShutdown}
 	if h.mode == "self-restart" && len(args) > 0 {
 		if f, err := os.OpenFile(h.oncePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644); err == nil {
@@ -302,5 +321,109 @@ func TestSCMSelfRestartViaDetachedHelper(t *testing.T) {
 			t.Fatalf("helper log does not record the restart:\n%s", logText)
 		}
 		time.Sleep(scmPollInterval)
+	}
+}
+
+// copyBinary writes src's bytes plus extra to dst.
+func copyBinary(t *testing.T, src, dst string, extra []byte) int64 {
+	t.Helper()
+	in, err := os.Open(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	n, err := io.Copy(out, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := out.Write(extra); err != nil {
+		t.Fatal(err)
+	}
+	return n + int64(len(extra))
+}
+
+// TestSCMPendingUpdateHelperReplacesServiceBinary runs the pending-update
+// helper the way production does: the service process writes the helper
+// while START_PENDING, spawns it detached and exits. Under the real SCM the
+// helper must wait for STOPPED, replace the (until then locked) service
+// binary with the staged copy, remove the marker and staged file, start the
+// service and see it RUNNING, logging each step.
+func TestSCMPendingUpdateHelperReplacesServiceBinary(t *testing.T) {
+	m := requireSCM(t)
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	target := filepath.Join(dir, "bloxos-e2-svc.exe")
+	copyBinary(t, self, target, nil)
+	// The staged binary is this test binary with trailing bytes, so the
+	// replacement is visible by size while remaining runnable.
+	newSize := copyBinary(t, self, target+".new", []byte("\n#bloxos-e2-staged\n"))
+	if err := os.WriteFile(target+".pending", []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	name := fmt.Sprintf("BloxOSE2Test-update-%d-%d", os.Getpid(), time.Now().UnixNano()%1_000_000)
+	s, err := m.CreateService(name, target, mgr.Config{DisplayName: name, StartType: mgr.StartManual}, "-bloxos-test-service=pending-update")
+	if err != nil {
+		t.Fatalf("create service %s: %v", name, err)
+	}
+	t.Cleanup(func() {
+		defer s.Close()
+		if st, err := s.Query(); err == nil && st.State != svc.Stopped {
+			_, _ = s.Control(svc.Stop)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			_ = waitForState(ctx, s, name, svc.Stopped)
+			cancel()
+		}
+		if err := s.Delete(); err != nil {
+			t.Logf("cleanup: delete %s: %v", name, err)
+		}
+	})
+
+	// The first instance exits while START_PENDING, so do not wait for
+	// RUNNING here; the helper is what brings the service up.
+	if err := s.Start(); err != nil {
+		t.Fatalf("start %s: %v", name, err)
+	}
+	logPath := target + ".update-helper.log"
+	deadline := time.Now().Add(120 * time.Second)
+	for {
+		st, err := s.Query()
+		if err != nil {
+			t.Fatal(err)
+		}
+		info, statErr := os.Stat(target)
+		logText, _ := os.ReadFile(logPath)
+		replaced := statErr == nil && info.Size() == newSize
+		if st.State == svc.Running && st.ProcessId != 0 && replaced && strings.Contains(string(logText), name+" running") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("helper did not complete within 120 s: state=%s pid=%d replaced=%v\nhelper log:\n%s",
+				serviceStateName(st.State), st.ProcessId, replaced, logText)
+		}
+		time.Sleep(scmPollInterval)
+	}
+	logText, _ := os.ReadFile(logPath)
+	t.Logf("helper log:\n%s", logText)
+	for _, want := range []string{"replaced binary after", name + " running"} {
+		if !strings.Contains(string(logText), want) {
+			t.Errorf("helper log lacks %q", want)
+		}
+	}
+	if strings.Contains(string(logText), "did not report STOPPED") {
+		t.Errorf("helper gave up waiting for STOPPED")
+	}
+	for _, gone := range []string{target + ".pending", target + ".new", filepath.Join(dir, "bloxos-agent-update-helper.bat")} {
+		if _, err := os.Stat(gone); err == nil {
+			t.Errorf("%s still exists after the helper finished", filepath.Base(gone))
+		}
 	}
 }

@@ -74,6 +74,10 @@ func applyTerminalCredentials(bashCmd *exec.Cmd, termUser *user.User) error {
 	if err != nil {
 		return fmt.Errorf("parse uid %q for user %q: %w", termUser.Uid, termUser.Username, err)
 	}
+	if uid == 0 {
+		// Any spelling of zero ("00", "+0"), not only the literal "0".
+		return fmt.Errorf("terminal user %q has uid 0; terminals never run as root", termUser.Username)
+	}
 	gid, err := strconv.ParseUint(termUser.Gid, 10, 32)
 	if err != nil {
 		return fmt.Errorf("parse gid %q for user %q: %w", termUser.Gid, termUser.Username, err)

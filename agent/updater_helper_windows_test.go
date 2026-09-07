@@ -34,7 +34,10 @@ func TestUpdateHelperTimeoutIsInertWithoutConsole(t *testing.T) {
 // a target held open with no sharing, the way a running executable is held.
 // While the lock is held the helper must keep retrying and leave the marker
 // alone; once released it replaces the binary, removes the marker and the
-// staged copy, logs the outcome and deletes itself.
+// staged copy, logs the outcome and deletes itself. The service name does
+// not exist here (no administrator rights needed), so the STOPPED and
+// RUNNING waits end at once and the failed start is logged; the SCM-level
+// flow is covered by TestSCMPendingUpdateHelperReplacesServiceBinary.
 func TestUpdateHelperRetriesWhileTargetLocked(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "agent.exe")
@@ -77,19 +80,21 @@ func TestUpdateHelperRetriesWhileTargetLocked(t *testing.T) {
 		t.Fatalf("helper exited (%v) while the binary was still locked", err)
 	default:
 	}
-	if _, err := os.Stat(marker); err != nil {
-		t.Fatalf("marker removed while the binary was still locked: %v", err)
-	}
-	if got, _ := os.ReadFile(target); string(got) != "old-binary" {
-		t.Fatalf("target changed while locked: %q", got)
+	// The target cannot be opened by anyone else while the handle is held
+	// (that is the point of the lock), so check the move has not happened
+	// through the files around it: the staged copy and marker still exist.
+	for _, still := range []string{marker, newBin} {
+		if _, err := os.Stat(still); err != nil {
+			t.Fatalf("%s gone while the binary was still locked: %v", filepath.Base(still), err)
+		}
 	}
 
 	windows.CloseHandle(h)
 	locked = false
 	select {
 	case err := <-done:
-		if err != nil {
-			t.Logf("helper exit: %v (sc.exe start of a missing service fails; expected)", err)
+		if err == nil {
+			t.Fatal("helper reported success although the service does not exist")
 		}
 	case <-time.After(45 * time.Second):
 		cmd.Process.Kill()
@@ -108,8 +113,10 @@ func TestUpdateHelperRetriesWhileTargetLocked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helper log missing: %v", err)
 	}
-	if !strings.Contains(string(logText), "replaced binary after") {
-		t.Fatalf("helper log does not record the replacement:\n%s", logText)
+	for _, want := range []string{"replaced binary after", "not RUNNING after start"} {
+		if !strings.Contains(string(logText), want) {
+			t.Fatalf("helper log lacks %q:\n%s", want, logText)
+		}
 	}
 	t.Logf("helper log: %s", strings.TrimSpace(string(logText)))
 }
