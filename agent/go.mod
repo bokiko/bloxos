@@ -11,7 +11,7 @@ require (
 	github.com/bokiko/bloxos/proto v0.0.0
 	github.com/creack/pty v1.1.24
 	github.com/gorilla/websocket v1.5.3
-	github.com/shirou/gopsutil/v4 v4.26.7
+	github.com/shirou/gopsutil/v4 v4.26.8
 	golang.org/x/sys v0.47.0
 )
 
