@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os/exec"
 	"runtime"
+	"strings"
+	"sync"
 	"time"
 )
 
@@ -13,32 +15,82 @@ import (
 // would block its handler goroutine forever.
 const agentCommandTimeout = 30 * time.Second
 
-// collectorTimeout bounds every discovery command the metrics tick runs
-// (nvidia-smi, docker, systemctl, dmidecode, lspci, PowerShell). Those run
-// on the connection loop itself, so an unbounded one (a GPU that fell off
-// the bus leaves nvidia-smi in D state) stalled pings, let the hub close the
-// socket after its idle timeout, and left the loop stuck inside the collector
-// so the agent never reconnected: remote reboot was unreachable exactly when
-// it was needed. Ten seconds per collector keeps the worst tick well under
-// the hub's 90 s idle timeout. Package-level so tests can shorten it.
+// collectorTimeout bounds how long the metrics tick waits for any external
+// command it runs (nvidia-smi, docker, systemctl, dmidecode, lspci,
+// PowerShell). Those run on the connection loop itself, so an unbounded one
+// stalled pings, let the hub close the socket after its idle timeout, and
+// left the loop stuck inside the collector so the agent never reconnected:
+// remote reboot was unreachable exactly when it was needed. Ten seconds per
+// command keeps the worst tick well under the hub's 90 s idle timeout.
+// Package-level so tests can shorten it. gopsutil's in-process readers are
+// not covered by this bound.
 var collectorTimeout = 10 * time.Second
 
-// runCollector runs argv under collectorTimeout and returns its stdout. On
-// timeout the child is killed (as a process group where configureCommand
-// supports it) and an error is returned; callers treat any error as "data
-// unavailable", never as a zero reading.
+// collectorInflight holds, per command, whether a previous invocation is
+// still outstanding. A child in uninterruptible sleep (D state) ignores
+// SIGKILL and its Wait never returns, so the runner cannot reclaim it; what
+// it can do is refuse to start another copy each tick, so a wedged command
+// costs exactly one goroutine and one process until the kernel releases it.
+var (
+	collectorInflightMu sync.Mutex
+	collectorInflight   = map[string]bool{}
+)
+
+// errCollectorBusy is returned when the same command is still outstanding
+// from an earlier tick.
+var errCollectorBusy = fmt.Errorf("collector still running from an earlier tick")
+
+// runCollector runs argv and returns its stdout, holding the caller for at
+// most collectorTimeout. On timeout the child is sent the kill signal (as a
+// process group where configureCommand supports it) and an error is returned
+// immediately; the wait continues in the background, and no second copy of
+// the same command is started until it finishes. Callers treat any error as
+// "data unavailable", never as a zero reading.
 func runCollector(argv ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), collectorTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	configureCommand(cmd)
-	// If the child ignores the kill for any reason, do not wait on it forever.
-	cmd.WaitDelay = 2 * time.Second
-	out, err := cmd.Output()
-	if ctx.Err() == context.DeadlineExceeded {
-		return nil, fmt.Errorf("%s: timed out after %s", argv[0], collectorTimeout)
+	return runBounded(strings.Join(argv, " "), collectorTimeout, func(ctx context.Context) ([]byte, error) {
+		cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+		configureCommand(cmd)
+		cmd.WaitDelay = 2 * time.Second
+		return cmd.Output()
+	})
+}
+
+// runBounded runs fn once per key at a time and returns within timeout even
+// if fn never does. The deadline is enforced by waiting on a channel rather
+// than on fn, because fn may be blocked in a wait that cannot return.
+func runBounded(key string, timeout time.Duration, fn func(ctx context.Context) ([]byte, error)) ([]byte, error) {
+	collectorInflightMu.Lock()
+	if collectorInflight[key] {
+		collectorInflightMu.Unlock()
+		return nil, errCollectorBusy
 	}
-	return out, err
+	collectorInflight[key] = true
+	collectorInflightMu.Unlock()
+
+	type result struct {
+		out []byte
+		err error
+	}
+	done := make(chan result, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	go func() {
+		defer func() {
+			collectorInflightMu.Lock()
+			delete(collectorInflight, key)
+			collectorInflightMu.Unlock()
+			cancel()
+		}()
+		out, err := fn(ctx)
+		done <- result{out, err}
+	}()
+	select {
+	case r := <-done:
+		return r.out, r.err
+	case <-ctx.Done():
+		// The goroutine keeps waiting (and holds the inflight mark) until
+		// fn returns; cancel() there releases the timer.
+		return nil, fmt.Errorf("%s: timed out after %s", strings.Fields(key)[0], timeout)
+	}
 }
 
 // commandPlan returns the argv steps to execute for a command on this host.
