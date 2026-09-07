@@ -20,6 +20,11 @@ type Server struct {
 	// Serializes agent authentication/registration with credential revocation.
 	agentAuthMu sync.RWMutex
 
+	// Alert evaluations are serialized; pending duration state is bounded by
+	// currently observable enabled rule/machine pairs and resets on restart.
+	alertEvalMu  sync.Mutex
+	alertPending map[string]alertPendingCondition
+
 	// Ingestion barrier. Every persisted agent frame runs under the read
 	// side (see ingestFrame); machine deletion takes the write side around
 	// registry removal and row deletion. Lock order is agentAuthMu, then

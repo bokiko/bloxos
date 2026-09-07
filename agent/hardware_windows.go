@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"os/exec"
 	"regexp"
 	"runtime"
 	"sort"
@@ -133,11 +132,11 @@ type win32ComputerSystem struct {
 }
 
 type win32BIOS struct {
-	Manufacturer string
-	Version      string
+	Manufacturer      string
+	Version           string
 	SMBIOSBIOSVersion string
-	ReleaseDate  string
-	SerialNumber string
+	ReleaseDate       string
+	SerialNumber      string
 }
 
 type win32BaseBoard struct {
@@ -154,46 +153,46 @@ type win32SystemEnclosure struct {
 }
 
 type win32PhysicalMemory struct {
-	BankLabel        string
-	DeviceLocator    string
-	Capacity         uint64
-	Speed            uint32
+	BankLabel            string
+	DeviceLocator        string
+	Capacity             uint64
+	Speed                uint32
 	ConfiguredClockSpeed uint32
-	SMBIOSMemoryType interface{}
-	MemoryType       interface{}
-	FormFactor       interface{}
-	Manufacturer     string
-	PartNumber       string
+	SMBIOSMemoryType     interface{}
+	MemoryType           interface{}
+	FormFactor           interface{}
+	Manufacturer         string
+	PartNumber           string
 }
 
 type win32DiskDrive struct {
-	DeviceID      string
-	Model         string
-	SerialNumber  string
+	DeviceID         string
+	Model            string
+	SerialNumber     string
 	FirmwareRevision string
-	Size          uint64
-	MediaType     string
-	InterfaceType string
+	Size             uint64
+	MediaType        string
+	InterfaceType    string
 }
 
 type win32NetworkAdapter struct {
-	Name              string
-	NetConnectionID   string
-	MACAddress        string
-	Speed             uint64
-	NetEnabled        bool
-	PhysicalAdapter   bool
-	AdapterTypeID     interface{}
-	PNPDeviceID       string
+	Name            string
+	NetConnectionID string
+	MACAddress      string
+	Speed           uint64
+	NetEnabled      bool
+	PhysicalAdapter bool
+	AdapterTypeID   interface{}
+	PNPDeviceID     string
 }
 
 type win32VideoController struct {
-	Name              string
+	Name                 string
 	AdapterCompatibility string
-	AdapterRAM        uint32
-	DriverVersion     string
-	PNPDeviceID       string
-	VideoProcessor    string
+	AdapterRAM           uint32
+	DriverVersion        string
+	PNPDeviceID          string
+	VideoProcessor       string
 }
 
 // collectHardware gathers a static hardware snapshot on Windows. Same
@@ -381,8 +380,8 @@ func collectCPUFlagsWindows() []string {
 		// execution policy (default on stock Windows): policy gates loading
 		// .ps1 files from disk, not inline expressions. Do not change to
 		// -File without also adding -ExecutionPolicy Bypass.
-		out, err := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive",
-			"-Command", "(Get-WmiObject Win32_Processor).Name").Output()
+		out, err := runCollector("powershell.exe", "-NoProfile", "-NonInteractive",
+			"-Command", "(Get-WmiObject Win32_Processor).Name")
 		if err == nil {
 			name = strings.ToLower(strings.TrimSpace(string(out)))
 		}
