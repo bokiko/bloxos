@@ -50,7 +50,60 @@ test("logout cancels pending cache writes before clearing", () => {
 
 test("cross-tab logout clears this tab's auth state", () => {
   assert.match(auth, /addEventListener\("storage"/, "AuthContext must listen for storage events");
-  assert.match(auth, /e\.key === "bloxos_token" && e\.newValue === null[\s\S]*?logout\(\)/, "token removal in another tab must log this tab out");
+  assert.match(auth, /storageAuthAction\(e\.key, e\.newValue\)/, "storage events must go through the shared policy");
+  assert.match(auth, /action === "logout"[\s\S]*?logout\(\)/, "token removal or full clear must log this tab out");
+  assert.match(auth, /action === "sync-login"[\s\S]*?setRole[\s\S]*?setScopes/, "token replacement must re-sync role and scopes");
+});
+
+test("logout invalidates in-flight connects and stale EventSources are guarded", () => {
+  const logoutBranch = sse.match(/\} else \{[\s\S]*?disconnect\(true\);\s*\}/);
+  assert.ok(logoutBranch, "logout branch not found");
+  assert.match(logoutBranch[0], /connectSeqRef\.current\+\+/, "logout must invalidate in-flight connect generations");
+  assert.match(sse, /addEventListener\("metrics"[\s\S]*?esRef\.current !== es/, "metrics handler must reject a replaced EventSource");
+  assert.match(sse, /addEventListener\("snapshot"[\s\S]*?esRef\.current !== es/, "snapshot handler must reject a replaced EventSource");
+});
+
+test("machine_removed persists the filtered cache and alerts fetch re-checks the token", () => {
+  assert.match(sse, /"machine_removed"[\s\S]*?next\.delete\(msg\.machine_id\)[\s\S]*?cacheFlushRef\.current\?\.\(\)/, "removal must flush the filtered cache");
+  assert.match(sse, /getStoredToken\(\) === token/, "initial alerts fetch must re-validate the token before applying");
+});
+
+test("401 logout requires the failing request to carry the current token", () => {
+  assert.match(auth, /res\.status === 401 && shouldLogoutOn401\(currentToken/, "401 must be gated on token currency");
+});
+
+test("login publishes role/scopes/flags before the token and clears stale flags", () => {
+  const m = auth.match(/const login = useCallback\(async[\s\S]*?\}, \[\]\)/);
+  assert.ok(m, "login not found");
+  assert.match(m[0], /sessionGenRef/, "login must carry a session generation");
+  assert.match(m[0], /gen !== sessionGenRef\.current/, "in-flight login must bail when superseded");
+  const scopesAt = m[0].indexOf('localStorage.setItem("bloxos_scopes"');
+  const tokenAt = m[0].indexOf('localStorage.setItem("bloxos_token"');
+  assert.ok(scopesAt > 0 && tokenAt > scopesAt, "token must be published after role/scopes/flags");
+  assert.match(m[0], /localStorage\.removeItem\("bloxos_pw_change_required"\)/, "login must clear a false pw-change flag");
+  assert.match(m[0], /localStorage\.removeItem\("bloxos_pin_change_required"\)/, "login must clear a false pin-change flag");
+});
+
+test("storage logout reads the current snapshot and skips newer tokens", () => {
+  assert.match(auth, /tokenRemovalApplies\(getStoredToken\(\)\)/, "removal must be gated on the current store");
+  assert.match(auth, /const storedToken = getStoredToken\(\)/, "sync-login must read the stored token, not the event payload");
+});
+
+test("detail-page delete keeps the dialog retryable and shows the failure", () => {
+  const m = pageDetail.match(/const handleDeleteMachine = useCallback\(async[\s\S]*?\}, \[/);
+  assert.ok(m, "handleDeleteMachine not found");
+  assert.match(m[0], /finally \{[\s\S]*?setDeleting\(false\)/, "loading must reset in finally");
+  assert.match(m[0], /setDeleteError\(/, "failure must surface an error");
+  assert.doesNotMatch(m[0], /else \{[\s\S]*?setShowDeleteConfirm\(false\)/, "failure must not close the dialog silently");
+  assert.match(pageDetail, /deleteError && <p role="alert"/, "delete error must be rendered");
+});
+
+test("login labels are bound to their inputs", () => {
+  const login = readFileSync(new URL("../app/login/page.tsx", import.meta.url), "utf8");
+  assert.match(login, /<label htmlFor="login-username"/, "username label must be bound");
+  assert.match(login, /id="login-username"/, "username input must carry the id");
+  assert.match(login, /<label htmlFor="login-password"/, "password label must be bound");
+  assert.match(login, /id="login-password"/, "password input must carry the id");
 });
 
 test("service and container controls are hidden from viewers", () => {

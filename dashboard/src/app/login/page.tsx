@@ -87,8 +87,9 @@ export default function LoginPage() {
           <CardContent className="pt-6 px-6 pb-6">
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
-                <label className="block text-xs text-blox-muted mb-1.5 font-medium">Username</label>
+                <label htmlFor="login-username" className="block text-xs text-blox-muted mb-1.5 font-medium">Username</label>
                 <Input
+                  id="login-username"
                   type="text"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
@@ -100,8 +101,9 @@ export default function LoginPage() {
                 />
               </div>
               <div>
-                <label className="block text-xs text-blox-muted mb-1.5 font-medium">Password</label>
+                <label htmlFor="login-password" className="block text-xs text-blox-muted mb-1.5 font-medium">Password</label>
                 <Input
+                  id="login-password"
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}

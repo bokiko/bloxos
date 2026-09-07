@@ -142,6 +142,7 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
   const [now, setNow] = useState(() => Date.now());
   const [showReboot, setShowReboot] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [showRevokeConfirm, setShowRevokeConfirm] = useState(false);
   const [revoking, setRevoking] = useState(false);
@@ -347,6 +348,7 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
 
   const handleDeleteMachine = useCallback(async () => {
     setDeleting(true);
+    setDeleteError(null);
     try {
       const res = await fetch(`${HUB_URL}/api/machines/${id}`, {
         method: "DELETE",
@@ -354,13 +356,19 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
       });
       if (res.ok) {
         router.push("/");
-      } else {
-        setDeleting(false);
-        setShowDeleteConfirm(false);
+        return;
       }
+      // Failure: surface the hub's reason and keep the dialog open so the
+      // delete can be retried — never close silently.
+      let hubError = "";
+      try {
+        hubError = (await res.json())?.error ?? "";
+      } catch { /* non-JSON body */ }
+      setDeleteError(hubError ? `Delete failed: ${hubError}` : `Delete failed (HTTP ${res.status}).`);
     } catch {
+      setDeleteError("Delete failed: request interrupted. The machine may still exist — retry or refresh to check.");
+    } finally {
       setDeleting(false);
-      setShowDeleteConfirm(false);
     }
   }, [id, router]);
 
@@ -482,6 +490,7 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
             <DialogDescription className="text-blox-muted text-xs mt-2">
               Are you sure you want to remove <span className="text-blox-text font-medium">{machine.hostname}</span> from BloxOS? This will delete all historical data.
             </DialogDescription>
+            {deleteError && <p role="alert" className="text-xs text-red-400 mt-2">{deleteError}</p>}
           </DialogHeader>
           <DialogFooter className="bg-transparent border-t-blox-border">
             <Button variant="outline" size="sm" onClick={() => setShowDeleteConfirm(false)} disabled={deleting} className="text-xs text-blox-muted border-blox-border">
@@ -713,7 +722,10 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => setShowDeleteConfirm(true)}
+                onClick={() => {
+                  setDeleteError(null);
+                  setShowDeleteConfirm(true);
+                }}
                 className="text-xs border-blox-border text-blox-muted hover:text-red-400 hover:border-red-500/30 gap-1.5"
               >
                 <Trash2 className="w-3.5 h-3.5" />
