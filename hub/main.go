@@ -780,6 +780,13 @@ func (s *Server) handleSetTags(c echo.Context) error {
 // --- Existing Handlers ---
 
 func (s *Server) handleDeleteMachine(c echo.Context) error {
+	// Same coordination as credential revocation: holding the auth writer
+	// lock means no agent socket can pass authentication or register while
+	// the machine is being removed, so a reconnect racing the delete cannot
+	// recreate the row between the socket close and the row delete. It is
+	// bounded by the agent auth window, exactly like revoke.
+	s.agentAuthMu.Lock()
+	defer s.agentAuthMu.Unlock()
 	id := c.Param("id")
 
 	// Check machine exists and get hostname
@@ -788,6 +795,35 @@ func (s *Server) handleDeleteMachine(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "machine not found"})
 	}
+
+	// Every persisted agent frame runs under the ingestion barrier's read
+	// side (ingestFrame), with its registration check inside. Holding the
+	// write side across registry removal and the row delete means a frame is
+	// either fully written before the delete or refused after it, for every
+	// socket that ever held this machine: the registered one, an older
+	// displaced one still mid-frame, and any retry of this handler. No
+	// draining or timeout is needed, so there is no path that can be
+	// retried around. Handlers hold the read side only for one frame's
+	// writes and never block on the registry or another connection inside
+	// it, so this cannot deadlock. If the DB delete fails, the agent simply
+	// reconnects with its still-valid credential; nothing is half-removed.
+	s.ingestMu.Lock()
+	defer s.ingestMu.Unlock()
+	s.agentsMu.Lock()
+	live := s.agents[id]
+	if live != nil {
+		delete(s.agents, id)
+	}
+	s.agentsMu.Unlock()
+	if live != nil && live.Conn != nil {
+		_ = live.Conn.Close()
+	}
+	// Rollout bookkeeping is keyed by machine id and never expires on its own:
+	// an armed reconnect expectation would record a phantom rollout failure
+	// for a machine that no longer exists, and the version list would show
+	// it forever.
+	clearReconnectExpectation(id)
+	forgetAgentVersion(id)
 
 	// Delete all related data in a transaction
 	tx, err := s.db.Begin()
@@ -809,14 +845,14 @@ func (s *Server) handleDeleteMachine(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to commit"})
 	}
 
-	// Remove from live cache
-	s.agentsMu.Lock()
-	delete(s.agents, id)
-	s.agentsMu.Unlock()
 	machineLatencyMu.Lock()
 	delete(machineLatency, id)
 	machineLatencyMu.Unlock()
 	s.removeAISessions(id)
+
+	// Additive event so dashboards drop the card immediately instead of
+	// waiting for their next snapshot. Older clients ignore unknown events.
+	broadcastSSE(machineRemovedEvent(id))
 
 	log.Printf("machine deleted: %s (%s)", hostname, id)
 	return c.JSON(http.StatusOK, map[string]string{"status": "deleted", "hostname": hostname})
@@ -989,6 +1025,12 @@ func (s *Server) markOffline(machineID string) {
 	log.Printf("agent offline: %s", machineID)
 }
 
+// machineRemovedEvent frames the SSE event emitted after a machine is deleted.
+func machineRemovedEvent(machineID string) []byte {
+	payload, _ := json.Marshal(map[string]string{"machine_id": machineID})
+	return []byte("event: machine_removed\ndata: " + string(payload) + "\n\n")
+}
+
 func broadcastSSE(data []byte) {
 	sseClientsMu.RLock()
 	defer sseClientsMu.RUnlock()
@@ -1001,6 +1043,13 @@ func broadcastSSE(data []byte) {
 }
 
 func (s *Server) handleSSE(c echo.Context) error {
+	// A stream without claims never passed the middleware and is not served;
+	// checked before anything is written or subscribed.
+	claims, ok := authClaimsFromContext(c)
+	if !ok || claims.UserID == "" {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "missing user context"})
+	}
+
 	c.Response().Header().Set("Content-Type", "text/event-stream")
 	c.Response().Header().Set("Cache-Control", "no-cache")
 	c.Response().Header().Set("Connection", "keep-alive")
@@ -1037,6 +1086,20 @@ func (s *Server) handleSSE(c echo.Context) error {
 	ping := time.NewTicker(15 * time.Second)
 	defer ping.Stop()
 
+	// Authorization was checked once, at the handshake. A stream is long
+	// lived, so enforce the token's own deadline exactly, and re-check on a
+	// modest timer that the user still exists. Without this a deleted user
+	// or an expired token keeps receiving fleet telemetry for as long as the
+	// connection is held.
+	var expiry <-chan time.Time
+	if !claims.ExpiresAt.IsZero() {
+		expiryTimer := time.NewTimer(time.Until(claims.ExpiresAt))
+		defer expiryTimer.Stop()
+		expiry = expiryTimer.C
+	}
+	revalidate := time.NewTicker(sseRevalidateInterval)
+	defer revalidate.Stop()
+
 	for {
 		select {
 		case data := <-ch:
@@ -1049,11 +1112,41 @@ func (s *Server) handleSSE(c echo.Context) error {
 		case <-ping.C:
 			fmt.Fprintf(c.Response(), ": keepalive\n\n")
 			flusher.Flush()
+		case <-expiry:
+			log.Printf("closing event stream for user %s: token expired", claims.UserID)
+			return nil
+		case <-revalidate.C:
+			if reason := s.sseStreamRevoked(claims); reason != "" {
+				log.Printf("closing event stream for user %s: %s", claims.UserID, reason)
+				return nil
+			}
 		case <-c.Request().Context().Done():
 			return nil
 		}
 	}
 
+}
+
+// sseRevalidateInterval is how often an open event stream re-checks its
+// authorization. Package-level so tests can shorten it.
+var sseRevalidateInterval = 60 * time.Second
+
+// sseStreamRevoked reports why an open stream must end, or "" to keep it.
+// It fails closed: if the user cannot be confirmed to exist, the stream ends.
+func (s *Server) sseStreamRevoked(claims requestAuthClaims) string {
+	if !claims.ExpiresAt.IsZero() && time.Now().After(claims.ExpiresAt) {
+		return "token expired"
+	}
+	if claims.UserID == "" {
+		return "no user in claims"
+	}
+	if _, err := s.lookupUserRole(claims.UserID); err != nil {
+		if err == sql.ErrNoRows {
+			return "user no longer exists"
+		}
+		return "user lookup failed: " + err.Error()
+	}
+	return ""
 }
 
 func (s *Server) handleListMachines(c echo.Context) error {
