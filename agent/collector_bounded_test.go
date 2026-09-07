@@ -35,7 +35,7 @@ func selfAsCollector(t *testing.T, mode string) []string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return []string{exe, "-test.run=NoSuchTest"}
+	return []string{exe, "-test.run=NoSuchTest_" + mode}
 }
 
 // TestRunCollectorTimesOutHungChild: a collector that never exits must
@@ -58,6 +58,13 @@ func TestRunCollectorTimesOutHungChild(t *testing.T) {
 	if elapsed > 5*time.Second {
 		t.Fatalf("hung collector held the caller for %s", elapsed)
 	}
+	// This child is killable, so the background wait returns and the gate
+	// clears; later tests must not see it as still outstanding.
+	waitUntilCleared(t, 5*time.Second, func() bool {
+		collectorInflightMu.Lock()
+		defer collectorInflightMu.Unlock()
+		return !collectorInflight[strings.Join(argv, " ")]
+	})
 }
 
 // TestRunCollectorReturnsOutput: a healthy collector's stdout is returned.
