@@ -58,12 +58,13 @@ CA_URL=%s
 CA_SHA256=%s
 TMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_DIR"' EXIT
+if [[ $(id -u) -eq 0 ]]; then SUDO=""; else SUDO=sudo; fi
 CA_ARGS=()
 CA_ENV=()
 if [[ -n "$CA_SHA256" ]]; then
   CA_PATH=/etc/bloxos/ca.crt
-  if sudo test -f "$CA_PATH"; then
-    ACTUAL_CA_SHA=$(sudo sha256sum "$CA_PATH" | awk '{print $1}')
+  if $SUDO test -f "$CA_PATH"; then
+    ACTUAL_CA_SHA=$($SUDO sha256sum "$CA_PATH" | awk '{print $1}')
     if [[ "$ACTUAL_CA_SHA" != "$CA_SHA256" ]]; then
       echo "Existing CA fingerprint mismatch; refusing to replace $CA_PATH" >&2
       exit 1
@@ -77,8 +78,8 @@ if [[ -n "$CA_SHA256" ]]; then
       echo "CA fingerprint mismatch; expected $CA_SHA256, got $ACTUAL_CA_SHA" >&2
       exit 1
     fi
-    sudo install -d -o root -g root -m 0755 /etc/bloxos
-    sudo install -o root -g root -m 0644 "$TMP_CA" "$CA_PATH"
+    $SUDO install -d -o root -g root -m 0755 /etc/bloxos
+    $SUDO install -o root -g root -m 0644 "$TMP_CA" "$CA_PATH"
   fi
   CA_ARGS=(--cacert "$CA_PATH")
   CA_ENV=(BLOXOS_CA_CERT="$CA_PATH" BLOXOS_CA_SHA256="$CA_SHA256")
