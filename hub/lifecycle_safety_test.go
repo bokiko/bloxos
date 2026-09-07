@@ -670,6 +670,14 @@ func TestDisplacedSocketMidWriteCannotResurrect(t *testing.T) {
 	if agentMapHasEntry(s, "machine-A") {
 		t.Fatal("registry still holds the deleted machine")
 	}
+	// The displaced frame's latency write lives inside the barrier too, so
+	// the cache cleared by the delete is not repopulated afterwards.
+	machineLatencyMu.RLock()
+	_, latencyKept := machineLatency["machine-A"]
+	machineLatencyMu.RUnlock()
+	if latencyKept {
+		t.Fatal("latency cache repopulated by a displaced frame after delete")
+	}
 }
 
 // TestSSEStreamEndsAtExactExpiry: the token deadline is enforced by its own
@@ -818,6 +826,173 @@ func TestAnnounceCannotRearmReconnectAfterDelete(t *testing.T) {
 	pendingReconnectsMu.Unlock()
 	if armed {
 		t.Fatal("reconnect expectation re-armed after delete")
+	}
+}
+
+// TestMachineRemovedKicksOverflowedStream: a subscriber whose queue is full
+// cannot silently lose machine_removed. Data events stay lossy for it; the
+// control event ends the stream so the client re-snapshots.
+func TestMachineRemovedKicksOverflowedStream(t *testing.T) {
+	ch := make(chan []byte, 64)
+	kick := &sseKick{ch: make(chan struct{})}
+	sseClientsMu.Lock()
+	sseClients[ch] = struct{}{}
+	sseKicks[ch] = kick
+	sseClientsMu.Unlock()
+	defer func() {
+		sseClientsMu.Lock()
+		delete(sseClients, ch)
+		delete(sseKicks, ch)
+		sseClientsMu.Unlock()
+	}()
+
+	for i := 0; i < 64; i++ {
+		broadcastSSE([]byte("event: metrics\ndata: {}\n\n"))
+	}
+	if len(ch) != 64 {
+		t.Fatalf("queue not full: %d", len(ch))
+	}
+	// A dropped data event must not kick.
+	broadcastSSE([]byte("event: metrics\ndata: {}\n\n"))
+	select {
+	case <-kick.ch:
+		t.Fatal("data overflow kicked the stream")
+	default:
+	}
+	// A dropped control event must.
+	broadcastSSEControl(machineRemovedEvent("machine-A"))
+	select {
+	case <-kick.ch:
+	case <-time.After(lifecycleDeadline):
+		t.Fatal("machine_removed overflow did not kick the stream")
+	}
+	// A stream with room receives the control event normally, no kick.
+	room := make(chan []byte, 1)
+	roomKick := &sseKick{ch: make(chan struct{})}
+	sseClientsMu.Lock()
+	sseClients[room] = struct{}{}
+	sseKicks[room] = roomKick
+	sseClientsMu.Unlock()
+	defer func() {
+		sseClientsMu.Lock()
+		delete(sseClients, room)
+		delete(sseKicks, room)
+		sseClientsMu.Unlock()
+	}()
+	broadcastSSEControl(machineRemovedEvent("machine-B"))
+	select {
+	case ev := <-room:
+		if !strings.Contains(string(ev), `"machine-B"`) {
+			t.Fatalf("unexpected event %q", ev)
+		}
+	default:
+		t.Fatal("control event not delivered to a stream with room")
+	}
+	select {
+	case <-roomKick.ch:
+		t.Fatal("stream with room was kicked")
+	default:
+	}
+}
+
+// TestSSEStreamEndsOnControlOverflow drives the real handler: a client that
+// never reads sees its stream ended once a control event overflows.
+func TestSSEStreamEndsOnControlOverflow(t *testing.T) {
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
+	server := httptest.NewServer(e)
+	defer server.Close()
+	adminToken := loginAndGetToken(t, e)
+	resp, r := openEventStream(t, server, adminToken)
+	defer resp.Body.Close()
+
+	// Find the handler's channel and fill it without the client reading.
+	var target chan []byte
+	waitForCondition(t, lifecycleDeadline, func() bool {
+		sseClientsMu.RLock()
+		defer sseClientsMu.RUnlock()
+		for ch := range sseClients {
+			if sseKicks[ch] != nil {
+				target = ch
+				return true
+			}
+		}
+		return false
+	})
+	// Large frames fill the unread TCP buffers quickly; once the handler's
+	// writes block, its queue fills and stays full.
+	filler := []byte("event: metrics\ndata: {\"pad\":\"" + strings.Repeat("x", 32*1024) + "\"}\n\n")
+	fillDeadline := time.Now().Add(lifecycleDeadline)
+	for len(target) < cap(target) {
+		broadcastSSE(filler)
+		if time.Now().After(fillDeadline) {
+			t.Fatalf("could not fill the stream queue (%d/%d)", len(target), cap(target))
+		}
+		if len(target) < cap(target) {
+			time.Sleep(time.Millisecond)
+		}
+	}
+	broadcastSSEControl(machineRemovedEvent("machine-A"))
+	streamEndsWithin(t, r, lifecycleDeadline, "control-event overflow")
+}
+
+// TestFreshEnrollmentVersionReportHeldUntilCommit: an aborted enrollment
+// leaves no /api/versions entry; a committed one keeps its initial report.
+func TestFreshEnrollmentVersionReportHeldUntilCommit(t *testing.T) {
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
+	server := httptest.NewServer(e)
+	defer server.Close()
+
+	enrollTo := func(machineID string, commit bool) {
+		t.Helper()
+		if _, err := s.db.Exec(`DELETE FROM tokens`); err != nil {
+			t.Fatal(err)
+		}
+		token := s.seedValidToken(t)
+		conn, err := wsDialAgent(t, server, "token="+token)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		writeFrame(t, conn, metricsFrame(machineID, "host"))
+		_ = conn.SetReadDeadline(time.Now().Add(lifecycleDeadline))
+		for {
+			var frame struct {
+				Type string `json:"type"`
+			}
+			_, raw, err := conn.ReadMessage()
+			if err != nil {
+				t.Fatalf("waiting for enrolled: %v", err)
+			}
+			_ = json.Unmarshal(raw, &frame)
+			if frame.Type == "enrolled" {
+				break
+			}
+		}
+		writeFrame(t, conn, map[string]interface{}{"type": "agent_running_version", "machine_id": machineID, "sha256": "abc123", "os": "linux"})
+		if commit {
+			commitEnrollment(t, conn)
+		}
+		// Order the assertion behind the frames above.
+		writeFrame(t, conn, metricsFrame(machineID, "host-2"))
+		waitHostname(t, s, machineID, "host-2")
+	}
+
+	enrollTo("machine-abort", false)
+	agentRunningVersionsMu.RLock()
+	_, phantom := agentRunningVersions["machine-abort"]
+	agentRunningVersionsMu.RUnlock()
+	if phantom {
+		t.Fatal("aborted enrollment left a version entry")
+	}
+
+	enrollTo("machine-commit", true)
+	agentRunningVersionsMu.RLock()
+	info, kept := agentRunningVersions["machine-commit"]
+	agentRunningVersionsMu.RUnlock()
+	if !kept || info.RunningSHA != "abc123" {
+		t.Fatalf("committed enrollment lost its initial version report: kept=%v info=%+v", kept, info)
 	}
 }
 

@@ -870,6 +870,10 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 	// Hold it and apply it at the commit point so first enrollment keeps
 	// its inventory without ever writing under an uncommitted identity.
 	var pendingHardwareInfo []byte
+	// Same for the agent's version report: it is sent once per connect and
+	// would otherwise create a /api/versions entry for an enrollment that may
+	// never commit.
+	var pendingVersionReport *agentVersionReport
 	defer func() {
 		s.unregisterAgentConnection(machineID, agent)
 		// A fresh enrollment that never committed was never registered, so
@@ -1124,25 +1128,26 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 			// regardless of what the payload claimed.
 			m.MachineID = machineID
 
-			// Calculate latency from sent_at.
-			if m.SentAt != "" {
-				sentTime, err := time.Parse(time.RFC3339Nano, m.SentAt)
-				if err == nil {
-					latencyMs := time.Since(sentTime).Milliseconds()
-					if latencyMs < 0 {
-						latencyMs = 0
-					}
-					machineLatencyMu.Lock()
-					machineLatency[m.MachineID] = latencyMs
-					machineLatencyMu.Unlock()
-				}
-			}
-
-			// Persistence and the dashboard broadcast stay inside one barrier
-			// section, so a delete's machine_removed event (emitted under the
-			// barrier's write side) is always the last event dashboards see
-			// for this machine; a late frame can never re-add the card.
+			// Persistence, the latency cache and the dashboard broadcast all
+			// stay inside one barrier section, so a delete's machine_removed
+			// event (emitted under the barrier's write side) is always the last
+			// event dashboards see for this machine and no per-machine state
+			// is repopulated afterwards; a late frame can never re-add the card.
 			if !s.ingestFrame(machineID, agent, registered, func() {
+				// Calculate latency from sent_at.
+				if m.SentAt != "" {
+					sentTime, err := time.Parse(time.RFC3339Nano, m.SentAt)
+					if err == nil {
+						latencyMs := time.Since(sentTime).Milliseconds()
+						if latencyMs < 0 {
+							latencyMs = 0
+						}
+						machineLatencyMu.Lock()
+						machineLatency[m.MachineID] = latencyMs
+						machineLatencyMu.Unlock()
+					}
+				}
+
 				s.upsertMachine(m)
 				s.storeMetrics(m)
 
@@ -1278,19 +1283,31 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 				continue
 			}
 			if versionMsg.SHA256 != "" && machineID != "" {
+				report := agentVersionReport{
+					RunningSHA:      versionMsg.SHA256,
+					OS:              versionMsg.OS,
+					Arch:            versionMsg.Arch,
+					UpdateProtocol:  versionMsg.UpdateProtocol,
+					Release:         versionMsg.Release,
+					ReleaseFloor:    versionMsg.ReleaseFloor,
+					ReleaseFloorSHA: versionMsg.ReleaseFloorSHA,
+					ReleaseFloorOK:  versionMsg.ReleaseFloorOK,
+					TransportOK:     versionMsg.UpdateTransportOK,
+					KeyPinned:       versionMsg.UpdateKeyPinned,
+				}
+				if !registered {
+					// A fresh enrollment reports its version before it commits;
+					// hold it so an aborted enrollment leaves no phantom entry
+					// and a committed one keeps its initial report.
+					if freshPendingTokenHash != "" {
+						pendingVersionReport = &report
+					} else {
+						log.Printf("rejecting agent_running_version before enrollment is committed for %s", machineID)
+					}
+					continue
+				}
 				if !s.ingestFrame(machineID, agent, registered, func() {
-					s.recordAgentRunningVersion(machineID, agentVersionReport{
-						RunningSHA:      versionMsg.SHA256,
-						OS:              versionMsg.OS,
-						Arch:            versionMsg.Arch,
-						UpdateProtocol:  versionMsg.UpdateProtocol,
-						Release:         versionMsg.Release,
-						ReleaseFloor:    versionMsg.ReleaseFloor,
-						ReleaseFloorSHA: versionMsg.ReleaseFloorSHA,
-						ReleaseFloorOK:  versionMsg.ReleaseFloorOK,
-						TransportOK:     versionMsg.UpdateTransportOK,
-						KeyPinned:       versionMsg.UpdateKeyPinned,
-					})
+					s.recordAgentRunningVersion(machineID, report)
 				}) {
 					return nil
 				}
@@ -1375,6 +1392,13 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 					held := pendingHardwareInfo
 					pendingHardwareInfo = nil
 					if !s.ingestFrame(machineID, agent, registered, func() { s.storeHardwareInfo(machineID, held) }) {
+						return nil
+					}
+				}
+				if pendingVersionReport != nil {
+					held := *pendingVersionReport
+					pendingVersionReport = nil
+					if !s.ingestFrame(machineID, agent, registered, func() { s.recordAgentRunningVersion(machineID, held) }) {
 						return nil
 					}
 				}

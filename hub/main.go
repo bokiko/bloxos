@@ -120,6 +120,12 @@ var (
 	// SSE subscribers.
 	sseClients   = make(map[chan []byte]struct{})
 	sseClientsMu sync.RWMutex
+	// sseKicks maps a stream's data channel to its invalidation signal. Data
+	// events may be dropped for a slow subscriber whose queue is full, but a
+	// control event such as machine_removed must never be lost: on overflow
+	// the stream is ended instead, and the client's reconnect delivers a
+	// fresh snapshot that already reflects the change. Guarded by sseClientsMu.
+	sseKicks = make(map[chan []byte]*sseKick)
 
 	// Pending command responses: command ID -> response channel.
 	pendingCmds   = make(map[string]chan CommandResponse)
@@ -850,9 +856,10 @@ func (s *Server) handleDeleteMachine(c echo.Context) error {
 	machineLatencyMu.Unlock()
 	s.removeAISessions(id)
 
-	// Additive event so dashboards drop the card immediately instead of
-	// waiting for their next snapshot. Older clients ignore unknown events.
-	broadcastSSE(machineRemovedEvent(id))
+	// Additive control event so dashboards drop the card immediately instead
+	// of waiting for their next snapshot; a subscriber that cannot take it is
+	// kicked to re-snapshot. Older clients ignore unknown events.
+	broadcastSSEControl(machineRemovedEvent(id))
 
 	log.Printf("machine deleted: %s (%s)", hostname, id)
 	return c.JSON(http.StatusOK, map[string]string{"status": "deleted", "hostname": hostname})
@@ -1042,6 +1049,32 @@ func broadcastSSE(data []byte) {
 	}
 }
 
+// sseKick ends one event stream exactly once.
+type sseKick struct {
+	ch   chan struct{}
+	once sync.Once
+}
+
+func (k *sseKick) fire() { k.once.Do(func() { close(k.ch) }) }
+
+// broadcastSSEControl delivers a control event that must not be dropped. A
+// subscriber whose queue is full is kicked instead of skipped; its client
+// reconnects and receives a fresh snapshot. Nothing blocks: the send is
+// non-blocking and the kick is a channel close.
+func broadcastSSEControl(data []byte) {
+	sseClientsMu.RLock()
+	defer sseClientsMu.RUnlock()
+	for ch := range sseClients {
+		select {
+		case ch <- data:
+		default:
+			if kick := sseKicks[ch]; kick != nil {
+				kick.fire()
+			}
+		}
+	}
+}
+
 func (s *Server) handleSSE(c echo.Context) error {
 	// A stream without claims never passed the middleware and is not served;
 	// checked before anything is written or subscribed.
@@ -1055,13 +1088,16 @@ func (s *Server) handleSSE(c echo.Context) error {
 	c.Response().Header().Set("Connection", "keep-alive")
 
 	ch := make(chan []byte, 64)
+	kick := &sseKick{ch: make(chan struct{})}
 	sseClientsMu.Lock()
 	sseClients[ch] = struct{}{}
+	sseKicks[ch] = kick
 	sseClientsMu.Unlock()
 
 	defer func() {
 		sseClientsMu.Lock()
 		delete(sseClients, ch)
+		delete(sseKicks, ch)
 		sseClientsMu.Unlock()
 		close(ch)
 	}()
@@ -1114,6 +1150,11 @@ func (s *Server) handleSSE(c echo.Context) error {
 			flusher.Flush()
 		case <-expiry:
 			log.Printf("closing event stream for user %s: token expired", claims.UserID)
+			return nil
+		case <-kick.ch:
+			// A control event could not be queued for this slow stream; end
+			// it so the client reconnects and re-snapshots.
+			log.Printf("closing event stream for user %s: queue overflow on a control event", claims.UserID)
 			return nil
 		case <-revalidate.C:
 			if reason := s.sseStreamRevoked(claims); reason != "" {
