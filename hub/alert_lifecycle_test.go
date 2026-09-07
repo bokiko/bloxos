@@ -280,3 +280,28 @@ func TestAlertAbortedReadPreservesPendingDuration(t *testing.T) {
 		t.Fatal("brief read failure discarded valid duration", got)
 	}
 }
+
+func TestAlertOfflineDoesNotCountScheduledAPIPollGap(t *testing.T) {
+	s := setupAlertsDB(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	s.insertMachineWithMetrics(t, "api-offline-cadence", 10, 5, 10, 5, 10)
+	if _, err := s.db.Exec(`INSERT INTO api_machines (id,name,adapter_type,base_url,auth_config,poll_interval_secs) VALUES ('offline-cadence','slow','proxmox','https://example.invalid','{}',300)`); err != nil {
+		t.Fatal(err)
+	}
+	s.insertAlertRule(t, "machine_offline", "gt", 120)
+	s.evaluateAlertsAt(now.Add(180 * time.Second))
+	if got := s.activeAlertCount(t, "api-offline-cadence"); got != 0 {
+		t.Fatalf("normal scheduled poll gap generated an offline incident: %d", got)
+	}
+	s.evaluateAlertsAt(now.Add(421 * time.Second))
+	if got := s.activeAlertCount(t, "api-offline-cadence"); got != 1 {
+		t.Fatal("overdue API poll did not alert", got)
+	}
+	if _, err := s.db.Exec(`UPDATE machines SET last_seen=? WHERE id='api-offline-cadence'`, now.Add(450*time.Second).Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+	s.evaluateAlertsAt(now.Add(450 * time.Second))
+	if got := s.activeAlertCount(t, "api-offline-cadence"); got != 0 {
+		t.Fatal("successful poll did not resolve incident", got)
+	}
+}

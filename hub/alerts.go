@@ -247,6 +247,11 @@ func (s *Server) evaluateAlertsAt(now time.Time) {
 					continue
 				}
 				offlineSecs := now.Sub(lastSeenTime).Seconds()
+				if m.pollInterval >= 30 && m.pollInterval <= 3600 {
+					// A scheduled polling gap is not downtime. API machines
+					// become overdue only after the next poll was expected.
+					offlineSecs = max(0, offlineSecs-float64(m.pollInterval))
+				}
 				triggered = compareValue(offlineSecs, rule.Operator, rule.Threshold)
 				msg = fmt.Sprintf("Machine offline for %.0fs (threshold: %.0fs)", offlineSecs, rule.Threshold)
 			default:

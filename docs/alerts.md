@@ -20,6 +20,9 @@ least their configured polling interval plus 30 seconds. Expected polling gaps
 do not reset duration alerts, but an overdue sample still does.
 An aborted database read preserves the previous observation; the next successful
 pass still resets continuity if that observation is more than 90 seconds old.
+For API-polled machines, offline duration starts when the next scheduled poll
+is overdue, not at the previous successful poll. A normal five-minute polling
+gap therefore does not trigger the default two-minute offline rule.
 
 Database and dashboard events are updated, and the evaluation lock released,
 before Telegram delivery. Telegram
