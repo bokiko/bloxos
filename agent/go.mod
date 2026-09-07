@@ -2,7 +2,7 @@ module github.com/bokiko/bloxos/agent
 
 go 1.25.0
 
-toolchain go1.25.9
+toolchain go1.26.8
 
 replace github.com/bokiko/bloxos/proto => ../proto
 
