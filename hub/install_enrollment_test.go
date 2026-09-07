@@ -222,11 +222,11 @@ func TestInstallScriptInstallsAgentBinaryAsRoot(t *testing.T) {
 	}
 
 	body := rec.Body.String()
-	const install = "sudo install -o root -g root -m 0755 /tmp/bloxos-agent /usr/local/bin/bloxos-agent"
+	const install = "$SUDO install -o root -g root -m 0755 /tmp/bloxos-agent /usr/local/bin/bloxos-agent"
 	if !strings.Contains(body, install) {
 		t.Fatal("install.sh does not install the agent root-owned with mode 0755")
 	}
-	if strings.Contains(body, "sudo mv /tmp/bloxos-agent /usr/local/bin/bloxos-agent") {
+	if strings.Contains(body, "$SUDO mv /tmp/bloxos-agent /usr/local/bin/bloxos-agent") {
 		t.Fatal("install.sh still preserves the downloaded agent's unprivileged ownership")
 	}
 	if !strings.Contains(body, "rm -f /tmp/bloxos-agent") {

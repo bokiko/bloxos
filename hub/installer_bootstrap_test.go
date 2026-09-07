@@ -106,7 +106,7 @@ func TestLinuxPasteBlockVerifiesCABeforeInstallerFetchAndExec(t *testing.T) {
 	if strings.Contains(got.AdvancedCommand, "install.sh | bash") || strings.Contains(got.AdvancedCommand, "curl -fsSLk https://hub.public.example/install.sh") {
 		t.Fatalf("Linux command still executes an unverified network pipe: %q", got.AdvancedCommand)
 	}
-	if !strings.Contains(got.AdvancedCommand, "Existing CA fingerprint mismatch") || !strings.Contains(got.AdvancedCommand, "sudo install") {
+	if !strings.Contains(got.AdvancedCommand, "Existing CA fingerprint mismatch") || !strings.Contains(got.AdvancedCommand, "$SUDO install") {
 		t.Fatal("Linux command does not reuse matching CA / stop on mismatching CA")
 	}
 }
@@ -333,10 +333,10 @@ func TestLinuxInstallerRequestsArchAndVerifiesELF(t *testing.T) {
 		`amd64) EXPECTED_AGENT_SHA256="$EXPECTED_AGENT_SHA256_AMD64" ;;`,
 		`arm64) EXPECTED_AGENT_SHA256="$EXPECTED_AGENT_SHA256_ARM64" ;;`,
 		`Agent binary fingerprint mismatch`,
-		`sudo mkdir -p /etc/bloxos`,
-		`sudo install -o root -g root -m 0755 /tmp/bloxos-agent /usr/local/bin/bloxos-agent`,
+		`$SUDO mkdir -p /etc/bloxos`,
+		`$SUDO install -o root -g root -m 0755 /tmp/bloxos-agent /usr/local/bin/bloxos-agent`,
 	)
-	if idx := strings.Index(script, `if [[ "$HTTP_STATUS" != "200" ]]; then`); strings.Contains(script[:idx], "sudo tee") || strings.Contains(script[:idx], "sudo install") || strings.Contains(script[:idx], "sudo mkdir") {
+	if idx := strings.Index(script, `if [[ "$HTTP_STATUS" != "200" ]]; then`); strings.Contains(script[:idx], "$SUDO tee") || strings.Contains(script[:idx], "$SUDO install") || strings.Contains(script[:idx], "$SUDO mkdir") {
 		t.Fatal("install.sh writes to the system before the download status is checked")
 	}
 
