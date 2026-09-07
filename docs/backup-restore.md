@@ -16,12 +16,22 @@ bash ../scripts/backup-compose.sh /absolute/path/to/new-backup-directory
 # bash ../scripts/backup-compose.sh /absolute/path/to/new-backup-directory -p my-bloxos -f compose.yaml -f override.yaml
 ```
 
-Requires Docker Compose, Bash, tar and `shasum`. The destination must not
-exist. The script stops hub and Caddy, copies their complete state, then
+Requires Docker Compose, Bash, Python3, tar and `shasum`. The destination must
+not exist; its parent must be owned by the invoking OS user and not writable
+by group/others (use a private backup directory, not `/tmp` directly).
+The script stops hub and Caddy, copies their complete state, then
 restarts only services that were running before the backup. Agents reconnect
 when the hub returns; the dashboard can temporarily show disconnected data.
 No volume, database, release floor, or key is deleted. A failure leaves the
-partial directory for inspection; a complete backup has `SHA256SUMS`.
+partial directory for inspection; a complete backup has an atomically finalized
+`SHA256SUMS` with all five entries verified. `.pending` is not complete.
+
+Overlapping backups of the same hub are refused using an exclusive, stopped
+Docker lock container; it never runs code and has no network. Normal exit
+removes it. A killed client/daemon failure can leave this lock behind: inspect
+the `bloxos-backup-lock-<hub-container-id>` container and verify no backup is
+still active before removing that exact lock container with `docker rm -v`.
+Do not remove the hub container or replace the stack during a backup.
 
 This procedure assumes the shipped `/data` and `/config` mounts have no other
 writers. Do not run another hub against the same database. Prevent another

@@ -23,9 +23,19 @@ if a[:1] == ['compose']:
     elif a[:1] == ['stop']:
         s['running'] = []
 elif a[:2] == ['inspect', '-f']:
-    print('true' if a[-1] in s['running'] else 'false')
+    if a[2] == '{{.Image}}': print('fake-image')
+    else: print('true' if a[-1] in s['running'] else 'false')
 elif a[:1] == ['inspect']:
     print('[]')
+elif a[:1] == ['create']:
+    if s.get('locked'):
+        p.write_text(json.dumps(s))
+        sys.exit(23)
+    s['locked'] = True
+    print('owned-lock-id')
+elif a[:1] == ['rm']:
+    assert a == ['rm', '-v', 'owned-lock-id']
+    s['locked'] = False
 elif a[:1] == ['start']:
     s['running'].extend(a[1:])
 elif a[:1] == ['cp']:
@@ -53,8 +63,8 @@ class BackupTests(unittest.TestCase):
         docker.chmod(0o700)
         self.destination = self.root / 'backup'
 
-    def run_backup(self, running=('hub-id', 'caddy-id'), fail_copy=False):
-        self.state.write_text(json.dumps({'running': list(running), 'calls': [], 'fail_copy': fail_copy}))
+    def run_backup(self, running=('hub-id', 'caddy-id'), fail_copy=False, locked=False):
+        self.state.write_text(json.dumps({'running': list(running), 'calls': [], 'fail_copy': fail_copy, 'locked': locked}))
         env = dict(os.environ, PATH=str(self.root) + os.pathsep + os.environ['PATH'], FAKE_STATE=str(self.state))
         result = subprocess.run(['bash', str(Path(__file__).with_name('backup-compose.sh')), str(self.destination)],
                                 env=env, capture_output=True, text=True)
@@ -67,6 +77,7 @@ class BackupTests(unittest.TestCase):
         self.assertEqual(self.destination.stat().st_mode & 0o777, 0o700)
         self.assertEqual((self.destination / 'hub-data.tar').stat().st_mode & 0o777, 0o600)
         self.assertEqual(state['running'], ['hub-id', 'caddy-id'])
+        self.assertFalse(state['locked'])
         stop = state['calls'].index(['compose', 'stop', 'hub', 'caddy'])
         copy = next(i for i, call in enumerate(state['calls']) if call[0] == 'cp')
         self.assertLess(stop, copy)
@@ -96,6 +107,30 @@ class BackupTests(unittest.TestCase):
         result, state = self.run_backup()
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(marker.read_text(), 'original')
+        self.assertEqual(state['calls'], [])
+
+    def test_overlapping_backup_is_refused_before_any_stop(self):
+        result, state = self.run_backup(locked=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(state['locked'])
+        self.assertFalse(any(call[0] in ('rm', 'cp', 'start') or 'stop' in call for call in state['calls']))
+
+    def test_partial_manifest_is_never_published_even_if_checksum_tool_returns_success(self):
+        checksum = self.root / 'shasum'
+        checksum.write_text('#!/bin/sh\nprintf "%064d  hub-data.tar\\n" 0\n')
+        checksum.chmod(0o700)
+        result, state = self.run_backup()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.destination / 'SHA256SUMS').exists())
+        self.assertTrue((self.destination / 'SHA256SUMS.pending').exists())
+        self.assertFalse(state['locked'])
+        self.assertEqual(state['running'], ['hub-id', 'caddy-id'])
+
+    def test_shared_writable_parent_is_refused_before_docker(self):
+        self.root.chmod(0o777)
+        result, state = self.run_backup()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.destination.exists())
         self.assertEqual(state['calls'], [])
 
 

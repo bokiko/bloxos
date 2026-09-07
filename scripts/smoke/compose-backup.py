@@ -43,6 +43,17 @@ def main():
     scratch.chmod(0o700)
     backup = scratch / 'backup'
     run('bash', str(root / 'scripts/backup-compose.sh'), str(backup), '--project-directory', str(root / 'docker'))
+    manifest = (backup / 'SHA256SUMS').read_text().splitlines()
+    assert len(manifest) == 5, 'incomplete checksum manifest'
+    run('shasum', '-a', '256', '-c', 'SHA256SUMS', cwd=backup)
+    # A competing client on this same daemon must not stop/restart anything.
+    lock = output('docker', 'create', '--name', 'bloxos-backup-lock-' + ids['hub'], '--network', 'none', '--entrypoint', '/bin/true', specs['hub']['Image']).decode().strip()
+    try:
+        competing = subprocess.run(['bash', str(root / 'scripts/backup-compose.sh'), str(scratch / 'competing'), '--project-directory', str(root / 'docker')], capture_output=True)
+        assert competing.returncode != 0, 'concurrent backup was accepted'
+        assert json.loads(output('docker', 'inspect', ids['hub']))[0]['State']['Running'], 'competing backup stopped source'
+    finally:
+        run('docker', 'rm', '-v', lock)
     name = 'bloxos-restore-' + uuid.uuid4().hex[:12]
     config = {
         'name': name,
