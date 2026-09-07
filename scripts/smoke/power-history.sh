@@ -9,9 +9,10 @@
 #   restart during the outage, and hub recovery with unchanged replayed data
 #   and an explicitly declared sequence gap.
 #
-# THIS IS NOT HARDWARE VERIFICATION. The GPU readings come from a synthetic
-# nvidia-smi fixture written by this script; it proves the binary pipeline,
-# not a driver. No host services or credentials are touched: no host
+# By default this is NOT hardware verification: GPU readings come from a
+# synthetic nvidia-smi fixture. PHSMOKE_REAL_GPU=1 instead checks two real
+# NVIDIA GPUs through the container runtime; neither mode measures wall power.
+# No host services or credentials are touched: no host
 # credential dirs, no docker socket mount, no Compose stack, no published
 # ports. The host-side footprint is one Docker build volume (removed unless
 # KEEP=1), two containers removed on exit and, optionally, existing Go caches
@@ -27,12 +28,16 @@
 #                   mounted for the BUILD step only
 #   KEEP=1          keep the build volume (the test container is always --rm)
 #   PHSMOKE_TIMEOUT per-phase wait in seconds (default 180)
+#   PHSMOKE_REAL_GPU=1 opt into a two-NVIDIA-GPU hardware canary instead of
+#                   synthetic inputs; requires Docker GPU runtime support.
 #
 # Requires on the host: docker. Everything else runs in the container.
 set -euo pipefail
 
 P="${PHSMOKE_PREFIX:-phsmoke}"
 GO_IMAGE="${GO_IMAGE:-golang:1.25}"
+PHSMOKE_REAL_GPU="${PHSMOKE_REAL_GPU:-0}"
+[[ "$PHSMOKE_REAL_GPU" == 0 || "$PHSMOKE_REAL_GPU" == 1 ]] || { echo "invalid GPU mode" >&2; exit 2; }
 if ! [[ "$P" =~ ^[a-z0-9][a-z0-9-]{0,23}$ ]]; then
   echo "refusing: PHSMOKE_PREFIX must match [a-z0-9][a-z0-9-]{0,23}" >&2; exit 2
 fi
@@ -62,7 +67,7 @@ outer() {
   CLEAN_TMP="$(mktemp -d "${TMPDIR:-/tmp}/$P.XXXXXXXX")"
   run="$(basename "$CLEAN_TMP" | tr '[:upper:]' '[:lower:]' | tr -c '[:alnum:]\n' '-')"
   vbin="$run-bin" testc="$run-test" buildc="$run-build"
-  echo "== power-history smoke (SYNTHETIC GPU fixture; real agent+hub binaries)"
+  echo "== power-history smoke (real_gpu=$PHSMOKE_REAL_GPU; real agent+hub binaries)"
   echo "   source: $repo (read-only)   run: $run   image: $GO_IMAGE"
 
   for n in "$testc" "$buildc"; do
@@ -94,9 +99,12 @@ outer() {
   docker rm -f "$CLEAN_BUILD_ID" >/dev/null; CLEAN_BUILD_ID=""
 
   echo "== run pipeline test in container $testc (loopback only, no ports, no host mounts)"
+  local gpu_args=()
+  [[ "$PHSMOKE_REAL_GPU" == 1 ]] && gpu_args+=(--gpus all -e NVIDIA_DRIVER_CAPABILITIES=utility)
   CLEAN_TEST_ID="$(docker create -i --name "$testc" \
+    --network none "${gpu_args[@]}" \
     -v "$vbin:/opt/phsmoke:ro" \
-    -e PHSMOKE_CONTAINER=1 -e PHSMOKE_TIMEOUT="${PHSMOKE_TIMEOUT:-180}" \
+    -e PHSMOKE_CONTAINER=1 -e PHSMOKE_REAL_GPU="$PHSMOKE_REAL_GPU" -e PHSMOKE_TIMEOUT="${PHSMOKE_TIMEOUT:-180}" \
     "$GO_IMAGE" bash -s -- inner)"
   docker start -a -i "$CLEAN_TEST_ID" < "$0"
   [[ "$(docker inspect -f '{{.State.ExitCode}}' "$CLEAN_TEST_ID")" == 0 ]]
@@ -159,6 +167,11 @@ inner() {
   # SYNTHETIC nvidia-smi: answers only the agent's streaming power query.
   # The legacy `-x -q` XML dump exits non-zero (no GPUs for legacy metrics),
   # which is exactly what a machine without the XML path would look like.
+  if [[ "$PHSMOKE_REAL_GPU" == 1 ]]; then
+    PHSMOKE_GPU_IDS=$(nvidia-smi --query-gpu=uuid --format=csv,noheader | paste -sd, -)
+    export PHSMOKE_GPU_IDS
+    echo "== REAL GPU canary: driver-reported sensors $PHSMOKE_GPU_IDS (not wall power)"
+  else
   cat > "$W/bin/nvidia-smi" <<'EOF'
 #!/bin/sh
 set -e
@@ -178,6 +191,7 @@ esac
 EOF
   chmod +x "$W/bin/nvidia-smi"
   echo "== fixture: $(command -v nvidia-smi) (SYNTHETIC)"
+  fi
 
   start_hub() {
     (cd "$W/hub" && exec env HUB_LISTEN=127.0.0.1:4000 PUBLIC_URL=$HUB \
@@ -236,7 +250,7 @@ EOF
   [[ -n "$TOKEN" ]] || fail "token mint failed"
   echo "   setup+login+token OK"
 
-  echo "== phase 1: agent enrolls over ws://loopback, samples SYNTHETIC GPUs, journals, uploads"
+  echo "== phase 1: agent enrolls over ws://loopback, samples GPUs (real_gpu=$PHSMOKE_REAL_GPU), journals, uploads"
   start_agent
   MID=""
   for _ in $(seq 1 60); do
@@ -300,12 +314,12 @@ EOF
   $V disjoint "$W/out/h1.json" < "$W/out/d3.json" || fail "delta after cursor overlapped the earlier window"
 
   echo "== phase 4: resource check"
-  echo "   agent RSS: $(awk '/VmRSS/{print $2" "$3}' "/proc/$AGENT_PID/status")   nvidia-smi fixture procs: $(pgrep -fc 'nvidia-smi --query-gpu' || true)"
+  echo "   agent RSS: $(awk '/VmRSS/{print $2" "$3}' "/proc/$AGENT_PID/status")   nvidia-smi streaming procs: $(pgrep -fc 'nvidia-smi --query-gpu' || true)"
   echo "   hub gaps/degraded: $(sed -n 's/.*GAPS=\([0-9]*\) DEGRADED=\([a-z]*\).*/gaps=\1 degraded=\2/p' <<<"$S2")"
   echo
-  echo "SMOKE PASS (synthetic GPU fixture; real agent+hub binaries; loopback container)"
-  echo "LIMITS: not hardware verification; ACK-loss-without-restart relies on unit/WS tests;"
-  echo "        legacy metrics XML path answered 'no GPU' by the fixture."
+  echo "SMOKE PASS (real_gpu=$PHSMOKE_REAL_GPU; real agent+hub binaries; loopback container)"
+  echo "LIMITS: no wall-power accuracy or 24h soak claim; ACK-loss-without-restart relies on unit/WS tests."
+  [[ "$PHSMOKE_REAL_GPU" == 1 ]] || echo "Synthetic fixture: NOT hardware verification; legacy XML path answered no GPU."
   stop_pid "$AGENT_PID"; stop_pid "$HUB_PID"
 }
 
@@ -328,6 +342,7 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"strings"
 )
 
 type Stats struct {
@@ -427,8 +442,11 @@ func validate(h History, minPoints int) (maxSeq uint64, streams map[string]bool)
 		if p.ExpectedSamples != 30 {
 			die("seq %d expected_samples %d", p.Seq, p.ExpectedSamples)
 		}
-		if len(p.GPUs) != 2 || p.GPUs[0].ID != "GPU-SYNTH-0" || p.GPUs[1].ID != "GPU-SYNTH-1" {
-			die("seq %d gpus %+v (want the two synthetic sensors)", p.Seq, p.GPUs)
+		expectedIDs := []string{"GPU-SYNTH-0", "GPU-SYNTH-1"}
+		realGPU := os.Getenv("PHSMOKE_REAL_GPU") == "1"
+		if realGPU { expectedIDs = strings.Split(os.Getenv("PHSMOKE_GPU_IDS"), ",") }
+		if len(expectedIDs) != 2 || len(p.GPUs) != 2 || p.GPUs[0].ID != strings.TrimSpace(expectedIDs[0]) || p.GPUs[1].ID != strings.TrimSpace(expectedIDs[1]) {
+			die("seq %d sensor IDs do not match the two expected GPUs", p.Seq)
 		}
 		minS := 1 << 30
 		for _, g := range p.GPUs {
@@ -445,7 +463,7 @@ func validate(h History, minPoints int) (maxSeq uint64, streams map[string]bool)
 		}
 		checkStats("seq "+strconv.FormatUint(p.Seq, 10)+" gpu_total", p.GPUTotal, minS)
 		// Fixture: GPU0 in [30,90]+0.5, GPU1 in [40,120]; total peak <= 210.5.
-		if *p.GPUTotal.PeakWatts > 210.5 || *p.GPUTotal.MeanWatts < 70 {
+		if !realGPU && (*p.GPUTotal.PeakWatts > 210.5 || *p.GPUTotal.MeanWatts < 70) {
 			die("seq %d gpu_total out of fixture range: %+v", p.Seq, *p.GPUTotal)
 		}
 		if p.CPU != nil {

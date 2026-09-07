@@ -127,6 +127,31 @@ The smoke does not simulate an ACK lost after hub commit; duplicate/retry and
 commit-failure behavior also has separate unit/WebSocket integration coverage.
 It does not establish a 24-hour resource soak or physical sensor accuracy.
 
-Still needed before fleet rollout: a real-hardware canary. Real CPU package
-readings and Windows driver streaming have not been runtime-verified.
-Cross-compilation is not a substitute for those hardware checks.
+### Real GPU canary
+
+An isolated Linux canary passed on two RTX 3090 GPUs using release-2 agent and
+hub binaries after integrating PR #180. It used real NVIDIA readings, no host
+credentials or published ports, and disconnected container networking during
+the test. The installed fleet agent remained running with the same PID and
+start timestamp.
+
+Two initial windows each contained all 30 samples. One idle window measured
+33.883 W and 37.153 W, correctly combining to 71.036 W. During the hub outage,
+two additional windows remained unacknowledged on disk. After restarting the
+canary agent and recovering the hub, both replayed unchanged. The test finished
+with five distinct records, ACK 66, one declared reservation gap, and three
+non-overlapping delta records. The disposable canary container was removed;
+logs and API responses were retained outside the repository.
+
+To opt into the two-GPU mode on a disposable Linux Docker host with NVIDIA
+container-runtime support:
+
+```sh
+PHSMOKE_REAL_GPU=1 bash scripts/smoke/power-history.sh
+```
+
+This was an idle GPU pipeline/recovery check, not a loaded-machine experiment,
+wall-power calibration or 24-hour soak. CPU sensors were unavailable in the
+restricted container and correctly absent. Real CPU package readings and
+Windows driver streaming remain unverified; cross-compilation is not a
+substitute for those hardware checks. Fleet rollout remains a separate step.
