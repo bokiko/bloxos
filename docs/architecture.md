@@ -245,8 +245,15 @@ snapshot `.prev` but has no automatic rollback, so recovery remains manual.
 The hub tracks reported running versions so the dashboard can show rollout
 state and pending updates.
 
-Signatures still carry no downgrade or monotonicity protection, so a previously
-valid `(os, sha)` pair remains valid indefinitely ([#145]).
+Protocol-2 agents additionally enforce a persistent release-number/SHA floor.
+The sequence is embedded in the binary, so the existing signed SHA authenticates
+it without a new signature format. Before installing, agents reject unnumbered
+or older binaries and equal-number binaries with a different SHA, then durably
+save the accepted floor. Startup seeds the floor from the running binary without
+waiting for a hub announcement. Local `.prev` recovery does not lower the floor.
+Protocol-1 binaries remain replayable until upgraded; returning to a pre-migration
+`.prev` temporarily loses enforcement. A compromised signing key can still
+authorize a malicious higher-numbered binary. See [update recovery](agent-update-recovery.md).
 
 ### Resolving served agent binaries
 

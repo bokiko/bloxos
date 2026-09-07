@@ -663,7 +663,8 @@ type announceProbe struct {
 	// metricsOS overrides the OS string sent in the metrics frame (default
 	// "linux/amd64"), which is what the hub infers a legacy agent's
 	// architecture from.
-	metricsOS string
+	metricsOS     string
+	releaseReport *agentVersionReport
 }
 
 // collectAnnounceFrames enrols an agent, sends metrics so the hub learns the
@@ -735,6 +736,13 @@ func (s *Server) collectAnnounceFrames(t *testing.T, e *echo.Echo, p announcePro
 		}
 	}
 	data, _ := json.Marshal(running)
+	if p.releaseReport != nil {
+		running["release"] = p.releaseReport.Release
+		running["release_floor"] = p.releaseReport.ReleaseFloor
+		running["release_floor_sha"] = p.releaseReport.ReleaseFloorSHA
+		running["release_floor_ok"] = p.releaseReport.ReleaseFloorOK
+		data, _ = json.Marshal(running)
+	}
 	if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
 		t.Fatalf("write agent_running_version: %v", err)
 	}
