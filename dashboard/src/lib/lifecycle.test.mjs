@@ -89,6 +89,24 @@ test("storage logout reads the current snapshot and skips newer tokens", () => {
   assert.match(auth, /const storedToken = getStoredToken\(\)/, "sync-login must read the stored token, not the event payload");
 });
 
+test("preferences are keyed per user with guarded async mutations", () => {
+  const prefs = readFileSync(new URL("../contexts/PreferencesContext.tsx", import.meta.url), "utf8");
+  assert.match(prefs, /useMemo<string \| null>\(\(\) => userIDFromToken\(token\), \[token\]\)/, "userID must track the token, not just isAuthenticated");
+  assert.doesNotMatch(prefs, /isAuthenticated/, "preferences must not key off the boolean auth flag");
+  assert.match(prefs, /purgeLegacyPreferencesCache\(\)/, "legacy unscoped cache must be purged");
+  assert.match(prefs, /readPreferencesCache\(userID, normalizePreferences\)/, "hydration must read only the current user's keyed cache");
+  // Every async mutation must capture uid at entry and gate state writes on it.
+  for (const fn of ["refresh", "updateScalar", "uploadAvatar", "removeAvatar", "pinMachine", "unpinMachine", "saveFilter", "deleteFilter"]) {
+    const m = prefs.match(new RegExp("const " + fn + " = useCallback\\(\\s*async[\\s\\S]*?\\},\\s*\\["));
+    assert.ok(m, `${fn} not found`);
+    assert.match(m[0], /userIDRef\.current/, `${fn} must consult the user ref`);
+  }
+  for (const fn of ["updateScalar", "uploadAvatar", "removeAvatar", "saveFilter"]) {
+    const m = prefs.match(new RegExp("const " + fn + " = useCallback\\(\\s*async[\\s\\S]*?\\},\\s*\\["));
+    assert.match(m[0], /userIDRef\.current !== uid/, `${fn} must skip state writes after a user switch`);
+  }
+});
+
 test("machine card keyboard handler does not hijack action buttons", () => {
   // Browser repro: focusing a nested Delete button and pressing Enter used
   // to navigate instead of activating it — the card's keydown ran on the

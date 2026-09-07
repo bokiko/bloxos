@@ -23,8 +23,14 @@ import {
   useState,
   ReactNode,
 } from "react";
-import { HUB_URL } from "@/lib/session";
+import { HUB_URL, getStoredToken } from "@/lib/session";
 import { useAuth } from "@/contexts/AuthContext";
+import { userIDFromToken } from "@/lib/auth-session.mjs";
+import {
+  purgeLegacyPreferencesCache,
+  readPreferencesCache,
+  writePreferencesCache,
+} from "@/lib/preferences-cache.mjs";
 
 export type Density = "comfortable" | "compact";
 export type DefaultView = "grid" | "list";
@@ -59,8 +65,6 @@ const DEFAULT_PREFS: Preferences = {
   saved_filters: [],
 };
 
-const CACHE_KEY = "bloxos-preferences";
-
 interface PreferencesContextValue {
   preferences: Preferences;
   loading: boolean;
@@ -80,28 +84,6 @@ interface PreferencesContextValue {
 }
 
 const PreferencesContext = createContext<PreferencesContextValue | null>(null);
-
-function readCachedPreferences(): Preferences | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = localStorage.getItem(CACHE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") return null;
-    return normalizePreferences(parsed);
-  } catch {
-    return null;
-  }
-}
-
-function writeCachedPreferences(p: Preferences) {
-  if (typeof window === "undefined") return;
-  try {
-    localStorage.setItem(CACHE_KEY, JSON.stringify(p));
-  } catch {
-    // Quota exceeded — the next refresh will rebuild from server state.
-  }
-}
 
 function normalizePreferences(raw: unknown): Preferences {
   const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
@@ -144,41 +126,21 @@ function normalizeSavedFilter(raw: unknown): SavedFilter | null {
   return { id: r.id, name: r.name, filter, created_at: createdAt };
 }
 
-// extractUserID pulls user_id from the JWT payload. The hub signs with
-// user_id, not sub — see hub/auth.go.
-function extractUserID(): string | null {
-  if (typeof window === "undefined") return null;
-  const tok = localStorage.getItem("bloxos_token");
-  if (!tok) return null;
-  try {
-    const parts = tok.split(".");
-    if (parts.length < 2) return null;
-    const payload = JSON.parse(atob(parts[1]));
-    return typeof payload.user_id === "string" ? payload.user_id : null;
-  } catch {
-    return null;
-  }
-}
+// userIDFromToken (lib/auth-session.mjs) is the single JWT user_id reader.
 
 export function PreferencesProvider({ children }: { children: ReactNode }) {
-  const { authFetch, isAuthenticated } = useAuth();
-  // Lazy initializer: read cached prefs synchronously so the first paint
-  // already has the right density/view/sort. React 19 frowns on
-  // setState-in-effect, but lazy init runs once before render and is fine.
+  const { authFetch, token } = useAuth();
+  // Lazy initializer: read THIS user's cached prefs synchronously so the
+  // first paint already has the right density/view/sort. Never reads the
+  // legacy unscoped cache (cross-user leak).
   const [preferences, setPreferences] = useState<Preferences>(
-    () => readCachedPreferences() ?? DEFAULT_PREFS,
+    () => readPreferencesCache(userIDFromToken(getStoredToken()), normalizePreferences) ?? DEFAULT_PREFS,
   );
   const [loading, setLoading] = useState(true);
-  // userID is derived directly from the auth-state dependency — no
-  // setState-in-effect required. Recomputes when login/logout flips
-  // isAuthenticated.
-  const userID = useMemo<string | null>(
-    () => extractUserID(),
-    // isAuthenticated drives recomputation; the ref to localStorage is
-    // stable for a given token.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [isAuthenticated],
-  );
+  // userID tracks the actual token, not just authenticated-ness: a cross-tab
+  // or same-tab user switch with the same boolean state must still re-key.
+  const userID = useMemo<string | null>(() => userIDFromToken(token), [token]);
+  const userIDRef = useRef<string | null>(userID);
 
   // Track in-flight refresh to avoid races between the post-login refresh
   // and any optimistic patch the user fires before it returns.
@@ -186,11 +148,12 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
 
   const setAndCache = useCallback((p: Preferences) => {
     setPreferences(p);
-    writeCachedPreferences(p);
+    writePreferencesCache(userIDRef.current, p);
   }, []);
 
   const refresh = useCallback(async () => {
     const seq = ++refreshSeqRef.current;
+    const uid = userIDRef.current;
     try {
       const res = await authFetch(`${HUB_URL}/api/me/preferences`);
       if (!res.ok) {
@@ -198,30 +161,40 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
         return;
       }
       const data = await res.json();
-      if (seq !== refreshSeqRef.current) return;
+      // A user switch (or a newer refresh) while this request was in flight
+      // must not write the old user's preferences into the new session.
+      if (seq !== refreshSeqRef.current || userIDRef.current !== uid) return;
       setAndCache(normalizePreferences(data));
     } catch {
       // Offline — leave cached prefs intact.
     } finally {
-      if (seq === refreshSeqRef.current) {
+      if (seq === refreshSeqRef.current && userIDRef.current === uid) {
         setLoading(false);
       }
     }
   }, [authFetch, setAndCache]);
 
-  // After authentication, sync prefs from the server. The lazy initializer
-  // already gave us cached prefs, so the network call is a sync, not a
-  // first-paint blocker. Setting `loading` to false in this effect is the
-  // canonical "fetch finished" signal — the same pattern as
-  // BrandingContext, suppressed by the same lint rule.
+  // Hydrate/sync on user change. Logout drops all state; a user switch
+  // hydrates ONLY the new user's keyed cache (never the legacy unscoped
+  // entry) before the server sync, so user A's preferences can never paint
+  // for user B. setState in this effect is the canonical fetch-sync pattern
+  // (same as BrandingContext), suppressed by the same lint rule.
   useEffect(() => {
-    if (!isAuthenticated) {
+    purgeLegacyPreferencesCache();
+    userIDRef.current = userID;
+    if (!userID) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setPreferences(DEFAULT_PREFS);
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setLoading(false);
       return;
     }
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setPreferences(readPreferencesCache(userID, normalizePreferences) ?? DEFAULT_PREFS);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setLoading(true);
     void refresh();
-  }, [isAuthenticated, refresh]);
+  }, [userID, refresh]);
 
   // Apply density-* class to <html> so CSS variables propagate to every
   // descendant. Plain DOM mutation, not setState — safe in an effect.
@@ -240,6 +213,7 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
     async (
       patch: Partial<Pick<Preferences, "display_name" | "density" | "default_view" | "default_sort">>,
     ) => {
+      const uid = userIDRef.current;
       // Optimistic local update.
       setAndCache({ ...preferences, ...patch });
       try {
@@ -253,6 +227,9 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
           throw new Error(typeof err.error === "string" ? err.error : "Failed to save preferences");
         }
         const data = await res.json();
+        // Late response after a user switch must not write the old user's
+        // preferences into the new session.
+        if (userIDRef.current !== uid) return;
         setAndCache(normalizePreferences(data));
       } catch (e) {
         // Don't revert: we keep the optimistic state so the user isn't
@@ -265,6 +242,7 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
 
   const uploadAvatar = useCallback(
     async (file: File) => {
+      const uid = userIDRef.current;
       const fd = new FormData();
       fd.append("file", file);
       const res = await authFetch(`${HUB_URL}/api/me/avatar`, {
@@ -276,24 +254,29 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
         throw new Error(typeof err.error === "string" ? err.error : "Failed to upload avatar");
       }
       const data = await res.json();
+      // Late response after a user switch must not write the old user's state.
+      if (userIDRef.current !== uid) return;
       setAndCache(normalizePreferences(data));
     },
     [authFetch, setAndCache],
   );
 
   const removeAvatar = useCallback(async () => {
+    const uid = userIDRef.current;
     const res = await authFetch(`${HUB_URL}/api/me/avatar`, { method: "DELETE" });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(typeof err.error === "string" ? err.error : "Failed to remove avatar");
     }
     const data = await res.json();
+    if (userIDRef.current !== uid) return;
     setAndCache(normalizePreferences(data));
   }, [authFetch, setAndCache]);
 
   const pinMachine = useCallback(
     async (machineID: string) => {
       if (preferences.pinned_machines.includes(machineID)) return;
+      const uid = userIDRef.current;
       const next = { ...preferences, pinned_machines: [machineID, ...preferences.pinned_machines] };
       setAndCache(next);
       try {
@@ -302,7 +285,9 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
         });
         if (!res.ok) throw new Error("pin failed");
       } catch {
-        // Revert on failure.
+        // Revert on failure — unless the user switched meanwhile; the new
+        // user's session owns its own state.
+        if (userIDRef.current !== uid) return;
         setAndCache({
           ...next,
           pinned_machines: next.pinned_machines.filter((id) => id !== machineID),
@@ -315,6 +300,7 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
   const unpinMachine = useCallback(
     async (machineID: string) => {
       if (!preferences.pinned_machines.includes(machineID)) return;
+      const uid = userIDRef.current;
       const prev = preferences.pinned_machines;
       const next = { ...preferences, pinned_machines: prev.filter((id) => id !== machineID) };
       setAndCache(next);
@@ -324,6 +310,7 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
         });
         if (!res.ok) throw new Error("unpin failed");
       } catch {
+        if (userIDRef.current !== uid) return;
         setAndCache({ ...next, pinned_machines: prev });
       }
     },
@@ -337,6 +324,7 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
 
   const saveFilter = useCallback(
     async (name: string, filter: Record<string, unknown>): Promise<SavedFilter> => {
+      const uid = userIDRef.current;
       const res = await authFetch(`${HUB_URL}/api/me/filters`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -349,6 +337,8 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
       const created = await res.json();
       const normalized = normalizeSavedFilter(created);
       if (!normalized) throw new Error("Invalid server response");
+      // Late response after a user switch must not write the old user's state.
+      if (userIDRef.current !== uid) return normalized;
       setAndCache({
         ...preferences,
         saved_filters: [normalized, ...preferences.saved_filters],
@@ -360,6 +350,7 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
 
   const deleteFilter = useCallback(
     async (id: string) => {
+      const uid = userIDRef.current;
       const prev = preferences.saved_filters;
       setAndCache({
         ...preferences,
@@ -371,6 +362,7 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
         });
         if (!res.ok && res.status !== 404) throw new Error("delete failed");
       } catch {
+        if (userIDRef.current !== uid) return;
         setAndCache({ ...preferences, saved_filters: prev });
       }
     },

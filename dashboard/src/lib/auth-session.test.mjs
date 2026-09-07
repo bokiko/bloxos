@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { shouldLogoutOn401, storageAuthAction, tokenRemovalApplies } from "./auth-session.mjs";
+import { shouldLogoutOn401, storageAuthAction, tokenRemovalApplies, userIDFromToken } from "./auth-session.mjs";
 
 test("401 logs out only when the failing request still carries the current token", () => {
   assert.equal(shouldLogoutOn401("tok-A", "tok-A"), true);
@@ -23,4 +23,12 @@ test("an old removal event never wipes a newer token", () => {
   assert.equal(tokenRemovalApplies(null), true);
   assert.equal(tokenRemovalApplies(""), true);
   assert.equal(tokenRemovalApplies("tok-new"), false);
+});
+
+test("userIDFromToken reads user_id from the JWT payload", () => {
+  const payload = Buffer.from(JSON.stringify({ user_id: "admin1" })).toString("base64");
+  assert.equal(userIDFromToken(`aaa.${payload}.bbb`), "admin1");
+  assert.equal(userIDFromToken("not-a-jwt"), null);
+  assert.equal(userIDFromToken(null), null);
+  assert.equal(userIDFromToken(`aaa.${Buffer.from("{}").toString("base64")}.bbb`), null);
 });

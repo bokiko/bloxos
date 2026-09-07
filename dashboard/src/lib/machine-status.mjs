@@ -6,12 +6,15 @@
 import { METRICS_STALE_MS, OFFLINE_MS } from "./fleet-metrics.mjs";
 
 // detailStatus returns one of: "offline" | "warning" | "stale" | "live".
+// Freshness outranks thresholds: a warning computed from data older than
+// METRICS_STALE_MS is unknown, not current — so stale wins (same precedence
+// as the fleet's classifyMachine).
 export function detailStatus({ apiStatus, lastSeenMs, now, maxGpuTempC = 0, diskPct = 0 }) {
   if (apiStatus === "offline") return "offline";
   const age = now - lastSeenMs;
   if (!(lastSeenMs > 0) || age > OFFLINE_MS) return "offline";
-  if (maxGpuTempC > 80 || diskPct > 90) return "warning";
   if (age > METRICS_STALE_MS) return "stale";
+  if (maxGpuTempC > 80 || diskPct > 90) return "warning";
   return "live";
 }
 

@@ -23,6 +23,15 @@ test("hub-known offline always wins; missing heartbeat is offline", () => {
   assert.equal(detailStatus({ apiStatus: "online", lastSeenMs: 0, now: NOW }), "offline");
 });
 
+test("hot readings from stale data report stale, keeping controls disabled", () => {
+  // 31-120s-old heartbeat with a hot GPU must be stale (controls disabled),
+  // not warning (controls enabled).
+  assert.equal(detailStatus({ apiStatus: "online", lastSeenMs: NOW - 40_000, now: NOW, maxGpuTempC: 95 }), "stale");
+  assert.equal(detailStatus({ apiStatus: "online", lastSeenMs: NOW - 40_000, now: NOW, diskPct: 95 }), "stale");
+  // Fresh + hot stays warning (controls enabled — data is current).
+  assert.equal(detailStatus({ apiStatus: "online", lastSeenMs: NOW - 5_000, now: NOW, maxGpuTempC: 95 }), "warning");
+});
+
 test("terminal start errors are actionable", () => {
   assert.match(terminalStartError(429, ""), /Too many terminal attempts/);
   assert.match(terminalStartError(404, ""), /agent is not connected/);
