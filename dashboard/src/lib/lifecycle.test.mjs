@@ -89,6 +89,16 @@ test("storage logout reads the current snapshot and skips newer tokens", () => {
   assert.match(auth, /const storedToken = getStoredToken\(\)/, "sync-login must read the stored token, not the event payload");
 });
 
+test("machine card keyboard handler does not hijack action buttons", () => {
+  // Browser repro: focusing a nested Delete button and pressing Enter used
+  // to navigate instead of activating it — the card's keydown ran on the
+  // bubbled event and its preventDefault cancelled the native button click.
+  const card = readFileSync(new URL("../components/MachineCard.tsx", import.meta.url), "utf8");
+  const m = card.match(/onKeyDown=\{\(e\) => \{[\s\S]*?\}\}/);
+  assert.ok(m, "card keydown handler not found");
+  assert.match(m[0], /e\.target !== e\.currentTarget/, "bubbled events from child buttons must be ignored");
+});
+
 test("detail-page delete keeps the dialog retryable and shows the failure", () => {
   const m = pageDetail.match(/const handleDeleteMachine = useCallback\(async[\s\S]*?\}, \[/);
   assert.ok(m, "handleDeleteMachine not found");
