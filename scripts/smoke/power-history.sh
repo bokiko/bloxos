@@ -23,7 +23,7 @@
 #   scripts/smoke/power-history.sh
 # Environment:
 #   PHSMOKE_PREFIX  name prefix ([a-z0-9][a-z0-9-]{0,23}, default phsmoke)
-#   GO_IMAGE        golang image (default golang:1.25)
+#   GO_IMAGE        golang image (default golang:1.26.8)
 #   GOMOD_VOL / GOCACHE_VOL  optional named volumes with warm Go caches,
 #                   mounted for the BUILD step only
 #   KEEP=1          keep the build volume (the test container is always --rm)
@@ -35,7 +35,7 @@
 set -euo pipefail
 
 P="${PHSMOKE_PREFIX:-phsmoke}"
-GO_IMAGE="${GO_IMAGE:-golang:1.25}"
+GO_IMAGE="${GO_IMAGE:-golang:1.26.8}"
 PHSMOKE_REAL_GPU="${PHSMOKE_REAL_GPU:-0}"
 [[ "$PHSMOKE_REAL_GPU" == 0 || "$PHSMOKE_REAL_GPU" == 1 ]] || { echo "invalid GPU mode" >&2; exit 2; }
 if ! [[ "$P" =~ ^[a-z0-9][a-z0-9-]{0,23}$ ]]; then
