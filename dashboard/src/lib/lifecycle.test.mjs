@@ -61,6 +61,8 @@ test("logout invalidates in-flight connects and stale EventSources are guarded",
   assert.match(logoutBranch[0], /connectSeqRef\.current\+\+/, "logout must invalidate in-flight connect generations");
   assert.match(sse, /addEventListener\("metrics"[\s\S]*?esRef\.current !== es/, "metrics handler must reject a replaced EventSource");
   assert.match(sse, /addEventListener\("snapshot"[\s\S]*?esRef\.current !== es/, "snapshot handler must reject a replaced EventSource");
+  assert.match(sse, /es\.onopen = \(\) => \{[\s\S]*?esRef\.current !== es/, "onopen must reject a replaced EventSource");
+  assert.match(sse, /es\.onerror = \(\) => \{[\s\S]*?esRef\.current !== es/, "onerror must reject a replaced EventSource");
 });
 
 test("machine_removed persists the filtered cache and alerts fetch re-checks the token", () => {

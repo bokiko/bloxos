@@ -221,7 +221,9 @@ export function SSEProvider({ children }: { children: ReactNode }) {
     }
 
     es.onopen = () => {
-      if (!mountedRef.current) return;
+      // Same generation guard as the event listeners: a queued onopen from a
+      // replaced EventSource must not flip state or schedule refreshes.
+      if (!mountedRef.current || esRef.current !== es) return;
       setConnected(true);
       backoffRef.current = 3000;
 
@@ -388,7 +390,9 @@ export function SSEProvider({ children }: { children: ReactNode }) {
     });
 
     es.onerror = () => {
-      if (!mountedRef.current) return;
+      // Without the guard, an error event queued before a reconnect could
+      // null esRef (the NEW connection) and double-schedule the backoff.
+      if (!mountedRef.current || esRef.current !== es) return;
       setConnected(false);
       es.close();
       esRef.current = null;
