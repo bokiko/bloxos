@@ -27,6 +27,9 @@ import (
 var (
 	setupTokenValue string
 	setupMu         sync.Mutex
+	// setupStorageTestHook, when set by a test, runs before the admin insert
+	// and lets a test inject a storage failure.
+	setupStorageTestHook func() error
 )
 
 // generateSetupToken creates a one-time setup token if no users exist.
@@ -136,15 +139,14 @@ func (s *Server) handleSetup(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid body"})
 	}
 
-	// Validate and atomically consume the setup token so concurrent requests
-	// with the same token cannot both create an admin user (TOCTOU fix).
+	// Check the token without consuming it, so a request that then fails
+	// validation, hashing or storage leaves the token usable for a retry.
+	// Consumption happens below, atomically, only once everything that can
+	// fail before the write has succeeded.
 	setupMu.Lock()
-	tokenOK := setupTokenValue != "" && body.SetupToken == setupTokenValue
-	if tokenOK {
-		setupTokenValue = ""
-	}
+	tokenMatches := setupTokenValue != "" && body.SetupToken == setupTokenValue
 	setupMu.Unlock()
-	if !tokenOK {
+	if !tokenMatches {
 		log.Printf("setup: invalid setup token attempt from %s", ip)
 		return c.JSON(http.StatusForbidden, map[string]string{"error": "invalid setup token"})
 	}
@@ -171,11 +173,40 @@ func (s *Server) handleSetup(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to hash PIN"})
 	}
 
+	// Atomically consume the setup token: concurrent requests with the same
+	// token cannot both create an admin (TOCTOU guard). Only one request
+	// holds the consumed token at a time; if its write fails the token is
+	// restored, so exactly one admin can ever be created through it.
+	setupMu.Lock()
+	tokenOK := setupTokenValue != "" && body.SetupToken == setupTokenValue
+	if tokenOK {
+		setupTokenValue = ""
+	}
+	setupMu.Unlock()
+	if !tokenOK {
+		log.Printf("setup: setup token consumed by a concurrent request (%s)", ip)
+		return c.JSON(http.StatusForbidden, map[string]string{"error": "invalid setup token"})
+	}
+	restoreToken := func() {
+		setupMu.Lock()
+		if setupTokenValue == "" {
+			setupTokenValue = body.SetupToken
+		}
+		setupMu.Unlock()
+	}
+
 	// Create admin user with credentials already rotated.
 	id := uuid.New().String()
-	_, err = s.db.Exec(`INSERT INTO users (id, username, password_hash, terminal_pin_hash, password_changed, pin_changed, role) VALUES (?, ?, ?, ?, TRUE, TRUE, ?)`,
-		id, body.Username, string(passwordHash), string(pinHash), RoleAdmin)
+	if setupStorageTestHook != nil {
+		err = setupStorageTestHook()
+	}
+	if err == nil {
+		_, err = s.db.Exec(`INSERT INTO users (id, username, password_hash, terminal_pin_hash, password_changed, pin_changed, role) VALUES (?, ?, ?, ?, TRUE, TRUE, ?)`,
+			id, body.Username, string(passwordHash), string(pinHash), RoleAdmin)
+	}
 	if err != nil {
+		restoreToken()
+		log.Printf("setup: admin creation failed, setup token restored for retry: %v", err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to create user"})
 	}
 
@@ -312,7 +343,11 @@ func jwtMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 			}
 			userID, _ := claims["user_id"].(string)
 			username, _ := claims["username"].(string)
-			setAuthClaimsOnContext(c, userID, username)
+			var expiresAt time.Time
+			if exp, ok := claims["exp"].(float64); ok && exp > 0 {
+				expiresAt = time.Unix(int64(exp), 0)
+			}
+			setAuthClaimsOnContext(c, userID, username, expiresAt)
 		}
 
 		return next(c)
@@ -488,6 +523,10 @@ func (s *Server) handleChangePassword(c echo.Context) error {
 	if userID == "" {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid token"})
 	}
+	if !rateLimiter.Allow("change-password", userID, 5) {
+		c.Response().Header().Set("Retry-After", "60")
+		return c.JSON(http.StatusTooManyRequests, map[string]string{"error": "too many password change attempts; wait a minute and retry"})
+	}
 
 	var passwordHash string
 	err := s.db.QueryRow(`SELECT password_hash FROM users WHERE id = ?`, userID).Scan(&passwordHash)
@@ -543,6 +582,10 @@ func (s *Server) handleChangePIN(c echo.Context) error {
 	userID := extractUserIDFromRequest(c)
 	if userID == "" {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "missing user context"})
+	}
+	if !rateLimiter.Allow("change-pin", userID, 5) {
+		c.Response().Header().Set("Retry-After", "60")
+		return c.JSON(http.StatusTooManyRequests, map[string]string{"error": "too many PIN change attempts; wait a minute and retry"})
 	}
 	if err := s.verifyTerminalPIN(userID, body.CurrentPIN); err != nil {
 		return c.JSON(http.StatusForbidden, map[string]string{"error": "current PIN is incorrect"})

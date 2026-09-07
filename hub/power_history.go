@@ -229,25 +229,43 @@ func validatePowerBatch(b *powerhistory.Batch, now time.Time) error {
 // ACK after commit is a harmless replay, while a commit failure must never
 // be acknowledged.
 func (s *Server) ingestPowerHistory(machineID string, agent *ConnectedAgent, raw []byte) error {
+	ack, err := s.commitPowerHistoryFrame(machineID, agent, raw)
+	if err != nil {
+		return err
+	}
+	if ack != nil {
+		if err := agent.writeLocked(websocket.TextMessage, ack); err != nil {
+			return fmt.Errorf("ack write: %w", err)
+		}
+	}
+	return nil
+}
+
+// commitPowerHistoryFrame validates and durably commits one batch and
+// returns the ACK frame to send, or nil when nothing was committed. It
+// performs no network write: the read loop runs it under the ingestion
+// barrier and sends the ACK afterwards, so a socket whose peer is not
+// reading can never hold the barrier and stall machine deletion.
+func (s *Server) commitPowerHistoryFrame(machineID string, agent *ConnectedAgent, raw []byte) ([]byte, error) {
 	if machineID == "" || !s.isRegisteredConnection(machineID, agent) {
-		return fmt.Errorf("unregistered connection")
+		return nil, fmt.Errorf("unregistered connection")
 	}
 	// Diagnostic state belongs only to this registered connection. No invalid
 	// frame mutates durable telemetry or advances an ACK. Never expose raw errors.
 	issue := powerIssueInvalid
 	defer func() { agent.powerIssue.Store(issue) }()
 	if len(raw) > powerhistory.MaxFrameBytes {
-		return fmt.Errorf("frame %d bytes exceeds %d", len(raw), powerhistory.MaxFrameBytes)
+		return nil, fmt.Errorf("frame %d bytes exceeds %d", len(raw), powerhistory.MaxFrameBytes)
 	}
 	var batch powerhistory.Batch
 	if err := json.Unmarshal(raw, &batch); err != nil {
-		return fmt.Errorf("invalid JSON: %w", err)
+		return nil, fmt.Errorf("invalid JSON: %w", err)
 	}
 	if err := validatePowerBatch(&batch, time.Now()); err != nil {
 		if errors.Is(err, errPowerClockSkew) {
 			issue = powerIssueClock
 		}
-		return err
+		return nil, err
 	}
 	issue = powerIssueStorage
 	through, err := s.commitPowerBatch(machineID, &batch, time.Now())
@@ -256,17 +274,12 @@ func (s *Server) ingestPowerHistory(machineID string, agent *ConnectedAgent, raw
 			issue = powerIssueConflict
 		}
 		log.Printf("power history commit for %s stream %s: %v", machineID, batch.StreamID, err)
-		return err
+		return nil, err
 	}
 	issue = powerIssueNone
 	agent.powerIssue.Store(issue) // clear before the successful ACK is observable
-	if agent != nil {
-		ack, _ := json.Marshal(powerhistory.Ack{Type: powerhistory.AckType, StreamID: batch.StreamID, Through: through})
-		if err := agent.writeLocked(websocket.TextMessage, ack); err != nil {
-			return fmt.Errorf("ack write: %w", err)
-		}
-	}
-	return nil
+	ack, _ := json.Marshal(powerhistory.Ack{Type: powerhistory.AckType, StreamID: batch.StreamID, Through: through})
+	return ack, nil
 }
 
 type powerStreamState struct {

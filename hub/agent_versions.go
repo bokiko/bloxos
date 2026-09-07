@@ -359,7 +359,16 @@ func (s *Server) announceVersionToAgent(machineID string, agent *ConnectedAgent)
 		return
 	}
 
-	expectReconnect(machineID)
+	s.armReconnectIfRegistered(machineID, agent)
+}
+
+// armReconnectIfRegistered arms the reconnect expectation for an announced
+// update only while agent still owns the registry entry, under the ingestion
+// barrier. The announce runs on its own goroutine, so without this a delete
+// that already cleared the expectation could be followed by a late arm and a
+// phantom rollout failure for a machine that no longer exists.
+func (s *Server) armReconnectIfRegistered(machineID string, agent *ConnectedAgent) bool {
+	return s.ingestFrame(machineID, agent, true, func() { expectReconnect(machineID) })
 }
 
 // announceDecision is the single place that decides whether an update may be
@@ -610,6 +619,15 @@ func expectReconnect(machineID string) {
 	pendingReconnectsMu.Lock()
 	defer pendingReconnectsMu.Unlock()
 	pendingReconnects[machineID] = time.Now().Add(reconnectExpectation)
+}
+
+// forgetAgentVersion drops the last-reported version for a machine that no
+// longer exists, so /api/versions stops listing it and no later reconnect
+// expectation can record a phantom rollout failure for it.
+func forgetAgentVersion(machineID string) {
+	agentRunningVersionsMu.Lock()
+	delete(agentRunningVersions, machineID)
+	agentRunningVersionsMu.Unlock()
 }
 
 func clearReconnectExpectation(machineID string) {
