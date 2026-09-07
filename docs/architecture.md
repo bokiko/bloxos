@@ -44,6 +44,29 @@ SQLite migrations live in `hub/migrations.go`. The hub explicitly enables
 foreign keys, but not every machine-keyed table has `ON DELETE CASCADE`, so some
 cleanup still happens in handlers.
 
+Explicit write transactions begin with SQLite `BEGIN IMMEDIATE`. This lets the
+five-second busy timeout wait for another writer before a read snapshot is
+taken; deferred read-to-write upgrades can fail immediately instead. Plain
+queries still run concurrently under WAL. This does not eliminate all possible
+lock timeouts: power-history failures remain unacknowledged and replayable.
+
+### Command feedback
+
+Ordinary commands wait for an agent response. Commands that can terminate the
+agent itself (its service restart/stop, reboot, shutdown on a known supported
+OS) allow two seconds for an immediate response such as a permission error.
+Without a response, the single-command API returns HTTP 202 with
+`accepted: true`, `success: false` and an unconfirmed-completion notice. This
+means the hub wrote the request to the socket, not that the action succeeded.
+Bulk commands retain HTTP 200 with independent `accepted`, `success` and
+`error` results per machine. Stopping the agent can require outside access to
+start it again; a reboot acknowledgement does not prove the machine booted back
+up. Check machine status before retrying an uncertain action.
+
+Deploy the matching dashboard with the hub: older clients that only understand
+`success` will display accepted commands as failures. No agent update or
+protocol change is needed for this feedback change.
+
 ### Server struct
 
 A `Server` struct in `hub/server.go` owns the database handle and the connected

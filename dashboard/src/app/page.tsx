@@ -44,6 +44,8 @@ import { NeedsAttention } from "@/components/NeedsAttention";
 import { UserMenu } from "@/components/UserMenu";
 import { BrandedHeader } from "@/components/BrandedHeader";
 import { FleetOverview } from "@/components/FleetOverview";
+import { useToast } from "@/components/Toast";
+import { bulkCommandFeedback } from "@/lib/command-feedback.mjs";
 
 type SortOption = "name" | "status" | "cpu" | "gpu_temp";
 type StatusFilter = "all" | "live" | "warning" | "critical" | "offline" | "stale";
@@ -79,6 +81,7 @@ const sortLabels: Record<SortOption, string> = {
 };
 
 export default function Home() {
+  const { addToast } = useToast();
   const { machines: liveMachines, connected, hasReceivedData, alerts, setAlerts, setAlertCount, refreshMachine, refreshFleet } = useSSE();
   const { authFetch, hasScope } = useAuth();
   const canCreateInstallTokens = hasScope("install_tokens.admin");
@@ -322,11 +325,15 @@ export default function Home() {
           target: "",
         }),
       });
-      if (!res.ok) return;
-    } catch { /* ignore */ }
-    setBulkLoading(false);
-    setSelected(new Set());
-  }, [selected, authFetch]);
+      const feedback = bulkCommandFeedback(res.ok, await res.json(), selected.size);
+      addToast(feedback.type, feedback.message);
+      if (feedback.type !== "error") setSelected(new Set());
+    } catch {
+      addToast("error", "Request interrupted; completion is unknown. Check machine status before retrying.");
+    } finally {
+      setBulkLoading(false);
+    }
+  }, [selected, authFetch, addToast]);
 
   const handleBulkRestart = useCallback(async (service: string) => {
     setBulkLoading(true);
@@ -340,11 +347,15 @@ export default function Home() {
           target: service,
         }),
       });
-      if (!res.ok) return;
-    } catch { /* ignore */ }
-    setBulkLoading(false);
-    setSelected(new Set());
-  }, [selected, authFetch]);
+      const feedback = bulkCommandFeedback(res.ok, await res.json(), selected.size);
+      addToast(feedback.type, feedback.message);
+      if (feedback.type !== "error") setSelected(new Set());
+    } catch {
+      addToast("error", "Request interrupted; completion is unknown. Check machine status before retrying.");
+    } finally {
+      setBulkLoading(false);
+    }
+  }, [selected, authFetch, addToast]);
 
   const handleDeleteFromGrid = useCallback(async () => {
     if (!deleteTarget) return;

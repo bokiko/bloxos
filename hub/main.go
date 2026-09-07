@@ -103,11 +103,12 @@ type CommandToAgent struct {
 
 // CommandResponse from agent.
 type CommandResponse struct {
-	Type    string `json:"type"`
-	ID      string `json:"id"`
-	Success bool   `json:"success"`
-	Output  string `json:"output"`
-	Error   string `json:"error"`
+	Accepted bool   `json:"accepted,omitempty"`
+	Type     string `json:"type"`
+	ID       string `json:"id"`
+	Success  bool   `json:"success"`
+	Output   string `json:"output"`
+	Error    string `json:"error"`
 }
 
 // TerminalSession tracks an active terminal relay session.
@@ -148,7 +149,7 @@ func main() {
 	// Phase 11 — `foreign_keys=on` is load-bearing: ON DELETE CASCADE on
 	// user_pinned_machines / user_saved_filters relies on it being set per
 	// connection. Without this pragma SQLite silently ignores cascade clauses.
-	db, err := sql.Open("sqlite", "bloxos.db?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
+	db, err := sql.Open("sqlite", databaseDSN("bloxos.db"))
 	if err != nil {
 		log.Fatalf("failed to open database: %v", err)
 	}
@@ -556,6 +557,7 @@ func (s *Server) handleBulkCommand(c echo.Context) error {
 	}
 
 	type BulkResult struct {
+		Accepted  bool   `json:"accepted,omitempty"`
 		MachineID string `json:"machine_id"`
 		Success   bool   `json:"success"`
 		Output    string `json:"output"`
@@ -620,13 +622,27 @@ func (s *Server) handleBulkCommand(c echo.Context) error {
 				return
 			}
 
+			mayDisconnect := commandMayDisconnectAgent(s.lookupAgentOS(machineID), body.Type, body.Target)
+			wait := 15 * time.Second
+			if mayDisconnect {
+				wait = disconnectCommandGrace
+			}
+			timer := time.NewTimer(wait)
+			defer timer.Stop()
 			select {
 			case resp := <-respCh:
 				result.Success = resp.Success
 				result.Output = resp.Output
 				result.Error = resp.Error
-			case <-time.After(15 * time.Second):
-				result.Error = "timeout"
+			case <-timer.C:
+				if mayDisconnect {
+					result.Accepted = true
+					result.Output = commandAcceptedNotice(body.Type)
+				} else {
+					result.Error = "timeout"
+				}
+			case <-c.Request().Context().Done():
+				result.Error = "request canceled; completion unknown"
 			}
 
 			mu.Lock()
@@ -1199,14 +1215,29 @@ func (s *Server) handleCommand(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to send command to agent"})
 	}
 
+	mayDisconnect := commandMayDisconnectAgent(s.lookupAgentOS(machineID), req.Type, req.Target)
+	wait := 10 * time.Second
+	if mayDisconnect {
+		wait = disconnectCommandGrace
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+
 	select {
 	case resp := <-respCh:
 		return c.JSON(http.StatusOK, resp)
-	case <-time.After(10 * time.Second):
+	case <-timer.C:
+		if mayDisconnect {
+			return c.JSON(http.StatusAccepted, CommandResponse{
+				ID: cmdID, Accepted: true, Output: commandAcceptedNotice(req.Type),
+			})
+		}
 		return c.JSON(http.StatusGatewayTimeout, map[string]string{
 			"id":    cmdID,
 			"error": "timeout waiting for agent response",
 		})
+	case <-c.Request().Context().Done():
+		return c.Request().Context().Err()
 	}
 }
 

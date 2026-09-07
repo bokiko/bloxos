@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useEffect, createContext, useContext } from "react";
 
-export type ToastType = "success" | "error";
+export type ToastType = "success" | "error" | "info";
 
 interface Toast {
   id: string;
@@ -39,10 +39,12 @@ function ToastItem({ toast, onRemove }: { toast: Toast; onRemove: (id: string) =
       } ${
         toast.type === "success"
           ? "bg-blox-green/10 border-blox-green/30 text-blox-green"
+          : toast.type === "info"
+          ? "bg-blox-blue/10 border-blox-blue/30 text-blox-blue"
           : "bg-blox-red/10 border-blox-red/30 text-blox-red"
       }`}
     >
-      <span className="text-xs font-medium">{toast.type === "success" ? "\u2713" : "\u2715"}</span>
+      <span className="text-xs font-medium">{toast.type === "success" ? "\u2713" : toast.type === "info" ? "i" : "\u2715"}</span>
       <span className="text-xs">{toast.message}</span>
     </div>
   );
