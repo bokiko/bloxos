@@ -11,11 +11,10 @@ import (
 )
 
 // configureCommand is the Windows counterpart to the Linux process-group hook.
-// Windows commands (sc.exe / docker.exe / shutdown.exe) don't fork long-lived
-// child trees the way a Linux service manager can, and CommandContext already
-// kills the child on timeout, so no extra process-group handling is needed.
-// The argv (including restart_service as two discrete sc.exe calls — no cmd.exe
-// string interpolation) comes from commandPlanFor.
+// Windows commands (docker.exe / shutdown.exe) don't fork long-lived child
+// trees the way a Linux service manager can, and CommandContext already kills
+// the child on timeout, so no extra process-group handling is needed. Service
+// commands do not go through argv at all; see service_control_windows.go.
 func configureCommand(cmd *exec.Cmd) {}
 
 // platformSupportsTerminal reports whether the current platform supports

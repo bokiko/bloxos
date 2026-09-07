@@ -308,15 +308,24 @@ func websocketDialerFor(rawURL string) (*websocket.Dialer, error) {
 
 func main() {
 	var (
-		installSvc   bool
-		uninstallSvc bool
+		installSvc    bool
+		uninstallSvc  bool
+		restartHelper string
 	)
 	flag.StringVar(&hubURL, "hub", "ws://localhost:4000/ws/agent", "Hub WebSocket URL")
 	flag.StringVar(&token, "token", "", "Registration token")
 	flag.StringVar(&agentSecret, "secret", "", "Agent secret for reconnection")
 	flag.BoolVar(&installSvc, "install-service", false, "Install as a Windows service and exit (Windows only)")
 	flag.BoolVar(&uninstallSvc, "uninstall-service", false, "Uninstall the Windows service and exit (Windows only)")
+	flag.StringVar(&restartHelper, "restart-service-helper", "", "Internal: restart the named Windows service from a detached process and exit")
 	flag.Parse()
+
+	if restartHelper != "" {
+		if err := platformRestartServiceHelper(restartHelper); err != nil {
+			log.Fatalf("restart-service-helper: %v", err)
+		}
+		return
+	}
 
 	if installSvc {
 		if err := platformInstallService(); err != nil {
@@ -956,24 +965,29 @@ func handleCommand(conn *websocket.Conn, mu *sync.Mutex, msg []byte) {
 		}
 	}
 
-	plan, err := commandPlan(cmd.Type, cmd.Target)
-	if err != nil {
-		resp := CommandResponse{
-			Type:  "command_response",
-			ID:    cmd.ID,
-			Error: err.Error(),
-		}
-		writeJSON(conn, mu, resp)
-		return
-	}
-
 	// Bound execution so a wedged systemctl/docker call can't hang this
 	// goroutine forever; on timeout the command (and its process group, on
 	// Linux) is killed and we report a clear timeout error.
 	ctx, cancel := context.WithTimeout(context.Background(), agentCommandTimeout)
 	defer cancel()
 
-	output, err := runCommandPlan(ctx, plan)
+	// Service commands on Windows go through the service control manager
+	// (stop, wait for STOPPED, start) rather than an argv plan.
+	output, handled, err := platformServiceCommand(ctx, cmd.Type, cmd.Target)
+	if !handled {
+		var plan [][]string
+		plan, err = commandPlan(cmd.Type, cmd.Target)
+		if err != nil {
+			resp := CommandResponse{
+				Type:  "command_response",
+				ID:    cmd.ID,
+				Error: err.Error(),
+			}
+			writeJSON(conn, mu, resp)
+			return
+		}
+		output, err = runCommandPlan(ctx, plan)
+	}
 	resp := CommandResponse{
 		Type:    "command_response",
 		ID:      cmd.ID,

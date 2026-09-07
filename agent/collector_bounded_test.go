@@ -25,6 +25,9 @@ func TestMain(m *testing.M) {
 		os.Stdout.WriteString("collector-output\n")
 		os.Exit(0)
 	}
+	if testServiceModes() {
+		return
+	}
 	os.Exit(m.Run())
 }
 

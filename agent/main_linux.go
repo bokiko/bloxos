@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -106,6 +107,18 @@ func configureCommand(cmd *exec.Cmd) {
 		// Negative PID targets the whole process group.
 		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
+}
+
+// platformServiceCommand is a no-op on Linux: service commands run through
+// the systemctl argv plan. Windows drives the SCM directly instead.
+func platformServiceCommand(ctx context.Context, cmdType, target string) ([]byte, bool, error) {
+	return nil, false, nil
+}
+
+// platformRestartServiceHelper is Windows-only (the detached self-restart
+// helper); systemd restarts the Linux agent itself.
+func platformRestartServiceHelper(name string) error {
+	return fmt.Errorf("restart-service-helper is Windows-only")
 }
 
 // platformSupportsTerminal reports whether the current platform supports
