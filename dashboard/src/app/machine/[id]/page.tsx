@@ -18,6 +18,8 @@ import { AISessionsPanel } from "@/components/AISessionsPanel";
 import { useAISessions } from "@/contexts/AISessionsContext";
 import { MachineGauges } from "@/components/MachineGauges";
 import { latestGPUs } from "@/lib/gauge-data.mjs";
+import { detailStatus, terminalStartError } from "@/lib/machine-status.mjs";
+import { parseServerTimestamp } from "@/lib/timestamps";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -110,19 +112,23 @@ function timeSince(dateStr: string): string {
   return `${hr}h ago`;
 }
 
-function getStatus(data: MachineData): MachineStatus {
-  if (data.machine.status === "offline") return "offline";
-  if (data.gpus && data.gpus.length > 0) {
-    for (const g of data.gpus) {
-      if ((g.temp_c ?? 0) > 80) return "warning";
-    }
-  } else if ((data.metrics?.gpu_temp ?? 0) > 80) {
-    return "warning";
-  }
+function getStatus(data: MachineData, now: number): MachineStatus {
+  const maxGpuTempC = Math.max(
+    data.metrics?.gpu_temp ?? 0,
+    ...(data.gpus ?? []).map((g) => g.temp_c ?? 0),
+  );
   const diskPct = (data.metrics?.disk_total_bytes ?? 0) > 0
     ? ((data.metrics?.disk_used_bytes ?? 0) / data.metrics.disk_total_bytes) * 100 : 0;
-  if (diskPct > 90) return "warning";
-  return "live";
+  // Freshness is judged from the last heartbeat, never from the REST
+  // snapshot fetched at page open (finding: an open detail page kept
+  // calling a quiet agent "live"). Shares the fleet's thresholds.
+  return detailStatus({
+    apiStatus: data.machine.status,
+    lastSeenMs: parseServerTimestamp(data.machine.last_seen),
+    now,
+    maxGpuTempC,
+    diskPct,
+  });
 }
 
 export default function MachineDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -136,6 +142,7 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
   const [now, setNow] = useState(() => Date.now());
   const [showReboot, setShowReboot] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [showRevokeConfirm, setShowRevokeConfirm] = useState(false);
   const [revoking, setRevoking] = useState(false);
@@ -175,6 +182,7 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
   const [termBrowserToken, setTermBrowserToken] = useState<string | null>(null);
   const [pinInput, setPinInput] = useState("");
   const [pinError, setPinError] = useState(false);
+  const [termError, setTermError] = useState<string | null>(null);
   const [termExpanded, setTermExpanded] = useState(false);
   const pinInputRef = useRef<HTMLInputElement>(null);
 
@@ -279,37 +287,45 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
     return () => clearInterval(id);
   }, []);
 
-  const handlePinSubmit = useCallback(() => {
+  const handlePinSubmit = useCallback(async () => {
     setPinError(false);
+    setTermError(null);
     setTermState("connecting");
     const hdrs = authHeaders();
     hdrs["Content-Type"] = "application/json";
-    fetch(`${HUB_URL}/api/machines/${id}/terminal`, {
-      method: "POST",
-      headers: hdrs,
-      body: JSON.stringify({ pin: pinInput }),
-    })
-      .then((res) => {
-        if (res.status === 403) {
-          setPinError(true);
-          setPinInput("");
-          setTermState("pin_entry");
-          pinInputRef.current?.focus();
-          return null;
-        }
-        if (!res.ok) throw new Error("Failed to start terminal");
-        return res.json();
-      })
-      .then((d) => {
-        if (!d) return;
-        setPinInput("");
-        setTermSessionId(d.session_id);
-        setTermBrowserToken(d.browser_token);
-        setTermState("active");
-      })
-      .catch(() => {
-        setTermState("disconnected");
+    try {
+      const res = await fetch(`${HUB_URL}/api/machines/${id}/terminal`, {
+        method: "POST",
+        headers: hdrs,
+        body: JSON.stringify({ pin: pinInput }),
       });
+      if (res.status === 403) {
+        setPinError(true);
+        setPinInput("");
+        setTermState("pin_entry");
+        pinInputRef.current?.focus();
+        return;
+      }
+      if (!res.ok) {
+        // Surface the hub's reason (rate limit, agent offline, ...) instead
+        // of a bare disconnect — the user needs to know what to do next.
+        let hubError = "";
+        try {
+          hubError = (await res.json())?.error ?? "";
+        } catch { /* non-JSON body */ }
+        setTermError(terminalStartError(res.status, hubError));
+        setTermState("disconnected");
+        return;
+      }
+      const d = await res.json();
+      setPinInput("");
+      setTermSessionId(d.session_id);
+      setTermBrowserToken(d.browser_token);
+      setTermState("active");
+    } catch {
+      setTermError("Terminal request was interrupted — check the hub connection and retry.");
+      setTermState("disconnected");
+    }
   }, [pinInput, id]);
 
   const handleTerminalClose = useCallback(() => {
@@ -332,6 +348,7 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
 
   const handleDeleteMachine = useCallback(async () => {
     setDeleting(true);
+    setDeleteError(null);
     try {
       const res = await fetch(`${HUB_URL}/api/machines/${id}`, {
         method: "DELETE",
@@ -339,13 +356,19 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
       });
       if (res.ok) {
         router.push("/");
-      } else {
-        setDeleting(false);
-        setShowDeleteConfirm(false);
+        return;
       }
+      // Failure: surface the hub's reason and keep the dialog open so the
+      // delete can be retried — never close silently.
+      let hubError = "";
+      try {
+        hubError = (await res.json())?.error ?? "";
+      } catch { /* non-JSON body */ }
+      setDeleteError(hubError ? `Delete failed: ${hubError}` : `Delete failed (HTTP ${res.status}).`);
     } catch {
+      setDeleteError("Delete failed: request interrupted. The machine may still exist — retry or refresh to check.");
+    } finally {
       setDeleting(false);
-      setShowDeleteConfirm(false);
     }
   }, [id, router]);
 
@@ -393,11 +416,17 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
     }
   }, [authFetch, id]);
 
-  const handleCopyReenroll = useCallback((text: string, which: "command" | "sha") => {
+  const handleCopyReenroll = useCallback(async (text: string, which: "command" | "sha") => {
     if (!text) return;
-    navigator.clipboard.writeText(text);
-    setReenrollCopied(which);
-    setTimeout(() => setReenrollCopied(null), 2000);
+    try {
+      await navigator.clipboard.writeText(text);
+      setReenrollCopied(which);
+      setTimeout(() => setReenrollCopied(null), 2000);
+    } catch {
+      // Clipboard denied (permissions/non-secure context) — never claim a
+      // copy that did not happen.
+      setReenrollError("Copy failed — select and copy the text manually.");
+    }
   }, []);
 
   useEffect(() => {
@@ -429,12 +458,14 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
   }
 
   const { machine, metrics } = data;
-  const status = getStatus(data);
+  const status = getStatus(data, now);
   const ramPct = (metrics?.ram_total_bytes ?? 0) > 0 ? ((metrics?.ram_used_bytes ?? 0) / metrics.ram_total_bytes) * 100 : 0;
   const diskPct = (metrics?.disk_total_bytes ?? 0) > 0 ? ((metrics?.disk_used_bytes ?? 0) / metrics.disk_total_bytes) * 100 : 0;
   const gpus = data.gpus || [];
   const hasGpu = gpus.length > 0;
-  const isOnline = machine.status !== "offline";
+  // Controls follow the same freshness policy as the badge: a stale or
+  // offline machine does not accept commands.
+  const isOnline = status === "live" || status === "warning";
   const sseM = getMachine(id);
   const machineTags = sseM?.tags ? sseM.tags.split(",").map((t: string) => t.trim().toLowerCase()) : [];
   const isAPIMachine = machineTags.includes("synology") || machineTags.includes("proxmox");
@@ -459,6 +490,7 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
             <DialogDescription className="text-blox-muted text-xs mt-2">
               Are you sure you want to remove <span className="text-blox-text font-medium">{machine.hostname}</span> from BloxOS? This will delete all historical data.
             </DialogDescription>
+            {deleteError && <p role="alert" className="text-xs text-red-400 mt-2">{deleteError}</p>}
           </DialogHeader>
           <DialogFooter className="bg-transparent border-t-blox-border">
             <Button variant="outline" size="sm" onClick={() => setShowDeleteConfirm(false)} disabled={deleting} className="text-xs text-blox-muted border-blox-border">
@@ -690,7 +722,10 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => setShowDeleteConfirm(true)}
+                onClick={() => {
+                  setDeleteError(null);
+                  setShowDeleteConfirm(true);
+                }}
                 className="text-xs border-blox-border text-blox-muted hover:text-red-400 hover:border-red-500/30 gap-1.5"
               >
                 <Trash2 className="w-3.5 h-3.5" />
@@ -1089,7 +1124,10 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
                       <Button
                         variant="ghost"
                         size="xs"
-                        onClick={() => setTermState("pin_entry")}
+                        onClick={() => {
+                          setTermError(null);
+                          setTermState("pin_entry");
+                        }}
                         className="text-xs text-blox-blue"
                       >
                         Reconnect
@@ -1142,7 +1180,6 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
                         <Input
                           ref={pinInputRef}
                           type="password"
-                          maxLength={8}
                           value={pinInput}
                           onChange={(e) => {
                             setPinInput(e.target.value);
@@ -1210,6 +1247,7 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
                     <div className="flex flex-col items-center justify-center h-[360px] gap-3">
                       <TerminalIcon className="w-8 h-8 text-red-400/40" />
                       <p className="text-sm text-blox-muted">Terminal disconnected</p>
+                      {termError && <p className="text-xs text-red-400 max-w-sm text-center">{termError}</p>}
                       <div className="flex items-center gap-2">
                         <Button
                           variant="outline"

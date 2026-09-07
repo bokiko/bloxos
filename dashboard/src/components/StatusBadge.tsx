@@ -1,7 +1,10 @@
 "use client";
 
-import type { MachineMetrics } from "@/lib/demo-data";
-import { METRICS_STALE_MS } from "@/lib/fleet-metrics.mjs";
+import { classifyMachine } from "@/lib/fleet-metrics.mjs";
+
+// classifyMachine lives in lib/fleet-metrics.mjs (shared, unit-testable);
+// re-exported here so existing component imports keep working.
+export { classifyMachine };
 
 /* ============================================================================
  * Fleet status — 5 intent states.
@@ -19,51 +22,9 @@ import { METRICS_STALE_MS } from "@/lib/fleet-metrics.mjs";
 
 export type MachineStatus = "live" | "stale" | "warning" | "critical" | "offline";
 
-const OFFLINE_MS = 120_000;
-
-const TH = {
-  cpuWarn: 75,
-  cpuCrit: 92,
-  ramWarn: 82,
-  ramCrit: 95,
-  diskWarn: 85,
-  diskCrit: 95,
-  gpuWarn: 78,
-  gpuCrit: 86,
-};
-
 export interface MachineClassification {
   status: MachineStatus;
   reason?: string;
-}
-
-export function classifyMachine(m: MachineMetrics): MachineClassification {
-  const age = Date.now() - (m.last_seen || 0);
-  if (!m.last_seen || age > OFFLINE_MS) return { status: "offline" };
-
-  const ramPct =
-    (m.ram_total_bytes ?? 0) > 0
-      ? ((m.ram_used_bytes ?? 0) / m.ram_total_bytes) * 100
-      : 0;
-  const diskPct =
-    (m.disk_total_bytes ?? 0) > 0
-      ? ((m.disk_used_bytes ?? 0) / m.disk_total_bytes) * 100
-      : 0;
-  const cpu = m.cpu_percent ?? 0;
-  const gpuT = m.gpu_temp ?? 0;
-
-  if (cpu >= TH.cpuCrit) return { status: "critical", reason: `CPU ${cpu.toFixed(0)}%` };
-  if (ramPct >= TH.ramCrit) return { status: "critical", reason: `RAM ${ramPct.toFixed(0)}%` };
-  if (diskPct >= TH.diskCrit) return { status: "critical", reason: `Disk ${diskPct.toFixed(0)}%` };
-  if (gpuT >= TH.gpuCrit) return { status: "critical", reason: `GPU ${gpuT.toFixed(0)}°C` };
-
-  if (cpu >= TH.cpuWarn) return { status: "warning", reason: `CPU ${cpu.toFixed(0)}%` };
-  if (ramPct >= TH.ramWarn) return { status: "warning", reason: `RAM ${ramPct.toFixed(0)}%` };
-  if (diskPct >= TH.diskWarn) return { status: "warning", reason: `Disk ${diskPct.toFixed(0)}%` };
-  if (gpuT >= TH.gpuWarn) return { status: "warning", reason: `GPU ${gpuT.toFixed(0)}°C` };
-
-  if (age > METRICS_STALE_MS) return { status: "stale" };
-  return { status: "live" };
 }
 
 /** Ordering for sort-by-status — problem machines first. */
