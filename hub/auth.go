@@ -312,7 +312,11 @@ func jwtMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 			}
 			userID, _ := claims["user_id"].(string)
 			username, _ := claims["username"].(string)
-			setAuthClaimsOnContext(c, userID, username)
+			var expiresAt time.Time
+			if exp, ok := claims["exp"].(float64); ok && exp > 0 {
+				expiresAt = time.Unix(int64(exp), 0)
+			}
+			setAuthClaimsOnContext(c, userID, username, expiresAt)
 		}
 
 		return next(c)

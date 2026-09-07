@@ -25,6 +25,12 @@ type Server struct {
 	alertEvalMu  sync.Mutex
 	alertPending map[string]alertPendingCondition
 
+	// Ingestion barrier. Every persisted agent frame runs under the read
+	// side (see ingestFrame); machine deletion takes the write side around
+	// registry removal and row deletion. Lock order is agentAuthMu, then
+	// ingestMu, then agentsMu; never the reverse.
+	ingestMu sync.RWMutex
+
 	// Latest AI Sessions snapshot per connected machine, and the cached
 	// feature switch with its revision (see ai_sessions.go).
 	aiSessions    *aiSessionStore
