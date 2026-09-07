@@ -111,6 +111,34 @@ func runBounded(key string, timeout time.Duration, fn func(ctx context.Context) 
 	}
 }
 
+// commandSeversOwnConnection reports whether a command, once it runs, is
+// expected to terminate this agent — so a child killed by a signal as the
+// process group goes down is a successful teardown, not a failure. It mirrors
+// the hub's commandMayDisconnectAgent for the Linux agent's own unit. Windows
+// service self-restart never reaches this path (it is scheduled through a
+// detached helper in service_control_windows.go) and errKilledBySignal is a
+// no-op there, so the Linux unit names are harmless on Windows.
+func commandSeversOwnConnection(cmdType, target string) bool {
+	switch cmdType {
+	case "reboot", "shutdown":
+		return true
+	case "restart_service", "stop_service":
+		return target == "bloxos-agent" || target == "bloxos-agent.service"
+	}
+	return false
+}
+
+// shouldSuppressTeardownReply reports whether the outcome of a command should
+// be left unreported so the hub's disconnect grace yields the truthful 202
+// "sent, unconfirmed". True only when the command severs this agent's own
+// connection, its child died by a teardown signal (SIGTERM/SIGKILL), and the
+// context did not fire — an ordinary status-code failure or a timeout is still
+// reported. handleCommand and its tests both go through this one predicate.
+func shouldSuppressTeardownReply(cmdType, target string, ctxErr, runErr error) bool {
+	return runErr != nil && ctxErr == nil &&
+		commandSeversOwnConnection(cmdType, target) && errKilledBySignal(runErr)
+}
+
 // commandPlan returns the argv steps to execute for a command on this host.
 func commandPlan(cmdType, target string) ([][]string, error) {
 	return commandPlanForIdentity(runtime.GOOS, runningAsRoot(), cmdType, target)

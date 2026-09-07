@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -126,6 +127,25 @@ func configureCommand(cmd *exec.Cmd) {
 		// Negative PID targets the whole process group.
 		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
+}
+
+// errKilledBySignal reports whether err is a child that was terminated by
+// SIGTERM or SIGKILL rather than exiting with a status code. When a command
+// tears down the agent's process group (self-restart/stop, reboot, shutdown),
+// systemd sends SIGTERM to the whole cgroup, so the systemctl child dies by
+// signal — that is teardown in progress, not a command failure. An ordinary
+// non-zero exit (unit unknown, permission denied) and a context-driven kill
+// are deliberately excluded: only these two teardown signals qualify.
+func errKilledBySignal(err error) bool {
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) {
+		return false
+	}
+	ws, ok := ee.Sys().(syscall.WaitStatus)
+	if !ok || !ws.Signaled() {
+		return false
+	}
+	return ws.Signal() == syscall.SIGTERM || ws.Signal() == syscall.SIGKILL
 }
 
 // platformServiceCommand is a no-op on Linux: service commands run through

@@ -988,6 +988,25 @@ func handleCommand(conn *websocket.Conn, mu *sync.Mutex, msg []byte) {
 		}
 		output, err = runCommandPlan(ctx, plan)
 	}
+
+	// A command that tears this agent down (self-restart or stop of our own
+	// unit, reboot, shutdown) kills the child mid-execution when the process
+	// group goes down: systemctl dies by SIGTERM/SIGKILL. That signal death
+	// is the expected result of a SUCCESSFUL teardown, not a failure —
+	// reporting success=false here would tell the operator the restart
+	// failed while it is in fact under way, and (since removing sudo shortened
+	// the race) the reply now reaches the hub inside its disconnect grace and
+	// turns the truthful 202 "sent, unconfirmed" into a 200 failure. Stay
+	// silent and let the hub's grace report it. A genuine pre-teardown error
+	// (unit unknown, permission denied) exits with a status code, not a
+	// signal, and is reported below; a context timeout/cancel is excluded so
+	// it is still surfaced as an error below.
+	if shouldSuppressTeardownReply(cmd.Type, cmd.Target, ctx.Err(), err) {
+		log.Printf("command %s (id=%s target=%s): agent teardown in progress; leaving completion unconfirmed",
+			cmd.Type, cmd.ID, cmd.Target)
+		return
+	}
+
 	resp := CommandResponse{
 		Type:    "command_response",
 		ID:      cmd.ID,

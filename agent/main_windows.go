@@ -12,6 +12,12 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
+// errKilledBySignal is Linux-only in effect. On Windows a self-restart is
+// scheduled through the SCM helper and never reaches the argv path, and
+// reboot/shutdown are the OS's own; there is no process-group signal death to
+// interpret, so a command's error is always reported as-is.
+func errKilledBySignal(err error) bool { return false }
+
 // configureCommand is the Windows counterpart to the Linux process-group hook.
 // Windows commands (docker.exe / shutdown.exe) don't fork long-lived child
 // trees the way a Linux service manager can, and CommandContext already kills
