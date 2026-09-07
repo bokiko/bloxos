@@ -30,7 +30,7 @@ export const metadata: Metadata = {
  * Phase 10:
  *   - Reads `bloxos-theme-name` (named theme) and `bloxos-theme-mode`
  *     (light/dark/system), with legacy `bloxos-theme` as a fallback.
- *   - Validates against the 5 curated names + 3 valid modes.
+ *   - Validates against the curated names + 3 valid modes.
  *   - Forces dark mode for dark-only themes (Dracula, Tokyo Night).
  *   - Resolves "system" against prefers-color-scheme.
  *   - Falls back to dark BloxOS on any error.
@@ -38,9 +38,9 @@ export const metadata: Metadata = {
 const themeBootstrapScript = `
 (function() {
   try {
-    var validNames = ['bloxos','solarized','dracula','nord','tokyo-night'];
+    var validNames = ['bloxos','solarized','dracula','nord','tokyo-night','mission-control','graphite','verdant'];
     var validModes = ['light','dark','system'];
-    var darkOnly = ['dracula','tokyo-night'];
+    var darkOnly = ['dracula','tokyo-night','mission-control','graphite','verdant'];
 
     var name = localStorage.getItem('bloxos-theme-name');
     if (validNames.indexOf(name) === -1) name = 'bloxos';

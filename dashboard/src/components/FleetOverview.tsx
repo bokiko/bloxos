@@ -139,7 +139,7 @@ export function FleetOverview({ machines }: FleetOverviewProps) {
   return (
     <div className="space-y-6">
       {/* Gauge cluster */}
-      <div className="bg-surface-raised border border-border-subtle rounded-xl p-6">
+      <div className="theme-panel fleet-health bg-surface-raised border border-border-subtle rounded-xl p-6">
         <div className="flex items-center justify-between mb-6">
           <h3 className="text-sm font-semibold text-text-primary uppercase tracking-wider">
             Fleet Health

@@ -166,7 +166,7 @@ export function MachineCard({ machine, onDelete, onEdit, onRefresh }: MachineCar
         whileHover={{ y: -1 }}
         transition={{ type: "spring", stiffness: 480, damping: 32 }}
         className={[
-          "relative h-full flex flex-col",
+          "theme-panel machine-panel relative h-full flex flex-col",
           surfaceClass,
           "border border-border-default rounded-md",
           STATE_RING[status],

@@ -1,0 +1,57 @@
+/* Visual designs. Scoped to named themes; existing palettes retain their geometry.
+   Status tokens retain their semantic meanings and are never replaced by accents. */
+.theme-mission-control.dark {
+  --surface-base: #12132b; --surface-sunken: #0c1022;
+  --surface-raised: #242747; --surface-elevated: #2c3155; --surface-overlay: #30355b;
+  --text-primary: #f0f3ff; --text-secondary: #bcc5e1; --text-tertiary: #99a7cb; --text-disabled: #667397;
+  --border-subtle: #ffffff14; --border-default: #7689c33b; --border-strong: #a2b6ed70;
+  --accent: #36d6f5; --accent-hover: #85eaff; --accent-subtle: #36d6f51a; --accent-foreground: #10162c;
+}
+.theme-graphite.dark {
+  --surface-base: #242627; --surface-sunken: #202324;
+  --surface-raised: #383c3e; --surface-elevated: #414648; --surface-overlay: #454a4c;
+  --text-primary: #f5f3ef; --text-secondary: #c7cdca; --text-tertiary: #a5afab; --text-disabled: #78827e;
+  --border-subtle: #ffffff10; --border-default: #ffffff19; --border-strong: #ffffff40;
+  --accent: #91d7c2; --accent-hover: #b6efde; --accent-subtle: #91d7c219; --accent-foreground: #1b3028;
+}
+.theme-verdant.dark {
+  --surface-base: #101c19; --surface-sunken: #0c1713;
+  --surface-raised: #1a2c26; --surface-elevated: #253c30; --surface-overlay: #2b4234;
+  --text-primary: #edf3e7; --text-secondary: #bbcdbf; --text-tertiary: #98b09f; --text-disabled: #647e6c;
+  --border-subtle: #c4f47710; --border-default: #b9d2a823; --border-strong: #c4f47755;
+  --accent: #c4f477; --accent-hover: #d9ffa5; --accent-subtle: #c4f47714; --accent-foreground: #172111;
+}
+/* Prominent filled actions need dark text on these bright accents. */
+:is(.theme-mission-control, .theme-graphite, .theme-verdant) .bg-blox-blue {
+  color: var(--accent-foreground);
+}
+.theme-mission-control .theme-panel { border-radius: 3px; border-top: 2px solid var(--border-strong); box-shadow: none; }
+.theme-mission-control .fleet-stat-row { gap: 10px; background: transparent; box-shadow: none; border-radius: 0; }
+.theme-mission-control .fleet-stat { border-radius: 3px; min-height: 112px; border-bottom: 3px solid var(--accent); }
+.theme-mission-control .metric-value { font-family: var(--font-sans), sans-serif; font-weight: 650; letter-spacing: -.05em; }
+.theme-mission-control .fleet-stat .metric-value { font-size: 2.4rem; }
+.theme-mission-control .fleet-header { background: var(--surface-sunken); border-bottom: 2px solid var(--accent); }
+.theme-mission-control .machine-panel { padding: 20px; }
+
+.theme-graphite .theme-panel { border-radius: 14px; box-shadow: inset 0 1px 0 #ffffff12, 0 5px 10px #0003; }
+.theme-graphite .fleet-stat-row { gap: 12px; border-radius: 0; background: transparent; box-shadow: none; padding-bottom: 8px; }
+.theme-graphite .fleet-stat { border: 1px solid var(--border-subtle); border-radius: 12px; box-shadow: inset 0 1px 0 #ffffff16, 0 4px 8px #0003; }
+.theme-graphite .metric-value { font-weight: 600; letter-spacing: -.04em; }
+.theme-graphite .fleet-header { background: linear-gradient(#35393a, #292c2d); box-shadow: 0 3px 12px #0004; }
+.theme-graphite .machine-panel { padding: 18px; }
+.theme-graphite .fleet-health { border-radius: 20px; }
+
+.theme-verdant .theme-panel { border-radius: 24px; border-color: var(--border-subtle); }
+.theme-verdant .fleet-stat-row { gap: 12px; background: transparent; box-shadow: none; border-radius: 0; }
+.theme-verdant .fleet-stat { border-radius: 22px; padding: 20px; }
+.theme-verdant .fleet-stat:first-child:not(.bg-status-critical-tint):not(.bg-status-warning-tint) { background: var(--accent); color: var(--accent-foreground); }
+.theme-verdant .fleet-stat:first-child:not(.bg-status-critical-tint):not(.bg-status-warning-tint) :is(.text-text-primary, .text-text-tertiary, .metric-unit) { color: var(--accent-foreground); }
+.theme-verdant .metric-value { font-family: var(--font-sans), sans-serif; font-weight: 450; letter-spacing: -.055em; }
+.theme-verdant .fleet-stat .metric-value { font-size: 2rem; }
+.theme-verdant .fleet-header { background: var(--surface-base); border-bottom-color: var(--border-subtle); }
+.theme-verdant .machine-panel { padding: 22px; }
+.theme-verdant :is(button, a).bg-blox-blue { border-radius: 999px; }
+@media (max-width: 640px) {
+  :is(.theme-mission-control, .theme-graphite, .theme-verdant) .fleet-stat-row { gap: 8px; }
+  :is(.theme-mission-control, .theme-graphite, .theme-verdant) .machine-panel { padding: 14px; }
+}

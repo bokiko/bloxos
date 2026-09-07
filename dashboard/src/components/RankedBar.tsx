@@ -22,7 +22,7 @@ export function RankedBar({ items, maxItems = 5, title }: RankedBarProps) {
 
   if (sorted.length === 0) {
     return (
-      <div className="bg-surface-raised border border-border-subtle rounded-xl p-4">
+      <div className="theme-panel bg-surface-raised border border-border-subtle rounded-xl p-4">
         {title && (
           <h4 className="text-xs font-medium text-text-secondary uppercase tracking-wider mb-3">
             {title}
@@ -36,7 +36,7 @@ export function RankedBar({ items, maxItems = 5, title }: RankedBarProps) {
   }
 
   return (
-    <div className="bg-surface-raised border border-border-subtle rounded-xl p-4">
+    <div className="theme-panel bg-surface-raised border border-border-subtle rounded-xl p-4">
       {title && (
         <h4 className="text-xs font-medium text-text-secondary uppercase tracking-wider mb-3">
           {title}

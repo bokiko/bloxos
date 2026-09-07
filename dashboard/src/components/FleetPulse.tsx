@@ -332,7 +332,7 @@ export function FleetPulse({ onAlertsClick }: FleetPulseProps) {
 function StatRow({ children }: { children: React.ReactNode }) {
   return (
     <div
-      className="grid grid-cols-2 sm:grid-cols-[5fr_3fr_3fr_3fr_3fr] md:grid-cols-[5fr_3fr_3fr_3fr_3fr_3fr] gap-px overflow-hidden rounded-lg bg-border-subtle ring-1 ring-border-subtle"
+      className="fleet-stat-row grid grid-cols-2 sm:grid-cols-[5fr_3fr_3fr_3fr_3fr] md:grid-cols-[5fr_3fr_3fr_3fr_3fr_3fr] gap-px overflow-hidden rounded-lg bg-border-subtle ring-1 ring-border-subtle"
     >
       {children}
     </div>
@@ -386,7 +386,7 @@ function StatCell({ label, icon, severity, hero, className, onClick, primary, co
   );
 
   const base = [
-    "relative flex flex-col px-3.5 py-3 text-left",
+    "fleet-stat relative flex flex-col px-3.5 py-3 text-left",
     sevSurface(severity),
     "transition-colors duration-[var(--motion-fast)]",
     hero ? "min-h-[88px]" : "min-h-[82px]",

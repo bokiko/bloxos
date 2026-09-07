@@ -13,11 +13,14 @@ import (
 )
 
 var validThemeNames = map[string]struct{}{
-	"bloxos":      {},
-	"solarized":   {},
-	"dracula":     {},
-	"nord":        {},
-	"tokyo-night": {},
+	"mission-control": {},
+	"graphite":        {},
+	"verdant":         {},
+	"bloxos":          {},
+	"solarized":       {},
+	"dracula":         {},
+	"nord":            {},
+	"tokyo-night":     {},
 }
 
 var validThemeModes = map[string]struct{}{
