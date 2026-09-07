@@ -243,3 +243,63 @@ func TestReviewPowerRejectsInconsistentStatistics(t *testing.T) {
 		})
 	}
 }
+
+// A changing GPU set must omit its aggregate before journaling. Keep hub
+// validation strict, and prove an omitted aggregate preserves the rest of the
+// batch, advances the ACK and does not block the next stable window.
+func TestReviewPowerMembershipChangeBatchRecovery(t *testing.T) {
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
+	server := httptest.NewServer(e)
+	defer server.Close()
+	conn := s.connectEnrolledAgent(t, server, "power-review")
+	defer conn.Close()
+	readAISessionsConfig(t, conn)
+
+	changed := reviewPowerBucket(2)
+	partial := changed.GPUs[0]
+	partial.ID = "GPU-added"
+	partial.Samples = 15
+	changed.GPUs = append(changed.GPUs, partial)
+	cpu := changed.GPUs[0].Stats
+	changed.CPU = &cpu
+	batch := powerhistory.Batch{Type: powerhistory.BatchType, StreamID: "membership", RetainedFrom: 1,
+		Buckets: []powerhistory.Bucket{reviewPowerBucket(1), changed, reviewPowerBucket(3)}}
+	writeFrame(t, conn, batch)
+	// Sentinel processing establishes that the preceding frame was handled,
+	// without poisoning this websocket's read state with a timeout.
+	s.sendSentinelMetrics(t, conn, "power-review", "after-membership-rejection")
+	if n := powerRowCount(t, s, "power-review"); n != 0 {
+		t.Fatalf("invalid middle bucket partially committed: %d rows", n)
+	}
+	if acked, maxSeen := powerStreamStateOf(t, s, "power-review", "membership"); acked != 0 || maxSeen != 0 {
+		t.Fatalf("invalid batch advanced stream: ack=%d max=%d", acked, maxSeen)
+	}
+	if problem := s.powerHistoryProblem("power-review"); problem != "rejected_data" {
+		t.Fatalf("missing rejection diagnostic: %q", problem)
+	}
+
+	// Model the corrected agent's wire output, not a hub-side sanitization.
+	batch.Buckets[1].GPUTotal = nil
+	writeFrame(t, conn, batch)
+	expectPowerAck(t, conn, "membership", 3)
+	// An invalid batch must not have left an earlier ACK queued above.
+	writeFrame(t, conn, powerhistory.Batch{Type: powerhistory.BatchType, StreamID: "membership", RetainedFrom: 4,
+		Buckets: []powerhistory.Bucket{reviewPowerBucket(4)}})
+	expectPowerAck(t, conn, "membership", 4)
+	history := reviewPowerHistory(t, s, "")
+	if history.Problem != "" || history.Degraded || len(history.Points) != 4 {
+		t.Fatalf("history did not recover: %+v", history)
+	}
+	for _, point := range history.Points {
+		if point.Seq != 2 {
+			if point.GPUTotal == nil {
+				t.Fatalf("stable window lost total: %+v", point)
+			}
+			continue
+		}
+		if point.GPUTotal != nil || len(point.GPUs) != 2 || point.GPUs[1].Samples != 15 || point.CPU == nil || point.CPU.Samples != 30 {
+			t.Fatalf("changed window lost component data or retained invalid total: %+v", point)
+		}
+	}
+}

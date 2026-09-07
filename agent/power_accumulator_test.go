@@ -207,3 +207,251 @@ func TestAccumulatorClockStepBackwardAndForward(t *testing.T) {
 		}
 	}
 }
+
+// --- GPU membership within a window (PR181 blocker) ---
+//
+// A combined GPU total is only truthful when every counted tick observed the
+// same set of devices. If the set changes inside a window (a device drops,
+// appears, or is replaced under the same count), the total is omitted for
+// that window while per-GPU and CPU readings are kept; the next window with
+// a stable set reports a total again.
+
+type rd struct {
+	id string
+	w  *float64
+}
+
+func mkTick(at time.Time, complete bool, rds ...rd) powerGPUTick {
+	t := powerGPUTick{at: at, complete: complete}
+	for _, r := range rds {
+		t.readings = append(t.readings, powerReading{id: r.id, watts: r.w})
+	}
+	return t
+}
+
+// feedTicks feeds one tick per second from sec `from` (inclusive) to `to`
+// (exclusive), each built by mk(sec).
+func feedTicks(a *powerAccumulator, c *accClock, from, to int, mk func(sec int) powerGPUTick) {
+	for s := from; s < to; s++ {
+		tk := mk(s)
+		tk.at = c.at(float64(s))
+		a.addGPUAt(tk, c.wall(float64(s)))
+	}
+}
+
+func sensorSamples(b powerhistory.Bucket) map[string]int {
+	out := map[string]int{}
+	for _, g := range b.GPUs {
+		out[g.ID] = g.Samples
+	}
+	return out
+}
+
+func closeWindow(t *testing.T, a *powerAccumulator, c *accClock, endSec float64) powerhistory.Bucket {
+	t.Helper()
+	out := a.tickAt(c.at(endSec), c.wall(endSec))
+	if len(out) != 1 {
+		t.Fatalf("want exactly one bucket at %vs, got %d", endSec, len(out))
+	}
+	return out[0]
+}
+
+func TestAccumulatorMembershipAdditionOmitsTotalKeepsSensorsAndCPU(t *testing.T) {
+	a := newPowerAccumulator(30*time.Second, time.Second)
+	c := newAccClock()
+	ab := func(int) powerGPUTick { return mkTick(time.Time{}, true, rd{"A", f(100)}, rd{"B", f(50)}) }
+	abc := func(int) powerGPUTick {
+		return mkTick(time.Time{}, true, rd{"A", f(100)}, rd{"B", f(50)}, rd{"C", f(25)})
+	}
+	feedTicks(a, c, 0, 15, ab)
+	feedTicks(a, c, 15, 30, abc)
+	for s := 0; s < 30; s++ {
+		a.addCPUAt(c.at(float64(s)), c.wall(float64(s)), 12)
+	}
+	b := closeWindow(t, a, c, 30)
+	if b.GPUTotal != nil {
+		t.Fatalf("device added mid-window: total must be omitted, got %+v", *b.GPUTotal)
+	}
+	ss := sensorSamples(b)
+	if ss["A"] != 30 || ss["B"] != 30 || ss["C"] != 15 {
+		t.Fatalf("per-GPU readings must be retained: %v", ss)
+	}
+	if b.CPU == nil || b.CPU.Samples != 30 || *b.CPU.MeanWatts != 12 {
+		t.Fatalf("CPU must be retained: %+v", b.CPU)
+	}
+}
+
+func TestAccumulatorMembershipRemovalOmitsTotal(t *testing.T) {
+	a := newPowerAccumulator(30*time.Second, time.Second)
+	c := newAccClock()
+	feedTicks(a, c, 0, 15, func(int) powerGPUTick { return mkTick(time.Time{}, true, rd{"A", f(100)}, rd{"B", f(50)}) })
+	feedTicks(a, c, 15, 30, func(int) powerGPUTick { return mkTick(time.Time{}, true, rd{"A", f(100)}) })
+	b := closeWindow(t, a, c, 30)
+	if b.GPUTotal != nil {
+		t.Fatalf("device removed mid-window: total must be omitted, got %+v", *b.GPUTotal)
+	}
+	if ss := sensorSamples(b); ss["A"] != 30 || ss["B"] != 15 {
+		t.Fatalf("per-GPU readings must be retained: %v", ss)
+	}
+}
+
+func TestAccumulatorMembershipSameCountReplacementOmitsTotal(t *testing.T) {
+	a := newPowerAccumulator(30*time.Second, time.Second)
+	c := newAccClock()
+	feedTicks(a, c, 0, 15, func(int) powerGPUTick { return mkTick(time.Time{}, true, rd{"A", f(100)}, rd{"B", f(50)}) })
+	// Same device count, different identity (uuid fallback flip, re-enumeration).
+	feedTicks(a, c, 15, 30, func(int) powerGPUTick { return mkTick(time.Time{}, true, rd{"A", f(100)}, rd{"gpu-1", f(50)}) })
+	b := closeWindow(t, a, c, 30)
+	if b.GPUTotal != nil {
+		t.Fatalf("same-count replacement: total must be omitted, got %+v", *b.GPUTotal)
+	}
+	if ss := sensorSamples(b); ss["A"] != 30 || ss["B"] != 15 || ss["gpu-1"] != 15 {
+		t.Fatalf("per-GPU readings must be retained: %v", ss)
+	}
+}
+
+func TestAccumulatorMembershipLeaveAndReturnOmitsTotal(t *testing.T) {
+	a := newPowerAccumulator(30*time.Second, time.Second)
+	c := newAccClock()
+	ab := func(int) powerGPUTick { return mkTick(time.Time{}, true, rd{"A", f(100)}, rd{"B", f(50)}) }
+	feedTicks(a, c, 0, 10, ab)
+	feedTicks(a, c, 10, 15, func(int) powerGPUTick { return mkTick(time.Time{}, true, rd{"A", f(100)}) })
+	feedTicks(a, c, 15, 30, ab)
+	b := closeWindow(t, a, c, 30)
+	if b.GPUTotal != nil {
+		t.Fatalf("device left and returned: total must be omitted for the whole window, got %+v", *b.GPUTotal)
+	}
+	if ss := sensorSamples(b); ss["A"] != 30 || ss["B"] != 25 {
+		t.Fatalf("per-GPU readings must be retained: %v", ss)
+	}
+}
+
+func TestAccumulatorMixedTotalThatPassesCountCheckIsStillOmitted(t *testing.T) {
+	a := newPowerAccumulator(30*time.Second, time.Second)
+	c := newAccClock()
+	// 10 ticks over {A,B} with watts: total would be 10 over {A,B}.
+	feedTicks(a, c, 0, 10, func(int) powerGPUTick { return mkTick(time.Time{}, true, rd{"A", f(100)}, rd{"B", f(50)}) })
+	// 20 ticks over {A,C} where A is N/A: these never enter the total, so a
+	// naive "total.n <= min sensor samples" gate passes (10 <= min(10,10,20)),
+	// yet the total no longer describes the reported sensor set.
+	feedTicks(a, c, 10, 30, func(int) powerGPUTick { return mkTick(time.Time{}, true, rd{"A", nil}, rd{"C", f(25)}) })
+	b := closeWindow(t, a, c, 30)
+	ss := sensorSamples(b)
+	if ss["A"] != 10 || ss["B"] != 10 || ss["C"] != 20 {
+		t.Fatalf("per-GPU readings: %v", ss)
+	}
+	if b.GPUTotal != nil {
+		t.Fatalf("mixed membership must omit the total even when counts look consistent, got %+v", *b.GPUTotal)
+	}
+}
+
+func TestAccumulatorTotalRecoversInNextStableWindow(t *testing.T) {
+	a := newPowerAccumulator(30*time.Second, time.Second)
+	c := newAccClock()
+	feedTicks(a, c, 0, 15, func(int) powerGPUTick { return mkTick(time.Time{}, true, rd{"A", f(100)}, rd{"B", f(50)}) })
+	ac := func(int) powerGPUTick { return mkTick(time.Time{}, true, rd{"A", f(100)}, rd{"C", f(25)}) }
+	feedTicks(a, c, 15, 30, ac)
+	if b := closeWindow(t, a, c, 30); b.GPUTotal != nil {
+		t.Fatalf("mixed window must omit total, got %+v", *b.GPUTotal)
+	}
+	feedTicks(a, c, 30, 60, ac)
+	b := closeWindow(t, a, c, 60)
+	if b.GPUTotal == nil || b.GPUTotal.Samples != 30 || *b.GPUTotal.MeanWatts != 125 {
+		t.Fatalf("stable next window must report a total again: %+v", b.GPUTotal)
+	}
+	if len(b.GPUs) != 2 {
+		t.Fatalf("stable window sensors: %+v", b.GPUs)
+	}
+}
+
+func TestAccumulatorStableReorderNAAndIncompleteTicksKeepTotal(t *testing.T) {
+	a := newPowerAccumulator(30*time.Second, time.Second)
+	c := newAccClock()
+	feedTicks(a, c, 0, 30, func(s int) powerGPUTick {
+		switch {
+		case s%3 == 0:
+			// Same set, reported in the other order.
+			return mkTick(time.Time{}, true, rd{"B", f(50)}, rd{"A", f(100)})
+		case s%5 == 0:
+			// Same set, one reading unavailable: not a membership change,
+			// just a tick that cannot enter the total.
+			return mkTick(time.Time{}, true, rd{"A", f(100)}, rd{"B", nil})
+		case s%7 == 0:
+			// Incomplete iteration (device missing from the read): never
+			// counted, and must not be mistaken for a smaller device set.
+			return mkTick(time.Time{}, false, rd{"A", f(100)})
+		default:
+			return mkTick(time.Time{}, true, rd{"A", f(100)}, rd{"B", f(50)})
+		}
+	})
+	b := closeWindow(t, a, c, 30)
+	if b.GPUTotal == nil {
+		t.Fatal("stable membership with reorder, N/A and incomplete ticks must keep the total")
+	}
+	// N/A ticks: 5, 10, 20, 25 (s%5 but not s%3). Incomplete ticks: 7, 14, 28
+	// (s%7 but not s%3 or s%5). Total counts the remaining 30 - 4 - 3 = 23.
+	if b.GPUTotal.Samples != 23 || *b.GPUTotal.PeakWatts != 150 {
+		t.Fatalf("total over stable ticks: %+v", *b.GPUTotal)
+	}
+	// B is absent from the 3 incomplete ticks and N/A on 4: 30 - 7 = 23.
+	if ss := sensorSamples(b); ss["A"] != 30 || ss["B"] != 23 {
+		t.Fatalf("per-GPU readings: %v", ss)
+	}
+}
+
+func TestAccumulatorIncompleteTickIntroducingSensorOmitsTotal(t *testing.T) {
+	a := newPowerAccumulator(30*time.Second, time.Second)
+	c := newAccClock()
+	// Reference set {A} from complete ticks; an incomplete tick then reports
+	// a device B the reference never saw. The emitted union {A,B} no longer
+	// matches the set the total was computed over, and B has fewer samples
+	// than the total.
+	feedTicks(a, c, 0, 20, func(int) powerGPUTick { return mkTick(time.Time{}, true, rd{"A", f(100)}) })
+	feedTicks(a, c, 20, 30, func(int) powerGPUTick { return mkTick(time.Time{}, false, rd{"A", f(100)}, rd{"B", f(50)}) })
+	b := closeWindow(t, a, c, 30)
+	if ss := sensorSamples(b); ss["A"] != 30 || ss["B"] != 10 {
+		t.Fatalf("per-GPU readings: %v", ss)
+	}
+	if b.GPUTotal != nil {
+		t.Fatalf("sensor introduced by an incomplete tick must omit the total, got %+v", *b.GPUTotal)
+	}
+}
+
+func TestAccumulatorPartialTicksBeforeAndAfterCompleteReferenceOmitTotal(t *testing.T) {
+	for _, before := range []bool{true, false} {
+		a := newPowerAccumulator(30*time.Second, time.Second)
+		c := newAccClock()
+		partial := func(int) powerGPUTick { return mkTick(time.Time{}, false, rd{"A", f(100)}, rd{"B", f(50)}) }
+		complete := func(int) powerGPUTick { return mkTick(time.Time{}, true, rd{"A", f(100)}) }
+		if before {
+			feedTicks(a, c, 0, 5, partial)
+			feedTicks(a, c, 5, 30, complete)
+		} else {
+			feedTicks(a, c, 0, 25, complete)
+			feedTicks(a, c, 25, 30, partial)
+		}
+		b := closeWindow(t, a, c, 30)
+		if ss := sensorSamples(b); ss["A"] != 30 || ss["B"] != 5 {
+			t.Fatalf("before=%v per-GPU readings: %v", before, ss)
+		}
+		if b.GPUTotal != nil {
+			t.Fatalf("before=%v: partial ticks outside the reference set must omit the total, got %+v", before, *b.GPUTotal)
+		}
+	}
+}
+
+func TestAccumulatorPartialTicksWithKnownSensorsKeepTotal(t *testing.T) {
+	a := newPowerAccumulator(30*time.Second, time.Second)
+	c := newAccClock()
+	feedTicks(a, c, 0, 25, func(int) powerGPUTick { return mkTick(time.Time{}, true, rd{"A", f(100)}, rd{"B", f(50)}) })
+	// Incomplete ticks naming only devices already in the reference set:
+	// not counted, but not a membership change either.
+	feedTicks(a, c, 25, 30, func(int) powerGPUTick { return mkTick(time.Time{}, false, rd{"A", f(100)}) })
+	b := closeWindow(t, a, c, 30)
+	if b.GPUTotal == nil || b.GPUTotal.Samples != 25 || *b.GPUTotal.MeanWatts != 150 {
+		t.Fatalf("partial ticks over known sensors must keep the total: %+v", b.GPUTotal)
+	}
+	if ss := sensorSamples(b); ss["A"] != 30 || ss["B"] != 25 {
+		t.Fatalf("per-GPU readings: %v", ss)
+	}
+}

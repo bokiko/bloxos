@@ -13,6 +13,11 @@ GPU peak is computed from complete simultaneous observations, never by summing
 each device's independently observed maximum. Missing sensors are unavailable,
 not zero. The existing `power_watts` instantaneous field keeps its meaning.
 
+If GPU membership changes inside a window, its combined GPU total is omitted
+rather than mixing different device sets. Per-GPU readings and CPU statistics
+are retained, and combined totals resume in the next stable window. This keeps
+the recorded window valid for replay without relaxing hub validation.
+
 Completed windows are saved locally before becoming eligible for upload. The
 local journal is bounded by 24 hours and a byte limit. The network sends bounded
 batches of new or unacknowledged windows, not the whole journal on every tick.
@@ -155,3 +160,8 @@ wall-power calibration or 24-hour soak. CPU sensors were unavailable in the
 restricted container and correctly absent. Real CPU package readings and
 Windows driver streaming remain unverified; cross-compilation is not a
 substitute for those hardware checks. Fleet rollout remains a separate step.
+
+The subsequent GPU-membership correction advances the agent release marker to 3.
+The hardware canary above tested release 2; it is not a hardware test of this
+later correction. Membership transitions have separate accumulator and hub
+regression coverage.

@@ -8,6 +8,8 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -108,6 +110,30 @@ type powerWindowState struct {
 	total statsAcc
 	cpu   statsAcc
 	any   bool
+	// totalSig is the device set (order-independent) the running total is
+	// being computed over, fixed by the first complete tick of the window;
+	// totalMembers is its size. totalMixed is set once a later complete
+	// tick reports a different set (device added, removed, or replaced
+	// under the same count): the total is then omitted for the rest of this
+	// window, because a sum over a changing set is not a simultaneous
+	// reading of the sensors reported. Incomplete ticks and unavailable
+	// readings never change membership, but an incomplete tick can still
+	// add a sensor to the emitted union; emit therefore also requires the
+	// union to be exactly the reference set (union ⊇ reference always, so
+	// equal size means equal set).
+	totalSig     string
+	totalMembers int
+	totalMixed   bool
+}
+
+// membershipSig is an order-independent identity of a tick's device set.
+func membershipSig(readings []powerReading) string {
+	ids := make([]string, len(readings))
+	for i, r := range readings {
+		ids[i] = r.id
+	}
+	sort.Strings(ids)
+	return strings.Join(ids, "\x00")
 }
 
 // powerAccumulator folds 1 Hz samples into fixed 30 s windows tiled on the
@@ -186,7 +212,7 @@ func (a *powerAccumulator) emit(endMS int64) {
 	for _, id := range w.order {
 		b.GPUs = append(b.GPUs, powerhistory.Sensor{ID: id, Stats: w.gpus[id].stats()})
 	}
-	if w.total.n > 0 {
+	if w.total.n > 0 && !w.totalMixed && len(w.order) == w.totalMembers {
 		s := w.total.stats()
 		b.GPUTotal = &s
 	}
@@ -204,6 +230,13 @@ func (a *powerAccumulator) addGPUAt(t powerGPUTick, wallMS int64) {
 	defer a.mu.Unlock()
 	a.roll(t.at, wallMS)
 	w := a.cur
+	if t.complete && len(t.readings) > 0 {
+		if sig := membershipSig(t.readings); w.totalSig == "" {
+			w.totalSig, w.totalMembers = sig, len(t.readings)
+		} else if sig != w.totalSig {
+			w.totalMixed = true
+		}
+	}
 	sum := 0.0
 	allPresent := t.complete && len(t.readings) > 0
 	for _, r := range t.readings {

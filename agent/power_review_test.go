@@ -39,6 +39,50 @@ func TestReviewPowerConstantFractionMeetsWireContract(t *testing.T) {
 	}
 }
 
+func TestReviewPowerMembershipChangeSurvivesJournalReplay(t *testing.T) {
+	a := newPowerAccumulator(30*time.Second, time.Second)
+	c := newAccClock()
+	feedGPU(a, c, 0, 15, func(int) []*float64 { return []*float64{f(100), f(200)} })
+	feedGPU(a, c, 15, 30, func(int) []*float64 { return []*float64{f(100)} })
+	changed := a.tickAt(c.at(30), c.wall(30))
+	feedGPU(a, c, 30, 60, func(int) []*float64 { return []*float64{f(100)} })
+	stable := a.tickAt(c.at(60), c.wall(60))
+	if len(changed) != 1 || len(stable) != 1 {
+		t.Fatal("expected one changed and one stable window")
+	}
+	dir := t.TempDir()
+	j, err := openPowerJournal(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range []powerhistory.Bucket{changed[0], stable[0]} {
+		if err := j.append(b); err != nil {
+			j.close()
+			t.Fatal(err)
+		}
+	}
+	j.close()
+	j, err = openPowerJournal(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.close()
+	batch, ok := j.snapshot().pendingBatch(powerhistory.MaxBatchRecords, powerhistory.MaxFrameBytes)
+	if !ok || len(batch.Buckets) != 2 || batch.Buckets[0].Seq != 1 || batch.Buckets[1].Seq != 2 {
+		t.Fatalf("restart did not preserve replay prefix: %+v", batch)
+	}
+	first, second := batch.Buckets[0], batch.Buckets[1]
+	if first.GPUTotal != nil || len(first.GPUs) != 2 || first.GPUs[0].Samples != 30 || first.GPUs[1].Samples != 15 {
+		t.Fatalf("changed window is not replay-safe: %+v", first)
+	}
+	if second.GPUTotal == nil || second.GPUTotal.Samples != 30 || *second.GPUTotal.MeanWatts != 100 {
+		t.Fatalf("next stable window did not recover: %+v", second)
+	}
+	if advanced, err := j.ack(batch.StreamID, 2); err != nil || !advanced {
+		t.Fatalf("replayed windows could not advance ACK: advanced=%v err=%v", advanced, err)
+	}
+}
+
 // Run under -race: filesystem ownership, snapshot reads and ACK coalescing must
 // remain independent even while retention prunes previously published records.
 func TestReviewPowerConcurrentSnapshotAndRetention(t *testing.T) {
