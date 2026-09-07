@@ -18,8 +18,11 @@ zero still means unavailable because older agents use it as a missing value.
 Native samples expire after 120 seconds; API-polled samples instead allow at
 least their configured polling interval plus 30 seconds. Expected polling gaps
 do not reset duration alerts, but an overdue sample still does.
+An aborted database read preserves the previous observation; the next successful
+pass still resets continuity if that observation is more than 90 seconds old.
 
-Database and dashboard events are updated before Telegram delivery. Telegram
+Database and dashboard events are updated, and the evaluation lock released,
+before Telegram delivery. Telegram
 has a five-second per-request timeout and a ten-second total evaluation-batch
 budget. Failed or undelivered notifications remain visible in the dashboard;
 there is no unbounded retry queue. No real Telegram credentials are needed for

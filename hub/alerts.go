@@ -103,12 +103,10 @@ type alertPendingCondition struct {
 // Missing/stale readings are unknown, not recovery and not zero. Duration
 // counts only a continuously observed condition, not a gap or hub downtime.
 func (s *Server) evaluateAlertsAt(now time.Time) {
-	s.alertEvalMu.Lock()
-	defer s.alertEvalMu.Unlock()
 	var notifications []string
 	defer func() { sendTelegramBatch(notifications) }()
-	nextPending := make(map[string]alertPendingCondition)
-	defer func() { s.alertPending = nextPending }()
+	s.alertEvalMu.Lock()
+	defer s.alertEvalMu.Unlock()
 	// Get all enabled rules.
 	rules, err := s.getAlertRules(true)
 	if err != nil {
@@ -189,6 +187,11 @@ func (s *Server) evaluateAlertsAt(now time.Time) {
 		return // Query failure must never be interpreted as no open incident.
 	}
 
+	// Failed database reads are not observations of missing sensors. Preserve
+	// prior timing on an aborted pass; the next valid pass still enforces
+	// the 90-second continuity bound and resets genuinely missing data.
+	nextPending := make(map[string]alertPendingCondition)
+	defer func() { s.alertPending = nextPending }()
 	for _, rule := range rules {
 		for _, m := range machines {
 			key := rule.ID + "|" + m.id
@@ -396,7 +399,7 @@ func (s *Server) getAlertRules(enabledOnly bool) ([]AlertRule, error) {
 	if rules == nil {
 		rules = []AlertRule{}
 	}
-	return rules, nil
+	return rules, rows.Err()
 }
 
 func broadcastAlertSSE(alert Alert) {

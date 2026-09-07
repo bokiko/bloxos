@@ -249,3 +249,34 @@ func TestAlertDurationHonorsSlowAPIPollCadence(t *testing.T) {
 		t.Fatal("overdue poll falsely resolved incident", got)
 	}
 }
+
+func TestAlertAbortedReadPreservesPendingDuration(t *testing.T) {
+	s := setupAlertsDB(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	s.insertMachineWithMetrics(t, "db-gap", 95, 5, 10, 5, 10)
+	rule := s.insertAlertRule(t, "cpu", "gt", 90)
+	if _, err := s.db.Exec(`UPDATE alert_rules SET duration_secs=60 WHERE id=?`, rule); err != nil {
+		t.Fatal(err)
+	}
+	s.evaluateAlertsAt(now)
+	key := rule + "|db-gap"
+	before, ok := s.alertPending[key]
+	if !ok {
+		t.Fatal("no pending condition")
+	}
+	// Force the prefetch to fail without introducing a production test hook.
+	if _, err := s.db.Exec(`ALTER TABLE alerts RENAME TO alerts_temporarily_unavailable`); err != nil {
+		t.Fatal(err)
+	}
+	s.evaluateAlertsAt(now.Add(30 * time.Second))
+	if _, err := s.db.Exec(`ALTER TABLE alerts_temporarily_unavailable RENAME TO alerts`); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.alertPending[key]; got != before {
+		t.Fatal("failed read mutated pending observation", got)
+	}
+	s.evaluateAlertsAt(now.Add(60 * time.Second))
+	if got := s.activeAlertCount(t, "db-gap"); got != 1 {
+		t.Fatal("brief read failure discarded valid duration", got)
+	}
+}
