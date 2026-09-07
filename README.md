@@ -142,7 +142,7 @@ environment variable read by the Go hub and agent.
 | `BLOXOS_HUB` | Agent | Hub base WebSocket URL; the agent appends `/ws/agent`. |
 | `BLOXOS_SECRET` | Agent | Durable machine credential, normally managed by enrollment. |
 | `BLOXOS_TOKEN` | Agent enrollment | One-time enrollment token. |
-| `BLOXOS_TERMINAL_USER` | No | Linux account used for terminal sessions. |
+| `BLOXOS_TERMINAL_USER` | No | Existing non-root Linux account used for terminal sessions. Unset, the agent tries `bokiko`, `ubuntu`, `admin`; if none exists, or the named account is missing or root, terminals are refused (never run as root). |
 | `BLOXOS_UPDATE_PUBKEY_PATH` | No | Override for the agent's pinned update-key file. |
 | `BLOXOS_TLS_INSECURE` | Development only | TLS bypass available only in an agent built with `-tags insecure`. |
 | `ProgramFiles` | Windows-provided | Used to discover NVIDIA tooling; normally never overridden. |

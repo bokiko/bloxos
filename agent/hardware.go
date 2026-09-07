@@ -477,11 +477,13 @@ func collectRAMModules() (modules []RAMModule, totalSlots, populatedSlots int, m
 		return nil, 0, 0, 0
 	}
 	out, err := runCollector("dmidecode", "--type", "17")
-	if err != nil {
+	if err != nil && !runningAsRoot() {
+		// Unprivileged runs may have a NOPASSWD sudo rule; root has no use
+		// for sudo and may not even have it installed.
 		out, err = runCollector("sudo", "-n", "dmidecode", "--type", "17")
-		if err != nil {
-			return nil, 0, 0, 0
-		}
+	}
+	if err != nil {
+		return nil, 0, 0, 0
 	}
 
 	if maxOut, err := runCollector("dmidecode", "--type", "16"); err == nil {

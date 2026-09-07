@@ -51,22 +51,24 @@ func (w *waitOnce) Wait() error {
 	return w.err
 }
 
-// applyTerminalCredentials configures bashCmd to run as termUser, or
-// returns an error if the user's UID/GID cannot be parsed. Pre-fix
-// behaviour at agent/main_linux.go:139-140 was
-// `uid, _ := strconv.ParseUint(...)` — discarding the error meant a
-// malformed /etc/passwd entry would silently produce uid=0 (root) and
-// the spawned shell would inherit root privileges. Now any parse
-// failure aborts the call site rather than falling back to root.
-//
-// Nil termUser and termUser.Uid == "0" both fall through with
-// SysProcAttr unset, matching the existing behaviour where the spawned
-// shell inherits the agent's identity (root). The caller logs a
-// WARNING in that case so the deployment misconfiguration is visible.
+// lookupGroupIDs returns the supplementary group ids of a user. It is a
+// variable so tests can supply groups for accounts that do not exist on
+// the test host.
+var lookupGroupIDs = func(u *user.User) ([]string, error) { return u.GroupIds() }
+
+// applyTerminalCredentials configures bashCmd to run as termUser with that
+// user's uid, primary gid and supplementary groups. Terminals never run as
+// the agent's own identity: a nil user or uid 0 is refused, as is any uid,
+// gid or group id that does not parse. Previously nil and root fell through
+// to "inherit the agent's identity (root)" with only a log warning, and
+// Groups were left empty so the shell lost the user's docker/sudo/etc.
+// memberships.
 func applyTerminalCredentials(bashCmd *exec.Cmd, termUser *user.User) error {
-	if termUser == nil || termUser.Uid == "0" {
-		bashCmd.Env = append(os.Environ(), "TERM=xterm-256color")
-		return nil
+	if termUser == nil {
+		return fmt.Errorf("no terminal user resolved")
+	}
+	if termUser.Uid == "0" {
+		return fmt.Errorf("terminal user %q is root; terminals never run as the agent's identity", termUser.Username)
 	}
 	uid, err := strconv.ParseUint(termUser.Uid, 10, 32)
 	if err != nil {
@@ -76,10 +78,23 @@ func applyTerminalCredentials(bashCmd *exec.Cmd, termUser *user.User) error {
 	if err != nil {
 		return fmt.Errorf("parse gid %q for user %q: %w", termUser.Gid, termUser.Username, err)
 	}
+	groupIDs, err := lookupGroupIDs(termUser)
+	if err != nil {
+		return fmt.Errorf("list groups for user %q: %w", termUser.Username, err)
+	}
+	groups := make([]uint32, 0, len(groupIDs))
+	for _, g := range groupIDs {
+		id, err := strconv.ParseUint(g, 10, 32)
+		if err != nil {
+			return fmt.Errorf("parse group id %q for user %q: %w", g, termUser.Username, err)
+		}
+		groups = append(groups, uint32(id))
+	}
 	bashCmd.SysProcAttr = &syscall.SysProcAttr{
 		Credential: &syscall.Credential{
-			Uid: uint32(uid),
-			Gid: uint32(gid),
+			Uid:    uint32(uid),
+			Gid:    uint32(gid),
+			Groups: groups,
 		},
 	}
 	bashCmd.Dir = termUser.HomeDir
@@ -211,24 +226,23 @@ func handleStartTerminal(cmd Command, rawMsg []byte) {
 	}
 	termURL := fmt.Sprintf("%s://%s/ws/terminal/%s?role=agent", wsScheme, u.Host, sessionID)
 
-	// Spawn bash PTY as non-root user for security.
-	// Uses BLOXOS_TERMINAL_USER env var, or falls back to the owner of the
-	// agent binary's parent directory, or "bokiko", or current user.
+	// Spawn bash PTY as a non-root user. BLOXOS_TERMINAL_USER names the
+	// account; otherwise a common non-root account is used. There is no
+	// root fallback: if no usable account exists the session is refused.
 	bashCmd := exec.Command("bash", "-l")
-	termUser := resolveTerminalUser()
+	termUser, err := resolveTerminalUser()
+	if err != nil {
+		log.Printf("terminal: refusing to start session — %v", err)
+		return
+	}
 	if err := applyTerminalCredentials(bashCmd, termUser); err != nil {
-		// Fail-closed: if the resolved user's UID/GID strings cannot be
-		// parsed, refuse to start the session rather than silently
-		// running bash as the agent's identity (root). Better to surface
-		// a confusing terminal failure than escalate.
+		// Fail-closed: refuse the session rather than run bash as the
+		// agent's identity (root). Better a visible terminal failure than
+		// an escalation.
 		log.Printf("terminal: refusing to start session — credential setup failed: %v", err)
 		return
 	}
-	if termUser != nil && termUser.Uid != "0" {
-		log.Printf("terminal: spawning shell as user %s (uid=%s)", termUser.Username, termUser.Uid)
-	} else {
-		log.Printf("terminal: WARNING spawning shell as current user (root)")
-	}
+	log.Printf("terminal: spawning shell as user %s (uid=%s)", termUser.Username, termUser.Uid)
 	ptmx, err := pty.Start(bashCmd)
 	if err != nil {
 		log.Printf("terminal: pty.Start failed: %v", err)
@@ -350,23 +364,26 @@ func handleStartTerminal(cmd Command, rawMsg []byte) {
 }
 
 // resolveTerminalUser determines which user to run terminal sessions as.
-// Priority: BLOXOS_TERMINAL_USER env var > "bokiko" > current user.
-func resolveTerminalUser() *user.User {
+// BLOXOS_TERMINAL_USER, when set, must name an existing non-root account;
+// a name that does not resolve is an error, not a fallback. When it is
+// unset the common non-root accounts are tried. There is never a fallback
+// to the agent's own identity: a host with no usable account refuses
+// terminals until BLOXOS_TERMINAL_USER is set.
+func resolveTerminalUser() (*user.User, error) {
 	if envUser := os.Getenv("BLOXOS_TERMINAL_USER"); envUser != "" {
-		if u, err := user.Lookup(envUser); err == nil {
-			return u
+		u, err := user.Lookup(envUser)
+		if err != nil {
+			return nil, fmt.Errorf("BLOXOS_TERMINAL_USER=%q: %w", envUser, err)
 		}
-		log.Printf("terminal: BLOXOS_TERMINAL_USER=%s not found, falling back", envUser)
+		if u.Uid == "0" {
+			return nil, fmt.Errorf("BLOXOS_TERMINAL_USER=%q is root; terminals never run as root", envUser)
+		}
+		return u, nil
 	}
-	// Try common non-root user.
 	for _, name := range []string{"bokiko", "ubuntu", "admin"} {
-		if u, err := user.Lookup(name); err == nil {
-			return u
+		if u, err := user.Lookup(name); err == nil && u.Uid != "0" {
+			return u, nil
 		}
 	}
-	// Fall back to current user (may be root).
-	if u, err := user.Current(); err == nil {
-		return u
-	}
-	return nil
+	return nil, fmt.Errorf("no non-root terminal user found; set BLOXOS_TERMINAL_USER to an existing non-root account")
 }

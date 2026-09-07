@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -240,7 +241,7 @@ func applyPendingUpdate() {
 	dir := filepath.Dir(exe)
 	helperPath := filepath.Join(dir, "bloxos-agent-update-helper.bat")
 
-	helper := buildHelperBatch(exe, newPath, markerPath)
+	helper := buildHelperBatch(exe, newPath, markerPath, windowsServiceName)
 	if err := os.WriteFile(helperPath, []byte(helper), 0755); err != nil {
 		log.Printf("update: cannot write helper script: %v", err)
 		return
@@ -312,19 +313,45 @@ func validatePendingUpdate(exe, markerPath, newPath string) error {
 }
 
 // buildHelperBatch returns the contents of the .bat we leave on disk.
-// Format mirrors the spec.
-func buildHelperBatch(target, newBin, marker string) string {
+//
+// The helper runs with no console (spawned from the service), and there
+// `timeout /t` exits immediately with "Input redirection is not supported",
+// so the old fixed delay was inert and the move raced the exiting agent
+// (TestUpdateHelperTimeoutIsInertWithoutConsole records that). The wait is
+// now `ping -n 2 127.0.0.1` (about one second, console-independent) and the
+// move is retried for up to helperMoveAttempts while the binary is still
+// locked. The marker is removed only after the outcome is decided: on
+// success the new binary starts; if the binary never unlocks the staged
+// copy is discarded and the current binary starts, and the hub re-announces
+// the update on reconnect. Either way a line goes to <target>.update-helper.log.
+func buildHelperBatch(target, newBin, marker, serviceName string) string {
 	// Use Windows path separators in the batch file.
 	target = filepath.FromSlash(target)
 	newBin = filepath.FromSlash(newBin)
 	marker = filepath.FromSlash(marker)
+	logFile := target + ".update-helper.log"
 	return "@echo off\r\n" +
-		"timeout /t 3 /nobreak > nul\r\n" +
-		"move /Y \"" + newBin + "\" \"" + target + "\" > nul\r\n" +
+		"set /a TRIES=0\r\n" +
+		":retry\r\n" +
+		"ping -n 2 127.0.0.1 > nul\r\n" +
+		"move /Y \"" + newBin + "\" \"" + target + "\" > nul 2>&1\r\n" +
+		"if not errorlevel 1 goto replaced\r\n" +
+		"set /a TRIES+=1\r\n" +
+		"if %TRIES% lss " + strconv.Itoa(helperMoveAttempts) + " goto retry\r\n" +
+		">> \"" + logFile + "\" echo [%DATE% %TIME%] update: binary still locked after %TRIES% attempts, keeping the current binary\r\n" +
+		"del \"" + newBin + "\" 2> nul\r\n" +
+		"goto restart\r\n" +
+		":replaced\r\n" +
+		">> \"" + logFile + "\" echo [%DATE% %TIME%] update: replaced binary after %TRIES% retries\r\n" +
+		":restart\r\n" +
 		"del \"" + marker + "\" 2> nul\r\n" +
-		"sc.exe start " + windowsServiceName + " > nul\r\n" +
+		"sc.exe start " + serviceName + " > nul 2>&1\r\n" +
 		"del \"%~f0\" 2> nul\r\n"
 }
+
+// helperMoveAttempts bounds how many one-second retries the update helper
+// makes while the agent binary is still locked by the exiting process.
+const helperMoveAttempts = 30
 
 // downloadAgentBinary fetches /download/agent?os=windows from the hub and
 // writes it to destPath. Reuses the agent's TLS configuration so the
