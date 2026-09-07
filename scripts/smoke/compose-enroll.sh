@@ -146,4 +146,7 @@ done
 [[ "$NEW_PID" != 0 && "$NEW_PID" != "$OLD_PID" ]] || fail "agent did not restart"
 [[ "$(systemctl is-active bloxos-agent)" == active ]] || fail "restarted agent not active"
 
-echo "SMOKE PASS: agent enrolled through the Compose stack at $HUB; self-restart returned 202 and a new active agent process"
+echo "== consistent backup and isolated restore"
+python3 "$COMPOSE_DIR/../scripts/smoke/compose-backup.py"
+
+echo "SMOKE PASS: agent enrolled through the Compose stack at $HUB; self-restart returned 202 and a new active agent process; backup restored with original identity"
