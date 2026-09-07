@@ -124,6 +124,12 @@ jobs:
       - name: Run agent tests
         run: go test -count=1 ./...
 
+      # The power journal, ACK mailbox, sampler goroutines and the connection
+      # loop are the agent's most concurrent code; a green ordinary run does
+      # not cover that class of bug. Same gate the hub and proto jobs have.
+      - name: Run agent tests with the race detector
+        run: go test -race -count=1 ./...
+
   # ~1,600 lines of *_windows.go were never compiled by CI. A windows-latest
   # runner costs the same as a GOOS=windows cross-build and also runs the tests.
   agent-windows:
