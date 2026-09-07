@@ -15,6 +15,9 @@ CPU/RAM/disk/GPU thresholds require fresh metrics and an online machine.
 Missing data is unknown, not zero and not evidence of recovery. Offline
 duration rules use the last-seen timestamp separately. Legacy GPU temperature
 zero still means unavailable because older agents use it as a missing value.
+Native samples expire after 120 seconds; API-polled samples instead allow at
+least their configured polling interval plus 30 seconds. Expected polling gaps
+do not reset duration alerts, but an overdue sample still does.
 
 Database and dashboard events are updated before Telegram delivery. Telegram
 has a five-second per-request timeout and a ten-second total evaluation-batch

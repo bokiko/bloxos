@@ -218,3 +218,34 @@ func TestAlertUnknownRAMAndDiskUsedDoNotTrigger(t *testing.T) {
 		t.Fatalf("unknown sensors became zeros: %d", got)
 	}
 }
+
+func TestAlertDurationHonorsSlowAPIPollCadence(t *testing.T) {
+	s := setupAlertsDB(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	s.insertMachineWithMetrics(t, "api-slow", 95, 5, 10, 5, 10)
+	if _, err := s.db.Exec(`INSERT INTO api_machines (id,name,adapter_type,base_url,auth_config,poll_interval_secs) VALUES ('slow','slow','proxmox','https://example.invalid','{}',300)`); err != nil {
+		t.Fatal(err)
+	}
+	rule := s.insertAlertRule(t, "cpu", "gt", 90)
+	if _, err := s.db.Exec(`UPDATE alert_rules SET duration_secs=180 WHERE id=?`, rule); err != nil {
+		t.Fatal(err)
+	}
+	for seconds := 0; seconds < 180; seconds += 30 {
+		s.evaluateAlertsAt(now.Add(time.Duration(seconds) * time.Second))
+		if got := s.alertCount(t, "api-slow"); got != 0 {
+			t.Fatal("early duration alert", got)
+		}
+	}
+	s.evaluateAlertsAt(now.Add(180 * time.Second))
+	if got := s.activeAlertCount(t, "api-slow"); got != 1 {
+		t.Fatal("expected polling gap reset sustained condition", got)
+	}
+	// A healthy-looking value with an overdue timestamp is not recovery.
+	if _, err := s.db.Exec(`UPDATE metrics SET cpu_percent=10`); err != nil {
+		t.Fatal(err)
+	}
+	s.evaluateAlertsAt(now.Add(331 * time.Second))
+	if got := s.activeAlertCount(t, "api-slow"); got != 1 {
+		t.Fatal("overdue poll falsely resolved incident", got)
+	}
+}

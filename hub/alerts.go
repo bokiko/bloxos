@@ -118,12 +118,13 @@ func (s *Server) evaluateAlertsAt(now time.Time) {
 
 	// Get all machines with latest metrics.
 	rows, err := s.db.Query(`
-		SELECT m.id, m.hostname, m.last_seen, m.status, met.timestamp,
+		SELECT m.id, m.hostname, m.last_seen, m.status, met.timestamp, COALESCE(ap.poll_interval_secs, 0),
 			met.cpu_percent,
 			met.ram_used_bytes, met.ram_total_bytes,
 			met.disk_used_bytes, met.disk_total_bytes,
 			COALESCE(met.gpu_temp, 0)
 		FROM machines m
+		LEFT JOIN api_machines ap ON m.id = 'api-' || ap.id AND ap.enabled = TRUE
 		LEFT JOIN (
 			SELECT machine_id, cpu_percent, ram_used_bytes, ram_total_bytes,
 				disk_used_bytes, disk_total_bytes, gpu_temp, timestamp,
@@ -143,6 +144,7 @@ func (s *Server) evaluateAlertsAt(now time.Time) {
 		lastSeen       *string
 		status         string
 		metricTime     *string
+		pollInterval   int
 		cpuPercent     sql.NullFloat64
 		ramUsedBytes   sql.NullInt64
 		ramTotalBytes  sql.NullInt64
@@ -154,7 +156,7 @@ func (s *Server) evaluateAlertsAt(now time.Time) {
 	var machines []machineMetrics
 	for rows.Next() {
 		var m machineMetrics
-		if err := rows.Scan(&m.id, &m.hostname, &m.lastSeen, &m.status, &m.metricTime, &m.cpuPercent,
+		if err := rows.Scan(&m.id, &m.hostname, &m.lastSeen, &m.status, &m.metricTime, &m.pollInterval, &m.cpuPercent,
 			&m.ramUsedBytes, &m.ramTotalBytes, &m.diskUsedBytes, &m.diskTotalBytes, &m.gpuTemp); err != nil {
 			continue
 		}
@@ -190,7 +192,14 @@ func (s *Server) evaluateAlertsAt(now time.Time) {
 	for _, rule := range rules {
 		for _, m := range machines {
 			key := rule.ID + "|" + m.id
-			if rule.Metric != "machine_offline" && (m.status != "online" || !alertReadingFresh(m.lastSeen, now) || !alertReadingFresh(m.metricTime, now)) {
+			freshFor := 120 * time.Second
+			// Native agents tick every 30s. API pollers legitimately tick up
+			// to once/hour: allow their configured cadence plus one eval tick,
+			// otherwise a normal polling gap breaks every longer duration.
+			if m.pollInterval > 90 && m.pollInterval <= 3600 {
+				freshFor = time.Duration(m.pollInterval+30) * time.Second
+			}
+			if rule.Metric != "machine_offline" && (m.status != "online" || !alertReadingFresh(m.lastSeen, now, freshFor) || !alertReadingFresh(m.metricTime, now, freshFor)) {
 				continue
 			}
 			var metricValue float64
@@ -341,12 +350,12 @@ func parseAlertTimestamp(value string) (time.Time, error) {
 	return time.Time{}, lastErr
 }
 
-func alertReadingFresh(value *string, now time.Time) bool {
+func alertReadingFresh(value *string, now time.Time, freshFor time.Duration) bool {
 	if value == nil {
 		return false
 	}
 	stamp, err := parseAlertTimestamp(*value)
-	return err == nil && now.Sub(stamp) >= -30*time.Second && now.Sub(stamp) <= 120*time.Second
+	return err == nil && now.Sub(stamp) >= -30*time.Second && now.Sub(stamp) <= freshFor
 }
 
 func compareValue(value float64, operator string, threshold float64) bool {
