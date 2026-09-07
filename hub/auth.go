@@ -523,6 +523,10 @@ func (s *Server) handleChangePassword(c echo.Context) error {
 	if userID == "" {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid token"})
 	}
+	if !rateLimiter.Allow("change-password", userID, 5) {
+		c.Response().Header().Set("Retry-After", "60")
+		return c.JSON(http.StatusTooManyRequests, map[string]string{"error": "too many password change attempts; wait a minute and retry"})
+	}
 
 	var passwordHash string
 	err := s.db.QueryRow(`SELECT password_hash FROM users WHERE id = ?`, userID).Scan(&passwordHash)
@@ -578,6 +582,10 @@ func (s *Server) handleChangePIN(c echo.Context) error {
 	userID := extractUserIDFromRequest(c)
 	if userID == "" {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "missing user context"})
+	}
+	if !rateLimiter.Allow("change-pin", userID, 5) {
+		c.Response().Header().Set("Retry-After", "60")
+		return c.JSON(http.StatusTooManyRequests, map[string]string{"error": "too many PIN change attempts; wait a minute and retry"})
 	}
 	if err := s.verifyTerminalPIN(userID, body.CurrentPIN); err != nil {
 		return c.JSON(http.StatusForbidden, map[string]string{"error": "current PIN is incorrect"})
