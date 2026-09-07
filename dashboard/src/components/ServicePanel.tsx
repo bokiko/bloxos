@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
 import { getStoredToken } from "@/lib/session";
+import { commandFeedback } from "@/lib/command-feedback.mjs";
 
 export interface Service {
   name: string;
@@ -60,12 +61,9 @@ function ServiceActions({
         body: JSON.stringify({ type, target: service.name }),
       });
       const data = await res.json();
-      if (data.success) {
-        const verb = type.replace("_service", "").replace("_", " ");
-        addToast("success", `${service.name} ${verb}ed`);
-      } else {
-        addToast("error", `Failed: ${data.error || data.output || "unknown error"}`);
-      }
+      const verb = type === "stop_service" ? "stopped" : type === "start_service" ? "started" : "restarted";
+      const feedback = commandFeedback(res.ok, data, `${service.name} ${verb}`);
+      addToast(feedback.type, feedback.message);
     } catch (err) {
       addToast("error", `Network error: ${err instanceof Error ? err.message : "unknown"}`);
     } finally {
@@ -95,7 +93,7 @@ function ServiceActions({
     <DropdownMenu>
       <DropdownMenuTrigger
         render={
-          <Button variant="ghost" size="icon-xs" className="text-blox-blue hover:bg-blox-blue/10">
+          <Button aria-label={`Actions for ${service.name}`} variant="ghost" size="icon-xs" className="text-blox-blue hover:bg-blox-blue/10">
             <RotateCcw className="w-3 h-3" />
           </Button>
         }

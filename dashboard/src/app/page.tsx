@@ -44,6 +44,8 @@ import { NeedsAttention } from "@/components/NeedsAttention";
 import { UserMenu } from "@/components/UserMenu";
 import { BrandedHeader } from "@/components/BrandedHeader";
 import { FleetOverview } from "@/components/FleetOverview";
+import { useToast } from "@/components/Toast";
+import { bulkCommandFeedback, selectionAfterBulkAttempt } from "@/lib/command-feedback.mjs";
 
 type SortOption = "name" | "status" | "cpu" | "gpu_temp";
 type StatusFilter = "all" | "live" | "warning" | "critical" | "offline" | "stale";
@@ -79,6 +81,7 @@ const sortLabels: Record<SortOption, string> = {
 };
 
 export default function Home() {
+  const { addToast } = useToast();
   const { machines: liveMachines, connected, hasReceivedData, alerts, setAlerts, setAlertCount, refreshMachine, refreshFleet } = useSSE();
   const { authFetch, hasScope } = useAuth();
   const canCreateInstallTokens = hasScope("install_tokens.admin");
@@ -311,40 +314,53 @@ export default function Home() {
 
   const handleBulkReboot = useCallback(async () => {
     if (!confirm(`Reboot ${selected.size} machine(s)? This cannot be undone.`)) return;
+    const attempted = Array.from(selected);
     setBulkLoading(true);
     try {
       const res = await authFetch(`${HUB_URL}/api/bulk/command`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          machine_ids: Array.from(selected),
+          machine_ids: attempted,
           type: "reboot",
           target: "",
         }),
       });
-      if (!res.ok) return;
-    } catch { /* ignore */ }
-    setBulkLoading(false);
-    setSelected(new Set());
-  }, [selected, authFetch]);
+      const feedback = bulkCommandFeedback(res.ok, await res.json(), attempted.length, "reboot");
+      addToast(feedback.type, feedback.message);
+    } catch {
+      addToast("error", "Request interrupted; completion is unknown. Check machine status before retrying.");
+    } finally {
+      // Clear exactly the attempted machines on EVERY finished attempt —
+      // success, partial failure, or interrupted — so nothing is silently
+      // retried; selections made while in flight are preserved.
+      setBulkLoading(false);
+      setSelected((prev) => selectionAfterBulkAttempt(prev, attempted));
+    }
+  }, [selected, authFetch, addToast]);
 
   const handleBulkRestart = useCallback(async (service: string) => {
+    const attempted = Array.from(selected);
     setBulkLoading(true);
     try {
       const res = await authFetch(`${HUB_URL}/api/bulk/command`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          machine_ids: Array.from(selected),
+          machine_ids: attempted,
           type: "restart_service",
           target: service,
         }),
       });
-      if (!res.ok) return;
-    } catch { /* ignore */ }
-    setBulkLoading(false);
-    setSelected(new Set());
-  }, [selected, authFetch]);
+      const feedback = bulkCommandFeedback(res.ok, await res.json(), attempted.length, "restart_service");
+      addToast(feedback.type, feedback.message);
+    } catch {
+      addToast("error", "Request interrupted; completion is unknown. Check machine status before retrying.");
+    } finally {
+      setBulkLoading(false);
+      setSelected((prev) => selectionAfterBulkAttempt(prev, attempted));
+    }
+  }, [selected, authFetch, addToast]);
 
   const handleDeleteFromGrid = useCallback(async () => {
     if (!deleteTarget) return;
