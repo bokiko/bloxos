@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -183,5 +184,30 @@ func TestTerminalRefusalRejectsLateAgentSocket(t *testing.T) {
 	session.mu.Unlock()
 	if agentWS != nil {
 		t.Fatal("late agent socket was registered on a failed session")
+	}
+}
+
+// TestTerminalRefusalConcurrentWithBrowserConnect races the browser connect
+// against the agent's refusal repeatedly. Whichever side wins, the browser
+// must receive exactly one refusal frame and then a closed socket, and the
+// race detector must see no unsynchronised access.
+func TestTerminalRefusalConcurrentWithBrowserConnect(t *testing.T) {
+	e, s := setupTestServer(t)
+	server := httptest.NewServer(e)
+	defer server.Close()
+	for i := 0; i < 25; i++ {
+		sid := fmt.Sprintf("refusal-race-%02d-session", i)
+		seedRefusalSession(t, s, sid, "machine-refusal")
+		resp := CommandResponse{Type: "command_response", ID: terminalCommandIDPrefix + sid[:terminalCommandIDChars], Error: "raced refusal"}
+		routed := make(chan bool, 1)
+		go func() { routed <- s.failTerminalSessionFromAgent("machine-refusal", resp) }()
+		conn := dialRefusalBrowser(t, server, sid)
+		if !<-routed {
+			t.Fatalf("iteration %d: refusal not routed", i)
+		}
+		expectRefusalThenClose(t, conn, "raced refusal")
+		if sessionExists(sid) {
+			t.Fatalf("iteration %d: session still registered", i)
+		}
 	}
 }
