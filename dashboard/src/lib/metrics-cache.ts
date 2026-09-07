@@ -96,10 +96,13 @@ export function clearCache(userID: string | null): void {
  * Create a debounced writer. The actual localStorage write happens at
  * most once every WRITE_DEBOUNCE_MS milliseconds, with the most recent
  * value winning. The returned flush() forces an immediate write.
+ * cancel() drops any pending write WITHOUT performing it — mandatory on
+ * logout, where clearCache() must not be undone by a timer that was
+ * already scheduled.
  */
 export function makeDebouncedWriter(
   userID: string | null
-): [writer: (machines: MachineMetrics[]) => void, flush: () => void] {
+): [writer: (machines: MachineMetrics[]) => void, flush: () => void, cancel: () => void] {
   let pendingMachines: MachineMetrics[] | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -114,6 +117,14 @@ export function makeDebouncedWriter(
     }
   };
 
+  const cancel = () => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    pendingMachines = null;
+  };
+
   const writer = (machines: MachineMetrics[]) => {
     pendingMachines = machines;
     if (timer) return;
@@ -126,5 +137,5 @@ export function makeDebouncedWriter(
     }, WRITE_DEBOUNCE_MS);
   };
 
-  return [writer, flush];
+  return [writer, flush, cancel];
 }

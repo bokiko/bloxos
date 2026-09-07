@@ -367,15 +367,22 @@ export default function Home() {
     setDeleteLoading(true);
     try {
       const res = await authFetch(`${HUB_URL}/api/machines/${deleteTarget.id}`, { method: "DELETE" });
-      if (!res.ok) return;
+      if (!res.ok) {
+        addToast("error", `Delete failed (HTTP ${res.status}). ${deleteTarget.hostname} was not removed.`);
+        return;
+      }
       if (deleteTarget.id.startsWith("api-")) {
         const apiID = deleteTarget.id.replace(/^api-/, "");
         setApiMachines((prev) => prev.filter((machine) => machine.id !== apiID));
       }
-    } catch { /* ignore */ }
-    setDeleteLoading(false);
-    setDeleteTarget(null);
-  }, [deleteTarget, authFetch]);
+      // Agent machines disappear via the hub's machine_removed SSE event.
+    } catch {
+      addToast("error", `Delete failed: request interrupted. ${deleteTarget.hostname} may still exist — refresh to check.`);
+    } finally {
+      setDeleteLoading(false);
+      setDeleteTarget(null);
+    }
+  }, [deleteTarget, authFetch, addToast]);
 
   const handleAPIMachineSaved = useCallback(() => {
     void loadAPIMachines();

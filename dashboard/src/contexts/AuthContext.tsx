@@ -1,9 +1,10 @@
 "use client";
 
-import { createContext, useContext, useEffect, useState, useCallback, ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, useCallback, ReactNode } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { ChangePasswordModal } from "@/components/ChangePasswordModal";
-import { HUB_URL, dispatchAuthChanged } from "@/lib/session";
+import { HUB_URL, dispatchAuthChanged, getStoredToken } from "@/lib/session";
+import { shouldLogoutOn401, storageAuthAction, tokenRemovalApplies } from "@/lib/auth-session.mjs";
 
 export type UserRole = "admin" | "operator" | "viewer";
 
@@ -84,7 +85,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [checked, token, pathname, router]);
 
+  // Session generation: incremented by every login attempt and every logout,
+  // so an async login that resolves after either is discarded instead of
+  // writing stale session state over the current one.
+  const sessionGenRef = useRef(0);
+
   const login = useCallback(async (username: string, password: string): Promise<boolean> => {
+    const gen = ++sessionGenRef.current;
     try {
       const res = await fetch(`${HUB_URL}/api/auth/login`, {
         method: "POST",
@@ -93,8 +100,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       });
       if (!res.ok) return false;
       const data = await res.json();
-      localStorage.setItem("bloxos_token", data.token);
-      setToken(data.token);
+      // A logout or a newer login happened while this request was in flight —
+      // discard this result rather than clobbering the current session.
+      if (gen !== sessionGenRef.current) return false;
 
       const nextRole = normalizeRole(typeof data.role === "string" ? data.role : null);
       setRole(nextRole);
@@ -110,18 +118,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setScopes(nextScopes);
       localStorage.setItem("bloxos_scopes", JSON.stringify(nextScopes));
 
-      dispatchAuthChanged();
-
-      // Check if password/PIN change is required (Finding #2).
-      if (data.password_change_required) {
-        setPasswordChangeRequired(true);
+      // Set OR CLEAR the change-required flags — a fresh login without a
+      // requirement must not inherit a previous session's forced modal.
+      const pwReq = !!data.password_change_required;
+      const pinReq = !!data.pin_change_required;
+      setPasswordChangeRequired(pwReq);
+      setPinChangeRequired(pinReq);
+      if (pwReq) {
         localStorage.setItem("bloxos_pw_change_required", "true");
+      } else {
+        localStorage.removeItem("bloxos_pw_change_required");
       }
-      if (data.pin_change_required) {
-        setPinChangeRequired(true);
+      if (pinReq) {
         localStorage.setItem("bloxos_pin_change_required", "true");
+      } else {
+        localStorage.removeItem("bloxos_pin_change_required");
       }
 
+      // Publish the token LAST: other tabs' storage listeners key on
+      // bloxos_token, and by the time it changes, role/scopes/flags are
+      // already consistent — no tab may observe a mixed session.
+      localStorage.setItem("bloxos_token", data.token);
+      setToken(data.token);
+
+      dispatchAuthChanged();
       return true;
     } catch {
       return false;
@@ -129,6 +149,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const logout = useCallback(() => {
+    sessionGenRef.current++;
     localStorage.removeItem("bloxos_token");
     localStorage.removeItem("bloxos_role");
     localStorage.removeItem("bloxos_scopes");
@@ -145,6 +166,42 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const hasScope = useCallback((scope: string) => scopes.includes(scope), [scopes]);
 
+  // Cross-tab auth sync: logout elsewhere clears this tab too (and a full
+  // localStorage.clear counts as logout); a token replaced by a login in
+  // another tab re-syncs role/scopes/flags from storage so this tab shows
+  // the new user's session instead of a stale mix.
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      const action = storageAuthAction(e.key, e.newValue);
+      if (action === "logout") {
+        // An old removal event must not wipe a newer login that landed
+        // meanwhile — act only when the store truly has no token now.
+        if (!tokenRemovalApplies(getStoredToken())) return;
+        logout();
+        return;
+      }
+      if (action === "sync-login") {
+        // Read the CURRENT stored snapshot, never the event payload — the
+        // event may be older than what is in storage now.
+        const storedToken = getStoredToken();
+        if (!storedToken) return;
+        setToken(storedToken);
+        setRole(normalizeRole(localStorage.getItem("bloxos_role")));
+        const rawScopes = localStorage.getItem("bloxos_scopes");
+        try {
+          setScopes(rawScopes ? JSON.parse(rawScopes) : []);
+        } catch {
+          setScopes([]);
+        }
+        setPasswordChangeRequired(localStorage.getItem("bloxos_pw_change_required") === "true");
+        setPinChangeRequired(localStorage.getItem("bloxos_pin_change_required") === "true");
+        dispatchAuthChanged();
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [logout]);
+
   const authFetch = useCallback(async (url: string, init?: RequestInit): Promise<Response> => {
     const currentToken = localStorage.getItem("bloxos_token");
     const headers = new Headers(init?.headers);
@@ -152,18 +209,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       headers.set("Authorization", `Bearer ${currentToken}`);
     }
     const res = await fetch(url, { ...init, headers });
-    if (res.status === 401) {
+    if (res.status === 401 && shouldLogoutOn401(currentToken, localStorage.getItem("bloxos_token"))) {
       // Any 401 is authoritative: the hub rejected this token. That covers
       // server-side revocation (deleted user, role change, rotated secret) as
       // well as expiry — cases the old local `exp` check missed, leaving the
-      // client "logged in" while every request silently failed.
-      localStorage.removeItem("bloxos_token");
-      setToken(null);
-      dispatchAuthChanged();
-      router.push("/login");
+      // client "logged in" while every request silently failed. Full logout
+      // (role/scopes/flags too), but ONLY when the failing request still
+      // carries the current token: an older in-flight request started before
+      // a re-login must not wipe the new session.
+      logout();
     }
     return res;
-  }, [router]);
+  }, [logout]);
 
   const handlePasswordChanged = useCallback(() => {
     setPasswordChangeRequired(false);

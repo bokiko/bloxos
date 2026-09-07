@@ -100,6 +100,9 @@ export function SSEProvider({ children }: { children: ReactNode }) {
     attached.add(event);
     es.addEventListener(event, (e) => {
       if (!mountedRef.current) return;
+      // A listener on a replaced EventSource must never fan out — only the
+      // current connection's events are valid.
+      if (esRef.current !== es) return;
       const handlers = subscriptionsRef.current.get(event);
       if (!handlers) return;
       for (const h of handlers) {
@@ -135,8 +138,12 @@ export function SSEProvider({ children }: { children: ReactNode }) {
   const userIDRef = useRef<string | null>(null);
   const cacheWriterRef = useRef<((machines: MachineMetrics[]) => void) | null>(null);
   const cacheFlushRef = useRef<(() => void) | null>(null);
+  const cacheCancelRef = useRef<(() => void) | null>(null);
 
   const updateUserID = useCallback(() => {
+    // A pending debounced write from the previous user must never fire into
+    // the new user's session (or resurrect a cache cleared on logout).
+    cacheCancelRef.current?.();
     const token = getStoredToken();
     if (!token) {
       userIDRef.current = null;
@@ -148,9 +155,10 @@ export function SSEProvider({ children }: { children: ReactNode }) {
     } catch {
       userIDRef.current = null;
     }
-    const [writer, flush] = makeDebouncedWriter(userIDRef.current);
+    const [writer, flush, cancel] = makeDebouncedWriter(userIDRef.current);
     cacheWriterRef.current = writer;
     cacheFlushRef.current = flush;
+    cacheCancelRef.current = cancel;
   }, []);
 
   const disconnect = useCallback((clearData = false) => {
@@ -213,7 +221,9 @@ export function SSEProvider({ children }: { children: ReactNode }) {
     }
 
     es.onopen = () => {
-      if (!mountedRef.current) return;
+      // Same generation guard as the event listeners: a queued onopen from a
+      // replaced EventSource must not flip state or schedule refreshes.
+      if (!mountedRef.current || esRef.current !== es) return;
       setConnected(true);
       backoffRef.current = 3000;
 
@@ -226,7 +236,7 @@ export function SSEProvider({ children }: { children: ReactNode }) {
     };
 
     es.addEventListener("snapshot", (event) => {
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || esRef.current !== es) return;
       try {
         const list = JSON.parse(event.data) as MachineMetrics[];
         setHasReceivedData(true);
@@ -253,7 +263,7 @@ export function SSEProvider({ children }: { children: ReactNode }) {
     });
 
     es.addEventListener("metrics", (event) => {
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || esRef.current !== es) return;
       try {
         const m = JSON.parse(event.data) as MachineMetrics;
         if (!m.machine_id) return;
@@ -289,7 +299,7 @@ export function SSEProvider({ children }: { children: ReactNode }) {
     });
 
     es.addEventListener("services", (event) => {
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || esRef.current !== es) return;
       try {
         const msg = JSON.parse(event.data);
         if (msg.machine_id && msg.services) {
@@ -310,7 +320,7 @@ export function SSEProvider({ children }: { children: ReactNode }) {
     });
 
     es.addEventListener("containers", (event) => {
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || esRef.current !== es) return;
       try {
         const msg = JSON.parse(event.data);
         if (msg.machine_id && msg.containers) {
@@ -330,8 +340,31 @@ export function SSEProvider({ children }: { children: ReactNode }) {
       }
     });
 
+    // machine_removed is additive (hubs before Unit A never send it): a
+    // deleted machine disappears from the fleet immediately instead of
+    // lingering until the next full reload. The filtered map is persisted
+    // AND flushed, so a pending debounced snapshot can't restore the
+    // deleted card on reload.
+    es.addEventListener("machine_removed", (event) => {
+      if (!mountedRef.current || esRef.current !== es) return;
+      try {
+        const msg = JSON.parse(event.data);
+        if (!msg.machine_id || typeof msg.machine_id !== "string") return;
+        setMachineMap((prev) => {
+          if (!prev.has(msg.machine_id)) return prev;
+          const next = new Map(prev);
+          next.delete(msg.machine_id);
+          cacheWriterRef.current?.(Array.from(next.values()));
+          cacheFlushRef.current?.();
+          return next;
+        });
+      } catch {
+        // ignore
+      }
+    });
+
     es.addEventListener("alert_count", (event) => {
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || esRef.current !== es) return;
       try {
         const data = JSON.parse(event.data);
         setAlertCount(data.count);
@@ -341,7 +374,7 @@ export function SSEProvider({ children }: { children: ReactNode }) {
     });
 
     es.addEventListener("alert", (event) => {
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || esRef.current !== es) return;
       try {
         const alert = JSON.parse(event.data) as AlertData;
         if (alert.status === "active") {
@@ -357,7 +390,9 @@ export function SSEProvider({ children }: { children: ReactNode }) {
     });
 
     es.onerror = () => {
-      if (!mountedRef.current) return;
+      // Without the guard, an error event queued before a reconnect could
+      // null esRef (the NEW connection) and double-schedule the backoff.
+      if (!mountedRef.current || esRef.current !== es) return;
       setConnected(false);
       es.close();
       esRef.current = null;
@@ -393,7 +428,9 @@ export function SSEProvider({ children }: { children: ReactNode }) {
 
     connectRef.current();
 
-    // Fetch active alerts on mount
+    // Fetch active alerts on mount. The token captured at dispatch time is
+    // re-checked before applying: a logout (or re-login) while the request
+    // is in flight must not repopulate state it just cleared.
     const token = getStoredToken();
     if (token) {
       fetch(`${HUB_URL}/api/alerts`, {
@@ -402,7 +439,7 @@ export function SSEProvider({ children }: { children: ReactNode }) {
         .then((r) => r.json())
         .then((data) => {
           if (!Array.isArray(data)) return;
-          if (mountedRef.current) {
+          if (mountedRef.current && getStoredToken() === token) {
             setAlerts(data);
             setAlertCount(data.length);
           }
@@ -413,6 +450,9 @@ export function SSEProvider({ children }: { children: ReactNode }) {
     const onStorage = (e: StorageEvent) => {
       if (e.key === "bloxos_token") {
         backoffRef.current = 3000;
+        // Token removed or replaced in another tab: re-key the cache writer
+        // before reconnecting (logout's purge is driven by AUTH_CHANGED).
+        updateUserID();
         connectRef.current();
       }
     };
@@ -423,11 +463,19 @@ export function SSEProvider({ children }: { children: ReactNode }) {
         updateUserID();
         connectRef.current();
       } else {
-        // Logout — clear this user's cache so the next user doesn't
-        // see leftover machine data on a shared browser.
+        // Logout — invalidate any in-flight connect (a fetchSSEToken that
+        // started before logout must not open an EventSource afterwards),
+        // cancel any pending debounced write FIRST so it cannot resurrect
+        // the cache we are about to clear, then clear this user's cache so
+        // the next user doesn't see leftover machine data on a shared
+        // browser.
+        connectSeqRef.current++;
+        cacheCancelRef.current?.();
         clearCache(userIDRef.current);
         userIDRef.current = null;
         cacheWriterRef.current = null;
+        cacheFlushRef.current = null;
+        cacheCancelRef.current = null;
         disconnect(true);
       }
     };

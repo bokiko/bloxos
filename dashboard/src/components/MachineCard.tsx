@@ -154,6 +154,10 @@ export function MachineCard({ machine, onDelete, onEdit, onRefresh }: MachineCar
       tabIndex={0}
       onClick={navigateToDetail}
       onKeyDown={(e) => {
+        // Events bubbling from the card's action buttons (pin/refresh/edit/
+        // delete) must keep their native keyboard behavior; only a keypress
+        // targeted at the card itself navigates.
+        if (e.target !== e.currentTarget) return;
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
           navigateToDetail();
