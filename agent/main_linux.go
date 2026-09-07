@@ -146,8 +146,8 @@ func platformSupportsTerminal() bool { return true }
 
 // handleStartTerminalPlatform is the platform-aware entry point for
 // start_terminal commands.
-func handleStartTerminalPlatform(cmd Command, rawMsg []byte) {
-	handleStartTerminal(cmd, rawMsg)
+func handleStartTerminalPlatform(conn *websocket.Conn, mu *sync.Mutex, cmd Command, rawMsg []byte) {
+	handleStartTerminal(conn, mu, cmd, rawMsg)
 }
 
 // platformInstallService is a no-op on Linux. Linux uses systemd via
@@ -197,10 +197,20 @@ type TerminalCommand struct {
 	TerminalToken string `json:"terminal_token,omitempty"`
 }
 
-func handleStartTerminal(cmd Command, rawMsg []byte) {
+func handleStartTerminal(conn *websocket.Conn, mu *sync.Mutex, cmd Command, rawMsg []byte) {
 	// Re-parse to get terminal_token field.
 	var termCmd TerminalCommand
 	json.Unmarshal(rawMsg, &termCmd)
+
+	// refuse reports why the session will not start. The hub relays the
+	// reason to the browser and closes the session, so the operator sees
+	// what to fix instead of a blank terminal that times out.
+	refuse := func(reason string) {
+		log.Printf("terminal: refusing to start session — %s", reason)
+		if cmd.ID != "" {
+			writeJSON(conn, mu, CommandResponse{Type: "command_response", ID: cmd.ID, Error: reason})
+		}
+	}
 
 	sessionID := termCmd.SessionID
 	if sessionID == "" {
@@ -236,20 +246,20 @@ func handleStartTerminal(cmd Command, rawMsg []byte) {
 	bashCmd := exec.Command("bash", "-l")
 	termUser, err := resolveTerminalUser()
 	if err != nil {
-		log.Printf("terminal: refusing to start session — %v", err)
+		refuse(err.Error())
 		return
 	}
 	if err := applyTerminalCredentials(bashCmd, termUser); err != nil {
 		// Fail-closed: refuse the session rather than run bash as the
 		// agent's identity (root). Better a visible terminal failure than
 		// an escalation.
-		log.Printf("terminal: refusing to start session — credential setup failed: %v", err)
+		refuse("credential setup failed: " + err.Error())
 		return
 	}
 	log.Printf("terminal: spawning shell as user %s (uid=%s)", termUser.Username, termUser.Uid)
 	ptmx, err := pty.Start(bashCmd)
 	if err != nil {
-		log.Printf("terminal: pty.Start failed: %v", err)
+		refuse("pty start failed: " + err.Error())
 		return
 	}
 	// waitOnce coordinates Wait() between the cleanup defer below and
@@ -270,7 +280,7 @@ func handleStartTerminal(cmd Command, rawMsg []byte) {
 	log.Printf("terminal: connecting to %s", termURL)
 	dialer, err := websocketDialerFor(termURL)
 	if err != nil {
-		log.Printf("terminal: build websocket dialer failed: %v", err)
+		refuse("build websocket dialer failed: " + err.Error())
 		return
 	}
 	termHeader := http.Header{}

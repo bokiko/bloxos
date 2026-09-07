@@ -1376,6 +1376,8 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 			pendingCmdsMu.Unlock()
 			if ok {
 				ch <- resp
+			} else if !s.failTerminalSessionFromAgent(machineID, resp) && resp.Error != "" {
+				log.Printf("command_response %s from %s not pending: %s", resp.ID, machineID, resp.Error)
 			}
 
 		case "enrollment_committed":

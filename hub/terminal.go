@@ -30,6 +30,65 @@ type TerminalSession struct {
 	mu            sync.Mutex
 	Done          chan struct{}
 	closeOnce     sync.Once
+	// FailReason is set when the agent refused the session before
+	// connecting (no non-root terminal user, credential setup, PTY). A
+	// browser that connects afterwards is told why and closed.
+	FailReason string
+}
+
+// terminalCommandIDPrefix prefixes the start_terminal command id, which is
+// followed by the first terminalCommandIDChars characters of the session id.
+const (
+	terminalCommandIDPrefix = "term-"
+	terminalCommandIDChars  = 8
+)
+
+// failTerminalSessionFromAgent handles a command_response the agent sent
+// for a start_terminal command: the agent refused the session. The reason
+// is written to the browser (now, or when it connects) and the session is
+// closed. Without this the browser sat on a blank terminal until the 30 s
+// agent-connect timeout. Only the session's own machine may fail it, and a
+// session whose agent has already connected is left to the relay.
+func (s *Server) failTerminalSessionFromAgent(machineID string, resp CommandResponse) bool {
+	if resp.Error == "" || !strings.HasPrefix(resp.ID, terminalCommandIDPrefix) {
+		return false
+	}
+	short := strings.TrimPrefix(resp.ID, terminalCommandIDPrefix)
+	if len(short) != terminalCommandIDChars {
+		return false
+	}
+	termSessionsMu.RLock()
+	var session *TerminalSession
+	for id, sess := range termSessions {
+		if strings.HasPrefix(id, short) && sess.MachineID == machineID {
+			session = sess
+			break
+		}
+	}
+	termSessionsMu.RUnlock()
+	if session == nil {
+		return false
+	}
+	session.mu.Lock()
+	if session.AgentWS != nil {
+		session.mu.Unlock()
+		return false
+	}
+	session.FailReason = resp.Error
+	browser := session.BrowserWS
+	session.mu.Unlock()
+	log.Printf("terminal %s: agent refused session: %s", session.ID, resp.Error)
+	if browser != nil {
+		writeTerminalRefusal(browser, resp.Error)
+		s.cleanupTerminalSession(session.ID)
+	}
+	return true
+}
+
+// writeTerminalRefusal shows the agent's reason in the browser terminal.
+func writeTerminalRefusal(ws *websocket.Conn, reason string) {
+	_ = ws.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	_ = ws.WriteMessage(websocket.TextMessage, []byte("\r\n[bloxos] terminal refused by agent: "+reason+"\r\n"))
 }
 
 // maxTerminalSessions is the maximum number of concurrent terminal sessions allowed.
@@ -317,9 +376,14 @@ func (s *Server) handleTerminalWS(c echo.Context) error {
 
 	agentWS := session.AgentWS
 	browserWS := session.BrowserWS
+	failReason := session.FailReason
 	session.mu.Unlock()
 
-	if agentWS != nil && browserWS != nil {
+	if role == "browser" && failReason != "" {
+		// The agent already refused this session; say why and close.
+		writeTerminalRefusal(ws, failReason)
+		s.cleanupTerminalSession(sessionID)
+	} else if agentWS != nil && browserWS != nil {
 		goSafelyOnce("terminalRelay/"+sessionID, func() { s.terminalRelay(sessionID, session) })
 	} else {
 		go func() {

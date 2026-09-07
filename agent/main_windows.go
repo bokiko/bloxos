@@ -6,7 +6,9 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"sync"
 
+	"github.com/gorilla/websocket"
 	"golang.org/x/sys/windows/registry"
 )
 
@@ -23,7 +25,7 @@ func platformSupportsTerminal() bool { return false }
 
 // handleStartTerminalPlatform is a no-op on Windows. The hub-side gating
 // in main.go already responds to start_terminal commands with an error.
-func handleStartTerminalPlatform(cmd Command, rawMsg []byte) {
+func handleStartTerminalPlatform(conn *websocket.Conn, mu *sync.Mutex, cmd Command, rawMsg []byte) {
 	// Intentionally no-op; gated by platformSupportsTerminal.
 }
 

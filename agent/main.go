@@ -903,7 +903,7 @@ func handleCommand(conn *websocket.Conn, mu *sync.Mutex, msg []byte) {
 			}
 			return
 		}
-		handleStartTerminalPlatform(cmd, msg)
+		handleStartTerminalPlatform(conn, mu, cmd, msg)
 		return
 	}
 
