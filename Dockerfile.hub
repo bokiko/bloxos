@@ -12,7 +12,7 @@
 # no VCS stamping, stripped), so rebuilding does not change the served
 # agent hash and does not trigger a fleet rollout.
 
-FROM --platform=$BUILDPLATFORM golang:1.25.9-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.26.8-alpine AS build
 ARG TARGETARCH
 ENV CGO_ENABLED=0 \
     GOTOOLCHAIN=local \

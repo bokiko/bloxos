@@ -35,11 +35,24 @@ compose() { docker compose --project-directory "$COMPOSE_DIR" "$@"; }
 json() { python3 -c "import sys,json; d=json.load(sys.stdin); print($1)"; }
 fail() { echo "SMOKE FAIL: $*" >&2; exit 1; }
 
+# Poll $1 until it answers 200 through Caddy, at most $2 attempts 2 s apart,
+# each with a 3 s curl timeout; on giving up, report the last status seen.
+wait_for_http_200() {
+  local url="$1" attempts="$2" code=""
+  for _ in $(seq 1 "$attempts"); do
+    code="$(curl -sk -o /dev/null --max-time 3 -w '%{http_code}' "$url" || true)"
+    [[ "$code" == 200 ]] && return 0
+    sleep 2
+  done
+  echo "last status for $url: ${code:-none}" >&2
+  return 1
+}
+
 cleanup() {
   local rc=$?
   if [[ $rc -ne 0 ]]; then
-    echo "== hub and caddy logs (last 60 lines) after failure"
-    compose logs --tail 60 hub caddy 2>/dev/null || true
+    echo "== hub, caddy and dashboard logs (last 60 lines) after failure"
+    compose logs --tail 60 hub caddy dashboard 2>/dev/null || true
     sudo journalctl -u bloxos-agent --no-pager -n 20 2>/dev/null || true
   fi
   [[ "${KEEP:-}" == "1" ]] && { echo "KEEP=1: stack and agent left in place"; return; }
@@ -63,7 +76,14 @@ for _ in $(seq 1 60); do
   sleep 2
 done
 curl -sk --max-time 3 "$HUB/health" | grep -q '"ok"' || fail "hub not healthy through Caddy"
-[[ "$(curl -sk -o /dev/null -w '%{http_code}' "$HUB/login")" == 200 ]] || fail "dashboard not served"
+
+# Caddy is ordered after the hub's health check but has no dependency on the
+# dashboard, and `compose up -d` returns once that container has started, not
+# once Next.js listens on :3000. The first proxied /login can therefore 502
+# for a few seconds on a cold host; poll, bounded like the hub health wait
+# (30 attempts, 2 s apart, 3 s curl timeout), and keep the final assertion a hard 200.
+echo "== wait for dashboard"
+wait_for_http_200 "$HUB/login" 30 || fail "dashboard not served"
 [[ "$(curl -sk -o /dev/null -w '%{http_code}' "$HUB/install.ps1")" == 200 ]] || fail "Windows installer not served"
 
 echo "== served certificate key type"
