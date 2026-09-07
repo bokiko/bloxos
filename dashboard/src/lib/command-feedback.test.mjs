@@ -19,3 +19,15 @@ test("bulk results distinguish sent, completed, offline and missing replies", ()
   assert.match(partial.message, /0 completed, 1 sent \(unconfirmed\), 2 failed/);
   assert.equal(bulkCommandFeedback(false, {}, 2).type, "error");
 });
+
+test("bulk reboot acknowledgements never claim completed recovery", () => {
+  const acknowledged = bulkCommandFeedback(true, { results: [{ success: true }] }, 1, "reboot");
+  assert.equal(acknowledged.type, "info");
+  assert.match(acknowledged.message, /1 acknowledged \(reboot\/recovery unconfirmed\)/);
+  assert.doesNotMatch(acknowledged.message, /completed/);
+  const mixed = bulkCommandFeedback(true, { results: [{ success: true }, { accepted: true }, { error: "denied" }] }, 3, "reboot");
+  assert.equal(mixed.type, "error");
+  assert.match(mixed.message, /1 acknowledged .*1 sent .*1 failed/);
+  assert.doesNotMatch(mixed.message, /completed/);
+  assert.equal(bulkCommandFeedback(true, { results: [{ success: true }] }, 1, "restart_service").type, "success");
+});

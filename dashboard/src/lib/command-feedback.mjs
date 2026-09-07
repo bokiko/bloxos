@@ -10,16 +10,20 @@ export function commandFeedback(httpOK, data, completedMessage) {
   return { type: "error", message: `Failed: ${data?.error || data?.output || "unknown error"}` };
 }
 
-export function bulkCommandFeedback(httpOK, data, expectedCount) {
+export function bulkCommandFeedback(httpOK, data, expectedCount, commandType) {
   const results = Array.isArray(data?.results) ? data.results : [];
   const accepted = results.filter(r => r.accepted === true).length;
-  const completed = results.filter(r => !r.accepted && r.success === true).length;
-  const failed = Math.max(expectedCount, results.length) - accepted - completed;
+  const succeeded = results.filter(r => !r.accepted && r.success === true).length;
+  const isReboot = commandType === "reboot";
+  const acknowledged = isReboot
+    ? `${succeeded} acknowledged (reboot/recovery unconfirmed)`
+    : `${succeeded} completed`;
+  const failed = Math.max(expectedCount, results.length) - accepted - succeeded;
   if (!httpOK || failed > 0 || results.length === 0) {
-    return { type: "error", message: `${completed} completed, ${accepted} sent (unconfirmed), ${failed || expectedCount} failed. Check machine status before retrying.` };
+    return { type: "error", message: `${acknowledged}, ${accepted} sent (unconfirmed), ${failed || expectedCount} failed. Check machine status before retrying.` };
   }
   return {
-    type: accepted ? "info" : "success",
-    message: `${completed} completed, ${accepted} sent${accepted ? " (completion unconfirmed; check machine status)" : ""}.`,
+    type: accepted || isReboot ? "info" : "success",
+    message: `${acknowledged}, ${accepted} sent${accepted ? " (completion unconfirmed; check machine status)" : ""}.`,
   };
 }

@@ -325,7 +325,7 @@ export default function Home() {
           target: "",
         }),
       });
-      const feedback = bulkCommandFeedback(res.ok, await res.json(), selected.size);
+      const feedback = bulkCommandFeedback(res.ok, await res.json(), selected.size, "reboot");
       addToast(feedback.type, feedback.message);
       if (feedback.type !== "error") setSelected(new Set());
     } catch {
@@ -347,7 +347,7 @@ export default function Home() {
           target: service,
         }),
       });
-      const feedback = bulkCommandFeedback(res.ok, await res.json(), selected.size);
+      const feedback = bulkCommandFeedback(res.ok, await res.json(), selected.size, "restart_service");
       addToast(feedback.type, feedback.message);
       if (feedback.type !== "error") setSelected(new Set());
     } catch {
