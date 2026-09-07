@@ -35,7 +35,7 @@ If you've ever opened five browser tabs to check on five machines, this is for y
 ## What you actually get
 
 ### Live, not polled
-Metrics stream over WebSocket from agent to hub, then push to your browser via SSE. CPU, RAM, GPU usage, GPU power, thermals, network throughput, disk I/O — all updating multiple times per second. No 15-second scrape intervals. No "did it just freeze or is it just slow." When a value changes, you see it change.
+Metrics stream over WebSocket from agent to hub, then push to your browser via SSE. The normal agent snapshot cadence is 30 seconds, with on-demand refresh. Freshness indicators distinguish current readings from stale data. Power history samples component sensors locally every second and uploads 30-second averages and sampled peaks; this is not a wall-power meter.
 
 ### Real hardware inventory
 Every agent collects DMI data, RAM modules (manufacturer, speed, slot, ECC status), GPU devices (model, VRAM, driver), PCI bus, network adapters, disks, BIOS, and motherboard. The fleet-wide `/inventory` page is sortable, filterable, groupable, and exports to CSV / JSON / Markdown. The first time you use it to find "every machine with less than 32GB RAM" in three seconds, you'll understand why it's there.
@@ -44,7 +44,7 @@ Every agent collects DMI data, RAM modules (manufacturer, speed, slot, ECC statu
 xterm.js, theme-aware, stable 360px pane. Hit a machine, get a real shell. No SSH key juggling, no port forwarding, no "what was the IP again." The terminal session belongs to the operator's auth context, not the machine's.
 
 ### Two operating systems, one dashboard
-The Linux agent and the Windows agent speak the same WebSocket protocol to the same hub. The Windows agent registers itself as a Windows Service via SCM, collects hardware via WMI, and supports the same auto-update flow. From the dashboard, a Windows machine and a Linux machine look and behave identically.
+The Linux agent and the Windows agent speak the same WebSocket protocol to the same hub. The Windows agent registers itself as a Windows Service via SCM, collects hardware via WMI, and supports signed auto-update. Web terminal access is Linux-only; Windows enrollment and re-enrollment use generated PowerShell commands.
 
 ### Signed auto-update and recovery
 Protocol-v1 agents accept an update only when its Ed25519 release signature verifies against their pinned key and the transport is permitted. Protocol-0 agents require a deliberately limited migration hop to reach protocol v1, because signature verification cannot be retrofitted into an already-running binary; the hub permits that hop only over TLS or loopback. After migration, the agent is withheld until its update key is pinned through a trusted provisioning path.
@@ -56,7 +56,7 @@ Both platforms use a `.prev` file for recovery, but their behavior differs:
 - **Linux** verifies the update, replaces the executable atomically, and exits for systemd to restart it. An `OnFailure` recovery unit can automatically restore `.prev` after repeated startup failure.
 - **Windows** attempts to snapshot `.prev`, downloads to `<exe>.new`, and writes `<exe>.pending` with the expected `sha256` and `signature`. On the SCM restart, `applyPendingUpdate` hashes `.new`, compares the SHA, and verifies the signature against the pinned key before spawning the swap helper. `performUpdateWindows` exits with code `1` to trigger that SCM restart. The helper attempts `move /Y` before deleting the marker, but marker deletion is unconditional; Windows has no automatic rollback, so restoring `.prev` remains manual.
 
-A circuit breaker pauses fleet rollout after two failures in five minutes. Signatures still have no downgrade or monotonicity protection: a previously valid `(os, sha)` pair remains valid indefinitely ([#145](https://github.com/bokiko/bloxos/issues/145)).
+A circuit breaker pauses fleet rollout after two failures in five minutes. Protocol-2 agents persist a signed release-number/SHA floor before replacing their executable: older builds are rejected, and the same release number is accepted only for identical bytes. Protocol-1 agents do not enforce this floor. Never delete the floor during reinstall, key rotation, or recovery; see [AGENTS.md](AGENTS.md) for the compatibility contract.
 
 You push an update to the hub and the fleet moves to the new version on its own. On Linux, a bad build can also recover automatically.
 
@@ -70,7 +70,7 @@ Five themes — BloxOS (default), Solarized, Dracula, Nord, Tokyo Night — each
 Command palette opens on `Cmd+K` (or `Ctrl+K`). Jump to any machine by name, run any action, open any setting, search inventory, switch themes. The palette is how operators actually use the system once they know it exists.
 
 ### One-file database
-SQLite. The whole system — users, machines, metrics history, inventory, branding, preferences, saved filters, notes — lives in `bloxos.db`. Backup is `cp bloxos.db backup.db`. Restore is the inverse. No replication setup, no migration nightmares, no "which Postgres version are we on."
+SQLite keeps users, machines, history, inventory, branding, preferences and notes together. The hub uses WAL, so a live copy of `bloxos.db` alone is **not a safe backup**. Preserve the database and the hub's signing/JWT identity plus the proxy CA using the [backup and restore procedure](docs/backup-restore.md).
 
 ### Built for operators, not viewers
 - Notes per machine (markdown-ish, URL auto-link)
@@ -148,11 +148,37 @@ environment variable read by the Go hub and agent.
 | `ProgramFiles` | Windows-provided | Used to discover NVIDIA tooling; normally never overridden. |
 | `NEXT_PUBLIC_HUB_URL` | Dashboard | Hub origin when dashboard and hub are not same-origin. |
 
-## Quick start from source
+## Quick start: Compose hub
 
-> **Status:** BloxOS is pre-1.0. The polished public installer is still in
-> progress. This path builds the hub and Linux agent from source and keeps the
-> first enrollment on loopback.
+Use the [supported Compose deployment](docker/README.md) on a Docker host:
+
+```bash
+git clone https://github.com/bokiko/bloxos.git
+cd bloxos/docker
+cp .env.example .env
+# Edit .env: set HUB_HOST to this machine's hostname or IP (no scheme/port).
+docker compose up -d --build
+docker compose exec hub cat /data/.bloxos/setup-token
+```
+
+Open `https://<HUB_HOST>` and use the setup token to create your account. The
+stack uses an internal CA; the container guide explains browser trust. Choose
+**Add Machine** and copy the generated Linux one-line command or Windows
+PowerShell command to that machine. Installing a hub and enrolling a machine
+are different operations; an enrollment command does not install another hub.
+
+Build from your chosen tested revision for current source. A green main build
+does not mean that the same revision is published as `latest` or deployed on
+your host. When using published images, pin an available version and verify
+its revision; do not assume an older release has the current source features.
+Back up before upgrading. The hub also serves agent updates, so upgrading it
+can update enrolled machines, not just the dashboard.
+
+## Native development from source
+
+> This alternative is for Linux development on amd64. The supported Compose
+> build packages both Linux architectures and Windows. A one-line public hub
+> installer is separate work; machine onboarding already ships.
 
 ### 1. Clone and build
 
@@ -173,8 +199,9 @@ To build the Windows agent artifact:
 (cd agent && GOOS=windows GOARCH=amd64 go build -o ../bin/bloxos-agent.exe .)
 ```
 
-Windows enrollment is under active rework and is intentionally not documented
-as a runnable installer flow yet.
+For Windows enrollment, use the generated command in **Add Machine → Windows**.
+The Compose image already includes the Windows artifact. Native development
+must set `BLOXOS_AGENT_BINARY_WINDOWS` to a trusted root-owned artifact path.
 
 ### 2. Configure and run the hub
 
@@ -209,16 +236,15 @@ admin account.
 ### 4. Enroll the local Linux agent
 
 In the dashboard, choose **Add Machine → Linux** and run the generated command
-on this same machine. The loopback quick start avoids a remote first-contact
-trust decision while the public bootstrap flow is being reworked. The agent
+on this same machine. This development path keeps first enrollment on loopback. The agent
 uses its one-time token once, stores a durable machine secret, and then appears
 in the fleet.
 
 For a LAN deployment, terminate TLS in front of the hub, set `PUBLIC_URL` to
 that trusted HTTPS origin, set `ALLOWED_ORIGINS` to the dashboard origin, and
-keep `BLOXOS_AGENT_BINARY` on an explicit absolute path. A safe cold-start
-bootstrap for a private or self-signed CA remains tracked in
-[#150](https://github.com/bokiko/bloxos/issues/150).
+keep `BLOXOS_AGENT_BINARY` on an explicit absolute path. The supported Compose
+path supplies the private-CA fingerprint and verified leaf-key pin in generated
+onboarding commands; do not replace this with an unverified download-and-run command.
 
 ### 5. Production builds and sample services
 
@@ -253,7 +279,7 @@ sudo systemctl enable --now bloxos-hub bloxos-dashboard bloxos-agent
 | Real-time | WebSocket (agent ↔ hub), SSE (hub ↔ browser) |
 | Deployment | Single Go binary for the hub, single binary for each agent, Next.js dashboard behind Caddy/systemd |
 
-No Docker required. No Kubernetes. No Redis. No Postgres. No external services. A hub binary, agent binaries, a dashboard service, and a SQLite file.
+Compose is the supported packaged hub deployment; native services remain an alternative. No Kubernetes, Redis or Postgres is required.
 
 ---
 
@@ -263,9 +289,9 @@ BloxOS is **pre-1.0** and currently powering the author's homelab fleet of ~10 m
 
 **What's solid:**
 - Hub, Linux agent, Windows agent — all three run continuously on my fleet
-- Auto-update with rollback — battle-tested through several agent updates
+- Signed auto-update with monotonic protection on protocol-2 agents; recovery differs by OS
 - Hardware inventory, metrics, terminal, RBAC, themes, branding — all working
-- ~20,000 lines of dashboard code, ~5,000 lines of Go across hub and agents
+- Metadata-only AI session monitoring and 24-hour component power history
 
 **What's not done:**
 - Polished public one-line hub installer
@@ -273,15 +299,14 @@ BloxOS is **pre-1.0** and currently powering the author's homelab fleet of ~10 m
 - Historical metrics retention beyond the live ring buffer
 - Custom alert rules UI (alerts exist; the rule editor isn't shipped)
 - Audit log
-- Backup/restore tooling beyond "copy the SQLite file"
-- Docker packaging
+- Broader disaster-recovery automation (a consistent backup helper and clean restore procedure ship)
 
 **What's planned for v1.0:**
 - Polished installer flow for hub and agents
 - Documentation site
 - Mobile responsive pass
 - Custom alert rules editor
-- Per-machine power tracking chart (GPU first, total system later)
+- Longer-term history beyond the shipped 24-hour component power chart
 
 See [the roadmap](#roadmap) for what's coming after v1.0.
 

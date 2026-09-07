@@ -6,6 +6,7 @@ on:
       - main
   pull_request:
   workflow_dispatch:
+  workflow_call:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -56,6 +57,9 @@ jobs:
 
       - name: Run hub tests
         run: go test -count=1 ./...
+
+      - name: Test backup failure and restart handling
+        run: python3 ../scripts/test_backup_compose.py
 
   # A real gate as of issue #60: the hub's DB handle and agent registry now live
   # on a Server instance, so tests build isolated servers instead of reassigning
