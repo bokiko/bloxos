@@ -23,7 +23,7 @@
     "lucide-react": "^1.41.0",
     "next": "16.2.12",
     "react": "19.2.8",
-    "react-dom": "19.2.6",
+    "react-dom": "19.2.8",
     "recharts": "^3.10.1",
     "shadcn": "^4.21.0",
     "tailwind-merge": "^3.6.0",

@@ -133,6 +133,8 @@ var routeScopeRequirements = map[string]string{
 	routeScopeKey(http.MethodPost, "/api/branding/favicon"): scopeBrandingAdmin,
 	routeScopeKey(http.MethodDelete, "/api/branding/:kind"): scopeBrandingAdmin,
 	routeScopeKey(http.MethodGet, "/api/me/theme"):          scopeAuthSelf,
+	routeScopeKey(http.MethodGet, "/api/me/design"):         scopeAuthSelf,
+	routeScopeKey(http.MethodPatch, "/api/me/design"):       scopeAuthSelf,
 	routeScopeKey(http.MethodPatch, "/api/me/theme"):        scopeAuthSelf,
 
 	// Phase 11 — per-user workflow personalization. All ten routes are

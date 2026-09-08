@@ -1,4 +1,5 @@
 "use client";
+import { AppShell } from "@/components/shell/AppShell";
 
 import { useEffect, useState, useCallback, useRef, use, useMemo } from "react";
 import Link from "next/link";
@@ -132,6 +133,10 @@ function getStatus(data: MachineData, now: number): MachineStatus {
 }
 
 export default function MachineDetailPage({ params }: { params: Promise<{ id: string }> }) {
+  return <AppShell><MachineDetailContent params={params} /></AppShell>;
+}
+
+function MachineDetailContent({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const { getMachine } = useSSE();
   const [baseData, setBaseData] = useState<MachineData | null>(null);
@@ -475,7 +480,7 @@ export default function MachineDetailPage({ params }: { params: Promise<{ id: st
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.25, ease: "easeOut" }}
-      className="min-h-screen bg-blox-bg"
+      className="min-h-screen bg-blox-bg" data-design-page
     >
       {/* Delete dialog */}
       <Dialog open={showDeleteConfirm} onOpenChange={(o) => { if (!o) setShowDeleteConfirm(false); }}>

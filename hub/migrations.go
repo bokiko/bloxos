@@ -493,6 +493,22 @@ var migrations = []migration{
 			return err
 		},
 	},
+	{
+		description: "independent dashboard layout and per-layout colors",
+		apply: func(tx *sql.Tx) error {
+			for _, statement := range []string{
+				`ALTER TABLE users ADD COLUMN dashboard_layout TEXT NOT NULL DEFAULT 'classic'`,
+				`ALTER TABLE users ADD COLUMN wall_color TEXT NOT NULL DEFAULT 'original'`,
+				`ALTER TABLE users ADD COLUMN grove_color TEXT NOT NULL DEFAULT 'original'`,
+				`ALTER TABLE users ADD COLUMN console_color TEXT NOT NULL DEFAULT 'original'`,
+			} {
+				if _, err := tx.Exec(statement); err != nil && !isDuplicateColumnErr(err) {
+					return err
+				}
+			}
+			return nil
+		},
+	},
 }
 
 // isDuplicateColumnErr returns true when SQLite rejects an ALTER TABLE ADD

@@ -181,7 +181,7 @@ function getSystemMode(): ResolvedMode {
   return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
-function applyToDocument(name: ThemeName, resolved: ResolvedMode) {
+export function applyToDocument(name: ThemeName, resolved: ResolvedMode) {
   if (typeof document === "undefined") return;
   const root = document.documentElement;
   // Strip any pre-existing theme-* class so toggles are clean.
@@ -259,6 +259,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // Apply theme + mode classes to <html>. This is a side-effect on an
   // external system (the DOM), which is the canonical use case for useEffect.
   useEffect(() => {
+    if (document.documentElement.dataset.layout && document.documentElement.dataset.layout !== "classic") return;
     applyToDocument(themeName, resolvedMode);
   }, [themeName, resolvedMode]);
 

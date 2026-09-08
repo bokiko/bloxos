@@ -17,11 +17,14 @@ import {
 import { Button } from "@/components/ui/button";
 import { Avatar } from "@/components/Avatar";
 import { cn } from "@/lib/utils";
+import { DesignSettings } from "@/components/DesignSettings";
+import { useDesign } from "@/contexts/DesignContext";
 
 export function UserMenu() {
   const router = useRouter();
   const { logout, hasScope, role } = useAuth();
   const { themeName, setTheme } = useTheme();
+  const { layout } = useDesign();
   const { preferences, myAvatarURL } = usePreferences();
   const canManageUsers = hasScope("users.admin");
   const displayName = preferences.display_name || "Account";
@@ -57,11 +60,13 @@ export function UserMenu() {
         </div>
         <DropdownMenuSeparator className="bg-blox-border" />
 
+        <DesignSettings compact />
+
         {/* Quick theme tiles use the shared registry so new palettes remain
             available here too. Each tile is part of a wrapping grid
             preview; clicking applies the theme immediately. The "Theme"
             label is wrapped in DropdownMenuGroup to satisfy Base UI #31. */}
-        <DropdownMenuGroup>
+        {layout === "classic" && <><DropdownMenuGroup>
           <DropdownMenuLabel className="text-blox-muted text-[10px] uppercase tracking-wider">
             Theme
           </DropdownMenuLabel>
@@ -93,6 +98,7 @@ export function UserMenu() {
             })}
           </div>
         </div>
+        </>}
         <DropdownMenuSeparator className="bg-blox-border" />
 
         <DropdownMenuItem

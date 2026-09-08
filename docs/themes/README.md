@@ -1,4 +1,41 @@
-# BloxOS layout studies
+# BloxOS designs and colors
+
+## Live application
+
+Choose **Account menu → Design** or **Settings → Theme → Design**. Select a
+layout, then **Original**, **Bright**, or **Dark**. Each layout remembers its own
+color. Original reproduces the design study's fixed palette; Bright and Dark
+are explicit choices, not operating-system modes. There are nine combinations.
+
+- **Operations Wall:** open summary panels, resource bars and a machine register.
+- **Grove Workspace:** sidebar navigation, central analytics and a context rail.
+- **Precision Console:** compact navigation, a table-first fleet and instruments.
+
+The layouts use live fleet data and the existing permissions and action paths.
+Selected navigation and colors continue onto machine details, inventory,
+versions, AI sessions, users and settings. Those pages retain their working
+contents and contextual controls. Empty/missing telemetry is unavailable, not
+an invented zero; stale readings are excluded from current aggregates. GPU
+power is component telemetry, not wall power, and incomplete readings are
+explicitly labelled partial.
+
+**Classic** retains the previous dashboard and all eight palettes below. Its
+light/dark/system controls apply only to Classic. Existing accounts default to
+Classic; selecting a new layout does not replace their old palette preference.
+
+Design preferences are saved locally per account and synced through
+`GET/PATCH /api/me/design`. The hub validates the four layout names and three
+color choices, updating only the authenticated user's row. Returning users see
+their account-scoped cached choice immediately while the server reconciles in
+the background. Without a valid cache, a neutral loading frame resolves the
+preference; a failed sync falls back to the
+cached choice with a visible warning and does not block using the app. Failed
+saves remain local across reloads and are reported instead of being presented as
+synced. Reselect a choice to retry syncing the complete local design. Zero GPU
+power on the legacy wire is ambiguous (unsupported sensors also report zero),
+so it is treated as unavailable, not proof of a complete zero-watt total.
+
+## Reference studies
 
 The revised [interactive comparison](index.html) contains three structurally distinct
 proposals built from the same sample fleet data:
@@ -10,10 +47,9 @@ proposals built from the same sample fleet data:
 - **Precision Console:** narrow tool rail, horizontal navigation, compact status
   strip and a machine table with telemetry instruments below.
 
-These are design proposals, not integrated application layouts. The previous
-implementation below changes palettes and styling only, and does not implement
-the revised compositions. The HTML preview is self-contained, responsive, and
-uses one shared data object for the three machine and resource presentations.
+The HTML preview is a self-contained reference with illustrative data, not the
+running application. It uses one shared data object for all three presentations.
+The live implementation described above connects these compositions to BloxOS.
 
 ## Color variants
 
@@ -44,8 +80,8 @@ The comparison is self-contained, with its own layout styles.
 | Graphite | Tactile charcoal console | Sculpted panels, inset highlights, cast shadows, mint accents, monospaced readings |
 | Verdant | Organic forest workspace | Broad curved panels, pill actions, lime fleet summary, lighter sans-serif figures |
 
-In the application, choose **Settings → Theme** to select a design. All three are
-dark-only. The existing BloxOS default and the four other existing palette choices are
+In the application, choose **Classic → Theme** to select these older palettes.
+All three are dark-only. The existing BloxOS default and the four other existing palette choices are
 preserved. The selected design uses the existing local and per-user server
 preferences, including the initial pre-hydration theme bootstrap.
 
@@ -67,8 +103,8 @@ image, third-party branding, financial widget, or unrelated CRM data is included
 - `dashboard/src/components/ThemePreview.tsx`: dashboard thumbnails in the picker.
 - `hub/user_prefs.go`: server acceptance of the three new preference names.
 
-The HTML comparison is illustrative, not a replacement implementation of the
-application. Browser visual verification remains required before release.
+The HTML comparison remains illustrative. Browser verification of the actual
+application is the release gate, not merely a screenshot of this reference.
 
 ## BloxOS logo
 

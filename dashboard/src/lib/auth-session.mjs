@@ -1,16 +1,22 @@
 
 // userIDFromToken reads user_id from a JWT payload without touching storage.
 // The hub signs with user_id, not sub — see hub/auth.go.
-export function userIDFromToken(token) {
+export function decodeJWTPayload(token) {
   if (!token) return null;
   try {
     const parts = token.split(".");
     if (parts.length < 2) return null;
-    const payload = JSON.parse(atob(parts[1]));
-    return typeof payload.user_id === "string" ? payload.user_id : null;
+    const encoded = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const binary = atob(encoded.padEnd(Math.ceil(encoded.length / 4) * 4, "="));
+    const payload = JSON.parse(new TextDecoder().decode(Uint8Array.from(binary, c => c.charCodeAt(0))));
+    return payload;
   } catch {
     return null;
   }
+}
+export function userIDFromToken(token) {
+  const payload = decodeJWTPayload(token);
+  return typeof payload?.user_id === "string" && payload.user_id !== "" ? payload.user_id : null;
 }
 // Auth session transition policy — pure decisions shared by AuthContext so
 // the tricky cases (stale in-flight 401 vs. fresh login, cross-tab storage
