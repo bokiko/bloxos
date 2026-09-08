@@ -2,7 +2,7 @@
 
 // Phase 10 — theme settings panel.
 //
-// Top: mode picker (Light / Dark / System). Below: 5 theme cards with a
+// Top: mode picker (Light / Dark / System). Below: theme cards with a
 // preview tile, label, description, and a "Dark only" tag where relevant.
 
 import { Sun, Moon, MonitorSmartphone, Check } from "lucide-react";
@@ -12,6 +12,7 @@ import {
   type ThemeMode,
   useTheme,
 } from "@/contexts/ThemeContext";
+import { ThemePreview } from "@/components/ThemePreview";
 import { cn } from "@/lib/utils";
 
 const MODE_OPTIONS: { value: ThemeMode; label: string; Icon: typeof Sun }[] = [
@@ -20,7 +21,7 @@ const MODE_OPTIONS: { value: ThemeMode; label: string; Icon: typeof Sun }[] = [
   { value: "system", label: "System", Icon: MonitorSmartphone },
 ];
 
-const ORDER: ThemeName[] = ["bloxos", "solarized", "dracula", "nord", "tokyo-night"];
+const ORDER: ThemeName[] = ["bloxos", "mission-control", "graphite", "verdant", "solarized", "dracula", "nord", "tokyo-night"];
 
 export function ThemeSettings() {
   const { themeName, themeMode, setTheme, setMode } = useTheme();
@@ -59,7 +60,7 @@ export function ThemeSettings() {
       <section>
         <h2 className="text-sm font-semibold text-blox-text mb-1">Theme</h2>
         <p className="text-xs text-blox-muted mb-4">
-          Five curated palettes. Dark-only themes ignore the mode selector.
+          Choose a visual design or a classic palette. Dark-only designs always use dark mode.
         </p>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {ORDER.map((name) => {
@@ -79,25 +80,7 @@ export function ThemeSettings() {
                     : "border-blox-border hover:border-blox-blue/40"
                 )}
               >
-                <div
-                  className="rounded-md h-16 mb-3 overflow-hidden flex"
-                  style={{
-                    background: meta.preview.background,
-                  }}
-                >
-                  <div
-                    className="flex-1 m-1 rounded"
-                    style={{ background: meta.preview.surface }}
-                  />
-                  <div
-                    className="w-3 m-1 rounded"
-                    style={{ background: meta.preview.accent }}
-                  />
-                  <div
-                    className="w-1 m-1 rounded"
-                    style={{ background: meta.preview.text, opacity: 0.6 }}
-                  />
-                </div>
+                <ThemePreview name={name} />
                 <div className="flex items-center justify-between gap-2 mb-1">
                   <span className="text-sm font-semibold text-blox-text">
                     {meta.label}

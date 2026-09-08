@@ -3,7 +3,7 @@
 // Phase 10 — multi-theme support.
 //
 // Tracks two orthogonal pieces of state:
-//   themeName  — which palette to use (5 curated themes)
+//   themeName  — which palette to use (curated palettes and visual designs)
 //   themeMode  — light / dark / system
 //
 // `resolvedMode` is computed from themeMode + the OS preference, with
@@ -29,7 +29,7 @@ import {
 import { HUB_URL } from "@/lib/session";
 import { useAuth } from "@/contexts/AuthContext";
 
-export type ThemeName = "bloxos" | "solarized" | "dracula" | "nord" | "tokyo-night";
+export type ThemeName = "bloxos" | "solarized" | "dracula" | "nord" | "tokyo-night" | "mission-control" | "graphite" | "verdant";
 export type ThemeMode = "light" | "dark" | "system";
 export type ResolvedMode = "light" | "dark";
 
@@ -45,12 +45,15 @@ export interface ThemeMeta {
   };
 }
 
-const THEME_NAMES: readonly ThemeName[] = [
+export const THEME_NAMES: readonly ThemeName[] = [
   "bloxos",
   "solarized",
   "dracula",
   "nord",
   "tokyo-night",
+  "mission-control",
+  "graphite",
+  "verdant",
 ];
 
 const THEME_MODES: readonly ThemeMode[] = ["light", "dark", "system"];
@@ -60,6 +63,25 @@ const STORAGE_MODE = "bloxos-theme-mode";
 const STORAGE_LEGACY = "bloxos-theme"; // pre-Phase 10 — used only for migration.
 
 export const THEMES: Record<ThemeName, ThemeMeta> = {
+  "mission-control": {
+    label: "Mission Control",
+    description: "Indigo instrument tiles, cyan highlights and oversized readouts.",
+    supportedModes: ["dark"],
+    preview: { background: "#12132b", surface: "#242747", accent: "#36d6f5", text: "#f0f3ff" },
+  },
+  graphite: {
+    label: "Graphite",
+    description: "Sculpted charcoal panels, silver type and mint detailing.",
+    supportedModes: ["dark"],
+    preview: { background: "#242627", surface: "#383c3e", accent: "#91d7c2", text: "#f5f3ef" },
+  },
+  verdant: {
+    label: "Verdant",
+    description: "Forest-green canvas, soft pill controls and electric lime.",
+    supportedModes: ["dark"],
+    preview: { background: "#101c19", surface: "#1a2c26", accent: "#c4f477", text: "#edf3e7" },
+  },
+
   bloxos: {
     label: "BloxOS",
     description: "Default — neutral surfaces, blue accent.",
@@ -117,7 +139,7 @@ export const THEMES: Record<ThemeName, ThemeMeta> = {
   },
 };
 
-const DARK_ONLY_THEMES: readonly ThemeName[] = ["dracula", "tokyo-night"];
+const DARK_ONLY_THEMES: readonly ThemeName[] = ["dracula", "tokyo-night", "mission-control", "graphite", "verdant"];
 
 interface ThemeContextValue {
   themeName: ThemeName;

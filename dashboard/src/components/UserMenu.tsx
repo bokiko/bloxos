@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { Users as UsersIcon, LogOut, Settings as SettingsIcon } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
-import { useTheme, THEMES, type ThemeName } from "@/contexts/ThemeContext";
+import { useTheme, THEMES, THEME_NAMES } from "@/contexts/ThemeContext";
 import { usePreferences } from "@/contexts/PreferencesContext";
 import {
   DropdownMenu,
@@ -17,8 +17,6 @@ import {
 import { Button } from "@/components/ui/button";
 import { Avatar } from "@/components/Avatar";
 import { cn } from "@/lib/utils";
-
-const THEME_ORDER: ThemeName[] = ["bloxos", "solarized", "dracula", "nord", "tokyo-night"];
 
 export function UserMenu() {
   const router = useRouter();
@@ -59,7 +57,8 @@ export function UserMenu() {
         </div>
         <DropdownMenuSeparator className="bg-blox-border" />
 
-        {/* Phase 10 — quick theme tile row. Each tile is a 5-column grid
+        {/* Quick theme tiles use the shared registry so new palettes remain
+            available here too. Each tile is part of a wrapping grid
             preview; clicking applies the theme immediately. The "Theme"
             label is wrapped in DropdownMenuGroup to satisfy Base UI #31. */}
         <DropdownMenuGroup>
@@ -68,8 +67,8 @@ export function UserMenu() {
           </DropdownMenuLabel>
         </DropdownMenuGroup>
         <div className="px-1 pb-1">
-          <div className="grid grid-cols-5 gap-1">
-            {THEME_ORDER.map((name) => {
+          <div className="grid grid-cols-4 gap-1">
+            {THEME_NAMES.map((name) => {
               const meta = THEMES[name];
               const active = themeName === name;
               return (

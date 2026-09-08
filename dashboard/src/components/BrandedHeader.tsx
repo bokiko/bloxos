@@ -10,6 +10,7 @@
 // Used in the fleet header and on the login page so both surfaces follow
 // the same branding configuration.
 
+import { BloxosMark } from "@/components/BloxosMark";
 import { useBranding } from "@/contexts/BrandingContext";
 
 interface BrandedHeaderProps {
@@ -61,22 +62,22 @@ export function BrandedHeader({ size = "compact" }: BrandedHeaderProps) {
     );
   }
 
-  // Default BloxOS wordmark.
+  // Default BloxOS identity. Custom instance titles and uploaded logos keep priority.
   if (size === "expanded") {
     return (
       <div className="text-center">
-        <h1 className="text-3xl font-bold tracking-tight">
-          <span className="text-blox-blue">Blox</span>
-          <span className="text-blox-text">OS</span>
+        <h1 className="flex items-center justify-center gap-3 text-3xl font-bold tracking-tight">
+          <BloxosMark className="h-11 w-11 shrink-0 text-blox-blue" />
+          <span><span className="text-blox-blue">Blox</span><span className="text-blox-text">OS</span></span>
         </h1>
         <p className="text-sm text-blox-muted mt-2">Fleet Management Dashboard</p>
       </div>
     );
   }
   return (
-    <h1 className="text-base font-bold tracking-tight">
-      <span className="text-blox-blue">Blox</span>
-      <span className="text-blox-text">OS</span>
+    <h1 className="flex items-center gap-2 text-base font-bold tracking-tight">
+      <BloxosMark className="h-7 w-7 shrink-0 text-blox-blue" />
+      <span><span className="text-blox-blue">Blox</span><span className="text-blox-text">OS</span></span>
     </h1>
   );
 }
