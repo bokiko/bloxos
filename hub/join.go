@@ -220,8 +220,16 @@ func joinPinForPrivateCA(ctx context.Context, publicURL *url.URL) (string, error
 // joinURLFor is the link the short command fetches. The code is the install
 // token, placed in the path so the hub can look it up without the client
 // sending anything else.
+//
+// Newly minted links use the canonical /api/join/ path: old reverse proxies
+// already forward /api/* to the hub but may not forward a bare /join, so the
+// /api-prefixed path onboards through those deployments with no proxy change.
+// The legacy GET /join/:code route is retained for links minted earlier; both
+// routes share the same handler and public status. The code stays a path
+// segment (never a query parameter), so redactJoinCodes scrubs it from logs
+// and it never leaks in a query string.
 func joinURLFor(httpBase, code string) string {
-	return strings.TrimRight(httpBase, "/") + "/join/" + code
+	return strings.TrimRight(httpBase, "/") + "/api/join/" + code
 }
 
 // shellBareWord is what can sit inside the single-quoted wrapper of the

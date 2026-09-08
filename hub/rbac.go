@@ -251,6 +251,11 @@ var publicAPIRoutes = map[string]struct{}{
 	routeScopeKey(http.MethodGet, "/api/branding"):         {},
 	routeScopeKey(http.MethodGet, "/api/branding/logo"):    {},
 	routeScopeKey(http.MethodGet, "/api/branding/favicon"): {},
+	// One-line onboarding: the canonical join path. Public by design, exactly
+	// like the legacy /join/:code route (which is not under /api/ and so is
+	// never seen by this audit). It serves only the bootstrap for an
+	// unexpired, unconsumed token and never consumes it; see join.go.
+	routeScopeKey(http.MethodGet, "/api/join/:code"): {},
 }
 
 // auditRBACRouteCoverage verifies every protected /api/* route registered on e has a

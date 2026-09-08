@@ -263,8 +263,14 @@ func (s *Server) registerRoutes(e *echo.Echo) {
 	e.GET("/install.ps1", handleWindowsInstallScript)
 	// One-line onboarding: the Linux bootstrap for an unexpired, unconsumed
 	// install token. Public by design; see join.go for what it does and
-	// does not reveal.
+	// does not reveal. Registered on `e` (not the authenticated `api` group),
+	// exactly like the other public /api/* routes (login, setup, branding),
+	// so both paths are unauthenticated. The canonical /api/join/:code path is
+	// what newly minted links use — old proxies already forward /api/* to the
+	// hub; the bare /join/:code is retained for links minted earlier. Both use
+	// the same handler, so their behavior and opaque 404s are identical.
 	e.GET("/join/:code", s.handleJoinScript)
+	e.GET("/api/join/:code", s.handleJoinScript)
 	e.GET("/download/agent", handleDownloadAgent)
 	e.GET("/download/ca.crt", handleDownloadCACert)
 	e.GET("/api/setup/status", s.handleSetupStatus)

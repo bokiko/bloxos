@@ -26,6 +26,7 @@ import {
 import { HUB_URL, getStoredToken } from "@/lib/session";
 import { useAuth } from "@/contexts/AuthContext";
 import { userIDFromToken } from "@/lib/auth-session.mjs";
+import { normalizeMachineOrder, acceptedMachineOrder, createPreferenceWriter } from "@/lib/machine-order.mjs";
 import {
   purgeLegacyPreferencesCache,
   readPreferencesCache,
@@ -34,7 +35,7 @@ import {
 
 export type Density = "comfortable" | "compact";
 export type DefaultView = "grid" | "list";
-export type DefaultSort = "name" | "status" | "cpu" | "gpu_temp";
+export type DefaultSort = "manual" | "name" | "status" | "cpu" | "gpu_temp";
 
 export interface SavedFilter {
   id: string;
@@ -51,6 +52,7 @@ export interface Preferences {
   default_view: DefaultView;
   default_sort: DefaultSort;
   pinned_machines: string[];
+  machine_order: string[];
   saved_filters: SavedFilter[];
 }
 
@@ -62,12 +64,14 @@ const DEFAULT_PREFS: Preferences = {
   default_view: "grid",
   default_sort: "name",
   pinned_machines: [],
+  machine_order: [],
   saved_filters: [],
 };
 
 interface PreferencesContextValue {
   preferences: Preferences;
   loading: boolean;
+  saveMachineOrder: (ids: string[]) => Promise<void>;
   /** Optimistic scalar update — applies locally then PATCHes. */
   updateScalar: (
     patch: Partial<Pick<Preferences, "display_name" | "density" | "default_view" | "default_sort">>,
@@ -91,7 +95,7 @@ function normalizePreferences(raw: unknown): Preferences {
   const defaultView = r.default_view === "list" ? "list" : "grid";
   const sortRaw = typeof r.default_sort === "string" ? r.default_sort : "name";
   const defaultSort: DefaultSort =
-    sortRaw === "status" || sortRaw === "cpu" || sortRaw === "gpu_temp"
+    sortRaw === "manual" || sortRaw === "status" || sortRaw === "cpu" || sortRaw === "gpu_temp"
       ? sortRaw
       : "name";
   const pinned = Array.isArray(r.pinned_machines)
@@ -110,6 +114,7 @@ function normalizePreferences(raw: unknown): Preferences {
     default_view: defaultView,
     default_sort: defaultSort,
     pinned_machines: pinned,
+    machine_order: normalizeMachineOrder(r.machine_order),
     saved_filters: saved,
   };
 }
@@ -129,7 +134,7 @@ function normalizeSavedFilter(raw: unknown): SavedFilter | null {
 // userIDFromToken (lib/auth-session.mjs) is the single JWT user_id reader.
 
 export function PreferencesProvider({ children }: { children: ReactNode }) {
-  const { authFetch, token } = useAuth();
+  const { authFetch, token, logout } = useAuth();
   // Lazy initializer: read THIS user's cached prefs synchronously so the
   // first paint already has the right density/view/sort. Never reads the
   // legacy unscoped cache (cross-user leak).
@@ -141,15 +146,40 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
   // or same-tab user switch with the same boolean state must still re-key.
   const userID = useMemo<string | null>(() => userIDFromToken(token), [token]);
   const userIDRef = useRef<string | null>(userID);
+  const preferencesRef = useRef(preferences);
+  const writePreference = useMemo(() => createPreferenceWriter(), []);
+  const patchPreferences = useCallback((patch: unknown) => {
+    const capturedToken = token;
+    return writePreference(async () => {
+      if (!capturedToken || getStoredToken() !== capturedToken) throw new Error("Your session changed. Please retry.");
+      const res = await fetch(`${HUB_URL}/api/me/preferences`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${capturedToken}` },
+        body: JSON.stringify(patch),
+        signal: AbortSignal.timeout(15000),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 401 && getStoredToken() === capturedToken) logout();
+      if (!res.ok) throw new Error(typeof data.error === "string" ? data.error : "Could not save preferences. Please retry.");
+      return data;
+    });
+  }, [token, logout, writePreference]);
 
   // Track in-flight refresh to avoid races between the post-login refresh
   // and any optimistic patch the user fires before it returns.
   const refreshSeqRef = useRef(0);
 
   const setAndCache = useCallback((p: Preferences) => {
+    preferencesRef.current = p;
     setPreferences(p);
     writePreferencesCache(userIDRef.current, p);
   }, []);
+
+  // Mutations only replace fields they own. A late pin/avatar/filter response
+  // must not overwrite a machine order that was saved while it was in flight.
+  const mergeAndCache = useCallback((patch: Partial<Preferences>) => {
+    setAndCache({ ...preferencesRef.current, ...patch });
+  }, [setAndCache]);
 
   const refresh = useCallback(async () => {
     const seq = ++refreshSeqRef.current;
@@ -183,6 +213,7 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
     purgeLegacyPreferencesCache();
     userIDRef.current = userID;
     if (!userID) {
+      preferencesRef.current = DEFAULT_PREFS;
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setPreferences(DEFAULT_PREFS);
       // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -190,11 +221,24 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
       return;
     }
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setPreferences(readPreferencesCache(userID, normalizePreferences) ?? DEFAULT_PREFS);
+    setAndCache(readPreferencesCache(userID, normalizePreferences) ?? DEFAULT_PREFS);
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true);
     void refresh();
-  }, [userID, refresh]);
+  }, [userID, refresh, setAndCache]);
+
+  const saveMachineOrder = useCallback(async (ids: string[]) => {
+    const uid = userIDRef.current;
+    if (!uid || loading) throw new Error("Wait for your preferences to load, then retry.");
+    const order = normalizeMachineOrder(ids);
+    ++refreshSeqRef.current;
+    const data = await patchPreferences({ machine_order: order });
+    if (userIDRef.current !== uid || userIDFromToken(getStoredToken()) !== uid) {
+      throw new Error("Your session changed. Sign in and check your saved order.");
+    }
+    if (!acceptedMachineOrder(data, order)) throw new Error("The hub did not confirm this order. Update the hub and retry.");
+    mergeAndCache({ machine_order: order, default_sort: "manual" });
+  }, [patchPreferences, loading, mergeAndCache]);
 
   // Apply density-* class to <html> so CSS variables propagate to every
   // descendant. Plain DOM mutation, not setState — safe in an effect.
@@ -215,29 +259,26 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
     ) => {
       const uid = userIDRef.current;
       // Optimistic local update.
-      setAndCache({ ...preferences, ...patch });
+      mergeAndCache(patch);
       try {
-        const res = await authFetch(`${HUB_URL}/api/me/preferences`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(patch),
-        });
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
-          throw new Error(typeof err.error === "string" ? err.error : "Failed to save preferences");
-        }
-        const data = await res.json();
+        const data = await patchPreferences(patch);
         // Late response after a user switch must not write the old user's
         // preferences into the new session.
         if (userIDRef.current !== uid) return;
-        setAndCache(normalizePreferences(data));
+        const normalized = normalizePreferences(data);
+        const owned: Partial<Preferences> = {};
+        if (patch.display_name !== undefined) owned.display_name = normalized.display_name;
+        if (patch.density !== undefined) owned.density = normalized.density;
+        if (patch.default_view !== undefined) owned.default_view = normalized.default_view;
+        if (patch.default_sort !== undefined) owned.default_sort = normalized.default_sort;
+        mergeAndCache(owned);
       } catch (e) {
         // Don't revert: we keep the optimistic state so the user isn't
         // jolted. The next refresh on reload reconciles with the server.
         throw e;
       }
     },
-    [authFetch, preferences, setAndCache],
+    [patchPreferences, mergeAndCache],
   );
 
   const uploadAvatar = useCallback(
@@ -256,9 +297,10 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
       const data = await res.json();
       // Late response after a user switch must not write the old user's state.
       if (userIDRef.current !== uid) return;
-      setAndCache(normalizePreferences(data));
+      const normalized = normalizePreferences(data);
+      mergeAndCache({ has_avatar: normalized.has_avatar, avatar_sha: normalized.avatar_sha });
     },
-    [authFetch, setAndCache],
+    [authFetch, mergeAndCache],
   );
 
   const removeAvatar = useCallback(async () => {
@@ -270,15 +312,16 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
     }
     const data = await res.json();
     if (userIDRef.current !== uid) return;
-    setAndCache(normalizePreferences(data));
-  }, [authFetch, setAndCache]);
+    const normalized = normalizePreferences(data);
+    mergeAndCache({ has_avatar: normalized.has_avatar, avatar_sha: normalized.avatar_sha });
+  }, [authFetch, mergeAndCache]);
 
   const pinMachine = useCallback(
     async (machineID: string) => {
       if (preferences.pinned_machines.includes(machineID)) return;
       const uid = userIDRef.current;
       const next = { ...preferences, pinned_machines: [machineID, ...preferences.pinned_machines] };
-      setAndCache(next);
+      mergeAndCache({ pinned_machines: next.pinned_machines });
       try {
         const res = await authFetch(`${HUB_URL}/api/me/pinned/${encodeURIComponent(machineID)}`, {
           method: "POST",
@@ -288,13 +331,12 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
         // Revert on failure — unless the user switched meanwhile; the new
         // user's session owns its own state.
         if (userIDRef.current !== uid) return;
-        setAndCache({
-          ...next,
-          pinned_machines: next.pinned_machines.filter((id) => id !== machineID),
+        mergeAndCache({
+          pinned_machines: preferencesRef.current.pinned_machines.filter((id) => id !== machineID),
         });
       }
     },
-    [authFetch, preferences, setAndCache],
+    [authFetch, preferences, mergeAndCache],
   );
 
   const unpinMachine = useCallback(
@@ -303,7 +345,7 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
       const uid = userIDRef.current;
       const prev = preferences.pinned_machines;
       const next = { ...preferences, pinned_machines: prev.filter((id) => id !== machineID) };
-      setAndCache(next);
+      mergeAndCache({ pinned_machines: next.pinned_machines });
       try {
         const res = await authFetch(`${HUB_URL}/api/me/pinned/${encodeURIComponent(machineID)}`, {
           method: "DELETE",
@@ -311,10 +353,10 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
         if (!res.ok) throw new Error("unpin failed");
       } catch {
         if (userIDRef.current !== uid) return;
-        setAndCache({ ...next, pinned_machines: prev });
+        mergeAndCache({ pinned_machines: [...new Set([...preferencesRef.current.pinned_machines, machineID])] });
       }
     },
-    [authFetch, preferences, setAndCache],
+    [authFetch, preferences, mergeAndCache],
   );
 
   const isPinned = useCallback(
@@ -339,21 +381,19 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
       if (!normalized) throw new Error("Invalid server response");
       // Late response after a user switch must not write the old user's state.
       if (userIDRef.current !== uid) return normalized;
-      setAndCache({
-        ...preferences,
-        saved_filters: [normalized, ...preferences.saved_filters],
+      mergeAndCache({
+        saved_filters: [normalized, ...preferencesRef.current.saved_filters],
       });
       return normalized;
     },
-    [authFetch, preferences, setAndCache],
+    [authFetch, mergeAndCache],
   );
 
   const deleteFilter = useCallback(
     async (id: string) => {
       const uid = userIDRef.current;
       const prev = preferences.saved_filters;
-      setAndCache({
-        ...preferences,
+      mergeAndCache({
         saved_filters: prev.filter((f) => f.id !== id),
       });
       try {
@@ -363,10 +403,10 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
         if (!res.ok && res.status !== 404) throw new Error("delete failed");
       } catch {
         if (userIDRef.current !== uid) return;
-        setAndCache({ ...preferences, saved_filters: prev });
+        mergeAndCache({ saved_filters: [...preferencesRef.current.saved_filters, ...prev.filter(f => f.id === id)] });
       }
     },
-    [authFetch, preferences, setAndCache],
+    [authFetch, preferences, mergeAndCache],
   );
 
   const myAvatarURL =
@@ -379,6 +419,7 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
       value={{
         preferences,
         loading,
+        saveMachineOrder,
         updateScalar,
         uploadAvatar,
         removeAvatar,

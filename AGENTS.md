@@ -58,7 +58,8 @@ Fleet management dashboard for AI machines. Go hub + agent, Next.js dashboard.
   only (no history) and re-sanitizes every frame. The admin switch defaults
   to on; disabling it stops agent-side scanning via the `ai_sessions_config`
   frame, and `BLOXOS_AI_SESSIONS=0` on an agent is a hard local opt-out.
-- **Join links** (`GET /join/<token>`, `hub/join.go`) reuse the 15-minute
+- **Join links** (`GET /api/join/<token>`, with legacy `/join/<token>` retained;
+  `hub/join.go`) reuse the 15-minute
   install token as the code and serve the verbose Linux bootstrap. They are
   never consumed by a GET — only `enrollment_committed` consumes the token —
   and every unusable code gets the same 404. Behind a private CA the short

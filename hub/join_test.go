@@ -126,7 +126,7 @@ func TestJoinServesTheAdvancedCommandForAFreshToken(t *testing.T) {
 	t.Setenv("BLOXOS_CA_CERT", testCAFile(t))
 	got := mintJoinToken(t, e, loginAndGetToken(t, e), "evil.example")
 
-	if got.JoinURL != "https://hub.public.example/join/"+got.Token {
+	if got.JoinURL != "https://hub.public.example/api/join/"+got.Token {
 		t.Fatalf("join_url = %q", got.JoinURL)
 	}
 	rec := getJoin(t, e, got.Token, "attacker.evil.example")
@@ -184,7 +184,7 @@ func TestJoinCommandShapes(t *testing.T) {
 		if sawURL != "https://hub.lan:8443" || string(sawPEM) != "test-private-ca" {
 			t.Fatalf("resolver saw url=%q pem=%q; must be the explicit PUBLIC_URL and the configured CA", sawURL, sawPEM)
 		}
-		want := `bash -c 's=$(curl -fsSk --pinnedpubkey sha256//` + testJoinPin + ` https://hub.lan:8443/join/` + got.Token + `) && bash -c "$s"'`
+		want := `bash -c 's=$(curl -fsSk --pinnedpubkey sha256//` + testJoinPin + ` https://hub.lan:8443/api/join/` + got.Token + `) && bash -c "$s"'`
 		if got.Command != want {
 			t.Fatalf("command = %q\nwant      %q", got.Command, want)
 		}
@@ -209,7 +209,7 @@ func TestJoinCommandShapes(t *testing.T) {
 			return "", nil
 		})
 		got := mintJoinToken(t, e, loginAndGetToken(t, e), "evil.example")
-		want := `bash -c 's=$(curl -fsS https://hub.example.com/join/` + got.Token + `) && bash -c "$s"'`
+		want := `bash -c 's=$(curl -fsS https://hub.example.com/api/join/` + got.Token + `) && bash -c "$s"'`
 		if got.Command != want {
 			t.Fatalf("command = %q\nwant      %q", got.Command, want)
 		}
@@ -224,7 +224,7 @@ func TestJoinCommandShapes(t *testing.T) {
 		t.Setenv("PUBLIC_URL", "http://127.0.0.1:4000")
 		t.Setenv("BLOXOS_CA_CERT", filepath.Join(t.TempDir(), "missing.crt"))
 		got := mintJoinToken(t, e, loginAndGetToken(t, e), "evil.example")
-		want := `bash -c 's=$(curl -fsS http://127.0.0.1:4000/join/` + got.Token + `) && bash -c "$s"'`
+		want := `bash -c 's=$(curl -fsS http://127.0.0.1:4000/api/join/` + got.Token + `) && bash -c "$s"'`
 		if got.Command != want {
 			t.Fatalf("command = %q\nwant      %q", got.Command, want)
 		}
@@ -560,7 +560,7 @@ func TestJoinCommandQuotesUnsafeShellWords(t *testing.T) {
 		t.Fatalf("IPv6 join URL: %q", got)
 	}
 	// A pin is only meaningful over https.
-	if got := buildLinuxJoinCommand("http://127.0.0.1:4000/join/abc", "AbC="); got != `bash -c 's=$(curl -fsS http://127.0.0.1:4000/join/abc) && bash -c "$s"'` {
+	if got := buildLinuxJoinCommand("http://127.0.0.1:4000/api/join/abc", "AbC="); got != `bash -c 's=$(curl -fsS http://127.0.0.1:4000/api/join/abc) && bash -c "$s"'` {
 		t.Fatalf("http with a pin: %q", got)
 	}
 	for _, bad := range []string{"https://hub.example/a b", "https://hub.example/it's", "https://hub.example/$(x)", "https://hub.example/a\"b"} {

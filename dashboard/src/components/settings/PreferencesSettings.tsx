@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 const SORT_LABELS: Record<DefaultSort, string> = {
+  manual: "My order",
   name: "Name (A-Z)",
   status: "Status",
   cpu: "CPU %",

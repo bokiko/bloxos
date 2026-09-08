@@ -32,11 +32,15 @@ import (
 )
 
 const (
-	maxAvatarBytes        = 200 * 1024
-	maxDisplayNameLen     = 60
-	maxSavedFilterNameLen = 60
+	maxAvatarBytes         = 200 * 1024
+	maxDisplayNameLen      = 60
+	maxSavedFilterNameLen  = 60
 	maxSavedFiltersPerUser = 20
-	maxWelcomeMessageLen  = 500
+	maxWelcomeMessageLen   = 500
+	// machine_order bounds. IDs are machine UUIDs (~36 chars); 128 is a
+	// generous per-ID cap; the count cap bounds the stored payload.
+	maxMachineOrderCount = 1000
+	maxMachineOrderIDLen = 128
 )
 
 // displayNameRegex permits Unicode letters/digits, plus a small set of
@@ -59,6 +63,8 @@ var validDefaultSorts = map[string]struct{}{
 	"status":   {},
 	"cpu":      {},
 	"gpu_temp": {},
+	// "manual" means the user's persistent machine_order is authoritative.
+	"manual": {},
 }
 
 // SavedFilter is the public shape of a saved-filter row. The `Filter`
@@ -73,14 +79,18 @@ type SavedFilter struct {
 
 // UserPreferences is the bundle returned by GET /api/me/preferences.
 type UserPreferences struct {
-	DisplayName    string         `json:"display_name"`
-	HasAvatar      bool           `json:"has_avatar"`
-	AvatarSHA      string         `json:"avatar_sha,omitempty"`
-	Density        string         `json:"density"`
-	DefaultView    string         `json:"default_view"`
-	DefaultSort    string         `json:"default_sort"`
-	PinnedMachines []string       `json:"pinned_machines"`
-	SavedFilters   []SavedFilter  `json:"saved_filters"`
+	DisplayName    string        `json:"display_name"`
+	HasAvatar      bool          `json:"has_avatar"`
+	AvatarSHA      string        `json:"avatar_sha,omitempty"`
+	Density        string        `json:"density"`
+	DefaultView    string        `json:"default_view"`
+	DefaultSort    string        `json:"default_sort"`
+	PinnedMachines []string      `json:"pinned_machines"`
+	SavedFilters   []SavedFilter `json:"saved_filters"`
+	// MachineOrder is the user's persistent machine display order. Empty when
+	// unset. May contain stale/deleted IDs — stored and returned harmlessly;
+	// the UI reconciles against the live fleet.
+	MachineOrder []string `json:"machine_order"`
 }
 
 // handleGetMyPreferences returns the entire prefs bundle in one round-trip.
@@ -93,15 +103,18 @@ func (s *Server) handleGetMyPreferences(c echo.Context) error {
 	prefs := UserPreferences{
 		PinnedMachines: []string{},
 		SavedFilters:   []SavedFilter{},
+		MachineOrder:   []string{},
 	}
 	var avatarSHA sql.NullString
 	var hasAvatar sql.NullInt64
+	var machineOrderJSON string
 	err := s.db.QueryRow(`
 		SELECT
 			COALESCE(display_name, ''),
 			COALESCE(density, 'comfortable'),
 			COALESCE(default_view, 'grid'),
 			COALESCE(default_sort, 'name'),
+			COALESCE(machine_order, '[]'),
 			avatar_sha,
 			CASE WHEN avatar_data IS NOT NULL AND length(avatar_data) > 0 THEN 1 ELSE 0 END
 		FROM users WHERE id = ?
@@ -110,6 +123,7 @@ func (s *Server) handleGetMyPreferences(c echo.Context) error {
 		&prefs.Density,
 		&prefs.DefaultView,
 		&prefs.DefaultSort,
+		&machineOrderJSON,
 		&avatarSHA,
 		&hasAvatar,
 	)
@@ -132,6 +146,16 @@ func (s *Server) handleGetMyPreferences(c echo.Context) error {
 	}
 	if _, ok := validDefaultSorts[prefs.DefaultSort]; !ok {
 		prefs.DefaultSort = "name"
+	}
+	// Persistent machine order. Corrupt/legacy JSON snaps to an empty order
+	// rather than failing the whole bundle. Elements that are not non-empty
+	// strings are dropped defensively.
+	if parsed := []string(nil); json.Unmarshal([]byte(machineOrderJSON), &parsed) == nil {
+		for _, id := range parsed {
+			if id != "" {
+				prefs.MachineOrder = append(prefs.MachineOrder, id)
+			}
+		}
 	}
 
 	// Pinned machines (most-recent first).
@@ -190,17 +214,22 @@ func (s *Server) handlePatchMyPreferences(c echo.Context) error {
 		Density     *string `json:"density,omitempty"`
 		DefaultView *string `json:"default_view,omitempty"`
 		DefaultSort *string `json:"default_sort,omitempty"`
+		// RawMessage so we can tell "omitted" (preserve) from an explicit
+		// null (reject) from an array. A type error surfaces on Unmarshal.
+		MachineOrder json.RawMessage `json:"machine_order,omitempty"`
 	}
 	if err := c.Bind(&body); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid body"})
 	}
 
-	if body.DisplayName == nil && body.Density == nil && body.DefaultView == nil && body.DefaultSort == nil {
+	orderSupplied := len(body.MachineOrder) > 0
+	if body.DisplayName == nil && body.Density == nil && body.DefaultView == nil && body.DefaultSort == nil && !orderSupplied {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "no fields to update"})
 	}
 
 	var sets []string
 	var args []any
+	defaultSortSet := false
 
 	if body.DisplayName != nil {
 		dn := strings.TrimSpace(*body.DisplayName)
@@ -235,6 +264,56 @@ func (s *Server) handlePatchMyPreferences(c echo.Context) error {
 		}
 		sets = append(sets, "default_sort = ?")
 		args = append(args, *body.DefaultSort)
+		defaultSortSet = true
+	}
+
+	if orderSupplied {
+		if string(bytes.TrimSpace(body.MachineOrder)) == "null" {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "machine_order cannot be null"})
+		}
+		var order []string
+		if err := json.Unmarshal(body.MachineOrder, &order); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "machine_order must be an array of strings"})
+		}
+		if len(order) > maxMachineOrderCount {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("machine_order accepts at most %d entries", maxMachineOrderCount)})
+		}
+		seen := make(map[string]struct{}, len(order))
+		for _, id := range order {
+			if id == "" {
+				return c.JSON(http.StatusBadRequest, map[string]string{"error": "machine_order entries must be non-empty"})
+			}
+			if len(id) > maxMachineOrderIDLen {
+				return c.JSON(http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("machine_order entries must be %d characters or fewer", maxMachineOrderIDLen)})
+			}
+			if _, dup := seen[id]; dup {
+				return c.JSON(http.StatusBadRequest, map[string]string{"error": "machine_order contains duplicate entries"})
+			}
+			seen[id] = struct{}{}
+		}
+		// Manual order is authoritative. Setting a non-manual default_sort in
+		// the same request is a conflict; setting it to "manual" is redundant
+		// but allowed.
+		if body.DefaultSort != nil && *body.DefaultSort != "manual" {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "default_sort conflicts with machine_order; omit it or set it to \"manual\""})
+		}
+		// Stored IDs are not checked against the fleet — stale/deleted IDs are
+		// kept harmlessly. Re-marshal the validated slice so what is persisted
+		// is canonical (never a nil array).
+		if order == nil {
+			order = []string{}
+		}
+		normalized, err := json.Marshal(order)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not encode machine_order"})
+		}
+		sets = append(sets, "machine_order = ?")
+		args = append(args, string(normalized))
+		if !defaultSortSet {
+			sets = append(sets, "default_sort = ?")
+			args = append(args, "manual")
+			defaultSortSet = true
+		}
 	}
 
 	query := fmt.Sprintf(`UPDATE users SET %s WHERE id = ?`, strings.Join(sets, ", "))
