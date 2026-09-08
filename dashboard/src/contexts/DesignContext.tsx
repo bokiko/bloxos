@@ -5,7 +5,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useTheme, applyToDocument } from "@/contexts/ThemeContext";
 import { HUB_URL, getStoredToken } from "@/lib/session";
 import { userIDFromToken } from "@/lib/auth-session.mjs";
-import { normalizeDesign, readDesign, writeDesign, type Layout, type DesignColor, type DesignPreferences } from "@/lib/design-prefs.mjs";
+import { normalizeDesign, readDesign, writeDesign, hasDesignCache, type Layout, type DesignColor, type DesignPreferences } from "@/lib/design-prefs.mjs";
 
 export type { Layout, DesignColor };
 interface DesignValue {
@@ -52,7 +52,10 @@ export function DesignProvider({ children }: { children: ReactNode }) {
       if (cancelled) return;
       const cached = readDesign(localStorage, userID);
       current.current = cached;
-      setState({ owner: userID, prefs: cached, ready: !token });
+      // Returning users can use their account-scoped choice immediately while
+      // the server reconciles in the background. A cold account still waits in
+      // the neutral frame instead of rendering the wrong Classic chrome.
+      setState({ owner: userID, prefs: cached, ready: !token || hasDesignCache(localStorage, userID) });
       setError(null);
       setSaving(false);
       if (!token || token !== getStoredToken()) return;
@@ -76,6 +79,9 @@ export function DesignProvider({ children }: { children: ReactNode }) {
   }, [token, userID, fetchDesign]);
 
   useEffect(() => {
+    // Keep the pre-hydration choice until this account's cache/server resolves.
+    // In particular, never paint the default Classic over a known saved design.
+    if (!ready) return;
     const root = document.documentElement;
     root.dataset.layout = prefs.layout;
     root.dataset.designColor = color;
@@ -88,7 +94,7 @@ export function DesignProvider({ children }: { children: ReactNode }) {
       root.classList.add(mode);
       root.style.colorScheme = mode;
     }
-  }, [prefs.layout, color, themeName, resolvedMode]);
+  }, [ready, prefs.layout, color, themeName, resolvedMode]);
 
   const update = useCallback((next: DesignPreferences) => {
     if (!ready || token !== getStoredToken()) return;

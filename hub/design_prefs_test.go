@@ -49,6 +49,11 @@ func TestDesignPreferences(t *testing.T) {
 		}
 	}
 	got := request(viewer, http.MethodPatch, `{"layout":"classic"}`, 200)
+	// Re-selecting an active choice must succeed, including an unchanged full
+	// snapshot. Exercise the actual SQLite driver, not an assumed row-count rule.
+	for i := 0; i < 3; i++ {
+		request(viewer, http.MethodPatch, `{"layout":"classic","colors":{"wall":"dark","grove":"dark","console":"dark"}}`, 200)
+	}
 	for _, color := range got.Colors {
 		if color != "dark" {
 			t.Fatal("layout-only PATCH lost saved colors")

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DESIGN_LAYOUTS, DESIGN_COLORS, normalizeDesign, readDesign, writeDesign } from './design-prefs.mjs';
+import { DESIGN_LAYOUTS, DESIGN_COLORS, normalizeDesign, readDesign, writeDesign, hasDesignCache } from './design-prefs.mjs';
 
 test('designs and colors are independent and have exactly nine new combinations', () => {
   assert.equal((DESIGN_LAYOUTS.length - 1) * DESIGN_COLORS.length, 9);
@@ -9,6 +9,19 @@ test('designs and colors are independent and have exactly nine new combinations'
     assert.equal(prefs.layout, layout);
     assert.equal(prefs.colors.grove, color);
   }
+});
+test('only a valid cache for the current account enables immediate rendering', () => {
+  const items = new Map();
+  const storage = { getItem: key => items.get(key), setItem: (key, value) => items.set(key, value) };
+  assert.equal(hasDesignCache(storage, 'one'), false);
+  writeDesign(storage, 'one', normalizeDesign({layout: 'grove'}));
+  assert.equal(hasDesignCache(storage, 'one'), true);
+  assert.equal(hasDesignCache(storage, 'two'), false);
+  for (const bad of ['{', 'null', '{"layout":"unknown"}']) {
+    items.set('bloxos-design:two', bad);
+    assert.equal(hasDesignCache(storage, 'two'), false);
+  }
+  assert.equal(hasDesignCache({ getItem() { throw Error('denied'); } }, 'one'), false);
 });
 test('unknown and corrupt preferences fall back to Classic, never a new design', () => {
   for (const value of [null, [], 'wall', { layout: 'verdant', colors: { wall: 'system' } }]) {

@@ -25,8 +25,10 @@ Classic; selecting a new layout does not replace their old palette preference.
 
 Design preferences are saved locally per account and synced through
 `GET/PATCH /api/me/design`. The hub validates the four layout names and three
-color choices, updating only the authenticated user's row. On a cold load a
-neutral loading frame resolves the preference; a failed sync falls back to the
+color choices, updating only the authenticated user's row. Returning users see
+their account-scoped cached choice immediately while the server reconciles in
+the background. Without a valid cache, a neutral loading frame resolves the
+preference; a failed sync falls back to the
 cached choice with a visible warning and does not block using the app. Failed
 saves remain local and are reported instead of being presented as synced.
 

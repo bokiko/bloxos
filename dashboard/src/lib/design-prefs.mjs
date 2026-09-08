@@ -8,6 +8,10 @@ export function normalizeDesign(value) {
   };
 }
 export function designCacheKey(userID) { return `bloxos-design:${userID || 'guest'}`; }
+export function hasDesignCache(storage, userID) {
+  try { return DESIGN_LAYOUTS.includes(JSON.parse(storage.getItem(designCacheKey(userID)))?.layout); }
+  catch { return false; }
+}
 export function readDesign(storage, userID) {
   try { return normalizeDesign(JSON.parse(storage.getItem(designCacheKey(userID)))); }
   catch { return normalizeDesign(null); }
