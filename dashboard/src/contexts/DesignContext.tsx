@@ -72,6 +72,15 @@ export function DesignProvider({ children }: { children: ReactNode }) {
         if (!response.ok) throw new Error("Design sync unavailable; using this browser’s saved choice.");
         const remote = normalizeDesign(await response.json());
         if (cancelled || token !== getStoredToken() || revision.current !== initialRevision) return;
+        // Another tab can create an unsynced local edit while this GET runs.
+        // Its revision counter is independent, so inspect the shared cache too.
+        if (hasPendingDesign(localStorage, userID)) {
+          const pending = readDesign(localStorage, userID);
+          current.current = pending;
+          setState({ owner: userID, prefs: pending, ready: true });
+          setError("Saved in this browser only. Select your choice again to retry account sync.");
+          return;
+        }
         current.current = remote;
         writeDesign(localStorage, userID, remote);
         setState({ owner: userID, prefs: remote, ready: true });
