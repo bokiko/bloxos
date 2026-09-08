@@ -12,51 +12,67 @@ By participating in this project you agree to abide by the
 
 ## Development setup
 
-The repo has three components, each runnable independently:
+Run each component in a separate shell, starting from the repository root.
+Use a disposable development host, not a machine running a production agent:
 
 ```sh
-# Hub (Go API server, port 4000)
-cd hub && go run .
+# Hub (Go API server, :4000) — refuses to start without an origin policy
+cd hub && PUBLIC_URL=http://localhost:4000 ALLOWED_ORIGINS=http://localhost:3000 go run .
 
-# Agent (connects to a running hub)
-cd agent && go run . --hub ws://localhost:4000/ws/agent --token <install-token>
+# Dashboard (Next.js, :3000) — must be told the hub origin (cross-origin in dev)
+cd dashboard && pnpm install && NEXT_PUBLIC_HUB_URL=http://localhost:4000 pnpm dev
 
-# Dashboard (Next.js, port 3000)
-cd dashboard && pnpm install && pnpm dev
+# Agent (connects to a running hub). The --hub flag takes the FULL path
+# including /ws/agent; the BLOXOS_HUB env var takes the base and appends it.
+cd agent && go run . --hub ws://localhost:4000/ws/agent --token '<install-token>'
 ```
 
-See `AGENTS.md` for repo conventions.
+The full from-source guide — building binaries, serving the agent, the Windows
+artifact, the environment reference, and the disposable-agent warning — is in
+[docs/development.md](docs/development.md). See [AGENTS.md](AGENTS.md) for repo
+conventions and the agent update-safety contract.
 
 ## Pull request gates
 
 Before pushing, run the same checks CI runs:
 
 ```sh
+# Shared Protocol Tests
+( cd proto && go vet ./... && go test -race -count=1 ./... )
+
 # Hub Tests
 ( cd hub   && go vet ./... && go test -count=1 ./... )
+python3 scripts/test_backup_compose.py
 
-# Hub Tests (race)
-( cd hub   && go test -race -count=1 -timeout=10m ./... )
+# Hub Tests (race)   — CI uses -timeout=15m and a 20-minute job cap
+( cd hub   && go test -race -count=1 -timeout=15m ./... )
 
-# Agent Tests
-( cd agent && go vet ./... && go test -count=1 ./... )
+# Agent Tests        — insecure tag, default build, and the race detector
+( cd agent && go vet ./... )
 ( cd agent && go vet -tags insecure ./... && go test -tags insecure -count=1 ./... )
+( cd agent && go test -count=1 ./... )
+( cd agent && go test -race -count=1 ./... )
 
-# Dashboard Lint + Build
-( cd dashboard && pnpm install --frozen-lockfile && pnpm lint && pnpm build )
+# Dashboard Lint + Build   — lint is eslint; test is `node --test src/lib/*.test.mjs`
+( cd dashboard && pnpm install --frozen-lockfile && pnpm lint && pnpm test && pnpm build )
 ```
 
-The fifth required check, `Agent Tests (windows)`, runs `go vet ./...` and
-`go test -count=1 ./...` natively on a Windows runner. A Linux host cannot run
-that native job locally. For agent changes that affect Windows, cross-vet as a
-precheck before pushing:
+The `Agent Tests (windows)` job runs natively on a Windows
+runner: `go vet ./...`, `go test -count=1 ./...`, and the opt-in service
+control manager tests (`BLOXOS_SCM_TEST=1 go test -run 'TestSCM' ./...`, which
+install disposable services and need an elevated Windows host). A Linux host
+cannot run that native job locally; for agent changes that affect Windows,
+cross-vet as a precheck before pushing:
 
 ```sh
 ( cd agent && GOOS=windows go vet ./... )
 ```
 
-All five checks are blocking on `main`. The race and native-Windows jobs cover
-behavior that ordinary Linux `go test` does not.
+CI has six component jobs. The current branch protection explicitly requires
+the hub, hub-race, agent, native-Windows and dashboard checks; shared protocol
+tests also run and must be treated as a release gate. Container-related changes
+add the Compose smoke job. Use the workflow files as the source of truth for
+commands, and check GitHub's branch rules for the current required statuses.
 
 ## Merge policy
 
@@ -113,7 +129,12 @@ reserved for shipped product phases.
 - Agent: bug fixes and safety-sensitive changes should add or update focused
   `_test.go` coverage when the behavior can be exercised without depending on
   real hardware or OS services.
-- Dashboard: lint + build must pass. There is no test runner yet.
+- Dashboard: lint, `pnpm test`, and build must pass. The test runner is Node's
+  built-in `node:test` over `src/lib/*.test.mjs` (pure, framework-free unit
+  tests — e.g. `design-prefs`, `design-fleet-model`, `fleet-status`). Add or
+  update a focused `*.test.mjs` when a change has testable pure logic; there is
+  no component/DOM test harness, so UI wiring is still covered by lint + build
+  plus manual browser checks.
 
 ## Reporting bugs / requesting features
 

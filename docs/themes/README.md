@@ -2,6 +2,9 @@
 
 ## Live application
 
+See the [actual dashboard screenshot gallery](../screenshots/README.md) for
+the released layouts. The HTML studies below are design references, not screenshots.
+
 Choose **Account menu → Design** or **Settings → Theme → Design**. Select a
 layout, then **Original**, **Bright**, or **Dark**. Each layout remembers its own
 color. Original reproduces the design study's fixed palette; Bright and Dark
@@ -67,12 +70,10 @@ Use the color controls below the design selector. Each layout remembers its own
 selection in browser storage when available. Links such as `#studio/bright` and
 `#console/dark` open a specific combination. All variants use the same fleet data.
 
-## Earlier palette implementation
+## Classic palettes
 
-
-Open [the interactive comparison](index.html) in a browser. Its three buttons show
-identical illustrative fleet information in each design; it makes no API calls.
-The comparison is self-contained, with its own layout styles.
+These earlier palettes remain part of Classic. They are separate from the
+three live layouts and are not the layout choices in the current HTML comparison.
 
 | Design | Character | Visual treatment |
 | --- | --- | --- |
@@ -97,11 +98,16 @@ image, third-party branding, financial widget, or unrelated CRM data is included
 
 ## Implementation
 
+- `dashboard/src/components/fleet/`: live fleet layout components and aggregation.
+- `dashboard/src/components/shell/AppShell.tsx`: shared layout navigation.
+- `dashboard/src/contexts/DesignContext.tsx`: live layout and color persistence.
+- `dashboard/src/app/design-layouts.css` and `design-pages.css`: live layouts and page styling.
 - `dashboard/src/app/design-themes.css`: palettes and visual treatments.
-- `dashboard/src/contexts/ThemeContext.tsx`: design registry and persistence.
+- `dashboard/src/contexts/ThemeContext.tsx`: Classic palette registry and persistence.
 - `dashboard/src/app/layout.tsx`: initial theme bootstrap.
 - `dashboard/src/components/ThemePreview.tsx`: dashboard thumbnails in the picker.
 - `hub/user_prefs.go`: server acceptance of the three new preference names.
+- `hub/design_prefs.go`: per-user live layout and color API.
 
 The HTML comparison remains illustrative. Browser verification of the actual
 application is the release gate, not merely a screenshot of this reference.

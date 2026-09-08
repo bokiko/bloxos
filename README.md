@@ -1,378 +1,218 @@
 <div align="center">
 
+<img src="dashboard/public/brand/bloxos-mark.svg" width="80" height="80" alt="BloxOS logo">
+
 # BloxOS
 
-**The operator console your homelab actually deserves.**
+**Your machines. One clear view.**
 
-Real-time fleet management for self-hosted infrastructure — Linux servers, Windows workstations, Proxmox VMs, NAS units, mining rigs. One dashboard, live metrics, web terminals, hardware inventory, native Windows + Linux agents, auto-update, multi-user RBAC.
+Self-hosted fleet management for Linux servers, Windows workstations, and AI machines.<br>
+See what is running, understand your hardware, and manage your fleet from one dashboard.
 
-[![License](https://img.shields.io/badge/license-Apache_2.0-blue.svg)](LICENSE)
-[![Made with Go](https://img.shields.io/badge/agent-Go-00ADD8?logo=go&logoColor=white)](https://go.dev)
-[![Made with Next.js](https://img.shields.io/badge/dashboard-Next.js-000000?logo=next.js&logoColor=white)](https://nextjs.org)
-[![SQLite](https://img.shields.io/badge/storage-SQLite-003B57?logo=sqlite&logoColor=white)](https://sqlite.org)
+[![Release](https://img.shields.io/github/v/release/bokiko/bloxos)](https://github.com/bokiko/bloxos/releases/latest)
+[![CI](https://github.com/bokiko/bloxos/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/bokiko/bloxos/actions/workflows/ci.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-[Report a bug](https://github.com/bokiko/bloxos/issues) · [Author](https://bokiko.io)
+[Get started](#get-started) · [Dashboard gallery](docs/screenshots/README.md) · [Documentation](docs/README.md) · [Releases](https://github.com/bokiko/bloxos/releases) · [Report a bug](https://github.com/bokiko/bloxos/issues/new/choose)
 
 </div>
 
----
+![Operations Wall showing connected Linux and Windows demo machines, fleet resource usage, and machine controls](docs/screenshots/operations-wall.png)
 
-## Why BloxOS exists
+*Actual v1.1.0 dashboard with synthetic demo machines. Missing GPU sensors display N/A; no private fleet data is shown.*
 
-I run a homelab. Multiple Proxmox boxes, a Synology NAS, a Windows workstation, a Mac Studio doing AI work, a couple of mining rigs, plus VMs spread across all of it. The existing options to manage that fleet are all wrong for me:
+## One place to look. One place to act.
 
-- **Datadog / New Relic** — built for SaaS companies, priced like SaaS companies, send my home network telemetry to a third party.
-- **Grafana + Prometheus + node_exporter** — three services to maintain just to see if a box is alive. Charts are great. Operating the fleet is not what they do.
-- **Cockpit / Webmin** — per-machine dashboards, no fleet view, no Windows story.
-- **Proxmox UI** — only sees Proxmox.
+BloxOS brings the everyday work of running a homelab or small AI fleet together.
+Host it on your own hardware, connect your machines, and open a browser.
+No Kubernetes, Redis, or external database required.
 
-BloxOS is what I wanted instead: **one dashboard that treats my whole fleet as one thing**, runs entirely on my hardware, holds zero of my data on someone else's servers, and is fast enough that it feels alive instead of feeling like a monitoring tool.
+| See your fleet | Operate it | Make it yours |
+| --- | --- | --- |
+| Live CPU, RAM, disk, GPU and freshness indicators | Linux web terminals with non-root shells and re-authentication | Three live layouts, each with Original, Bright and Dark colors |
+| Hardware inventory with search, filters and exports | Machine actions, service and container controls where supported | Classic dashboard with eight palettes |
+| Supported AI-tool session metadata across machines | Viewer, operator and admin permissions | Per-user preferences, pins and saved filters |
+| 24-hour component power history with averages and sampled peaks | Native Linux and Windows agents with signed updates | Instance logo, favicon and welcome-message branding |
 
-If you've ever opened five browser tabs to check on five machines, this is for you.
+### Three designs. The same working app.
 
----
+**Operations Wall** gives you an open fleet overview. **Grove Workspace** adds a
+sidebar and a separate context column. **Precision Console** puts the machine
+table first.
 
-## What you actually get
+Choose **Account menu → Design**, then a color. Navigation continues through
+machine details, inventory, AI Sessions, versions and settings. Existing
+accounts keep Classic until they choose another design.
 
-### Live, not polled
-Metrics stream over WebSocket from agent to hub, then push to your browser via SSE. The normal agent snapshot cadence is 30 seconds, with on-demand refresh. Freshness indicators distinguish current readings from stale data. Power history samples component sensors locally every second and uploads 30-second averages and sampled peaks; this is not a wall-power meter.
+| Grove Workspace · Original | Precision Console · Bright |
+| --- | --- |
+| [![Grove Workspace dashboard with synthetic demo machines](docs/screenshots/grove-workspace.png)](docs/screenshots/grove-workspace.png) | [![Precision Console dashboard with synthetic demo machines](docs/screenshots/precision-console.png)](docs/screenshots/precision-console.png) |
 
-### Real hardware inventory
-Every agent collects DMI data, RAM modules (manufacturer, speed, slot, ECC status), GPU devices (model, VRAM, driver), PCI bus, network adapters, disks, BIOS, and motherboard. The fleet-wide `/inventory` page is sortable, filterable, groupable, and exports to CSV / JSON / Markdown. The first time you use it to find "every machine with less than 32GB RAM" in three seconds, you'll understand why it's there.
+[See all three dashboards →](docs/screenshots/README.md) · [Design and color guide →](docs/themes/README.md)
 
-### Web terminal that actually works
-xterm.js, theme-aware, stable 360px pane. Hit a machine, get a real shell. No SSH key juggling, no port forwarding, no "what was the IP again." The terminal session belongs to the operator's auth context, not the machine's.
+### Machines stay where you put them
 
-### Two operating systems, one dashboard
-The Linux agent and the Windows agent speak the same WebSocket protocol to the same hub. The Windows agent registers itself as a Windows Service via SCM, collects hardware via WMI, and supports signed auto-update. Web terminal access is Linux-only; Windows enrollment and re-enrollment use generated PowerShell commands.
+Name sorting no longer moves machines when connectivity changes. Choose
+**Arrange machines**, drag or use the arrows, then **Save order**. Your **My
+order** is saved per account across grid/list and all four layouts. New machines
+appear after your saved set. [Machine arrangement guide →](docs/machine-order.md)
 
-### Signed auto-update and recovery
-Protocol-v1 agents accept an update only when its Ed25519 release signature verifies against their pinned key and the transport is permitted. Protocol-0 agents require a deliberately limited migration hop to reach protocol v1, because signature verification cannot be retrofitted into an already-running binary; the hub permits that hop only over TLS or loopback. After migration, the agent is withheld until its update key is pinned through a trusted provisioning path.
+### AI activity, without reading the conversation
 
-The signature covers `bloxos-agent-update:v1:<os>:<sha>`. It may come from a detached `<binary>.sig` produced offline, in which case the hub holds no private key, or from a hub-held signing key. Protocol-v1 updates fail closed when the signature is missing or invalid, the transport is plaintext, or the agent has no pinned key.
+AI Sessions reports supported running tools—Claude Code, Codex and Kimi—with
+project basenames, explicitly detected model information, and inferred activity
+states. Detection has limits; it is not a universal list of every local model.
 
-Both platforms use a `.prev` file for recovery, but their behavior differs:
+It is **read-only metadata monitoring**: no prompts, responses, transcripts,
+terminal output or full project paths. Administrators can disable it fleet-wide;
+a machine can opt out with `BLOXOS_AI_SESSIONS=0`.
 
-- **Linux** verifies the update, replaces the executable atomically, and exits for systemd to restart it. An `OnFailure` recovery unit can automatically restore `.prev` after repeated startup failure.
-- **Windows** attempts to snapshot `.prev`, downloads to `<exe>.new`, and writes `<exe>.pending` with the expected `sha256` and `signature`. On the SCM restart, `applyPendingUpdate` hashes `.new`, compares the SHA, and verifies the signature against the pinned key before spawning the swap helper. `performUpdateWindows` exits with code `1` to trigger that SCM restart. The helper attempts `move /Y` before deleting the marker, but marker deletion is unconditional; Windows has no automatic rollback, so restoring `.prev` remains manual.
+### Power readings you can interpret
 
-A circuit breaker pauses fleet rollout after two failures in five minutes. Protocol-2 agents persist a signed release-number/SHA floor before replacing their executable: older builds are rejected, and the same release number is accepted only for identical bytes. Protocol-1 agents do not enforce this floor. Never delete the floor during reinstall, key rotation, or recovery; see [AGENTS.md](AGENTS.md) for the compatibility contract.
+Component sensors are sampled locally every second, collected into 30-second
+averages and sampled peaks, and retained in a rolling 24-hour history.
+Unavailable readings stay unavailable, and incomplete totals are labelled.
 
-You push an update to the hub and the fleet moves to the new version on its own. On Linux, a bad build can also recover automatically.
+**Component power is not wall power.** CPU and GPU readings do not include every
+part of a machine or power-supply losses. [How power history works →](docs/power-history.md)
 
-### Multi-user with real permissions
-Viewers, operators, admins. Every endpoint has a scope (`fleet.read`, `fleet.control`, `fleet.metadata`, `fleet.admin`, `branding.admin`, `users.admin`). Operators can run actions but not change roles. Admins can change branding. Viewers can look but not touch. JWT-based, bcrypt for passwords.
+## Get started
 
-### Personalization that respects your eyes
-Five themes — BloxOS (default), Solarized, Dracula, Nord, Tokyo Night — each in light and dark variants where appropriate. Per-user. Plus org-wide custom branding: upload your own logo, favicon, and login welcome message. Density toggle (comfortable / compact). Pinned machines. Saved filters. Default views per user.
+You need a Docker host with **Docker Compose v2**, Git, and a hostname or IP
+address reachable by your browser and managed machines. The packaged hub and
+dashboard support **Linux amd64 and arm64**. Ports **80 and 443** must be available.
 
-### Cmd+K everywhere
-Command palette opens on `Cmd+K` (or `Ctrl+K`). Jump to any machine by name, run any action, open any setting, search inventory, switch themes. The palette is how operators actually use the system once they know it exists.
+### 1. Download BloxOS
 
-### One-file database
-SQLite keeps users, machines, history, inventory, branding, preferences and notes together. The hub uses WAL, so a live copy of `bloxos.db` alone is **not a safe backup**. Preserve the database and the hub's signing/JWT identity plus the proxy CA using the [backup and restore procedure](docs/backup-restore.md).
-
-### Built for operators, not viewers
-- Notes per machine (markdown-ish, URL auto-link)
-- Persistent last-known state in localStorage so the dashboard hydrates instantly even before WebSocket reconnects
-- Live freshness timer per card so you always know how stale the data is
-- Per-card refresh button + global refresh button
-- Skeleton loading states everywhere — no flashes of blank UI
-- `prefers-reduced-motion` honored throughout
-
----
-
-## Architecture at a glance
-
-```
-┌─────────────────┐         ┌─────────────────┐
-│   Linux Agent   │◀──WS───▶│                 │
-└─────────────────┘         │                 │
-                            │       Hub       │◀──SSE──▶  Dashboard (browser)
-┌─────────────────┐         │   (Go + SQLite) │
-│  Windows Agent  │◀──WS───▶│                 │◀──REST──▶  CLI / scripts
-└─────────────────┘         │                 │
-                            └─────────────────┘
-┌─────────────────┐                  ▲
-│   API-polled    │──────────────────┘
-│  (Synology, etc)│
-└─────────────────┘
-```
-
-- **Hub** is a single Go binary. Holds the SQLite database. Speaks WebSocket to agents, SSE to dashboards, REST to CLIs and scripts.
-- **Agents** are single Go binaries. Linux runs under systemd; Windows runs under SCM. They open one outbound WebSocket to the hub — no inbound ports needed on agent machines.
-- **Dashboard** is Next.js. In production it normally runs as its own local service on `127.0.0.1:3000` behind Caddy; in development it runs with `pnpm dev`. The dashboard never talks to agents directly; it always goes through the hub.
-- **API-polled targets** (Synology, Proxmox, anything without a native agent) are scraped by the hub on a schedule and surfaced as machines in the same dashboard.
-
-For a deeper component map, see [docs/architecture.md](docs/architecture.md).
-
-### Why this shape
-
-A central hub means agents don't need inbound network access — they punch out to the hub from wherever they live. Works through NATs, behind home routers, across Tailscale, across UniFi VLANs. The hub is the only thing that needs a stable address.
-
-WebSocket from agents to hub means real-time, bidirectional. The hub can push commands (`refresh_metrics`, `run_command`, `open_terminal`) without polling. Agents can stream metrics without scrape intervals.
-
-SSE from hub to browser means the dashboard updates live without WebSocket complexity in the frontend. SSE survives proxies and corporate firewalls better than WebSocket. Reconnect is automatic.
-
----
-
-## Configuration
-
-The hub refuses to start unless an origin policy is explicit. Set
-`PUBLIC_URL`, `ALLOWED_ORIGINS`, or both before the first boot. Copy
-[.env.example](.env.example) for a commented reference covering every
-environment variable read by the Go hub and agent.
-
-| Variable | Required | Purpose |
-|---|---:|---|
-| `PUBLIC_URL` | **Yes, unless `ALLOWED_ORIGINS` is set** | Browser-facing hub URL; also drives generated commands and update transport policy. |
-| `ALLOWED_ORIGINS` | **Yes, unless `PUBLIC_URL` is set** | Comma-separated browser origins permitted by CORS. |
-| `HUB_LISTEN` | No | Hub listen address; defaults to `127.0.0.1:4000`. |
-| `BLOXOS_JWT_SECRET` | No | JWT secret, at least 32 bytes; otherwise generated and persisted. |
-| `BLOXOS_SETUP_TOKEN` | No | Fixed first-boot setup token; otherwise generated and persisted. |
-| `BLOXOS_CA_CERT` | No | Additional CA certificate used by installers and agents. |
-| `BLOXOS_AGENT_BINARY` | No | Absolute Linux **amd64** agent binary; blank uses the built-in defaults (`/usr/local/lib/bloxos/linux/amd64/bloxos-agent`, then the legacy `/usr/local/lib/bloxos/linux/bloxos-agent`, then a hub sibling). Served only for the architecture its ELF actually is. |
-| `BLOXOS_AGENT_BINARY_ARM64` | No | Absolute Linux arm64 agent binary; blank uses `/usr/local/lib/bloxos/linux/arm64/bloxos-agent`. ELF-verified like all Linux paths, so no request is served another CPU's binary. |
-| `BLOXOS_AGENT_BINARY_WINDOWS` | No | Absolute Windows agent binary served by the hub. |
-| `BLOXOS_UPDATE_PUBKEY` | No | Base64 Ed25519 public key for detached-signature mode. |
-| `BLOXOS_UPDATE_SIGNING_KEY` | No | Explicit online-signing private-key path. |
-| `BLOXOS_ALLOW_PRIVATE_TARGETS` | No | Set to `1` to permit API pollers to target RFC1918 addresses. |
-| `BLOXOS_TELEGRAM_TOKEN` | No | Telegram bot token; both Telegram values are needed. |
-| `BLOXOS_TELEGRAM_CHAT_ID` | No | Telegram destination chat ID. |
-| `BLOXOS_HUB` | Agent | Hub base WebSocket URL; the agent appends `/ws/agent`. |
-| `BLOXOS_SECRET` | Agent | Durable machine credential, normally managed by enrollment. |
-| `BLOXOS_TOKEN` | Agent enrollment | One-time enrollment token. |
-| `BLOXOS_TERMINAL_USER` | No | Existing non-root Linux account used for terminal sessions. Unset, the agent tries `bokiko`, `ubuntu`, `admin`; if none exists, or the named account is missing or root, terminals are refused (never run as root). |
-| `BLOXOS_UPDATE_PUBKEY_PATH` | No | Override for the agent's pinned update-key file. |
-| `BLOXOS_TLS_INSECURE` | Development only | TLS bypass available only in an agent built with `-tags insecure`. |
-| `ProgramFiles` | Windows-provided | Used to discover NVIDIA tooling; normally never overridden. |
-| `NEXT_PUBLIC_HUB_URL` | Dashboard | Hub origin when dashboard and hub are not same-origin. |
-
-## Quick start: Compose hub
-
-Use the [supported Compose deployment](docker/README.md) on a Docker host:
-
-```bash
-git clone https://github.com/bokiko/bloxos.git
+```sh
+git clone --branch v1.2.0 --depth 1 https://github.com/bokiko/bloxos.git
 cd bloxos/docker
 cp .env.example .env
-# Edit .env: set HUB_HOST to this machine's hostname or IP (no scheme/port).
-docker compose up -d --build
+```
+
+### 2. Set your address
+
+Open `.env` in a text editor. Set `HUB_HOST` to your Docker host's reachable
+hostname or IP—without `https://`, a path, or a port—and add the version:
+
+```dotenv
+HUB_HOST=192.168.1.50
+BLOXOS_VERSION=1.2.0
+```
+
+Replace the example IP with your own address. Do not use `localhost` if other
+machines need to reach this hub.
+
+### 3. Start it
+
+```sh
+docker compose pull
+docker compose up -d --no-build
 docker compose exec hub cat /data/.bloxos/setup-token
 ```
 
-Open `https://<HUB_HOST>` and use the setup token to create your account. The
-stack uses an internal CA; the container guide explains browser trust. Choose
-**Add Machine** and copy the generated Linux one-line command or Windows
-PowerShell command to that machine. Installing a hub and enrolling a machine
-are different operations; an enrollment command does not install another hub.
+Open **`https://<HUB_HOST>`**, enter the setup token, and create your admin
+account. There is no shared default username or password.
 
-Build from your chosen tested revision for current source. A green main build
-does not mean that the same revision is published as `latest` or deployed on
-your host. When using published images, pin an available version and verify
-its revision; do not assume an older release has the current source features.
-Back up before upgrading. The hub also serves agent updates, so upgrading it
-can update enrolled machines, not just the dashboard.
+The default stack uses a private certificate authority. Your browser will need
+to trust its root certificate; follow the [browser trust instructions](docker/README.md#browser-trust).
+The generated agent command already includes the required verification.
 
-## Native development from source
+[Full installation guide and troubleshooting →](docker/README.md)
 
-> This alternative is for Linux development on amd64. The supported Compose
-> build packages both Linux architectures and Windows. A one-line public hub
-> installer is separate work; machine onboarding already ships.
+## Add your first machine
 
-### 1. Clone and build
+1. In the dashboard, choose **Add Machine**.
+2. Select **Linux** or **Windows**.
+3. Copy the generated command and run it on that machine.
 
-```bash
-git clone https://github.com/bokiko/bloxos.git
-cd bloxos
-mkdir -p bin
-(cd hub && go build -o ../bin/bloxos-hub .)
-(cd agent && go build -o ../bin/bloxos-agent .)
-sudo install -d -o root -g root -m 0755 /usr/local/lib/bloxos/linux
-sudo install -o root -g root -m 0755 bin/bloxos-agent \
-  /usr/local/lib/bloxos/linux/bloxos-agent
+Linux onboarding is **one copy-and-paste line**. Windows uses the generated
+PowerShell command. The installer sets up the native service; the machine then
+appears in your fleet. Enrollment links expire after 15 minutes—generate a new
+one if needed, and do not share them publicly.
+
+Linux agents support amd64 and arm64 with systemd; the packaged Windows agent
+is amd64. Installation needs administrative privileges. The Linux service runs
+as root and the Windows service as LocalSystem; Linux terminal sessions run as
+a configured **non-root** user.
+
+This command enrolls a machine into an existing hub. It does not install a
+second hub. A public one-line *hub* installer is not shipped.
+
+## Update an existing installation
+
+**Back up first.** Use the [backup and restore guide](docs/backup-restore.md),
+which preserves the database, secrets, signing identity and Caddy CA. Never
+use `docker compose down -v` to update.
+
+In your existing Compose directory, set `BLOXOS_VERSION=1.2.0` in your existing
+`.env`, then run these with the same project name and any existing overrides:
+
+```sh
+docker compose pull hub dashboard
+docker compose up -d --no-build hub dashboard
 ```
 
-To build the Windows agent artifact:
+Refresh your browser when the services are healthy. Keep your existing volumes
+and keys; normal upgrades do not require enrolling every machine again.
 
-```bash
-(cd agent && GOOS=windows GOARCH=amd64 go build -o ../bin/bloxos-agent.exe .)
+For new machines, generate a **fresh** Add Machine command after upgrading.
+v1.2.0 uses `/api/join/`, so older proxies that already forward `/api/*` need
+no route edit. Previously copied `/join/` commands may still fail or have expired.
+See the [Docker upgrade guide](docker/README.md#upgrades) for details.
+
+The hub serves agent updates too: eligible older agents can update and restart
+after a hub upgrade. Legacy agents may need update-key pinning; offline-signing
+installations have a separate procedure. Very old or customized deployments
+should compare their Compose configuration before updating.
+
+[Release notes](https://github.com/bokiko/bloxos/releases/tag/v1.2.0) ·
+[Update signing](docs/offline-update-signing.md) ·
+[Agent recovery](docs/agent-update-recovery.md)
+
+## How it fits together
+
+```text
+Linux / Windows agents ── outbound WebSocket ── Go hub + SQLite
+                                                    │
+                                           Caddy HTTPS proxy
+                                                    │
+                                            Browser dashboard
 ```
 
-For Windows enrollment, use the generated command in **Add Machine → Windows**.
-The Compose image already includes the Windows artifact. Native development
-must set `BLOXOS_AGENT_BINARY_WINDOWS` to a trusted root-owned artifact path.
+Agents initiate the connection; managed machines need no inbound agent port.
+The browser uses the hub API and an SSE stream. The Compose stack packages
+Caddy, the hub, and the Next.js dashboard; agents remain native services.
+API-polled integrations are also supported where an adapter is available.
 
-### 2. Configure and run the hub
+[Architecture](docs/architecture.md) · [Configuration reference](docs/configuration.md) · [Source development](docs/development.md)
 
-These exports set the origin policy required for startup. The explicit
-agent-binary path also ensures that the download endpoint serves the artifact
-you just built.
+## Know the boundaries
 
-```bash
-export PUBLIC_URL=http://localhost:4000
-export ALLOWED_ORIGINS=http://localhost:3000
-export HUB_LISTEN=127.0.0.1:4000
-export BLOXOS_AGENT_BINARY=/usr/local/lib/bloxos/linux/bloxos-agent
-./bin/bloxos-hub
-```
+- Web terminals are **Linux-only**. Only session metadata is audited, not terminal content.
+- Hardware and sensor coverage depends on the OS, device and available drivers.
+- AI Sessions is live metadata, not conversation playback, remote AI control, or session history.
+- Power history covers 24 hours of component readings, not long-term observability or a wall-power meter.
+- Signed updates and protocol-2 rollback protection are shipped; recovery differs between Linux and Windows.
+- A full product-wide audit log, custom alert-rule editor, and public one-line hub installer are not shipped.
 
-On first run the hub creates a setup token in `~/.bloxos/setup-token`.
-Keep this shell running.
+For current priorities, use the [issue tracker](https://github.com/bokiko/bloxos/issues).
+[BLOXOS_FUTURE.md](BLOXOS_FUTURE.md) is a collection of longer-term ideas, not a
+list of available features or a release commitment.
 
-### 3. Run the dashboard
+## Documentation and contributing
 
-In another shell:
+Start with the [documentation index](docs/README.md) for installation,
+configuration, backups, power history, alerts, designs, and development.
 
-```bash
-cd bloxos/dashboard
-pnpm install
-NEXT_PUBLIC_HUB_URL=http://localhost:4000 pnpm dev
-```
+Bug reports and focused pull requests are welcome. For larger changes, open an
+issue describing the problem first. Read [CONTRIBUTING.md](CONTRIBUTING.md) and
+the [Code of Conduct](CODE_OF_CONDUCT.md). Report vulnerabilities privately
+using [SECURITY.md](SECURITY.md), not public issues.
 
-Open `http://localhost:3000`, enter the setup token, and create the first
-admin account.
+## License and credits
 
-### 4. Enroll the local Linux agent
+[Apache License 2.0](LICENSE). Built by [Bokiko](https://bokiko.io).
 
-In the dashboard, choose **Add Machine → Linux** and run the generated command
-on this same machine. This development path keeps first enrollment on loopback. The agent
-uses its one-time token once, stores a durable machine secret, and then appears
-in the fleet.
-
-For a LAN deployment, terminate TLS in front of the hub, set `PUBLIC_URL` to
-that trusted HTTPS origin, set `ALLOWED_ORIGINS` to the dashboard origin, and
-keep `BLOXOS_AGENT_BINARY` on an explicit absolute path. The supported Compose
-path supplies the private-CA fingerprint and verified leaf-key pin in generated
-onboarding commands; do not replace this with an unverified download-and-run command.
-
-### 5. Production builds and sample services
-
-```bash
-(cd hub && go build -o ../bin/bloxos-hub .)
-(cd agent && go build -o ../bin/bloxos-agent .)
-(cd dashboard && pnpm install --frozen-lockfile && pnpm build)
-```
-
-The sample units in [scripts/systemd](scripts/systemd) use `<user>` and
-`/opt/bloxos` placeholders. Replace `<user>` and install the hub and dashboard
-artifacts there. Keep the served agent binary on the root-owned path shown
-above (or another absolute path whose complete ancestor chain is root-owned and
-not group/other-writable), then enable each installed unit:
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now bloxos-hub bloxos-dashboard bloxos-agent
-```
-
----
-
-## Tech stack
-
-| Layer | Stack |
-|---|---|
-| Hub | Go, SQLite, WebSocket, SSE, JWT, bcrypt |
-| Linux agent | Go, systemd, `/sys/class/thermal`, `/proc`, `dmidecode`, `lspci`, `nvidia-smi` |
-| Windows agent | Go, Windows Service Manager, WMI (`Win32_*`, `MSAcpi_ThermalZoneTemperature`), `nvidia-smi.exe` |
-| Dashboard | Next.js 16 (App Router), React, TypeScript, Tailwind CSS v4, lucide-react, cmdk, recharts, xterm.js |
-| Auth | JWT (HS256), bcrypt password hashing, scope-based RBAC |
-| Real-time | WebSocket (agent ↔ hub), SSE (hub ↔ browser) |
-| Deployment | Single Go binary for the hub, single binary for each agent, Next.js dashboard behind Caddy/systemd |
-
-Compose is the supported packaged hub deployment; native services remain an alternative. No Kubernetes, Redis or Postgres is required.
-
----
-
-## Project status
-
-BloxOS is **pre-1.0** and currently powering the author's homelab fleet of ~10 machines across Proxmox, Synology, Windows, Linux, and Mac. It's stable enough to be the only dashboard I look at, but not yet documented enough for a stranger to install without reading source.
-
-**What's solid:**
-- Hub, Linux agent, Windows agent — all three run continuously on my fleet
-- Signed auto-update with monotonic protection on protocol-2 agents; recovery differs by OS
-- Hardware inventory, metrics, terminal, RBAC, themes, branding — all working
-- Metadata-only AI session monitoring and 24-hour component power history
-
-**What's not done:**
-- Polished public one-line hub installer
-- Mobile-responsive layout
-- Historical metrics retention beyond the live ring buffer
-- Custom alert rules UI (alerts exist; the rule editor isn't shipped)
-- Audit log
-- Broader disaster-recovery automation (a consistent backup helper and clean restore procedure ship)
-
-**What's planned for v1.0:**
-- Polished installer flow for hub and agents
-- Documentation site
-- Mobile responsive pass
-- Custom alert rules editor
-- Longer-term history beyond the shipped 24-hour component power chart
-
-See [the roadmap](#roadmap) for what's coming after v1.0.
-
----
-
-## Roadmap
-
-Beyond v1.0:
-
-- **Audit log** — every privileged action recorded with operator + timestamp
-- **Fleet-wide full-text search** — across machine names, notes, tags, hardware
-- **Historical metrics** — opt-in long-term storage with downsampling
-- **Custom dashboard layouts** — drag-to-arrange machine cards, save layouts per user
-- **Alert delivery** — webhooks (Discord, Slack, Telegram, generic)
-- **API tokens** — long-lived tokens for automation scripts, with scope restrictions
-- **Plugin system for API-polled machines** — first-class Synology, Proxmox, UniFi, TrueNAS support
-
-If something on this list matters more to you than the others, [open an issue](https://github.com/bokiko/bloxos/issues) and tell me — operator pull is how priorities move.
-
----
-
-## Comparison
-
-|  | BloxOS | Datadog | Grafana stack | Cockpit |
-|---|---|---|---|---|
-| Self-hosted | ✅ | ❌ | ✅ | ✅ |
-| Single binary install | ✅ | n/a | ❌ | ✅ |
-| Linux + Windows agents | ✅ | ✅ | partial | ❌ |
-| Live web terminal | ✅ | ❌ | ❌ | ✅ |
-| Hardware inventory | ✅ | ❌ | ❌ | partial |
-| Multi-user RBAC | ✅ | ✅ | ✅ | ❌ |
-| Auto-updating agents | ✅ | ✅ | ❌ | ❌ |
-| Fleet view | ✅ | ✅ | ✅ | ❌ |
-| No subscription | ✅ | ❌ | ✅ | ✅ |
-
-BloxOS isn't trying to compete with Datadog on enterprise observability or with Grafana on time-series visualization. It's competing for the **single operator running their own infrastructure** who wants one tool that does the operator-facing job well.
-
----
-
-## Naming note
-
-There is a separate, unrelated project also called BloxOS by [BotBlox](https://github.com/botblox/bloxos-releases) — embedded Linux for industrial Ethernet switches. Different audience entirely (hardware firmware vs. fleet management). If you're looking for switch firmware, that's not this. If you're looking for the homelab dashboard, you're in the right place.
-
----
-
-## Contributing
-
-The project is open source under the Apache 2.0 license. Issues, ideas, and pull requests are welcome.
-
-If you're building something on BloxOS or want a feature added, the fastest path is to open an issue describing the use case before opening a PR — that way we can talk about the shape of the change before code happens.
-
----
-
-## License
-
-[Apache License 2.0](LICENSE) — permissive, includes an explicit patent grant, requires preserving the `NOTICE` file when redistributing. Use it commercially or personally; modify it, fork it, ship it inside another product. Just don't sue contributors over patents and don't strip the attribution.
-
----
-
-## Author
-
-Built by [Bokiko](https://bokiko.io) — infrastructure between hardware and intelligence.
-
-- 🌐 [bokiko.io](https://bokiko.io)
-- 🐦 [@Bokiko](https://x.com/Bokiko)
-- ✍️ [Medium](https://medium.com/@bokiko)
-- 📧 Open an [issue](https://github.com/bokiko/bloxos/issues) for project-specific contact
-
-If BloxOS makes your homelab quieter to operate, ⭐ the repo. That's the only marketing this project will ever do.
+This fleet-management project is unrelated to BotBlox's similarly named
+Ethernet-switch firmware.
