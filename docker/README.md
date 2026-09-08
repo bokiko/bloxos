@@ -1,4 +1,4 @@
-# Containers
+# Install BloxOS with Docker Compose
 
 The hub side of a deployment runs as containers: Caddy for TLS, the hub API,
 and the dashboard. Agents stay native services on every managed machine;
@@ -6,19 +6,25 @@ they are not containerized.
 
 ## Compose: the supported hub deployment
 
-One required setting, three commands, from a clone of this repository:
+Use Docker Compose v2 on a Linux amd64 or arm64 host. Ports 80 and 443 must
+be free, and browsers and agents must be able to reach the host. From a
+clone of the released `v1.1.0` tag:
 
 ```bash
 cd docker
-cp .env.example .env      # set HUB_HOST to this machine's hostname or IP
-docker compose up -d --build
+cp .env.example .env
+# Edit .env: set HUB_HOST to this machine's reachable hostname or IP.
+# Add BLOXOS_VERSION=1.1.0 to use this release's images.
+docker compose pull
+docker compose up -d --no-build
 ```
 
-Published images are an alternative to building: every `v*` tag publishes
+After full CI and the Compose smoke test pass, release tags publish
 `ghcr.io/bokiko/bloxos-hub` and `ghcr.io/bokiko/bloxos-dashboard` for
-amd64 and arm64, tagged with the version and `latest`. To use them, replace
-the last command with `docker compose pull && docker compose up -d`; set
-`BLOXOS_VERSION` in `.env` to pin a version instead of `latest`.
+amd64 and arm64, tagged with the version (without `v`) and `latest`. Pin
+`BLOXOS_VERSION` in `.env` for a predictable upgrade target. A merge to `main`
+does not publish images. To build your chosen source revision instead, use
+`docker compose up -d --build` in place of the pull/start commands.
 
 Then read the first-boot setup token and open the dashboard:
 
@@ -26,8 +32,7 @@ Then read the first-boot setup token and open the dashboard:
 docker compose exec hub cat /data/.bloxos/setup-token
 ```
 
-Open `https://<HUB_HOST>`, accept the browser warning for the internal CA
-(or install its root certificate, see below), enter the token, and create
+Open `https://<HUB_HOST>`, configure [browser trust](#browser-trust), enter the token, and create
 the admin account. Use **Add Machine** to enroll agents; the generated
 command carries the CA fingerprint, so agents verify the hub without any
 manual trust step.
@@ -57,16 +62,60 @@ clients share one address there; rootful Docker passes the real address.
 
 Operations:
 
-- Upgrade: `git pull` then `docker compose up -d --build`, or with published
-  images `docker compose pull && docker compose up -d`. The hub and the
-  agents it serves come from the same commit; connected agents that have
-  pinned the update key self-update.
+- Upgrade: back up first, set `BLOXOS_VERSION` to the desired published
+  version in your existing `.env`, then run `docker compose pull hub dashboard`
+  and `docker compose up -d --no-build hub dashboard`. Preserve the project
+  name, overrides, volumes and keys. Source-build installations instead update
+  to a chosen tested source revision and run `docker compose up -d --build`.
+  The hub serves agent updates too; eligible older agents can update and restart.
+  See the [upgrade notes](../README.md#update-an-existing-installation) for
+  legacy-agent and offline-signing cautions.
 - Use the [consistent backup and clean restore procedure](../docs/backup-restore.md)
   for the database, secrets, signing key and Caddy CA/configuration. Do not copy
   only the live SQLite file or delete volumes to repair a failed upgrade.
 - Root certificate for browsers:
   `docker compose exec caddy cat /data/caddy/pki/authorities/local/root.crt`.
 - Logs: `docker compose logs -f hub`.
+
+## Browser trust
+
+Caddy creates a private certificate authority for this installation. A browser
+that does not trust it will show a certificate warning. Obtain its root
+certificate directly from your Docker host over a trusted administrative
+connection:
+
+```sh
+docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt ./bloxos-root.crt
+```
+
+Import this public root certificate into the trusted certificate store used by
+your browser/operating system, then reopen `https://<HUB_HOST>`. Only trust a
+root obtained from your own verified host; do not download an unverified
+certificate from a warning page. Never copy or distribute Caddy's private keys.
+
+Trusting a root CA grants it the ability to authenticate sites for that client.
+On managed devices, follow your administrator's certificate policy. A properly
+configured publicly trusted certificate is an alternative for custom deployments.
+
+The generated agent commands handle their own CA and key verification; browser
+trust and agent enrollment are separate. Keep the Caddy data volume across
+upgrades so this identity does not change.
+
+## Troubleshooting the first start
+
+- **Page will not open:** check `docker compose ps`, that ports 80/443 are free,
+  and that `HUB_HOST` resolves to a reachable address. `localhost` on an agent
+  means that agent, not the hub.
+- **Certificate warning:** follow [Browser trust](#browser-trust); do not remove
+  certificate verification from enrollment commands.
+- **Setup token not ready:** wait for the hub to be healthy, then retry the token
+  command. Check `docker compose logs --tail=100 hub caddy` locally if needed.
+  Logs may contain setup information—redact secrets before posting them.
+- **Expired enrollment command:** generate a fresh command in Add Machine. Linux
+  join links expire after 15 minutes. Never paste a real join link into an issue.
+
+For persistent failures, use the [bug report template](https://github.com/bokiko/bloxos/issues/new/choose)
+with your version, platform and sanitized error output.
 
 ## Smoke test
 
@@ -81,7 +130,7 @@ CI runs it on source/container changes, and tags must pass both smoke and the
 full CI suite on their exact commit before publishing images. Locally:
 
 ```bash
-SMOKE_CONFIRM_DISPOSABLE=1 HUB_HOST=<this host's IP> scripts/smoke/compose-enroll.sh
+SMOKE_CONFIRM_DISPOSABLE=1 HUB_HOST=127.0.0.1 scripts/smoke/compose-enroll.sh
 ```
 
 ## Images
@@ -129,26 +178,31 @@ The hub refuses to start without an origin policy, so `PUBLIC_URL` (or
 update-signing key.
 
 ```bash
-docker run -d --name bloxos-hub -p 4000:4000 \
+docker run -d --name bloxos-hub -p 127.0.0.1:4000:4000 \
   -e PUBLIC_URL=http://127.0.0.1:4000 \
   -v bloxos-data:/data \
   bloxos-hub
 docker exec bloxos-hub cat /data/.bloxos/setup-token
 ```
 
-Inside the image the hub listens on `0.0.0.0:4000` and runs as uid 65532.
+This standalone example is local-only. Use the Caddy+HTTPS Compose stack for
+LAN access. Inside the image the hub listens on `0.0.0.0:4000` and runs as uid 65532.
 The agent binaries are root-owned and read-only at
 `/usr/local/lib/bloxos/linux/amd64/bloxos-agent`,
 `/usr/local/lib/bloxos/linux/arm64/bloxos-agent` and
 `/usr/local/lib/bloxos/windows/bloxos-agent.exe`, which are the resolver's
-default paths, so no `BLOXOS_AGENT_BINARY*` setting is needed. The Compose file sets `BLOXOS_PIN_DIAL_ADDR=caddy:443` so the hub can read the TLS certificate it pins into one-line join commands: PUBLIC_URL routes to Caddy from outside, but to the hub's own loopback from inside its container, so the pin handshake is aimed at the Caddy service while SNI and verification still use PUBLIC_URL. For a private
+default paths, so no `BLOXOS_AGENT_BINARY*` setting is needed. Compose sets
+`BLOXOS_PIN_DIAL_ADDR=caddy:443` so pin verification reaches Caddy directly.
+This also handles a loopback `PUBLIC_URL`, which otherwise points back into
+the hub container itself. SNI and certificate verification still use the
+configured public identity. For a private
 CA, mount the CA certificate and point `BLOXOS_CA_CERT` at it. Back up the
 `/data` volume; losing the update-signing key strands agent self-update.
 
 ### Run the dashboard alone
 
 ```bash
-docker run -d --name bloxos-dashboard -p 3000:3000 bloxos-dashboard
+docker run -d --name bloxos-dashboard -p 127.0.0.1:3000:3000 bloxos-dashboard
 ```
 
 The dashboard is built with an empty `NEXT_PUBLIC_HUB_URL`, so it expects
