@@ -126,7 +126,15 @@ export function aggregate(machines: MachineMetrics[], now: number = Date.now()):
   // GPU aggregates are sampled PER DEVICE (matching computeFleetMetrics): a
   // machine with two GPUs contributes two samples, so unequal GPU counts
   // weight the fleet average by device rather than by machine. CPU-only
-  // machines contribute nothing. Power counts any finite reading including 0.
+  // machines contribute nothing.
+  //
+  // GPU power is special: the agent's parseNvValue serializes an unknown/"N/A"
+  // reading as 0 (agent/main.go), so on the wire 0 W is indistinguishable from
+  // "not reported". Only a strictly positive reading is treated as an
+  // observation. A total is therefore reported only when at least one device
+  // reported >0; it is complete only when EVERY GPU device did. All-zero or
+  // no-reading fleets are unavailable (null), never a false 0 W total, and a
+  // mix of positive and zero is a partial sum.
   const gpuUtil: number[] = [];
   const vram: number[] = [];
   const temps: number[] = [];
@@ -143,7 +151,10 @@ export function aggregate(machines: MachineMetrics[], now: number = Date.now()):
           if (Number.isFinite(v)) vram.push(v);
         }
         if (Number.isFinite(g.temp_c) && g.temp_c > 0) temps.push(g.temp_c);
-        if (Number.isFinite(g.power_watts) && g.power_watts >= 0) {
+        // Strictly > 0: a 0 may be a real idle draw or an unknown serialized as
+        // 0, and the legacy wire cannot tell them apart, so 0 never counts as a
+        // power observation.
+        if (Number.isFinite(g.power_watts) && g.power_watts > 0) {
           power += g.power_watts;
           powerDevices += 1;
         }

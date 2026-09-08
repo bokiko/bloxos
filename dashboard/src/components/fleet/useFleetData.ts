@@ -28,7 +28,7 @@ export interface FleetData {
  * tick re-derives freshness so machines age to stale/offline even if the SSE
  * stream goes quiet, matching FleetOverview's clock. */
 export function useFleetData(): FleetData {
-  const { machines: live, hasReceivedData, alerts } = useSSE();
+  const { machines: live, hasReceivedData, alertCount } = useSSE();
   const ai = useAISessions();
 
   const [now, setNow] = useState(() => Date.now());
@@ -90,7 +90,10 @@ export function useFleetData(): FleetData {
     agg,
     sessionCount,
     sessionMachines,
-    alertsCount: alerts.length,
+    // The SSE alert count is maintained independently and can arrive before or
+    // during a failed GET /api/alerts, so it is the reliable source — not the
+    // length of the alerts array, which is empty until that fetch succeeds.
+    alertsCount: alertCount,
     isDemo,
     hasReceivedData,
     isEmpty: machines.length === 0,

@@ -36,14 +36,30 @@ test('fleet averages count GPUs, not machine averages, when device counts differ
  assert.ok(Math.abs(result.avgVram-200/3)<1e-9);
  assert.equal(result.gpuPowerTotal,350);
 });
-test('partial GPU power must not be presented as a complete fleet total; valid zero survives',()=>{
- const machine=gpuMachine();delete machine.gpus[1].power_watts;
- const partial=aggregate([machine]);
- assert.equal(partial.gpuPowerComplete,false);
- assert.equal(partial.gpuPowerTotal,100);
- machine.gpus.forEach(g=>{g.power_watts=0;g.util_percent=0;});
- assert.equal(aggregate([machine]).gpuPowerTotal,0);
- assert.equal(aggregate([machine]).avgGpuUtil,0);
+test('legacy GPU power: only >0 is observed; mixed is partial; all-zero/absent is unavailable',()=>{
+ // All devices report a positive draw -> complete total.
+ const all=aggregate([gpuMachine()]);
+ assert.equal(all.gpuPowerTotal,300);
+ assert.equal(all.gpuPowerComplete,true);
+ // One device omits the reading -> partial, only the observed device counts.
+ const missing=gpuMachine();delete missing.gpus[1].power_watts;
+ const partialMissing=aggregate([missing]);
+ assert.equal(partialMissing.gpuPowerTotal,100);
+ assert.equal(partialMissing.gpuPowerComplete,false);
+ // A 0 is ambiguous (the agent serializes "N/A" power as 0), so it is not an
+ // observation: mixed positive + zero is a partial sum, never complete.
+ const mixed=gpuMachine();mixed.gpus[1].power_watts=0;
+ const partialZero=aggregate([mixed]);
+ assert.equal(partialZero.gpuPowerTotal,100);
+ assert.equal(partialZero.gpuPowerComplete,false);
+ // Every device reads 0 -> entirely ambiguous -> unavailable, never a 0 W total.
+ const allZero=gpuMachine();allZero.gpus.forEach(g=>{g.power_watts=0;});
+ const zeroResult=aggregate([allZero]);
+ assert.equal(zeroResult.gpuPowerTotal,null);
+ assert.equal(zeroResult.gpuPowerComplete,false);
+ // Non-power GPU readings are unaffected: 0% utilization stays a valid reading.
+ const idle=gpuMachine();idle.gpus.forEach(g=>{g.util_percent=0;});
+ assert.equal(aggregate([idle]).avgGpuUtil,0);
 });
 test('non-finite readings are unavailable, not NaN output',()=>{
  const machine={...cpuOnly(),cpu_percent:NaN,ram_used_bytes:Infinity};

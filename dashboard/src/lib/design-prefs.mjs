@@ -16,7 +16,17 @@ export function readDesign(storage, userID) {
   try { return normalizeDesign(JSON.parse(storage.getItem(designCacheKey(userID)))); }
   catch { return normalizeDesign(null); }
 }
-export function writeDesign(storage, userID, value) {
-  try { storage.setItem(designCacheKey(userID), JSON.stringify(normalizeDesign(value))); }
+export function hasPendingDesign(storage, userID) {
+  try { return hasDesignCache(storage, userID) && JSON.parse(storage.getItem(designCacheKey(userID)))?.pendingSync === true; }
+  catch { return false; }
+}
+export function writeDesign(storage, userID, value, pendingSync = false) {
+  try { storage.setItem(designCacheKey(userID), JSON.stringify({ ...normalizeDesign(value), ...(pendingSync ? {pendingSync: true} : {}) })); }
   catch { /* Appearance remains usable with blocked/full storage. */ }
+}
+export function markDesignSynced(storage, userID, sent) {
+  // A different tab may have saved a newer local choice while this request ran.
+  if (JSON.stringify(readDesign(storage, userID)) === JSON.stringify(normalizeDesign(sent))) {
+    writeDesign(storage, userID, sent);
+  }
 }

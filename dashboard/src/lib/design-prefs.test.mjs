@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DESIGN_LAYOUTS, DESIGN_COLORS, normalizeDesign, readDesign, writeDesign, hasDesignCache } from './design-prefs.mjs';
+import { DESIGN_LAYOUTS, DESIGN_COLORS, normalizeDesign, readDesign, writeDesign, hasDesignCache, hasPendingDesign, markDesignSynced } from './design-prefs.mjs';
 
 test('designs and colors are independent and have exactly nine new combinations', () => {
   assert.equal((DESIGN_LAYOUTS.length - 1) * DESIGN_COLORS.length, 9);
@@ -39,4 +39,19 @@ test('cache is account-scoped and unavailable storage is harmless', () => {
   const blocked = { getItem() { throw Error('denied'); }, setItem() { throw Error('full'); } };
   assert.equal(readDesign(blocked, 'one').layout, 'classic');
   assert.doesNotThrow(() => writeDesign(blocked, 'one', one));
+});
+test('unsynced choices survive reads and only their matching acknowledgement clears dirty state', () => {
+  const items = new Map();
+  const storage = { getItem: key => items.get(key), setItem: (key, value) => items.set(key, value) };
+  const old = normalizeDesign({layout:'wall'}), newer = normalizeDesign({layout:'grove'});
+  writeDesign(storage, 'one', old, true);
+  assert.equal(hasPendingDesign(storage, 'one'), true);
+  assert.deepEqual(readDesign(storage, 'one'), old);
+  assert.equal(hasPendingDesign(storage, 'two'), false);
+  writeDesign(storage, 'one', newer, true);
+  markDesignSynced(storage, 'one', old);
+  assert.equal(hasPendingDesign(storage, 'one'), true);
+  assert.deepEqual(readDesign(storage, 'one'), newer);
+  markDesignSynced(storage, 'one', newer);
+  assert.equal(hasPendingDesign(storage, 'one'), false);
 });

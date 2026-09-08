@@ -5,7 +5,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useTheme, applyToDocument } from "@/contexts/ThemeContext";
 import { HUB_URL, getStoredToken } from "@/lib/session";
 import { userIDFromToken } from "@/lib/auth-session.mjs";
-import { normalizeDesign, readDesign, writeDesign, hasDesignCache, type Layout, type DesignColor, type DesignPreferences } from "@/lib/design-prefs.mjs";
+import { normalizeDesign, readDesign, writeDesign, hasDesignCache, hasPendingDesign, markDesignSynced, type Layout, type DesignColor, type DesignPreferences } from "@/lib/design-prefs.mjs";
 
 export type { Layout, DesignColor };
 interface DesignValue {
@@ -59,6 +59,13 @@ export function DesignProvider({ children }: { children: ReactNode }) {
       setError(null);
       setSaving(false);
       if (!token || token !== getStoredToken()) return;
+      // Never replace an advertised browser-local save with an older server
+      // value after a reload. Keep it (and the retry warning) until a selection
+      // successfully syncs. Any selection sends the complete snapshot again.
+      if (hasPendingDesign(localStorage, userID)) {
+        setError("Saved in this browser only. Select your choice again to retry account sync.");
+        return;
+      }
       const timeout = setTimeout(() => controller.abort(), 5000);
       try {
         const response = await fetchDesign({ signal: controller.signal });
@@ -100,7 +107,7 @@ export function DesignProvider({ children }: { children: ReactNode }) {
     if (!ready || token !== getStoredToken()) return;
     const edit = ++revision.current;
     current.current = next;
-    writeDesign(localStorage, userID, next);
+    writeDesign(localStorage, userID, next, !!token);
     setState({ owner: userID, prefs: next, ready: true });
     setError(null);
     if (!token) return;
@@ -117,7 +124,10 @@ export function DesignProvider({ children }: { children: ReactNode }) {
           body: JSON.stringify(next), signal: AbortSignal.timeout(5000),
         });
         if (!response.ok) throw new Error("save failed");
-        if (token === getStoredToken() && edit === revision.current) setError(null);
+        if (token === getStoredToken() && edit === revision.current) {
+          markDesignSynced(localStorage, userID, next);
+          setError(null);
+        }
       } catch {
         if (token === getStoredToken()) setError("Saved in this browser only. Select your choice again to retry account sync.");
       } finally {

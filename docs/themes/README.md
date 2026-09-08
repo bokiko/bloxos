@@ -30,7 +30,10 @@ their account-scoped cached choice immediately while the server reconciles in
 the background. Without a valid cache, a neutral loading frame resolves the
 preference; a failed sync falls back to the
 cached choice with a visible warning and does not block using the app. Failed
-saves remain local and are reported instead of being presented as synced.
+saves remain local across reloads and are reported instead of being presented as
+synced. Reselect a choice to retry syncing the complete local design. Zero GPU
+power on the legacy wire is ambiguous (unsupported sensors also report zero),
+so it is treated as unavailable, not proof of a complete zero-watt total.
 
 ## Reference studies
 
