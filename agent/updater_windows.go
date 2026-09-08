@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -240,7 +241,7 @@ func applyPendingUpdate() {
 	dir := filepath.Dir(exe)
 	helperPath := filepath.Join(dir, "bloxos-agent-update-helper.bat")
 
-	helper := buildHelperBatch(exe, newPath, markerPath)
+	helper := buildHelperBatch(exe, newPath, markerPath, windowsServiceName)
 	if err := os.WriteFile(helperPath, []byte(helper), 0755); err != nil {
 		log.Printf("update: cannot write helper script: %v", err)
 		return
@@ -312,19 +313,95 @@ func validatePendingUpdate(exe, markerPath, newPath string) error {
 }
 
 // buildHelperBatch returns the contents of the .bat we leave on disk.
-// Format mirrors the spec.
-func buildHelperBatch(target, newBin, marker string) string {
+//
+// The helper runs with no console (spawned from the service), and there
+// `timeout /t` exits immediately with "Input redirection is not supported",
+// so the old fixed delay was inert and the move raced the exiting agent
+// (TestUpdateHelperTimeoutIsInertWithoutConsole records that). Waits are now
+// `ping -n 2 127.0.0.1` (about one second, console-independent) and the
+// helper is driven by the service state rather than by time:
+//
+//  1. wait until the SCM reports the service STOPPED (bounded), or the
+//     service does not exist so there is nothing to wait for;
+//  2. move the staged binary into place, retrying while the file is still
+//     locked by the exiting process (bounded);
+//  3. remove the marker only once the outcome is decided: on success the new
+//     binary starts; if the binary never unlocks the staged copy is
+//     discarded and the current binary starts (the hub re-announces the
+//     update on reconnect);
+//  4. start the service and wait until it reports RUNNING (bounded).
+//
+// Every outcome, including a failed restart, is written to
+// <target>.update-helper.log, the only evidence a console-less helper has.
+func buildHelperBatch(target, newBin, marker, serviceName string) string {
 	// Use Windows path separators in the batch file.
 	target = filepath.FromSlash(target)
 	newBin = filepath.FromSlash(newBin)
 	marker = filepath.FromSlash(marker)
+	logFile := target + ".update-helper.log"
+	logLine := func(text string) string {
+		return ">> \"" + logFile + "\" echo [%DATE% %TIME%] update: " + text + "\r\n"
+	}
+	query := "sc.exe query " + serviceName
 	return "@echo off\r\n" +
-		"timeout /t 3 /nobreak > nul\r\n" +
-		"move /Y \"" + newBin + "\" \"" + target + "\" > nul\r\n" +
+		"set /a WAITS=0\r\n" +
+		":waitstop\r\n" +
+		query + " | find \"STOPPED\" > nul\r\n" +
+		"if not errorlevel 1 goto stopped\r\n" +
+		query + " > nul 2>&1\r\n" +
+		"if errorlevel 1 goto stopped\r\n" +
+		"set /a WAITS+=1\r\n" +
+		"if %WAITS% geq " + strconv.Itoa(helperStopWaitSeconds) + " goto stopwaitfailed\r\n" +
+		"ping -n 2 127.0.0.1 > nul\r\n" +
+		"goto waitstop\r\n" +
+		":stopwaitfailed\r\n" +
+		logLine(serviceName+" did not report STOPPED within %WAITS% s, continuing") +
+		":stopped\r\n" +
+		"set /a TRIES=0\r\n" +
+		":retry\r\n" +
+		"move /Y \"" + newBin + "\" \"" + target + "\" > nul 2>&1\r\n" +
+		"if not errorlevel 1 goto replaced\r\n" +
+		"set /a TRIES+=1\r\n" +
+		"if %TRIES% geq " + strconv.Itoa(helperMoveAttempts) + " goto giveup\r\n" +
+		"ping -n 2 127.0.0.1 > nul\r\n" +
+		"goto retry\r\n" +
+		":giveup\r\n" +
+		logLine("binary still locked after %TRIES% attempts, keeping the current binary") +
+		"del \"" + newBin + "\" 2> nul\r\n" +
+		"goto restart\r\n" +
+		":replaced\r\n" +
+		logLine("replaced binary after %TRIES% retries") +
+		":restart\r\n" +
 		"del \"" + marker + "\" 2> nul\r\n" +
-		"sc.exe start " + windowsServiceName + " > nul\r\n" +
-		"del \"%~f0\" 2> nul\r\n"
+		"sc.exe start " + serviceName + " > nul 2>&1\r\n" +
+		"set /a STARTS=0\r\n" +
+		":waitrun\r\n" +
+		query + " | find \"RUNNING\" > nul\r\n" +
+		"if not errorlevel 1 goto running\r\n" +
+		query + " > nul 2>&1\r\n" +
+		"if errorlevel 1 goto startfailed\r\n" +
+		"set /a STARTS+=1\r\n" +
+		"if %STARTS% geq " + strconv.Itoa(helperStartWaitSeconds) + " goto startfailed\r\n" +
+		"ping -n 2 127.0.0.1 > nul\r\n" +
+		"goto waitrun\r\n" +
+		":startfailed\r\n" +
+		logLine(serviceName+" not RUNNING after start (waited %STARTS% s); check the service") +
+		"del \"%~f0\" 2> nul\r\n" +
+		"exit /b 1\r\n" +
+		":running\r\n" +
+		logLine(serviceName+" running") +
+		"del \"%~f0\" 2> nul\r\n" +
+		"exit /b 0\r\n"
 }
+
+// Helper bounds, in one-second waits: how long to wait for the service to
+// report STOPPED, how many times to retry the move while the binary is
+// locked, and how long to wait for RUNNING after the start request.
+const (
+	helperStopWaitSeconds  = 60
+	helperMoveAttempts     = 30
+	helperStartWaitSeconds = 60
+)
 
 // downloadAgentBinary fetches /download/agent?os=windows from the hub and
 // writes it to destPath. Reuses the agent's TLS configuration so the

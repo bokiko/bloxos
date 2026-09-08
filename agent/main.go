@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"os/user"
 	"path/filepath"
 	"regexp"
@@ -309,15 +308,24 @@ func websocketDialerFor(rawURL string) (*websocket.Dialer, error) {
 
 func main() {
 	var (
-		installSvc   bool
-		uninstallSvc bool
+		installSvc    bool
+		uninstallSvc  bool
+		restartHelper string
 	)
 	flag.StringVar(&hubURL, "hub", "ws://localhost:4000/ws/agent", "Hub WebSocket URL")
 	flag.StringVar(&token, "token", "", "Registration token")
 	flag.StringVar(&agentSecret, "secret", "", "Agent secret for reconnection")
 	flag.BoolVar(&installSvc, "install-service", false, "Install as a Windows service and exit (Windows only)")
 	flag.BoolVar(&uninstallSvc, "uninstall-service", false, "Uninstall the Windows service and exit (Windows only)")
+	flag.StringVar(&restartHelper, "restart-service-helper", "", "Internal: restart the named Windows service from a detached process and exit")
 	flag.Parse()
+
+	if restartHelper != "" {
+		if err := platformRestartServiceHelper(restartHelper); err != nil {
+			log.Fatalf("restart-service-helper: %v", err)
+		}
+		return
+	}
 
 	if installSvc {
 		if err := platformInstallService(); err != nil {
@@ -895,7 +903,7 @@ func handleCommand(conn *websocket.Conn, mu *sync.Mutex, msg []byte) {
 			}
 			return
 		}
-		handleStartTerminalPlatform(cmd, msg)
+		handleStartTerminalPlatform(conn, mu, cmd, msg)
 		return
 	}
 
@@ -957,24 +965,48 @@ func handleCommand(conn *websocket.Conn, mu *sync.Mutex, msg []byte) {
 		}
 	}
 
-	plan, err := commandPlan(cmd.Type, cmd.Target)
-	if err != nil {
-		resp := CommandResponse{
-			Type:  "command_response",
-			ID:    cmd.ID,
-			Error: err.Error(),
-		}
-		writeJSON(conn, mu, resp)
-		return
-	}
-
 	// Bound execution so a wedged systemctl/docker call can't hang this
 	// goroutine forever; on timeout the command (and its process group, on
 	// Linux) is killed and we report a clear timeout error.
 	ctx, cancel := context.WithTimeout(context.Background(), agentCommandTimeout)
 	defer cancel()
 
-	output, err := runCommandPlan(ctx, plan)
+	// Service commands on Windows go through the service control manager
+	// (stop, wait for STOPPED, start) rather than an argv plan.
+	output, handled, err := platformServiceCommand(ctx, cmd.Type, cmd.Target)
+	if !handled {
+		var plan [][]string
+		plan, err = commandPlan(cmd.Type, cmd.Target)
+		if err != nil {
+			resp := CommandResponse{
+				Type:  "command_response",
+				ID:    cmd.ID,
+				Error: err.Error(),
+			}
+			writeJSON(conn, mu, resp)
+			return
+		}
+		output, err = runCommandPlan(ctx, plan)
+	}
+
+	// A command that tears this agent down (self-restart or stop of our own
+	// unit, reboot, shutdown) kills the child mid-execution when the process
+	// group goes down: systemctl dies by SIGTERM/SIGKILL. That signal death
+	// is the expected result of a SUCCESSFUL teardown, not a failure —
+	// reporting success=false here would tell the operator the restart
+	// failed while it is in fact under way, and (since removing sudo shortened
+	// the race) the reply now reaches the hub inside its disconnect grace and
+	// turns the truthful 202 "sent, unconfirmed" into a 200 failure. Stay
+	// silent and let the hub's grace report it. A genuine pre-teardown error
+	// (unit unknown, permission denied) exits with a status code, not a
+	// signal, and is reported below; a context timeout/cancel is excluded so
+	// it is still surfaced as an error below.
+	if shouldSuppressTeardownReply(cmd.Type, cmd.Target, ctx.Err(), err) {
+		log.Printf("command %s (id=%s target=%s): agent teardown in progress; leaving completion unconfirmed",
+			cmd.Type, cmd.ID, cmd.Target)
+		return
+	}
+
 	resp := CommandResponse{
 		Type:    "command_response",
 		ID:      cmd.ID,
@@ -997,8 +1029,8 @@ func handleCommand(conn *websocket.Conn, mu *sync.Mutex, msg []byte) {
 func sendServices(conn *websocket.Conn, mu *sync.Mutex, machineID string) {
 	hostname, _ := os.Hostname()
 
-	out, err := exec.Command("systemctl", "list-units", "--type=service",
-		"--state=active,inactive,failed", "--no-pager", "--no-legend").Output()
+	out, err := runCollector("systemctl", "list-units", "--type=service",
+		"--state=active,inactive,failed", "--no-pager", "--no-legend")
 	if err != nil {
 		log.Printf("service discovery error: %v", err)
 		return
@@ -1071,12 +1103,12 @@ func isInterestingService(name string) bool {
 func sendContainers(conn *websocket.Conn, mu *sync.Mutex, machineID string) {
 	hostname, _ := os.Hostname()
 
-	if err := exec.Command("docker", "info").Run(); err != nil {
+	if _, err := runCollector("docker", "info"); err != nil {
 		return
 	}
 
-	out, err := exec.Command("docker", "ps", "-a", "--format",
-		"{{.ID}}\t{{.Names}}\t{{.Status}}\t{{.Image}}").Output()
+	out, err := runCollector("docker", "ps", "-a", "--format",
+		"{{.ID}}\t{{.Names}}\t{{.Status}}\t{{.Image}}")
 	if err != nil {
 		log.Printf("docker discovery error: %v", err)
 		return
@@ -1187,13 +1219,20 @@ type nvPower struct {
 	InstPowerDraw string `xml:"instant_power_draw"`
 }
 
+// resolveNvidiaSmi is the nvidia-smi locator; a variable so tests can point
+// it at a synthetic collector.
+var resolveNvidiaSmi = resolveNvidiaSmiPath
+
 func collectGPUMetrics() []GPUInfo {
-	smiPath := resolveNvidiaSmiPath()
+	smiPath := resolveNvidiaSmi()
 	if smiPath == "" {
 		return nil
 	}
-	out, err := exec.Command(smiPath, "-x", "-q").Output()
+	// A hung nvidia-smi (GPU off the bus) must report "no GPU data", not
+	// zeros, and must not hold the connection loop: see runCollector.
+	out, err := runCollector(smiPath, "-x", "-q")
 	if err != nil {
+		log.Printf("nvidia-smi unavailable: %v", err)
 		return nil
 	}
 

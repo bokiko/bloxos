@@ -227,6 +227,7 @@ func TestApplyTerminalCredentials_NonNumericGIDFailsClosed(t *testing.T) {
 // Without it the fail-closed tests could pass by always returning an
 // error, even on valid input.
 func TestApplyTerminalCredentials_ValidUser(t *testing.T) {
+	stubGroupIDs(t, []string{"1000", "27", "999"}, nil)
 	bashCmd := exec.Command("/bin/true")
 	termUser := &user.User{
 		Uid:      "1000",
@@ -250,48 +251,110 @@ func TestApplyTerminalCredentials_ValidUser(t *testing.T) {
 	if got := bashCmd.SysProcAttr.Credential.Gid; got != 1000 {
 		t.Errorf("Credential.Gid = %d, want 1000", got)
 	}
+	if got := bashCmd.SysProcAttr.Credential.Groups; len(got) != 3 || got[0] != 1000 || got[1] != 27 || got[2] != 999 {
+		t.Errorf("Credential.Groups = %v, want [1000 27 999]", got)
+	}
 	if bashCmd.Dir != "/home/ok" {
 		t.Errorf("Dir = %q, want /home/ok", bashCmd.Dir)
 	}
 }
 
-// TestApplyTerminalCredentials_NilUserFallback covers the existing
-// pre-Phase-A behaviour: if no non-root user can be resolved, we fall
-// back to running as the current user (which on the agent host means
-// root). The helper must accept this without error — it's the right
-// behaviour for a misconfigured single-user host where no
-// BLOXOS_TERMINAL_USER, "bokiko", or other candidate exists. SysProcAttr
-// stays nil so the spawned process inherits the agent's identity.
-func TestApplyTerminalCredentials_NilUserFallback(t *testing.T) {
-	bashCmd := exec.Command("/bin/true")
+// stubGroupIDs makes group lookup return the given ids for any user, so the
+// tests can use accounts that do not exist on the test host.
+func stubGroupIDs(t *testing.T, ids []string, err error) {
+	t.Helper()
+	old := lookupGroupIDs
+	lookupGroupIDs = func(*user.User) ([]string, error) { return ids, err }
+	t.Cleanup(func() { lookupGroupIDs = old })
+}
 
-	if err := applyTerminalCredentials(bashCmd, nil); err != nil {
-		t.Fatalf("nil user must not error (it's the documented fallback): %v", err)
+// TestApplyTerminalCredentials_NilUserRefused: with no resolved user the
+// old code inherited the agent's identity (root) and only logged a warning.
+// That fallback is gone; a nil user is an error and nothing is configured.
+func TestApplyTerminalCredentials_NilUserRefused(t *testing.T) {
+	bashCmd := exec.Command("/bin/true")
+	if err := applyTerminalCredentials(bashCmd, nil); err == nil {
+		t.Fatal("nil user must be refused")
 	}
 	if bashCmd.SysProcAttr != nil {
 		t.Errorf("SysProcAttr was set for nil user: %+v", bashCmd.SysProcAttr)
 	}
 }
 
-// TestApplyTerminalCredentials_RootUserFallback covers the same
-// fallback path when the resolved user happens to be root (UID 0).
-// We deliberately skip the credential setup in that case rather than
-// setting Credential{Uid:0, Gid:0} — both produce the same effect but
-// the no-SysProcAttr form is what the existing code does and what
-// callers test against.
-func TestApplyTerminalCredentials_RootUserFallback(t *testing.T) {
+// TestApplyTerminalCredentials_RootUserRefused: uid 0 is refused for the
+// same reason, even when it was named explicitly.
+func TestApplyTerminalCredentials_RootUserRefused(t *testing.T) {
+	stubGroupIDs(t, []string{"0"}, nil)
+	for _, uid := range []string{"0", "00", "+0"} {
+		bashCmd := exec.Command("/bin/true")
+		termUser := &user.User{Uid: uid, Gid: "0", Username: "root", HomeDir: "/root"}
+		if err := applyTerminalCredentials(bashCmd, termUser); err == nil {
+			t.Fatalf("uid %q must be refused", uid)
+		}
+		if bashCmd.SysProcAttr != nil {
+			t.Errorf("SysProcAttr was set for uid %q: %+v", uid, bashCmd.SysProcAttr)
+		}
+	}
+}
+
+// TestApplyTerminalCredentials_GroupLookupFailureFailsClosed: a group list
+// that cannot be read or parsed aborts before any credential is set, rather
+// than starting the shell with no supplementary groups.
+func TestApplyTerminalCredentials_GroupLookupFailureFailsClosed(t *testing.T) {
+	termUser := &user.User{Uid: "1000", Gid: "1000", Username: "ok", HomeDir: "/home/ok"}
+
+	stubGroupIDs(t, nil, errors.New("nss unavailable"))
 	bashCmd := exec.Command("/bin/true")
-	termUser := &user.User{
-		Uid:      "0",
-		Gid:      "0",
-		Username: "root",
-		HomeDir:  "/root",
+	if err := applyTerminalCredentials(bashCmd, termUser); err == nil || bashCmd.SysProcAttr != nil {
+		t.Fatalf("group lookup error must fail closed: err=%v attr=%+v", err, bashCmd.SysProcAttr)
 	}
 
-	if err := applyTerminalCredentials(bashCmd, termUser); err != nil {
-		t.Fatalf("root user must not error (existing fallback): %v", err)
+	stubGroupIDs(t, []string{"1000", "junk"}, nil)
+	bashCmd = exec.Command("/bin/true")
+	if err := applyTerminalCredentials(bashCmd, termUser); err == nil || bashCmd.SysProcAttr != nil {
+		t.Fatalf("unparseable group id must fail closed: err=%v attr=%+v", err, bashCmd.SysProcAttr)
 	}
-	if bashCmd.SysProcAttr != nil {
-		t.Errorf("SysProcAttr was set for root fallback: %+v", bashCmd.SysProcAttr)
+}
+
+// TestResolveTerminalUser_ConfiguredNameMustExist: a BLOXOS_TERMINAL_USER
+// that does not resolve is an error. The old code logged "falling back" and
+// went on to try the common names and then the current user (root).
+func TestResolveTerminalUser_ConfiguredNameMustExist(t *testing.T) {
+	t.Setenv("BLOXOS_TERMINAL_USER", "bloxos-no-such-user-e2")
+	if u, err := resolveTerminalUser(); err == nil {
+		t.Fatalf("unknown configured user resolved to %+v", u)
+	} else if !strings.Contains(err.Error(), "bloxos-no-such-user-e2") {
+		t.Fatalf("error does not name the configured account: %v", err)
+	}
+}
+
+// TestResolveTerminalUser_ConfiguredRootRefused: naming root explicitly is
+// refused too; terminals never run as root.
+func TestResolveTerminalUser_ConfiguredRootRefused(t *testing.T) {
+	t.Setenv("BLOXOS_TERMINAL_USER", "root")
+	if u, err := resolveTerminalUser(); err == nil {
+		t.Fatalf("root resolved as terminal user: %+v", u)
+	}
+}
+
+// TestResolveTerminalUser_ConfiguredNonRootWorksWithRealGroups: the
+// supported path (an existing non-root account) still resolves with no
+// extra setup, and its real supplementary groups reach the credential.
+func TestResolveTerminalUser_ConfiguredNonRootWorksWithRealGroups(t *testing.T) {
+	if _, err := user.Lookup("nobody"); err != nil {
+		t.Skip("no 'nobody' account on this host")
+	}
+	t.Setenv("BLOXOS_TERMINAL_USER", "nobody")
+	u, err := resolveTerminalUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bashCmd := exec.Command("/bin/true")
+	if err := applyTerminalCredentials(bashCmd, u); err != nil {
+		t.Fatal(err)
+	}
+	cred := bashCmd.SysProcAttr.Credential
+	if cred.Uid == 0 || len(cred.Groups) == 0 {
+		t.Fatalf("credential for nobody = %+v, want non-zero uid and populated groups", cred)
 	}
 }

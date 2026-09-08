@@ -168,7 +168,7 @@ func TestCheckAndCleanPendingUpdate(t *testing.T) {
 }
 
 func TestBuildHelperBatchMovesNotDeletes(t *testing.T) {
-	helper := buildHelperBatch("target.exe", "new.exe", "marker.pending")
+	helper := buildHelperBatch("target.exe", "new.exe", "marker.pending", "BloxOSAgent")
 	if strings.Contains(helper, "del \"target.exe\"") {
 		t.Errorf("buildHelperBatch contains del target: %s", helper)
 	}

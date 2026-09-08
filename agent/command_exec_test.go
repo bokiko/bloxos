@@ -8,28 +8,51 @@ import (
 	"time"
 )
 
-// TestCommandPlanForWindowsRestartService locks in item 3: on Windows,
-// restart_service is two separate argv commands (sc.exe stop / sc.exe start)
-// with no cmd.exe and no shell metacharacters — injection-proof by
-// construction. This is pure argv logic, testable on any OS.
-func TestCommandPlanForWindowsRestartService(t *testing.T) {
-	plan, err := commandPlanFor("windows", "restart_service", "My-Svc.1")
-	if err != nil {
-		t.Fatalf("commandPlanFor: %v", err)
-	}
-	want := [][]string{
-		{"sc.exe", "stop", "My-Svc.1"},
-		{"sc.exe", "start", "My-Svc.1"},
-	}
-	if !equalPlan(plan, want) {
-		t.Fatalf("windows restart_service plan = %v, want %v", plan, want)
-	}
-	for _, step := range plan {
-		for _, arg := range step {
-			if strings.Contains(arg, "cmd.exe") || strings.Contains(arg, "&") {
-				t.Fatalf("windows plan must not use cmd.exe / shell chaining, got arg %q", arg)
-			}
+// TestCommandPlanForWindowsServiceCommandsGoThroughSCM: Windows service
+// commands are not argv plans any more. "sc.exe stop; sc.exe start" returned
+// while the service was still STOP_PENDING and raced the start, so they are
+// executed through the service control manager (service_control_windows.go);
+// the plan builder refuses them so no caller can fall back to the old race.
+func TestCommandPlanForWindowsServiceCommandsGoThroughSCM(t *testing.T) {
+	for _, cmdType := range []string{"restart_service", "stop_service", "start_service"} {
+		plan, err := commandPlanFor("windows", cmdType, "My-Svc.1")
+		if err != errServiceViaSCM {
+			t.Fatalf("%s: err=%v plan=%v, want errServiceViaSCM", cmdType, err, plan)
 		}
+	}
+	// Non-service commands are still discrete argv with no shell.
+	plan, err := commandPlanFor("windows", "restart_container", "web-1")
+	if err != nil || !equalPlan(plan, [][]string{{"docker.exe", "restart", "web-1"}}) {
+		t.Fatalf("windows restart_container plan = %v err=%v", plan, err)
+	}
+}
+
+// TestCommandPlanLinuxRootDropsSudo: the generated systemd unit runs the
+// agent as root and root-onboarded hosts need not have sudo installed, so a
+// root agent must invoke systemctl/docker/reboot directly. Unprivileged
+// (developer) runs keep the sudo prefix.
+func TestCommandPlanLinuxRootDropsSudo(t *testing.T) {
+	cases := map[string][]string{
+		"restart_service":   {"systemctl", "restart", "nginx"},
+		"stop_service":      {"systemctl", "stop", "nginx"},
+		"start_service":     {"systemctl", "start", "nginx"},
+		"restart_container": {"docker", "restart", "nginx"},
+		"start_container":   {"docker", "start", "nginx"},
+		"reboot":            {"reboot"},
+		"shutdown":          {"shutdown", "-h", "now"},
+	}
+	for cmdType, bare := range cases {
+		asRoot, err := commandPlanForIdentity("linux", true, cmdType, "nginx")
+		if err != nil || !equalPlan(asRoot, [][]string{bare}) {
+			t.Fatalf("%s as root: plan=%v err=%v, want %v", cmdType, asRoot, err, bare)
+		}
+		unprivileged, err := commandPlanForIdentity("linux", false, cmdType, "nginx")
+		if err != nil || !equalPlan(unprivileged, [][]string{append([]string{"sudo"}, bare...)}) {
+			t.Fatalf("%s unprivileged: plan=%v err=%v, want sudo prefix", cmdType, unprivileged, err)
+		}
+	}
+	if _, err := commandPlanForIdentity("linux", true, "definitely_not_a_command", "x"); err == nil {
+		t.Fatal("unknown command must be rejected regardless of identity")
 	}
 }
 

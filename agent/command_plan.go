@@ -3,8 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
+	"strings"
+	"sync"
 	"time"
 )
 
@@ -13,31 +16,166 @@ import (
 // would block its handler goroutine forever.
 const agentCommandTimeout = 30 * time.Second
 
-// commandPlan returns the argv steps to execute for a command on this host.
-func commandPlan(cmdType, target string) ([][]string, error) {
-	return commandPlanFor(runtime.GOOS, cmdType, target)
+// collectorTimeout bounds how long the metrics tick waits for any external
+// command it runs (nvidia-smi, docker, systemctl, dmidecode, lspci,
+// PowerShell). Those run on the connection loop itself, so an unbounded one
+// stalled pings, let the hub close the socket after its idle timeout, and
+// left the loop stuck inside the collector so the agent never reconnected:
+// remote reboot was unreachable exactly when it was needed. Ten seconds per
+// command keeps the worst tick well under the hub's 90 s idle timeout.
+// Package-level so tests can shorten it. gopsutil's in-process readers are
+// not covered by this bound.
+var collectorTimeout = 10 * time.Second
+
+// collectorInflight holds, per command, whether a previous invocation is
+// still outstanding. A child in uninterruptible sleep (D state) ignores
+// SIGKILL and its Wait never returns, so the runner cannot reclaim it; what
+// it can do is refuse to start another copy each tick, so a wedged command
+// costs exactly one goroutine and one process until the kernel releases it.
+var (
+	collectorInflightMu sync.Mutex
+	collectorInflight   = map[string]bool{}
+)
+
+// errCollectorBusy is returned when the same command is still outstanding
+// from an earlier tick.
+var errCollectorBusy = fmt.Errorf("collector still running from an earlier tick")
+
+// runBoundedBeforeWaitHook, when set by a test, runs after the worker has
+// been started and before the caller waits on it, so a test can pin the
+// ordering in which the result and the deadline become ready.
+var runBoundedBeforeWaitHook func(ctx context.Context)
+
+// runCollector runs argv and returns its stdout, holding the caller for at
+// most collectorTimeout. On timeout the child is sent the kill signal (as a
+// process group where configureCommand supports it) and an error is returned
+// immediately; the wait continues in the background, and no second copy of
+// the same command is started until it finishes. Callers treat any error as
+// "data unavailable", never as a zero reading.
+func runCollector(argv ...string) ([]byte, error) {
+	return runBounded(strings.Join(argv, " "), collectorTimeout, func(ctx context.Context) ([]byte, error) {
+		cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+		configureCommand(cmd)
+		cmd.WaitDelay = 2 * time.Second
+		return cmd.Output()
+	})
 }
 
-// commandPlanFor returns the argv steps for a command type on the given GOOS.
-// It is pure argv construction (no OS-specific calls), so it is unit-testable
-// on any platform. Every step is a discrete argv slice executed without a
-// shell, so a validated target can never be interpreted as shell syntax.
-//
-// Windows restart_service is two steps (sc.exe stop, then sc.exe start) run as
-// separate argv commands rather than a "cmd.exe /C stop & start" string — no
-// shell interpolation, injection-proof by construction.
+// runBounded runs fn once per key at a time and returns within timeout even
+// if fn never does. The deadline is enforced by waiting on a channel rather
+// than on fn, because fn may be blocked in a wait that cannot return.
+func runBounded(key string, timeout time.Duration, fn func(ctx context.Context) ([]byte, error)) ([]byte, error) {
+	collectorInflightMu.Lock()
+	if collectorInflight[key] {
+		collectorInflightMu.Unlock()
+		return nil, errCollectorBusy
+	}
+	collectorInflight[key] = true
+	collectorInflightMu.Unlock()
+
+	type result struct {
+		out []byte
+		err error
+	}
+	done := make(chan result, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	// cancel belongs to the caller, not the worker: if the worker cancelled
+	// after publishing its result, ctx.Done and done would both be ready and
+	// the select below could report a timeout for a command that succeeded.
+	defer cancel()
+	go func() {
+		out, err := fn(ctx)
+		// Clear the gate before publishing so that a caller who has just
+		// received this result can run the same command again immediately.
+		collectorInflightMu.Lock()
+		delete(collectorInflight, key)
+		collectorInflightMu.Unlock()
+		done <- result{out, err}
+	}()
+	if runBoundedBeforeWaitHook != nil {
+		runBoundedBeforeWaitHook(ctx)
+	}
+	select {
+	case r := <-done:
+		return r.out, r.err
+	case <-ctx.Done():
+		// The deadline expired. A result that landed at the same instant
+		// still wins; otherwise the goroutine keeps waiting (and holds the
+		// inflight mark) until fn returns.
+		select {
+		case r := <-done:
+			return r.out, r.err
+		default:
+		}
+		return nil, fmt.Errorf("%s: timed out after %s", strings.Fields(key)[0], timeout)
+	}
+}
+
+// commandSeversOwnConnection reports whether a command, once it runs, is
+// expected to terminate this agent — so a child killed by a signal as the
+// process group goes down is a successful teardown, not a failure. It mirrors
+// the hub's commandMayDisconnectAgent for the Linux agent's own unit. Windows
+// service self-restart never reaches this path (it is scheduled through a
+// detached helper in service_control_windows.go) and errKilledBySignal is a
+// no-op there, so the Linux unit names are harmless on Windows.
+func commandSeversOwnConnection(cmdType, target string) bool {
+	switch cmdType {
+	case "reboot", "shutdown":
+		return true
+	case "restart_service", "stop_service":
+		return target == "bloxos-agent" || target == "bloxos-agent.service"
+	}
+	return false
+}
+
+// shouldSuppressTeardownReply reports whether the outcome of a command should
+// be left unreported so the hub's disconnect grace yields the truthful 202
+// "sent, unconfirmed". True only when the command severs this agent's own
+// connection, its child died by a teardown signal (SIGTERM/SIGKILL), and the
+// context did not fire — an ordinary status-code failure or a timeout is still
+// reported. handleCommand and its tests both go through this one predicate.
+func shouldSuppressTeardownReply(cmdType, target string, ctxErr, runErr error) bool {
+	return runErr != nil && ctxErr == nil &&
+		commandSeversOwnConnection(cmdType, target) && errKilledBySignal(runErr)
+}
+
+// commandPlan returns the argv steps to execute for a command on this host.
+func commandPlan(cmdType, target string) ([][]string, error) {
+	return commandPlanForIdentity(runtime.GOOS, runningAsRoot(), cmdType, target)
+}
+
+// runningAsRoot reports whether this process already has root, in which case
+// the Linux plans must not go through sudo: the generated systemd unit runs
+// the agent as root, and hosts onboarded as root may not have sudo installed
+// at all (the install path no longer requires it), so a sudo prefix there
+// fails every control with "executable file not found".
+func runningAsRoot() bool {
+	return runtime.GOOS != "windows" && os.Geteuid() == 0
+}
+
+// commandPlanFor returns the unprivileged (sudo-prefixed on Linux) plan for a
+// command type on the given GOOS. See commandPlanForIdentity.
 func commandPlanFor(goos, cmdType, target string) ([][]string, error) {
+	return commandPlanForIdentity(goos, false, cmdType, target)
+}
+
+// errServiceViaSCM is returned for Windows service commands, which are
+// executed through the service control manager (service_control_windows.go)
+// rather than as argv steps: sc.exe stop returns while the service is still
+// STOP_PENDING, so "sc.exe stop; sc.exe start" raced the stop.
+var errServiceViaSCM = fmt.Errorf("windows service commands are executed through the service control manager, not argv")
+
+// commandPlanForIdentity returns the argv steps for a command type on the
+// given GOOS, dropping the sudo prefix on Linux when the caller already runs
+// as root. It is pure argv construction (no OS-specific calls), so it is
+// unit-testable on any platform. Every step is a discrete argv slice executed
+// without a shell, so a validated target can never be interpreted as shell
+// syntax.
+func commandPlanForIdentity(goos string, root bool, cmdType, target string) ([][]string, error) {
 	if goos == "windows" {
 		switch cmdType {
-		case "restart_service":
-			return [][]string{
-				{"sc.exe", "stop", target},
-				{"sc.exe", "start", target},
-			}, nil
-		case "stop_service":
-			return [][]string{{"sc.exe", "stop", target}}, nil
-		case "start_service":
-			return [][]string{{"sc.exe", "start", target}}, nil
+		case "restart_service", "stop_service", "start_service":
+			return nil, errServiceViaSCM
 		case "restart_container":
 			return [][]string{{"docker.exe", "restart", target}}, nil
 		case "start_container":
@@ -51,24 +189,29 @@ func commandPlanFor(goos, cmdType, target string) ([][]string, error) {
 		}
 	}
 
+	var argv []string
 	switch cmdType {
 	case "restart_service":
-		return [][]string{{"sudo", "systemctl", "restart", target}}, nil
+		argv = []string{"systemctl", "restart", target}
 	case "stop_service":
-		return [][]string{{"sudo", "systemctl", "stop", target}}, nil
+		argv = []string{"systemctl", "stop", target}
 	case "start_service":
-		return [][]string{{"sudo", "systemctl", "start", target}}, nil
+		argv = []string{"systemctl", "start", target}
 	case "restart_container":
-		return [][]string{{"sudo", "docker", "restart", target}}, nil
+		argv = []string{"docker", "restart", target}
 	case "start_container":
-		return [][]string{{"sudo", "docker", "start", target}}, nil
+		argv = []string{"docker", "start", target}
 	case "reboot":
-		return [][]string{{"sudo", "reboot"}}, nil
+		argv = []string{"reboot"}
 	case "shutdown":
-		return [][]string{{"sudo", "shutdown", "-h", "now"}}, nil
+		argv = []string{"shutdown", "-h", "now"}
 	default:
 		return nil, fmt.Errorf("unknown command type: %s", cmdType)
 	}
+	if !root {
+		argv = append([]string{"sudo"}, argv...)
+	}
+	return [][]string{argv}, nil
 }
 
 // runCommandPlan executes each step's argv in order under ctx, concatenating

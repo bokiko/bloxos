@@ -509,6 +509,11 @@ mv "$PREV_PATH" "$AGENT_PATH"
 chmod +x "$AGENT_PATH"
 rm -f "$MARKER_PATH"
 log "Rollback complete, restarting agent"
+# The unit reached failed state, and on systemd versions where OnFailure=
+# fires only once the start limit is hit, a plain restart inside the
+# StartLimitIntervalSec window is refused ("start request repeated too
+# quickly"). Reproduced on systemd 259; reset-failed clears the counter.
+systemctl reset-failed bloxos-agent.service 2>/dev/null || true
 systemctl restart bloxos-agent.service
 RECOVEREOF
 $SUDO chmod +x /usr/local/bin/bloxos-agent-recover
@@ -1371,6 +1376,8 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 			pendingCmdsMu.Unlock()
 			if ok {
 				ch <- resp
+			} else if !s.failTerminalSessionFromAgent(machineID, resp) && resp.Error != "" {
+				log.Printf("command_response %s from %s not pending: %s", resp.ID, machineID, resp.Error)
 			}
 
 		case "enrollment_committed":

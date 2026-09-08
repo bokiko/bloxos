@@ -7,6 +7,56 @@ export function hasGpuData(machine) {
 
 export const METRICS_STALE_MS = 30_000;
 
+// OFFLINE_MS is the shared no-heartbeat cutoff (fleet classifyMachine and the
+// machine detail page both use it — do not fork the threshold).
+export const OFFLINE_MS = 120_000;
+
+const STATUS_TH = {
+  cpuWarn: 75,
+  cpuCrit: 92,
+  ramWarn: 82,
+  ramCrit: 95,
+  diskWarn: 85,
+  diskCrit: 95,
+  gpuWarn: 78,
+  gpuCrit: 86,
+};
+
+// classifyMachine is the single source of truth for fleet status, used by the
+// card, stat strip, filter dropdown and NeedsAttention stripe (re-exported by
+// StatusBadge.tsx for existing imports). Freshness outranks thresholds: data
+// older than METRICS_STALE_MS is stale, not warning/critical — a badge based
+// on aged readings would overstate what we know.
+/** @param {import("./demo-data").MachineMetrics} m @returns {import("../components/StatusBadge").MachineClassification} */
+export function classifyMachine(m) {
+  const age = Date.now() - (m.last_seen || 0);
+  if (!m.last_seen || age > OFFLINE_MS) return { status: "offline" };
+  if (age > METRICS_STALE_MS) return { status: "stale" };
+
+  const ramPct =
+    (m.ram_total_bytes ?? 0) > 0
+      ? ((m.ram_used_bytes ?? 0) / m.ram_total_bytes) * 100
+      : 0;
+  const diskPct =
+    (m.disk_total_bytes ?? 0) > 0
+      ? ((m.disk_used_bytes ?? 0) / m.disk_total_bytes) * 100
+      : 0;
+  const cpu = m.cpu_percent ?? 0;
+  const gpuT = m.gpu_temp ?? 0;
+
+  if (cpu >= STATUS_TH.cpuCrit) return { status: "critical", reason: `CPU ${cpu.toFixed(0)}%` };
+  if (ramPct >= STATUS_TH.ramCrit) return { status: "critical", reason: `RAM ${ramPct.toFixed(0)}%` };
+  if (diskPct >= STATUS_TH.diskCrit) return { status: "critical", reason: `Disk ${diskPct.toFixed(0)}%` };
+  if (gpuT >= STATUS_TH.gpuCrit) return { status: "critical", reason: `GPU ${gpuT.toFixed(0)}°C` };
+
+  if (cpu >= STATUS_TH.cpuWarn) return { status: "warning", reason: `CPU ${cpu.toFixed(0)}%` };
+  if (ramPct >= STATUS_TH.ramWarn) return { status: "warning", reason: `RAM ${ramPct.toFixed(0)}%` };
+  if (diskPct >= STATUS_TH.diskWarn) return { status: "warning", reason: `Disk ${diskPct.toFixed(0)}%` };
+  if (gpuT >= STATUS_TH.gpuWarn) return { status: "warning", reason: `GPU ${gpuT.toFixed(0)}°C` };
+
+  return { status: "live" };
+}
+
 /** @param {number | undefined} lastSeen @param {number} now */
 export function isFreshMetrics(lastSeen, now) {
   return Number.isFinite(lastSeen) && lastSeen > 0 && now - lastSeen <= METRICS_STALE_MS;
