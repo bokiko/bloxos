@@ -1,4 +1,5 @@
 "use client";
+import { AppShell } from "@/components/shell/AppShell";
 
 import { useEffect } from "react";
 import Link from "next/link";
@@ -114,6 +115,10 @@ function AgentBinaryCard({
 }
 
 export default function VersionsPage() {
+  return <AppShell><VersionsContent /></AppShell>;
+}
+
+function VersionsContent() {
   const { data, loading, error, refresh, pauseRollout, resumeRollout } = useVersions();
   const { hasScope } = useAuth();
   const canManageRollout = hasScope("fleet.admin");
@@ -172,7 +177,7 @@ export default function VersionsPage() {
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.25, ease: "easeOut" }}
-      className="min-h-screen bg-blox-bg"
+      className="min-h-screen bg-blox-bg" data-design-page
     >
       {/* Top nav */}
       <header className="sticky top-0 z-50 bg-blox-bg/80 backdrop-blur-xl border-b border-blox-border/50">

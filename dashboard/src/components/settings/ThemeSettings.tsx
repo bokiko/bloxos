@@ -14,6 +14,8 @@ import {
 } from "@/contexts/ThemeContext";
 import { ThemePreview } from "@/components/ThemePreview";
 import { cn } from "@/lib/utils";
+import { DesignSettings } from "@/components/DesignSettings";
+import { useDesign } from "@/contexts/DesignContext";
 
 const MODE_OPTIONS: { value: ThemeMode; label: string; Icon: typeof Sun }[] = [
   { value: "light", label: "Light", Icon: Sun },
@@ -25,9 +27,12 @@ const ORDER: ThemeName[] = ["bloxos", "mission-control", "graphite", "verdant", 
 
 export function ThemeSettings() {
   const { themeName, themeMode, setTheme, setMode } = useTheme();
+  const { layout } = useDesign();
 
   return (
     <div className="space-y-8">
+      <DesignSettings />
+      {layout === "classic" && <>
       <section>
         <h2 className="text-sm font-semibold text-blox-text mb-1">Mode</h2>
         <p className="text-xs text-blox-muted mb-3">
@@ -60,7 +65,7 @@ export function ThemeSettings() {
       <section>
         <h2 className="text-sm font-semibold text-blox-text mb-1">Theme</h2>
         <p className="text-xs text-blox-muted mb-4">
-          Choose a visual design or a classic palette. Dark-only designs always use dark mode.
+          Choose a palette for Classic. Dark-only palettes always use dark mode.
         </p>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {ORDER.map((name) => {
@@ -104,6 +109,7 @@ export function ThemeSettings() {
           })}
         </div>
       </section>
+      </>}
     </div>
   );
 }

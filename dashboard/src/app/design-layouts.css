@@ -1,0 +1,387 @@
+/* ============================================================================
+ * BloxOS live dashboard layouts — Operations Wall, Grove Workspace,
+ * Precision Console — ported from docs/themes/index.html.
+ *
+ * Scope and safety
+ * ----------------
+ * Every rule is scoped under html[data-layout="wall"|"grove"|"console"], set
+ * by DesignContext. Classic (data-layout="classic" or unset) receives NONE of
+ * this and keeps the existing dashboard verbatim. Class names are prefixed
+ * (lw-/lg-/lc-/ld-) so they cannot collide with Tailwind utilities or existing
+ * component classes.
+ *
+ * Color variants (nine total = 3 layouts x 3 colors)
+ * --------------------------------------------------
+ * The twelve palette variables are namespaced --ld-* so they never override
+ * the app's own tokens (--surface/--text/--blox/--status) used by the reused
+ * inner components. Original is a FIXED palette (the approved mockup), not OS
+ * mode dependent; Bright is a fixed light palette; Dark a fixed near-black one.
+ * DesignContext also sets .light (Bright) / .dark (Original, Dark) on <html>
+ * so the reused inner components (machine cards, tables, gauges) follow a
+ * matching scheme via the app tokens.
+ *
+ * Status semantics
+ * ----------------
+ * Machine status always uses the app's semantic --status-* tokens, never the
+ * decorative --ld-good. There is no single "all healthy" color (AGENTS.md:
+ * missing sensors are unavailable, not zero; no false all-healthy status).
+ * ========================================================================== */
+
+/* ---- Palette variable sets ------------------------------------------------ */
+
+/* Operations Wall — Original (midnight-blue mockup) */
+html[data-layout="wall"] {
+  --ld-ink: #e7edf8; --ld-secondary: #a4b3ca; --ld-muted: #94a3bc;
+  --ld-canvas: #10151f; --ld-panel: #1c2534; --ld-panel-alt: #19212e;
+  --ld-edge: #ffffff14; --ld-track: #0e1624;
+  --ld-accent: #8eaaff; --ld-accent-soft: #8faeff2e; --ld-good: #95d8bb; --ld-on-accent: #0b1425;
+}
+html[data-layout="wall"][data-design-color="bright"] {
+  --ld-ink: #202d44; --ld-secondary: #526480; --ld-muted: #60718a;
+  --ld-canvas: #f1f5fb; --ld-panel: #ffffff; --ld-panel-alt: #e9eff9;
+  --ld-edge: #d7e0ee; --ld-track: #dfe7f3;
+  --ld-accent: #4c6dba; --ld-accent-soft: #cad8fb; --ld-good: #286c52; --ld-on-accent: #ffffff;
+}
+html[data-layout="wall"][data-design-color="dark"] {
+  --ld-ink: #e3e9f5; --ld-secondary: #adbbd2; --ld-muted: #8395b2;
+  --ld-canvas: #080c14; --ld-panel: #101724; --ld-panel-alt: #0c1220;
+  --ld-edge: #263147; --ld-track: #202d44;
+  --ld-accent: #8aa8ee; --ld-accent-soft: #354f80; --ld-good: #8ad6b6; --ld-on-accent: #0b1425;
+}
+
+/* Grove Workspace — Original (evergreen mockup) */
+html[data-layout="grove"] {
+  --ld-ink: #e0ecdf; --ld-secondary: #a8bfab; --ld-muted: #819487;
+  --ld-canvas: #0d1714; --ld-panel: #1a2a21; --ld-panel-alt: #111e18;
+  --ld-edge: #29372e; --ld-track: #263b27;
+  --ld-accent: #c2f27d; --ld-accent-soft: #354a23; --ld-good: #96cda0; --ld-on-accent: #132115;
+}
+html[data-layout="grove"][data-design-color="bright"] {
+  --ld-ink: #203b2b; --ld-secondary: #496551; --ld-muted: #587461;
+  --ld-canvas: #f5f7ef; --ld-panel: #fffef9; --ld-panel-alt: #eaf0df;
+  --ld-edge: #d7dfcb; --ld-track: #dfe7d3;
+  --ld-accent: #537e2c; --ld-accent-soft: #d1e5ad; --ld-good: #33724e; --ld-on-accent: #ffffff;
+}
+html[data-layout="grove"][data-design-color="dark"] {
+  --ld-ink: #e0ecdf; --ld-secondary: #a8bfab; --ld-muted: #859f8a;
+  --ld-canvas: #080f0b; --ld-panel: #101b13; --ld-panel-alt: #0b140d;
+  --ld-edge: #293c2b; --ld-track: #263b27;
+  --ld-accent: #a6cf6c; --ld-accent-soft: #354a23; --ld-good: #96cda0; --ld-on-accent: #15210e;
+}
+
+/* Precision Console — Original (graphite mockup) */
+html[data-layout="console"] {
+  --ld-ink: #dde4f0; --ld-secondary: #a5b4cc; --ld-muted: #909baf;
+  --ld-canvas: #11141a; --ld-panel: #191f29; --ld-panel-alt: #1b1f28;
+  --ld-edge: #303644; --ld-track: #323c50;
+  --ld-accent: #9fb5ff; --ld-accent-soft: #35405e; --ld-good: #91ceb0; --ld-on-accent: #10182a;
+}
+html[data-layout="console"][data-design-color="bright"] {
+  --ld-ink: #242e40; --ld-secondary: #53637b; --ld-muted: #617089;
+  --ld-canvas: #f3f4f7; --ld-panel: #ffffff; --ld-panel-alt: #e9edf4;
+  --ld-edge: #d2dae6; --ld-track: #dfe5ef;
+  --ld-accent: #536bb5; --ld-accent-soft: #c7d3f4; --ld-good: #317154; --ld-on-accent: #ffffff;
+}
+html[data-layout="console"][data-design-color="dark"] {
+  --ld-ink: #dde4f0; --ld-secondary: #a5b4cc; --ld-muted: #8495ae;
+  --ld-canvas: #080a10; --ld-panel: #10141d; --ld-panel-alt: #0b0f17;
+  --ld-edge: #283043; --ld-track: #252f43;
+  --ld-accent: #94a8dd; --ld-accent-soft: #35405e; --ld-good: #91ceb0; --ld-on-accent: #10182a;
+}
+
+/* ---- Remap the app tokens so reused content and dialogs inherit the palette -
+ * Tailwind utilities (bg-blox-card, text-blox-text, ...) resolve through
+ * --color-blox-* -> the base tokens below. Remapping the base tokens on the
+ * root element (so portalled dialogs inherit too) makes every reused
+ * component adopt the active layout palette instead of the default BloxOS
+ * light/dark. --ld-* already carries the active color, so this follows it.
+ * Status tokens are deliberately NOT remapped here — they are set explicitly
+ * below to stay semantic and distinct. Classic is excluded. */
+html[data-layout="wall"],
+html[data-layout="grove"],
+html[data-layout="console"] {
+  --surface-sunken: var(--ld-panel-alt);
+  --surface-base: var(--ld-canvas);
+  --surface-raised: var(--ld-panel);
+  --surface-elevated: var(--ld-panel-alt);
+  --surface-overlay: var(--ld-panel);
+
+  --text-primary: var(--ld-ink);
+  --text-secondary: var(--ld-secondary);
+  --text-tertiary: var(--ld-muted);
+  --text-disabled: color-mix(in srgb, var(--ld-muted) 60%, transparent);
+
+  --border-subtle: var(--ld-edge);
+  --border-default: var(--ld-edge);
+  --border-strong: color-mix(in srgb, var(--ld-ink) 22%, transparent);
+
+  --accent: var(--ld-accent);
+  --accent-hover: var(--ld-accent);
+  --accent-subtle: var(--ld-accent-soft);
+  --accent-foreground: var(--ld-on-accent);
+}
+
+/* ---- Status tokens: five distinct, scheme-appropriate states in all 9 combos.
+ * Defined per data-design-color so they never depend on the presence of a
+ * .light/.dark class. Never collapse to one "healthy" color (AGENTS.md). */
+html[data-layout="wall"]:not([data-design-color="bright"]),
+html[data-layout="grove"]:not([data-design-color="bright"]),
+html[data-layout="console"]:not([data-design-color="bright"]) {
+  --status-ok: oklch(0.74 0.16 158); --status-ok-tint: oklch(0.74 0.16 158 / 0.10);
+  --status-warning: oklch(0.8 0.16 75); --status-warning-tint: oklch(0.8 0.16 75 / 0.10);
+  --status-critical: oklch(0.7 0.21 25); --status-critical-tint: oklch(0.7 0.21 25 / 0.10);
+  --status-stale: oklch(0.66 0.07 285); --status-stale-tint: oklch(0.66 0.07 285 / 0.10);
+  --status-offline: oklch(0.66 0.02 240); --status-offline-tint: oklch(0.5 0.01 240 / 0.4);
+  --success: var(--status-ok); --success-subtle: var(--status-ok-tint);
+  --warning: var(--status-warning); --warning-subtle: var(--status-warning-tint);
+  --danger: var(--status-critical); --danger-subtle: var(--status-critical-tint);
+}
+html[data-layout="wall"][data-design-color="bright"],
+html[data-layout="grove"][data-design-color="bright"],
+html[data-layout="console"][data-design-color="bright"] {
+  --status-ok: oklch(0.52 0.15 158); --status-ok-tint: oklch(0.52 0.15 158 / 0.12);
+  --status-warning: oklch(0.54 0.14 65); --status-warning-tint: oklch(0.54 0.14 65 / 0.12);
+  --status-critical: oklch(0.52 0.22 27); --status-critical-tint: oklch(0.52 0.22 27 / 0.12);
+  --status-stale: oklch(0.5 0.08 285); --status-stale-tint: oklch(0.5 0.08 285 / 0.12);
+  --status-offline: oklch(0.53 0.02 240); --status-offline-tint: oklch(0.53 0.02 240 / 0.14);
+  --success: var(--status-ok); --success-subtle: var(--status-ok-tint);
+  --warning: var(--status-warning); --warning-subtle: var(--status-warning-tint);
+  --danger: var(--status-critical); --danger-subtle: var(--status-critical-tint);
+}
+
+/* ---- Shared primitives (scoped to any non-classic layout) ----------------- */
+:is([data-layout="wall"], [data-layout="grove"], [data-layout="console"]) .ld-shell {
+  min-height: 100vh;
+  background: var(--ld-canvas);
+  color: var(--ld-ink);
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+.ld-label { font-size: 11px; letter-spacing: .2px; color: var(--ld-secondary); font-weight: 450; }
+.ld-mono { font-family: var(--font-mono), ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+.ld-unit { font-size: .4em; opacity: .65; margin-left: 4px; }
+.ld-note { font-size: 10px; color: var(--ld-muted); }
+.ld-bar { height: 6px; background: var(--ld-track); border-radius: 5px; overflow: hidden; }
+.ld-bar > i { display: block; height: 100%; background: var(--ld-accent); border-radius: 5px; }
+/* Status dot uses the real per-status token supplied inline as --dot. */
+.ld-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--dot, var(--ld-good)); }
+.ld-rank-item { margin-top: 22px; }
+.ld-rank-item > div:first-child { display: flex; justify-content: space-between; font-size: 11px; color: var(--ld-ink); margin-bottom: 9px; gap: 10px; }
+
+/* ===========================================================================
+ * 01 — Operations Wall: open canvas, responsive bento grid.
+ * ========================================================================= */
+[data-layout="wall"] .lw {
+  background: radial-gradient(ellipse at 18% 0%, color-mix(in srgb, var(--ld-accent) 8%, transparent), transparent 55%), var(--ld-canvas);
+  padding: 28px clamp(20px, 4vw, 64px) 30px;
+}
+[data-layout="wall"] .lw-head { max-width: 1480px; margin: 0 auto; display: flex; align-items: center; gap: 16px; padding-bottom: 22px; border-bottom: 1px solid var(--ld-edge); flex-wrap: wrap; }
+[data-layout="wall"] .lw-nav { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; }
+[data-layout="wall"] .lw-nav a { display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 9px; font-size: 12px; color: var(--ld-secondary); text-decoration: none; }
+[data-layout="wall"] .lw-nav a:hover { color: var(--ld-ink); background: color-mix(in srgb, var(--ld-accent) 12%, transparent); }
+[data-layout="wall"] .lw-nav a.is-active { color: var(--ld-ink); background: var(--ld-accent-soft); }
+[data-layout="wall"] .lw-actions { margin-left: auto; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+[data-layout="wall"] .lw-content { max-width: 1480px; margin: 26px auto 0; }
+[data-layout="wall"] .lw-intro { max-width: 1480px; margin: 4px auto 26px; display: flex; justify-content: space-between; align-items: center; gap: 15px; }
+[data-layout="wall"] .lw-intro h1 { font-size: 30px; letter-spacing: -1.2px; font-weight: 550; color: var(--ld-ink); }
+[data-layout="wall"] .lw-intro p { font-size: 12px; color: var(--ld-secondary); margin-top: 8px; }
+[data-layout="wall"] .lw-scope { font-size: 11px; color: var(--ld-secondary); border: 1px solid var(--ld-edge); border-radius: 9px; padding: 10px 13px; background: var(--ld-panel); }
+[data-layout="wall"] .lw-grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 18px; max-width: 1480px; margin: auto; }
+[data-layout="wall"] .lw-tile { background: var(--ld-panel); border: 1px solid var(--ld-edge); border-radius: 19px; padding: 24px; position: relative; min-width: 0; overflow: hidden; box-shadow: 0 8px 30px #0000000a; }
+[data-layout="wall"] .lw-tile .ld-label { letter-spacing: .2px; }
+[data-layout="wall"] .lw-fleet { grid-column: span 6; display: flex; flex-direction: column; min-height: 206px; background: linear-gradient(120deg, var(--ld-panel-alt), var(--ld-panel)); border-color: var(--ld-edge); }
+[data-layout="wall"] .lw-fleet-reading { display: flex; align-items: baseline; gap: 12px; margin-top: 17px; }
+[data-layout="wall"] .lw-massive { font-size: 64px; letter-spacing: -4px; line-height: 1; font-weight: 500; color: var(--ld-ink); }
+[data-layout="wall"] .lw-denominator { font-size: 15px; color: var(--ld-secondary); }
+[data-layout="wall"] .lw-fleet-bottom { margin-top: 20px; font-size: 11px; color: var(--ld-secondary); display: flex; gap: 8px; align-items: center; }
+/* Availability ring — the accent arc is bound to --pct (real onlinePct); an
+   unknown/zero value leaves a full track (empty ring), never a false full. */
+[data-layout="wall"] .lw-orbit { position: absolute; right: 28px; top: 30px; width: 140px; height: 140px; border-radius: 50%; display: grid; place-items: center; background: conic-gradient(var(--ld-accent) calc(var(--pct, 0) * 1%), var(--ld-track) 0); }
+[data-layout="wall"] .lw-orbit::before { content: ""; position: absolute; inset: 12px; border-radius: 50%; background: var(--ld-panel); }
+[data-layout="wall"] .lw-orbit span { position: relative; z-index: 1; font-size: 21px; color: var(--ld-ink); letter-spacing: -.6px; text-align: center; }
+[data-layout="wall"] .lw-orbit small { display: block; font-size: 8px; letter-spacing: 1px; color: var(--ld-secondary); margin-top: 5px; }
+[data-layout="wall"] .lw-sessions { grid-column: span 3; }
+[data-layout="wall"] .lw-alerts { grid-column: span 3; }
+[data-layout="wall"] .lw-card-icon { position: absolute; top: 21px; right: 22px; width: 29px; height: 29px; border: 1px solid var(--ld-edge); border-radius: 9px; display: grid; place-items: center; color: var(--ld-accent); background: var(--ld-panel-alt); }
+[data-layout="wall"] .lw-card-icon svg { width: 15px; height: 15px; }
+[data-layout="wall"] .lw-stat-big { font-size: 49px; font-weight: 450; letter-spacing: -2px; display: block; line-height: 1.2; margin: 25px 0 11px; color: var(--ld-ink); }
+[data-layout="wall"] .lw-sessions p, [data-layout="wall"] .lw-alerts p { font-size: 11px; color: var(--ld-secondary); }
+[data-layout="wall"] .lw-resources { grid-column: span 6; }
+[data-layout="wall"] .lw-resource-bars { display: grid; gap: 23px; margin-top: 27px; }
+[data-layout="wall"] .lw-resource-row { display: grid; grid-template-columns: 90px 1fr 45px; gap: 16px; align-items: center; font-size: 11px; color: var(--ld-secondary); }
+[data-layout="wall"] .lw-resource-row strong { text-align: right; font-size: 12px; font-weight: 500; color: var(--ld-ink); font-variant-numeric: tabular-nums; }
+[data-layout="wall"] .lw-ranks { grid-column: span 6; display: grid; grid-template-columns: 1fr 1fr; gap: 25px; }
+[data-layout="wall"] .lw-ranks > div + div { border-left: 1px solid var(--ld-edge); padding-left: 25px; }
+[data-layout="wall"] .lw-ranks h2 { font-size: 12px; color: var(--ld-secondary); font-weight: 500; }
+[data-layout="wall"] .lw-foot-tile { grid-column: span 2; background: var(--ld-panel-alt); }
+[data-layout="wall"] .lw-foot-tile .lw-big { font-size: 39px; font-weight: 450; letter-spacing: -1.8px; margin-top: 40px; white-space: nowrap; color: var(--ld-ink); }
+[data-layout="wall"] .lw-foot-tile p { font-size: 10px; color: var(--ld-secondary); margin-top: 13px; line-height: 1.6; }
+[data-layout="wall"] .lw-machines { grid-column: span 8; padding: 24px; }
+[data-layout="wall"] .lw-machine { display: grid; grid-template-columns: minmax(0, 1fr) 52px 52px 52px; gap: 20px; align-items: center; font-size: 11px; margin-top: 14px; color: var(--ld-ink); text-decoration: none; }
+[data-layout="wall"] a.lw-machine:hover { color: var(--ld-accent); }
+[data-layout="wall"] .lw-machine small { display: block; color: var(--ld-secondary); font-size: 9px; margin-top: 5px; }
+[data-layout="wall"] .lw-machine span:not(:first-child) { text-align: right; font-variant-numeric: tabular-nums; color: var(--ld-secondary); }
+[data-layout="wall"] .lw-machine-head { padding-bottom: 11px; border-bottom: 1px solid var(--ld-edge); margin-top: 20px; color: var(--ld-muted); font-size: 9px; letter-spacing: .6px; }
+[data-layout="wall"] .lw-empty { color: var(--ld-secondary); font-size: 12px; padding: 24px 0; text-align: center; }
+
+/* ===========================================================================
+ * 02 — Grove Workspace: sidebar, analytics column, context rail.
+ * ========================================================================= */
+[data-layout="grove"] .lg { display: grid; grid-template-columns: 232px minmax(0, 1fr) 300px; min-height: 100vh; background: var(--ld-canvas); }
+[data-layout="grove"] .lg.lg-norail { grid-template-columns: 232px minmax(0, 1fr); }
+/* Mobile top bar is desktop-hidden; the @700 block flips it to flex and hides
+   the sidebar, so exactly one nav + action cluster is visible per breakpoint. */
+[data-layout="grove"] .lg-mobilebar { display: none; }
+[data-layout="grove"] .lg-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+[data-layout="grove"] .lg-brand { display: flex; align-items: center; gap: 10px; margin-bottom: 26px; }
+[data-layout="grove"] .lg-sidebar { border-right: 1px solid var(--ld-edge); padding: 26px 18px; display: flex; flex-direction: column; background: var(--ld-panel-alt); position: sticky; top: 0; height: 100vh; }
+[data-layout="grove"] .lg-navlabel { font-size: 9px; letter-spacing: 2px; color: var(--ld-secondary); margin: 24px 12px 10px; }
+[data-layout="grove"] .lg-navitem { padding: 12px 14px; color: var(--ld-secondary); font-size: 12px; margin-bottom: 4px; display: flex; align-items: center; gap: 12px; border-radius: 30px; text-decoration: none; transition: background .12s, color .12s; }
+[data-layout="grove"] .lg-navitem:hover { color: var(--ld-ink); background: color-mix(in srgb, var(--ld-accent) 12%, transparent); }
+[data-layout="grove"] .lg-navitem.is-active { background: var(--ld-accent); color: var(--ld-on-accent); }
+[data-layout="grove"] .lg-navicon { width: 16px; height: 16px; display: grid; place-items: center; }
+[data-layout="grove"] .lg-sidebar-foot { margin-top: auto; font-size: 11px; color: var(--ld-secondary); padding: 24px 12px 0; line-height: 1.8; }
+[data-layout="grove"] .lg-main { padding: 30px 30px 40px; min-width: 0; }
+[data-layout="grove"] .lg-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 26px; gap: 16px; }
+[data-layout="grove"] .lg-top h1 { font-size: 26px; font-weight: 400; letter-spacing: -1px; color: var(--ld-ink); }
+[data-layout="grove"] .lg-top p { color: var(--ld-secondary); font-size: 11px; margin-top: 8px; }
+[data-layout="grove"] .lg-hero { display: grid; grid-template-columns: 1.1fr 1fr; gap: 22px; align-items: center; border-bottom: 1px solid var(--ld-edge); padding-bottom: 28px; }
+[data-layout="grove"] .lg-online { font-size: 72px; font-weight: 400; letter-spacing: -5px; margin: 10px 0 4px; color: var(--ld-ink); }
+[data-layout="grove"] .lg-online span { font-size: 22px; letter-spacing: -1px; color: var(--ld-secondary); }
+[data-layout="grove"] .lg-hero p { font-size: 11px; color: var(--ld-secondary); }
+/* Availability ring bound to --pct (real onlinePct); empty track when unknown. */
+[data-layout="grove"] .lg-orb { width: 165px; height: 165px; margin: auto; border-radius: 50%; background: conic-gradient(var(--ld-accent) calc(var(--pct, 0) * 1%), var(--ld-track) 0); padding: 14px; box-shadow: 0 0 0 13px color-mix(in srgb, var(--ld-accent) 9%, transparent), 0 0 0 28px color-mix(in srgb, var(--ld-accent) 4%, transparent); }
+[data-layout="grove"] .lg-orb-core { background: var(--ld-panel); border-radius: 50%; height: 100%; display: flex; align-items: center; justify-content: center; flex-direction: column; }
+[data-layout="grove"] .lg-orb-core strong { font-size: 30px; font-weight: 400; color: var(--ld-ink); }
+[data-layout="grove"] .lg-orb-core small { font-size: 9px; color: var(--ld-secondary); margin-top: 6px; }
+[data-layout="grove"] .lg-health { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 24px 0; }
+[data-layout="grove"] .lg-health article { background: var(--ld-panel); border: 1px solid var(--ld-edge); border-radius: 18px; padding: 18px 16px; }
+[data-layout="grove"] .lg-health small { color: var(--ld-secondary); font-size: 10px; }
+[data-layout="grove"] .lg-health strong { display: block; font-size: 25px; font-weight: 400; margin: 12px 0; color: var(--ld-ink); }
+[data-layout="grove"] .lg-health .ld-bar { height: 4px; }
+[data-layout="grove"] .lg-ranks { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin: 28px 0; }
+[data-layout="grove"] .lg-ranks h2 { font-size: 12px; color: var(--ld-ink); font-weight: 500; }
+[data-layout="grove"] .lg-fleet { border-top: 1px solid var(--ld-edge); padding-top: 24px; }
+[data-layout="grove"] .lg-fleet > h2 { font-size: 13px; color: var(--ld-ink); margin-bottom: 6px; }
+[data-layout="grove"] .lg-machine { display: grid; grid-template-columns: 1.5fr 1fr; align-items: center; gap: 12px; padding: 16px 0; border-bottom: 1px solid var(--ld-edge); text-decoration: none; }
+[data-layout="grove"] .lg-machine strong { font-size: 12px; font-weight: 500; color: var(--ld-ink); display: flex; align-items: center; gap: 8px; }
+[data-layout="grove"] .lg-machine small { display: block; font-size: 9px; color: var(--ld-secondary); margin-top: 6px; }
+[data-layout="grove"] .lg-machine .lg-values { font-size: 10px; color: var(--ld-secondary); text-align: right; font-variant-numeric: tabular-nums; }
+[data-layout="grove"] .lg-rail { padding: 30px 22px; background: var(--ld-panel-alt); border-left: 1px solid var(--ld-edge); position: sticky; top: 0; height: 100vh; overflow: auto; }
+[data-layout="grove"] .lg-rail > h2 { color: var(--ld-ink); margin-bottom: 22px; font-size: 13px; }
+[data-layout="grove"] .lg-session-hero { background: var(--ld-accent-soft); color: var(--ld-ink); padding: 24px; border-radius: 24px; margin-bottom: 16px; }
+[data-layout="grove"] .lg-session-hero strong { font-size: 60px; letter-spacing: -4px; font-weight: 400; display: block; margin: 14px 0 6px; }
+[data-layout="grove"] .lg-rail-card { border: 1px solid var(--ld-edge); border-radius: 22px; padding: 20px; margin: 14px 0; }
+[data-layout="grove"] .lg-rail-card .lg-reading { font-size: 34px; margin: 14px 0 8px; letter-spacing: -1px; color: var(--ld-ink); }
+[data-layout="grove"] .lg-rail-card p { font-size: 10px; color: var(--ld-secondary); line-height: 1.7; }
+
+/* ===========================================================================
+ * 03 — Precision Console: icon rail, tabs, table-first, instrument row.
+ * ========================================================================= */
+[data-layout="console"] .lc { display: grid; grid-template-columns: 65px 1fr; min-height: 100vh; background: var(--ld-canvas); }
+[data-layout="console"] .lc-rail { background: var(--ld-panel-alt); border-right: 1px solid var(--ld-edge); display: flex; align-items: center; flex-direction: column; padding: 22px 0; gap: 20px; position: sticky; top: 0; height: 100vh; }
+[data-layout="console"] .lc-rail .lc-mark { color: var(--ld-accent); margin-bottom: 18px; line-height: 0; }
+[data-layout="console"] .lc-rail a { color: var(--ld-muted); width: 38px; height: 38px; border-radius: 8px; display: grid; place-items: center; text-decoration: none; }
+[data-layout="console"] .lc-rail a:hover { color: var(--ld-ink); }
+[data-layout="console"] .lc-rail a.is-active { color: var(--ld-ink); background: var(--ld-accent-soft); }
+[data-layout="console"] .lc-body { min-width: 0; }
+[data-layout="console"] .lc-head { padding: 18px 30px; display: flex; align-items: center; border-bottom: 1px solid var(--ld-edge); gap: 20px; flex-wrap: wrap; }
+[data-layout="console"] .lc-tabs { display: flex; gap: 22px; font-size: 11px; flex-wrap: wrap; min-width: 0; }
+[data-layout="console"] .lc-tabs a { color: var(--ld-secondary); text-decoration: none; }
+[data-layout="console"] .lc-tabs a:hover { color: var(--ld-ink); }
+[data-layout="console"] .lc-tabs a.is-active { color: var(--ld-ink); }
+[data-layout="console"] .lc-actions { margin-left: auto; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+[data-layout="console"] .lc-content { padding: 30px; }
+[data-layout="console"] .lc-heading { display: flex; justify-content: space-between; align-items: end; margin-bottom: 24px; gap: 16px; }
+[data-layout="console"] .lc-heading h1 { font-size: 24px; font-weight: 500; color: var(--ld-ink); }
+[data-layout="console"] .lc-heading p { font-size: 11px; color: var(--ld-secondary); margin-top: 8px; }
+[data-layout="console"] .lc-heading > span { font: 10px var(--font-mono, monospace); color: var(--ld-secondary); }
+[data-layout="console"] .lc-ticker { display: grid; grid-template-columns: repeat(6, 1fr); border: 1px solid var(--ld-edge); border-radius: 6px; margin-bottom: 24px; background: var(--ld-panel); }
+[data-layout="console"] .lc-ticker-cell { padding: 18px 20px; border-right: 1px solid var(--ld-edge); }
+[data-layout="console"] .lc-ticker-cell:last-child { border-right: 0; }
+[data-layout="console"] .lc-ticker-cell small { display: block; color: var(--ld-secondary); font-size: 9px; text-transform: uppercase; letter-spacing: 1px; }
+[data-layout="console"] .lc-ticker-cell strong { font: 26px var(--font-mono, monospace); display: block; margin-top: 10px; color: var(--ld-ink); }
+[data-layout="console"] .lc-ticker-cell p { font-size: 9px; color: var(--ld-secondary); margin-top: 8px; }
+[data-layout="console"] .lc-table-wrap { border: 1px solid var(--ld-edge); border-radius: 6px; overflow: auto; }
+[data-layout="console"] .lc-table-title { padding: 16px 20px; background: var(--ld-panel-alt); display: flex; justify-content: space-between; align-items: center; }
+[data-layout="console"] .lc-table-title h2 { font-size: 12px; color: var(--ld-ink); }
+[data-layout="console"] .lc-table-title span { font: 10px var(--font-mono, monospace); color: var(--ld-secondary); }
+[data-layout="console"] table.lc-table { width: 100%; border-collapse: collapse; white-space: nowrap; background: var(--ld-panel); }
+[data-layout="console"] .lc-table th { text-align: left; font-size: 9px; color: var(--ld-secondary); letter-spacing: 1px; text-transform: uppercase; font-weight: 400; padding: 14px 20px; background: var(--ld-panel-alt); }
+[data-layout="console"] .lc-table td { padding: 18px 20px; border-top: 1px solid var(--ld-edge); font-size: 12px; color: var(--ld-ink); }
+[data-layout="console"] .lc-table td small { display: block; font-size: 10px; color: var(--ld-secondary); margin-top: 6px; }
+[data-layout="console"] .lc-table td.lc-number { font: 13px var(--font-mono, monospace); }
+[data-layout="console"] .lc-table a { color: inherit; text-decoration: none; }
+[data-layout="console"] .lc-table a:hover { color: var(--ld-accent); }
+[data-layout="console"] .lc-meter { width: 60px; margin-top: 8px; height: 3px; background: var(--ld-track); }
+[data-layout="console"] .lc-meter i { display: block; height: 100%; background: var(--ld-accent); }
+[data-layout="console"] .lc-lower { display: grid; grid-template-columns: 1.1fr 1fr 1fr; gap: 18px; margin-top: 22px; }
+[data-layout="console"] .lc-instrument { border: 1px solid var(--ld-edge); border-radius: 6px; padding: 20px; background: var(--ld-panel); }
+[data-layout="console"] .lc-instrument h2 { color: var(--ld-secondary); font-size: 10px; letter-spacing: 1px; text-transform: uppercase; }
+[data-layout="console"] .lc-instrument .ld-rank-item { font-family: var(--font-mono, monospace); }
+[data-layout="console"] .lc-thermal { display: flex; align-items: center; gap: 18px; margin-top: 20px; }
+[data-layout="console"] .lc-thermal-reading { font: 42px var(--font-mono, monospace); letter-spacing: -3px; color: var(--ld-ink); }
+[data-layout="console"] .lc-thermal p { font-size: 10px; color: var(--ld-secondary); line-height: 1.8; }
+[data-layout="console"] .lc-bottom { display: flex; justify-content: space-between; margin-top: 22px; color: var(--ld-secondary); font: 10px var(--font-mono, monospace); }
+[data-layout="console"] .lc-empty { padding: 24px 20px; color: var(--ld-secondary); font-size: 12px; }
+
+/* ---- Shared brand marks --------------------------------------------------- */
+:is([data-layout="wall"], [data-layout="grove"], [data-layout="console"]) .ld-mark { display: block; flex-shrink: 0; color: var(--ld-accent); }
+:is([data-layout="wall"], [data-layout="grove"], [data-layout="console"]) .ld-wordmark { font-weight: 650; letter-spacing: -.8px; line-height: 1; color: var(--ld-ink); }
+
+/* ===========================================================================
+ * Responsive — ported from the study breakpoints.
+ * ========================================================================= */
+@media (max-width: 1100px) {
+  [data-layout="grove"] .lg { grid-template-columns: 180px minmax(0, 1fr); }
+  [data-layout="grove"] .lg-rail { grid-column: 2; position: static; height: auto; display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; padding: 20px; }
+  [data-layout="grove"] .lg-rail > h2, [data-layout="grove"] .lg-rail > .ld-note { display: none; }
+  [data-layout="grove"] .lg-session-hero, [data-layout="grove"] .lg-rail-card { margin: 0; }
+  [data-layout="grove"] .lg-session-hero strong { font-size: 40px; }
+  [data-layout="wall"] .lw-grid { grid-template-columns: repeat(12, minmax(0, 1fr)); }
+  [data-layout="wall"] .lw-fleet { grid-column: span 6; grid-row: auto; }
+  [data-layout="wall"] .lw-sessions, [data-layout="wall"] .lw-alerts { grid-column: span 3; }
+  [data-layout="wall"] .lw-resources, [data-layout="wall"] .lw-ranks { grid-column: span 6; }
+  [data-layout="wall"] .lw-foot-tile { grid-column: span 3; }
+  [data-layout="wall"] .lw-machines { grid-column: span 6; }
+  [data-layout="console"] .lc-lower { grid-template-columns: 1fr 1fr; }
+  [data-layout="console"] .lc-lower .lc-instrument:first-child { grid-column: span 2; }
+  [data-layout="grove"] .lg-health { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 800px) {
+  [data-layout="wall"] .lw-fleet { grid-column: span 12; }
+  [data-layout="wall"] .lw-sessions, [data-layout="wall"] .lw-alerts { grid-column: span 6; }
+  [data-layout="wall"] .lw-resources, [data-layout="wall"] .lw-ranks { grid-column: span 12; }
+  [data-layout="wall"] .lw-foot-tile { grid-column: span 6; }
+  [data-layout="wall"] .lw-machines { grid-column: span 12; }
+  [data-layout="wall"] .lw-scope { display: none; }
+}
+@media (max-width: 700px) {
+  [data-layout="wall"] .lw { padding: 20px 14px; }
+  [data-layout="wall"] .lw-ranks { grid-template-columns: 1fr; gap: 24px; }
+  [data-layout="wall"] .lw-ranks > div + div { border-left: 0; border-top: 1px solid var(--ld-edge); padding: 20px 0 0; }
+  [data-layout="grove"] .lg { grid-template-columns: 1fr; min-height: auto; }
+  [data-layout="grove"] .lg-sidebar { display: none; }
+  /* The sidebar is hidden on mobile, so the compact top bar carries the full
+     navigation and the shell actions — destinations and actions are never
+     lost, only re-placed. */
+  [data-layout="grove"] .lg-mobilebar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 12px 14px; background: var(--ld-panel-alt); border-bottom: 1px solid var(--ld-edge); position: sticky; top: 0; z-index: 20; }
+  [data-layout="grove"] .lg-mnav { display: flex; gap: 2px; overflow-x: auto; flex: 1 1 100%; order: 3; }
+  [data-layout="grove"] .lg-mnav a { display: inline-flex; align-items: center; gap: 6px; padding: 8px 10px; border-radius: 20px; font-size: 12px; color: var(--ld-secondary); text-decoration: none; white-space: nowrap; }
+  [data-layout="grove"] .lg-mnav a:hover { color: var(--ld-ink); }
+  [data-layout="grove"] .lg-mnav a.is-active { background: var(--ld-accent); color: var(--ld-on-accent); }
+  [data-layout="grove"] .lg-mobilebar .lg-actions { margin-left: auto; }
+  [data-layout="grove"] .lg-main { padding: 22px 16px; }
+  [data-layout="grove"] .lg-rail { grid-column: 1; grid-template-columns: 1fr; }
+  [data-layout="grove"] .lg-hero { grid-template-columns: 1fr; }
+  [data-layout="grove"] .lg-health { grid-template-columns: repeat(2, 1fr); }
+  [data-layout="grove"] .lg-ranks { grid-template-columns: 1fr; }
+  [data-layout="console"] .lc { grid-template-columns: 1fr; }
+  [data-layout="console"] .lc-rail { flex-direction: row; height: auto; position: static; padding: 12px; gap: 12px; overflow: auto; }
+  [data-layout="console"] .lc-rail .lc-mark { margin-bottom: 0; }
+  [data-layout="console"] .lc-content { padding: 20px 14px; }
+  [data-layout="console"] .lc-ticker { grid-template-columns: repeat(3, 1fr); }
+  [data-layout="console"] .lc-ticker-cell { border-bottom: 1px solid var(--ld-edge); }
+  [data-layout="console"] .lc-lower { grid-template-columns: 1fr; }
+  [data-layout="console"] .lc-lower .lc-instrument:first-child { grid-column: auto; }
+  [data-layout="wall"] .lw-machine { grid-template-columns: 1fr 40px 40px 40px; gap: 8px; }
+}

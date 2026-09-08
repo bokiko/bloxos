@@ -1,4 +1,5 @@
 "use client";
+import { AppShell } from "@/components/shell/AppShell";
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
@@ -80,6 +81,10 @@ function timeSince(isoOrMs: string): string {
 }
 
 export default function InventoryPage() {
+  return <AppShell><InventoryContent /></AppShell>;
+}
+
+function InventoryContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { isAuthenticated } = useAuth();
@@ -129,7 +134,7 @@ export default function InventoryPage() {
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.25, ease: "easeOut" }}
-      className="min-h-screen bg-blox-bg"
+      className="min-h-screen bg-blox-bg" data-design-page
     >
       {/* Top sticky bar */}
       <header className="sticky top-0 z-50 bg-blox-bg/80 backdrop-blur-xl border-b border-blox-border/50">

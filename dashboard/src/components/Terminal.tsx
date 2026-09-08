@@ -5,6 +5,7 @@ import { Terminal as XTerm, ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { useTheme } from "@/contexts/ThemeContext";
+import { useDesign } from "@/contexts/DesignContext";
 import { getHubWsBaseUrl } from "@/lib/session";
 import "@xterm/xterm/css/xterm.css";
 
@@ -75,9 +76,10 @@ export function Terminal({ sessionId, browserToken, onDisconnect }: TerminalProp
   const wsRef = useRef<WebSocket | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const [status, setStatus] = useState<"connecting" | "connected" | "disconnected">("connecting");
-  // Phase 10 — context renamed to resolvedMode; alias to keep the rest of
-  // the file unchanged.
-  const { resolvedMode: resolvedTheme } = useTheme();
+  // Follow the active design's fixed color scheme; Classic keeps its own mode.
+  const { resolvedMode } = useTheme();
+  const { layout, color } = useDesign();
+  const resolvedTheme = layout === "classic" ? resolvedMode : color === "bright" ? "light" : "dark";
 
   const cleanup = useCallback(() => {
     if (wsRef.current) {

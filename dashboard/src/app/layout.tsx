@@ -1,9 +1,11 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import "./design-pages.css";
 import { ToastProvider } from "@/components/Toast";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { SSEProvider } from "@/contexts/SSEContext";
 import { ThemeProvider } from "@/contexts/ThemeContext";
+import { DesignProvider } from "@/contexts/DesignContext";
 import { BrandingProvider } from "@/contexts/BrandingContext";
 import { PreferencesProvider } from "@/contexts/PreferencesContext";
 import { VersionsProvider } from "@/contexts/VersionsContext";
@@ -58,7 +60,24 @@ const themeBootstrapScript = `
       resolved = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
     }
 
+    // Layout colors are independent of Classic's palette/mode. Read only this
+    // account's cache; never paint a previous account's design after logout.
+    var design = 'classic', designColor = 'original';
+    try {
+      var token = localStorage.getItem('bloxos_token');
+      var user = token ? JSON.parse(atob(token.split('.')[1])).user_id : null;
+      var saved = JSON.parse(localStorage.getItem('bloxos-design:' + (typeof user === 'string' ? user : 'guest')) || '{}');
+      if (['wall','grove','console'].indexOf(saved.layout) !== -1) {
+        design = saved.layout;
+        var color = saved.colors && saved.colors[design];
+        if (['original','bright','dark'].indexOf(color) !== -1) designColor = color;
+        name = 'bloxos';
+        resolved = designColor === 'bright' ? 'light' : 'dark';
+      }
+    } catch (e) {}
     var root = document.documentElement;
+    root.dataset.layout = design;
+    root.dataset.designColor = designColor;
     var classes = root.classList;
     // Strip any prior theme-* class so toggles are clean.
     Array.prototype.slice.call(classes).forEach(function(c) {
@@ -97,6 +116,7 @@ export default function RootLayout({
             can still observe theme classes set on <html>. */}
         <AuthProvider>
           <ThemeProvider>
+            <DesignProvider>
             <BrandingProvider>
               {/* Phase 11 — PreferencesProvider sits inside AuthProvider
                   (it reads the JWT for user_id) but outside the SSE/data
@@ -120,6 +140,7 @@ export default function RootLayout({
                 </ErrorBoundary>
               </PreferencesProvider>
             </BrandingProvider>
+            </DesignProvider>
           </ThemeProvider>
         </AuthProvider>
       </body>

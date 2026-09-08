@@ -46,6 +46,12 @@ import { BrandedHeader } from "@/components/BrandedHeader";
 import { FleetOverview } from "@/components/FleetOverview";
 import { useToast } from "@/components/Toast";
 import { bulkCommandFeedback, selectionAfterBulkAttempt } from "@/lib/command-feedback.mjs";
+import { useDesign } from "@/contexts/DesignContext";
+import { AppShell } from "@/components/shell/AppShell";
+import { OPEN_ALERTS, OPEN_COMMAND, API_MACHINES_CHANGED } from "@/components/shell/ShellActions";
+import { FleetWall } from "@/components/fleet/FleetWall";
+import { FleetGrove, FleetGroveRail } from "@/components/fleet/FleetGrove";
+import { FleetConsole } from "@/components/fleet/FleetConsole";
 
 type SortOption = "name" | "status" | "cpu" | "gpu_temp";
 type StatusFilter = "all" | "live" | "warning" | "critical" | "offline" | "stale";
@@ -80,10 +86,17 @@ const sortLabels: Record<SortOption, string> = {
   gpu_temp: "GPU Temp",
 };
 
-export default function Home() {
+function DashboardContent() {
   const { addToast } = useToast();
   const { machines: liveMachines, connected, hasReceivedData, alerts, setAlerts, setAlertCount, refreshMachine, refreshFleet } = useSSE();
   const { authFetch, hasScope } = useAuth();
+  // One shared controller serves every layout. Classic renders its own header
+  // and the FleetPulse/overview summary; the live layouts render their summary
+  // composition instead. The machine-management section below (search, filter,
+  // sort, tags, saved filters, grid/list, bulk, delete, API edit) is present in
+  // ALL layouts — the layout only changes the summary, never the tooling.
+  const { layout } = useDesign();
+  const isClassic = layout === "classic";
   const canCreateInstallTokens = hasScope("install_tokens.admin");
   const canManageAPIMachines = hasScope("api_machines.admin");
   const canControlFleet = hasScope("fleet.control");
@@ -149,7 +162,14 @@ export default function Home() {
     },
     [changeSort],
   );
-  const [alertPanelOpen, setAlertPanelOpen] = useState(false);
+  // Lazy-init from a cross-route ?panel=alerts request. Safe to read window
+  // here: this controller only mounts client-side after AppShell is ready
+  // (the shell renders a loading frame during SSR/first paint), so there is no
+  // hydration mismatch and no setState-in-effect.
+  const [alertPanelOpen, setAlertPanelOpen] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return new URLSearchParams(window.location.search).get("panel") === "alerts";
+  });
   const [addMachineOpen, setAddMachineOpen] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkLoading, setBulkLoading] = useState(false);
@@ -157,7 +177,9 @@ export default function Home() {
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [addAPIMachineOpen, setAddAPIMachineOpen] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
-  useCommandPaletteHotkey(setCommandOpen);
+  // In non-classic layouts the shell owns the command palette and its hotkey;
+  // disable the local hotkey so exactly one ⌘K listener is active.
+  useCommandPaletteHotkey(setCommandOpen, isClassic);
   const [editAPIMachine, setEditAPIMachine] = useState<EditableAPIMachine | null>(null);
   const [apiMachines, setApiMachines] = useState<EditableAPIMachine[]>([]);
 
@@ -174,6 +196,26 @@ export default function Home() {
       // ignore
     }
   }, [authFetch]);
+
+  // Shell-forwarded events: open the alert panel in place (same-route),
+  // pick up a cross-route request via /?panel=alerts on mount, and refresh the
+  // API-machine config list after any shell-owned Add API save so the list
+  // stays consistent wherever the add happened.
+  useEffect(() => {
+    const openAlerts = () => setAlertPanelOpen(true);
+    const reloadAPI = () => void loadAPIMachines();
+    window.addEventListener(OPEN_ALERTS, openAlerts);
+    window.addEventListener(API_MACHINES_CHANGED, reloadAPI);
+    // The panel was already opened by the lazy initial state; just tidy the
+    // URL so a refresh doesn't reopen it.
+    if (new URLSearchParams(window.location.search).get("panel") === "alerts") {
+      window.history.replaceState(null, "", window.location.pathname);
+    }
+    return () => {
+      window.removeEventListener(OPEN_ALERTS, openAlerts);
+      window.removeEventListener(API_MACHINES_CHANGED, reloadAPI);
+    };
+  }, [loadAPIMachines]);
 
   useEffect(() => {
     let active = true;
@@ -400,9 +442,10 @@ export default function Home() {
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       transition={{ duration: 0.25 }}
-      className="min-h-screen bg-blox-bg"
+      className={isClassic ? "min-h-screen bg-blox-bg" : ""}
     >
-      {/* Header */}
+      {/* Header — classic only; the live layouts get the shared shell chrome. */}
+      {isClassic && (
       <header className="fleet-header sticky top-0 z-50 bg-blox-bg/80 backdrop-blur-xl border-b border-blox-border/50">
         <div className="max-w-[1600px] mx-auto px-4 sm:px-6 min-h-14 py-2 sm:py-0 sm:h-14 flex flex-wrap sm:flex-nowrap items-center justify-between gap-2 sm:gap-4">
           {/* Brand */}
@@ -493,18 +536,26 @@ export default function Home() {
           </div>
         </div>
       </header>
+      )}
 
-      {/* Fleet Pulse Strip — sits directly below the header */}
-      <FleetPulse onAlertsClick={() => setAlertPanelOpen(true)} />
-
-      {/* Needs-Attention stripe — only renders when problems exist */}
-      <NeedsAttention machines={machines} />
-
-      {/* Fleet Overview — gauges and resource attribution */}
-      {machines.length > 0 && hasReceivedData && (
-        <div className="max-w-[1600px] mx-auto px-4 sm:px-6 pt-6">
-          <FleetOverview machines={machines} />
-        </div>
+      {/* Fleet summary — classic shows the pulse strip + gauges; the live
+          layouts render their own composition as the summary. */}
+      {isClassic ? (
+        <>
+          <FleetPulse onAlertsClick={() => setAlertPanelOpen(true)} />
+          <NeedsAttention machines={machines} />
+          {machines.length > 0 && hasReceivedData && (
+            <div className="max-w-[1600px] mx-auto px-4 sm:px-6 pt-6">
+              <FleetOverview machines={machines} />
+            </div>
+          )}
+        </>
+      ) : (
+        <>
+          {layout === "wall" && <FleetWall />}
+          {layout === "grove" && <FleetGrove />}
+          {layout === "console" && <FleetConsole />}
+        </>
       )}
 
       {/* Degraded connection banner — surfaces SSE disconnect inline so it isn't
@@ -524,6 +575,16 @@ export default function Home() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Machine management — the full working list and its controls. Present
+          in every layout; the layout only changes the summary above. Labelled
+          so it is distinct from any compact register in the summary. */}
+      <section aria-label="Machine management">
+      {!isClassic && (
+        <div className="max-w-[1600px] mx-auto px-4 sm:px-6 pt-6 -mb-2">
+          <h2 className="text-sm font-semibold text-text-primary uppercase tracking-wider">Manage machines</h2>
+        </div>
+      )}
 
       {/* Bulk action bar */}
       <AnimatePresence>
@@ -589,7 +650,9 @@ export default function Home() {
             />
             <button
               type="button"
-              onClick={() => setCommandOpen(true)}
+              onClick={() =>
+                isClassic ? setCommandOpen(true) : window.dispatchEvent(new CustomEvent(OPEN_COMMAND))
+              }
               className="absolute right-2 top-1/2 -translate-y-1/2 hidden sm:flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] font-mono text-blox-muted bg-blox-bg border border-blox-border rounded hover:text-blox-text transition-colors"
               aria-label="Open command palette"
               title="Open command palette (⌘K)"
@@ -722,7 +785,10 @@ export default function Home() {
             className="grid auto-rows-fr justify-start"
             style={{
               gap: "var(--grid-gap)",
-              gridTemplateColumns: "repeat(auto-fill, minmax(var(--grid-min-col), 360px))",
+              // min(100%, …) clamps the column to the container at very narrow
+              // widths (≤320px) so a fixed 260–300px min never overflows; the
+              // desktop track is unchanged.
+              gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, var(--grid-min-col)), 360px))",
             }}
           >
             {!hasReceivedData && machines.length === 0 && !isDemo && (
@@ -921,6 +987,7 @@ export default function Home() {
           </div>
         )}
       </main>
+      </section>
 
       {/* Delete confirmation dialog */}
       <Dialog open={!!deleteTarget} onOpenChange={(o) => { if (!o) setDeleteTarget(null); }}>
@@ -967,17 +1034,19 @@ export default function Home() {
         onAcknowledgeAll={handleAcknowledgeAll}
       />
 
-      <AddMachineModal
-        open={addMachineOpen}
-        onClose={() => setAddMachineOpen(false)}
-      />
-
-      {addAPIMachineOpen && (
-        <AddAPIMachineModal
-          open={addAPIMachineOpen}
-          onClose={() => setAddAPIMachineOpen(false)}
-          onSaved={handleAPIMachineSaved}
-        />
+      {/* Add-machine flows: classic owns them here; the live layouts get them
+          from the shell chrome (single owner, no duplicate modals). */}
+      {isClassic && (
+        <>
+          <AddMachineModal open={addMachineOpen} onClose={() => setAddMachineOpen(false)} />
+          {addAPIMachineOpen && (
+            <AddAPIMachineModal
+              open={addAPIMachineOpen}
+              onClose={() => setAddAPIMachineOpen(false)}
+              onSaved={handleAPIMachineSaved}
+            />
+          )}
+        </>
       )}
 
       {editAPIMachine && (
@@ -989,13 +1058,15 @@ export default function Home() {
         />
       )}
 
-      <CommandPalette
-        open={commandOpen}
-        onOpenChange={setCommandOpen}
-        onAddMachine={canCreateInstallTokens ? () => setAddMachineOpen(true) : undefined}
-        onAddAPIMachine={canManageAPIMachines ? () => setAddAPIMachineOpen(true) : undefined}
-        onOpenAlerts={() => setAlertPanelOpen(true)}
-      />
+      {isClassic && (
+        <CommandPalette
+          open={commandOpen}
+          onOpenChange={setCommandOpen}
+          onAddMachine={canCreateInstallTokens ? () => setAddMachineOpen(true) : undefined}
+          onAddAPIMachine={canManageAPIMachines ? () => setAddAPIMachineOpen(true) : undefined}
+          onOpenAlerts={() => setAlertPanelOpen(true)}
+        />
+      )}
     </motion.div>
   );
 }
@@ -1040,5 +1111,24 @@ function GlobalRefreshButton({
     >
       <RefreshCw className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`} />
     </Button>
+  );
+}
+
+/* ============================================================================
+ * Home — one shared controller (DashboardContent) inside the shell.
+ *
+ * The controller holds every machine-management control and handler once and
+ * renders in every layout; the layout only changes the summary above the
+ * management section. AppShell provides the navigation chrome and, for the
+ * live layouts, owns the global action modals and the command palette (so the
+ * controller disables its local ⌘K there). Grove's context rail is supplied to
+ * the shell as a slot. Classic renders AppShell as a passthrough.
+ * ========================================================================== */
+export default function Home() {
+  const { layout } = useDesign();
+  return (
+    <AppShell rail={layout === "grove" ? <FleetGroveRail /> : undefined}>
+      <DashboardContent />
+    </AppShell>
   );
 }

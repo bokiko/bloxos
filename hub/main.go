@@ -336,6 +336,8 @@ func (s *Server) registerRoutes(e *echo.Echo) {
 
 	// Phase 10 — per-user theme prefs and admin branding writes.
 	api.GET("/api/me/theme", s.handleGetMyThemePrefs)
+	api.GET("/api/me/design", s.handleGetMyDesign)
+	api.PATCH("/api/me/design", s.handlePatchMyDesign)
 	api.PATCH("/api/me/theme", s.handleUpdateMyThemePrefs)
 	api.PATCH("/api/branding", s.handleUpdateBrandingText)
 	api.POST("/api/branding/logo", s.handleUploadLogo)

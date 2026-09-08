@@ -1,4 +1,5 @@
 "use client";
+import { AppShell } from "@/components/shell/AppShell";
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -49,6 +50,10 @@ function timeSince(iso: string): string {
 }
 
 export default function UsersPage() {
+  return <AppShell><UsersContent /></AppShell>;
+}
+
+function UsersContent() {
   const router = useRouter();
   const { hasScope, authFetch, isAuthenticated, role: myRole } = useAuth();
   const canManage = isAuthenticated && hasScope("users.admin");
@@ -160,7 +165,7 @@ export default function UsersPage() {
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.25, ease: "easeOut" }}
-      className="min-h-screen bg-blox-bg"
+      className="min-h-screen bg-blox-bg" data-design-page
     >
       <header className="sticky top-0 z-50 bg-blox-bg/80 backdrop-blur-xl border-b border-blox-border/50">
         <div className="max-w-[1200px] mx-auto px-4 sm:px-6 h-14 flex items-center justify-between">

@@ -1,4 +1,5 @@
 "use client";
+import { AppShell } from "@/components/shell/AppShell";
 
 // Phase 10/11 — settings page.
 //
@@ -26,6 +27,10 @@ const SETTINGS_TABS = ["profile", "preferences", "theme", "branding", "ai-sessio
 type SettingsTab = (typeof SETTINGS_TABS)[number];
 
 export default function SettingsPage() {
+  return <AppShell><SettingsContent /></AppShell>;
+}
+
+function SettingsContent() {
   const { hasScope } = useAuth();
   const searchParams = useSearchParams();
   const canEditBranding = hasScope("branding.admin");
@@ -39,7 +44,7 @@ export default function SettingsPage() {
       : "profile";
 
   return (
-    <div className="min-h-screen bg-blox-bg">
+    <div className="min-h-screen bg-blox-bg" data-design-page>
       <header className="sticky top-0 z-40 bg-blox-bg/80 backdrop-blur-xl border-b border-blox-border/50">
         <div className="max-w-[1100px] mx-auto px-4 sm:px-6 h-14 flex items-center gap-3">
           <Link
