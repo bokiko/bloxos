@@ -45,7 +45,7 @@ export interface ThemeMeta {
   };
 }
 
-const THEME_NAMES: readonly ThemeName[] = [
+export const THEME_NAMES: readonly ThemeName[] = [
   "bloxos",
   "solarized",
   "dracula",
