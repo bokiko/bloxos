@@ -404,7 +404,7 @@ export default function Home() {
     >
       {/* Header */}
       <header className="fleet-header sticky top-0 z-50 bg-blox-bg/80 backdrop-blur-xl border-b border-blox-border/50">
-        <div className="max-w-[1600px] mx-auto px-4 sm:px-6 h-14 flex items-center justify-between gap-4">
+        <div className="max-w-[1600px] mx-auto px-4 sm:px-6 min-h-14 py-2 sm:py-0 sm:h-14 flex flex-wrap sm:flex-nowrap items-center justify-between gap-2 sm:gap-4">
           {/* Brand */}
           <div className="flex items-center gap-3 shrink-0">
             <BrandedHeader size="compact" />
@@ -416,10 +416,10 @@ export default function Home() {
           </div>
 
           {/* Spacer — claims the middle so left and right groups stay anchored */}
-          <div className="flex-1" />
+          <div className="hidden sm:block flex-1" />
 
           {/* Action group */}
-          <div className="flex items-center gap-1">
+          <div className="flex w-full sm:w-auto items-center justify-end gap-1">
             {/* Phase 7: global refresh — sends refresh_metrics to every connected agent */}
             <GlobalRefreshButton onRefresh={refreshFleet} disabled={!canControlFleet} />
 

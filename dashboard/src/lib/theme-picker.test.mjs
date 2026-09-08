@@ -14,3 +14,10 @@ test("quick theme picker uses the complete shared theme registry", () => {
   assert.doesNotMatch(menu, /const THEME_ORDER/);
   assert.match(menu, /aria-pressed=\{active\}/);
 });
+
+test("fleet header gives branding and actions separate rows on narrow screens", () => {
+  const page = readFileSync(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /flex-wrap sm:flex-nowrap/);
+  assert.match(page, /min-h-14 py-2 sm:py-0 sm:h-14/);
+  assert.match(page, /flex w-full sm:w-auto items-center justify-end gap-1/);
+});
