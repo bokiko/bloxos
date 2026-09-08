@@ -8,13 +8,13 @@ they are not containerized.
 
 Use Docker Compose v2 on a Linux amd64 or arm64 host. Ports 80 and 443 must
 be free, and browsers and agents must be able to reach the host. From a
-clone of the released `v1.1.0` tag:
+clone of the released `v1.2.0` tag:
 
 ```bash
 cd docker
 cp .env.example .env
 # Edit .env: set HUB_HOST to this machine's reachable hostname or IP.
-# Add BLOXOS_VERSION=1.1.0 to use this release's images.
+# Add BLOXOS_VERSION=1.2.0 to use this release's images.
 docker compose pull
 docker compose up -d --no-build
 ```
@@ -62,20 +62,65 @@ clients share one address there; rootful Docker passes the real address.
 
 Operations:
 
-- Upgrade: back up first, set `BLOXOS_VERSION` to the desired published
-  version in your existing `.env`, then run `docker compose pull hub dashboard`
-  and `docker compose up -d --no-build hub dashboard`. Preserve the project
-  name, overrides, volumes and keys. Source-build installations instead update
-  to a chosen tested source revision and run `docker compose up -d --build`.
-  The hub serves agent updates too; eligible older agents can update and restart.
-  See the [upgrade notes](../README.md#update-an-existing-installation) for
-  legacy-agent and offline-signing cautions.
+- Upgrade: follow [Upgrades](#upgrades) below.
 - Use the [consistent backup and clean restore procedure](../docs/backup-restore.md)
   for the database, secrets, signing key and Caddy CA/configuration. Do not copy
   only the live SQLite file or delete volumes to repair a failed upgrade.
 - Root certificate for browsers:
   `docker compose exec caddy cat /data/caddy/pki/authorities/local/root.crt`.
 - Logs: `docker compose logs -f hub`.
+
+## Upgrades
+
+Back up first using the [backup and restore guide](../docs/backup-restore.md),
+then upgrade from your existing Compose directory with the same project name
+and any existing overrides. Preserve volumes, keys, and your `.env`.
+
+### 1. Pull and start the new images
+
+Set `BLOXOS_VERSION` in your existing `.env` to the desired published version,
+then:
+
+```bash
+docker compose pull hub dashboard
+docker compose up -d --no-build hub dashboard
+```
+
+Source-build installations instead update to a chosen tested source revision
+and run `docker compose up -d --build`.
+
+### 2. Verify
+
+Health through the container network (plain HTTP inside the stack, no TLS
+flags):
+
+```bash
+docker compose exec caddy wget -qO- http://hub:4000/health
+```
+
+Expected: `{"status":"ok"}`. Then, in the dashboard, generate a **fresh** Add
+Machine command: v1.2.0 mints one-line onboarding links under `/api/join/`,
+which works with older proxies that already forward `/api/*` to the hub.
+No Caddyfile edit is required for those new commands. (The legacy `/join/`
+path remains as an alias; enrollment links expire after 15 minutes either
+way.)
+
+The hub serves agent updates too; eligible older agents can update and restart.
+See the [upgrade notes](../README.md#update-an-existing-installation) for
+legacy-agent and offline-signing cautions.
+
+### Older links and custom proxies
+
+Pulling images does not update a bind-mounted Caddyfile. If an older proxy
+does not forward `/join/*`, previously copied links can still reach the
+dashboard's HTML 404. **Generate a fresh command after upgrading to v1.2.0**;
+do not edit your proxy just to rescue a short-lived old link.
+
+For custom proxies, `/api/*` must reach the hub. The optional legacy `/join/*`
+alias also needs forwarding if you intend to keep using it. Compare the
+[Compose Caddyfile](Caddyfile) or [native sample](../scripts/caddy/Caddyfile)
+with your own configuration, preserving custom TLS settings, CA and keys.
+Do not overwrite a customized configuration with a release sample.
 
 ## Browser trust
 

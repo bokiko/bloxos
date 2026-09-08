@@ -19,6 +19,7 @@ Start with the [project overview](../README.md) or choose the task you need.
 | --- | --- |
 | See the three live dashboards | [Screenshot gallery](screenshots/README.md) |
 | Choose a layout and colors | [Design guide](themes/README.md) |
+| Keep machines in your preferred positions | [Machine arrangement](machine-order.md) |
 | Understand component power, retention and missing sensors | [Power history](power-history.md) |
 | Understand alert timing, acknowledgment and recovery | [Alert lifecycle](alerts.md) |
 | Understand AI monitoring privacy and limitations | [AI Sessions overview](../README.md#ai-activity-without-reading-the-conversation) |

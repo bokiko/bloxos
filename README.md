@@ -50,6 +50,13 @@ accounts keep Classic until they choose another design.
 
 [See all three dashboards →](docs/screenshots/README.md) · [Design and color guide →](docs/themes/README.md)
 
+### Machines stay where you put them
+
+Name sorting no longer moves machines when connectivity changes. Choose
+**Arrange machines**, drag or use the arrows, then **Save order**. Your **My
+order** is saved per account across grid/list and all four layouts. New machines
+appear after your saved set. [Machine arrangement guide →](docs/machine-order.md)
+
 ### AI activity, without reading the conversation
 
 AI Sessions reports supported running tools—Claude Code, Codex and Kimi—with
@@ -78,7 +85,7 @@ dashboard support **Linux amd64 and arm64**. Ports **80 and 443** must be availa
 ### 1. Download BloxOS
 
 ```sh
-git clone --branch v1.1.0 --depth 1 https://github.com/bokiko/bloxos.git
+git clone --branch v1.2.0 --depth 1 https://github.com/bokiko/bloxos.git
 cd bloxos/docker
 cp .env.example .env
 ```
@@ -90,7 +97,7 @@ hostname or IP—without `https://`, a path, or a port—and add the version:
 
 ```dotenv
 HUB_HOST=192.168.1.50
-BLOXOS_VERSION=1.1.0
+BLOXOS_VERSION=1.2.0
 ```
 
 Replace the example IP with your own address. Do not use `localhost` if other
@@ -138,7 +145,7 @@ second hub. A public one-line *hub* installer is not shipped.
 which preserves the database, secrets, signing identity and Caddy CA. Never
 use `docker compose down -v` to update.
 
-In your existing Compose directory, set `BLOXOS_VERSION=1.1.0` in your existing
+In your existing Compose directory, set `BLOXOS_VERSION=1.2.0` in your existing
 `.env`, then run these with the same project name and any existing overrides:
 
 ```sh
@@ -149,12 +156,17 @@ docker compose up -d --no-build hub dashboard
 Refresh your browser when the services are healthy. Keep your existing volumes
 and keys; normal upgrades do not require enrolling every machine again.
 
+For new machines, generate a **fresh** Add Machine command after upgrading.
+v1.2.0 uses `/api/join/`, so older proxies that already forward `/api/*` need
+no route edit. Previously copied `/join/` commands may still fail or have expired.
+See the [Docker upgrade guide](docker/README.md#upgrades) for details.
+
 The hub serves agent updates too: eligible older agents can update and restart
 after a hub upgrade. Legacy agents may need update-key pinning; offline-signing
 installations have a separate procedure. Very old or customized deployments
 should compare their Compose configuration before updating.
 
-[Release notes](https://github.com/bokiko/bloxos/releases/tag/v1.1.0) ·
+[Release notes](https://github.com/bokiko/bloxos/releases/tag/v1.2.0) ·
 [Update signing](docs/offline-update-signing.md) ·
 [Agent recovery](docs/agent-update-recovery.md)
 
