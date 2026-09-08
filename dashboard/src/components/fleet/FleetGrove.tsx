@@ -47,9 +47,11 @@ export function FleetGrove() {
       ? hasReceivedData
         ? "No machines"
         : "Waiting for telemetry"
-      : agg.online === agg.total
-        ? "All machines reporting"
-        : `${agg.total - agg.online} not reporting`;
+      : agg.stale > 0
+        ? `${agg.online} connected, ${agg.stale} stale`
+        : agg.online === agg.total
+          ? "All machines reporting"
+          : `${agg.total - agg.online} not reporting`;
   return (
     <>
       <header className="lg-top">
@@ -73,7 +75,7 @@ export function FleetGrove() {
               {agg.onlinePct === null ? "N/A" : Math.round(agg.onlinePct)}
               {agg.onlinePct !== null && <span style={{ fontSize: 14 }}>%</span>}
             </strong>
-            <small>FLEET ONLINE</small>
+            <small>CONNECTED</small>
           </div>
         </div>
       </section>

@@ -31,6 +31,9 @@ export interface FleetAggregate {
   total: number;
   /** Connected machines (not offline); includes stale. */
   online: number;
+  /** Connected but not fresh (30–120s since last report). A subset of online.
+   * Summary text must surface this and never claim "all reporting" when > 0. */
+  stale: number;
   onlinePct: Metric;
   avgCpu: Metric;
   avgRam: Metric;
@@ -118,6 +121,7 @@ export function machineMaxTemp(m: MachineMetrics): Metric {
 export function aggregate(machines: MachineMetrics[], now: number = Date.now()): FleetAggregate {
   const valid = machines.filter((m) => m && typeof m.machine_id === "string");
   const online = valid.filter((m) => statusOf(m) !== "offline").length;
+  const stale = valid.filter((m) => statusOf(m) === "stale").length;
   const fresh = valid.filter((m) => isFreshMetrics(m.last_seen, now));
 
   const cpu = fresh.map((m) => m.cpu_percent).filter((v): v is number => Number.isFinite(v) && v >= 0);
@@ -184,6 +188,7 @@ export function aggregate(machines: MachineMetrics[], now: number = Date.now()):
   return {
     total: valid.length,
     online,
+    stale,
     onlinePct: valid.length ? (online / valid.length) * 100 : null,
     avgCpu: mean(cpu),
     avgRam: mean(ram),

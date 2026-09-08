@@ -46,9 +46,13 @@ export function FleetWall() {
       ? hasReceivedData
         ? "No machines"
         : "Waiting for telemetry"
-      : agg.online === agg.total
-        ? "All systems connected"
-        : `${agg.total - agg.online} not reporting`;
+      : agg.stale > 0
+        ? `${agg.online} connected, ${agg.stale} stale`
+        : agg.online === agg.total
+          ? "All systems connected"
+          : `${agg.total - agg.online} not reporting`;
+  const connectivityStatus =
+    agg.total === 0 ? "offline" : agg.online < agg.total ? "warning" : agg.stale > 0 ? "stale" : "live";
 
   return (
     <>
@@ -65,23 +69,20 @@ export function FleetWall() {
           <h2 className="ld-label">Connected machines</h2>
           <div className="lw-fleet-reading">
             <strong className="lw-massive">{agg.online}</strong>
-            <span className="lw-denominator">/ {agg.total} online</span>
+            <span className="lw-denominator">/ {agg.total} connected</span>
           </div>
           <div className="lw-fleet-bottom">
-            <span
-              className="ld-dot"
-              style={{ "--dot": statusVar(agg.total > 0 && agg.online === agg.total ? "live" : agg.total === 0 ? "offline" : "warning") } as CSSProperties}
-            />
+            <span className="ld-dot" style={{ "--dot": statusVar(connectivityStatus) } as CSSProperties} />
             {connectivity}
           </div>
           <div
             className="lw-orbit"
-            aria-label={`${pct(agg.onlinePct)} fleet online`}
+            aria-label={`${pct(agg.onlinePct)} fleet connected`}
             style={{ "--pct": agg.onlinePct ?? 0 } as CSSProperties}
           >
             <span>
               {pct(agg.onlinePct)}
-              <small>FLEET ONLINE</small>
+              <small>CONNECTED</small>
             </span>
           </div>
         </article>

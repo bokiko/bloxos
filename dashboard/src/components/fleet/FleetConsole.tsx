@@ -48,7 +48,15 @@ function num(value: Metric, unit = "%"): string {
 export function FleetConsole() {
   const { sorted, agg, sessionCount, sessionMachines, alertsCount, hasReceivedData } = useFleetData();
   const onlineSub =
-    agg.total === 0 ? (hasReceivedData ? "No machines" : "Waiting for telemetry") : agg.online === agg.total ? "All reporting" : "Some offline";
+    agg.total === 0
+      ? hasReceivedData
+        ? "No machines"
+        : "Waiting for telemetry"
+      : agg.stale > 0
+        ? `${agg.stale} stale`
+        : agg.online === agg.total
+          ? "All reporting"
+          : "Some offline";
 
   return (
     <>
@@ -61,7 +69,7 @@ export function FleetConsole() {
       </header>
 
       <div className="lc-ticker">
-        <Cell label="Online" value={`${agg.online}`} unit={`/ ${agg.total}`} sub={onlineSub} />
+        <Cell label="Connected" value={`${agg.online}`} unit={`/ ${agg.total}`} sub={onlineSub} />
         <Cell label="Avg CPU" value={num(agg.avgCpu, "")} unit={agg.avgCpu === null ? "" : "%"} sub="Fleet average" />
         <Cell label="Avg RAM" value={num(agg.avgRam, "")} unit={agg.avgRam === null ? "" : "%"} sub="Fleet average" />
         <Cell label="GPU power" value={agg.gpuPowerTotal === null ? "N/A" : `${Math.round(agg.gpuPowerTotal)}`} unit={agg.gpuPowerTotal === null ? "" : "W"} sub={agg.gpuPowerTotal !== null && !agg.gpuPowerComplete ? "Partial telemetry" : "Component telemetry"} />
@@ -141,7 +149,7 @@ export function FleetConsole() {
 
       <div className="lc-bottom">
         <span>
-          {agg.total} MACHINES / {agg.online} ONLINE
+          {agg.total} MACHINES / {agg.online} CONNECTED
         </span>
         <span>PRECISION CONSOLE</span>
       </div>

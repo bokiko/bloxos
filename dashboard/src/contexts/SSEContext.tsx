@@ -1,4 +1,5 @@
 "use client";
+import { userIDFromToken } from "@/lib/auth-session.mjs";
 
 import {
   createContext,
@@ -149,12 +150,7 @@ export function SSEProvider({ children }: { children: ReactNode }) {
       userIDRef.current = null;
       return;
     }
-    try {
-      const payload = JSON.parse(atob(token.split(".")[1]));
-      userIDRef.current = payload.user_id ?? null;
-    } catch {
-      userIDRef.current = null;
-    }
+    userIDRef.current = userIDFromToken(token);
     const [writer, flush, cancel] = makeDebouncedWriter(userIDRef.current);
     cacheWriterRef.current = writer;
     cacheFlushRef.current = flush;

@@ -4,7 +4,7 @@ import { createContext, useContext, useEffect, useRef, useState, useCallback, Re
 import { useRouter, usePathname } from "next/navigation";
 import { ChangePasswordModal } from "@/components/ChangePasswordModal";
 import { HUB_URL, dispatchAuthChanged, getStoredToken } from "@/lib/session";
-import { shouldLogoutOn401, storageAuthAction, tokenRemovalApplies } from "@/lib/auth-session.mjs";
+import { shouldLogoutOn401, storageAuthAction, tokenRemovalApplies, decodeJWTPayload } from "@/lib/auth-session.mjs";
 
 export type UserRole = "admin" | "operator" | "viewer";
 
@@ -47,8 +47,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const stored = localStorage.getItem("bloxos_token");
     if (stored) {
       try {
-        const payload = JSON.parse(atob(stored.split(".")[1]));
-        if (payload.exp * 1000 > Date.now()) {
+        const payload = decodeJWTPayload(stored);
+        if (payload?.exp * 1000 > Date.now()) {
           // eslint-disable-next-line react-hooks/set-state-in-effect
           setToken(stored);
           setRole(normalizeRole(localStorage.getItem("bloxos_role")));

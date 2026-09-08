@@ -61,6 +61,27 @@ test('legacy GPU power: only >0 is observed; mixed is partial; all-zero/absent i
  const idle=gpuMachine();idle.gpus.forEach(g=>{g.util_percent=0;});
  assert.equal(aggregate([idle]).avgGpuUtil,0);
 });
+test('stale machines count as connected but are surfaced separately, never as reporting',()=>{
+ const stale={...gpuMachine(),last_seen:Date.now()-60000};
+ // All stale: connected but every one is stale, so no "all reporting".
+ const allStale=aggregate([stale]);
+ assert.equal(allStale.total,1);
+ assert.equal(allStale.online,1);
+ assert.equal(allStale.stale,1);
+ assert.equal(allStale.onlinePct,100);
+ // Mixed fresh + stale: both connected, one stale.
+ const fresh={...gpuMachine(),machine_id:'fresh',last_seen:Date.now()};
+ const mixed=aggregate([fresh,stale]);
+ assert.equal(mixed.total,2);
+ assert.equal(mixed.online,2);
+ assert.equal(mixed.stale,1);
+ // Offline is neither connected nor stale.
+ const offline={...gpuMachine(),machine_id:'off',last_seen:Date.now()-180000};
+ const withOffline=aggregate([fresh,stale,offline]);
+ assert.equal(withOffline.total,3);
+ assert.equal(withOffline.online,2);
+ assert.equal(withOffline.stale,1);
+});
 test('non-finite readings are unavailable, not NaN output',()=>{
  const machine={...cpuOnly(),cpu_percent:NaN,ram_used_bytes:Infinity};
  const result=aggregate([machine]);assert.equal(result.avgCpu,null);assert.equal(result.avgRam,null);

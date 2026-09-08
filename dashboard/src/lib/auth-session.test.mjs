@@ -10,6 +10,14 @@ test("401 logs out only when the failing request still carries the current token
   assert.equal(shouldLogoutOn401(null, null), false);
   assert.equal(shouldLogoutOn401("", null), false);
 });
+test("JWT base64url and UTF-8 payloads retain distinct account identities", () => {
+  for (const username of ['x>', 'x?', 'مستخدم', '🦊']) {
+    const body = {user_id:'user-'+username, username};
+    const payload = Buffer.from(JSON.stringify(body)).toString('base64url');
+    assert.equal(userIDFromToken(`aaa.${payload}.bbb`), body.user_id);
+  }
+  for (const payload of ['-', '_', '%%%%']) assert.equal(userIDFromToken(`aaa.${payload}.bbb`), null);
+});
 
 test("storage events map to logout or login-sync precisely", () => {
   assert.equal(storageAuthAction("bloxos_token", null), "logout");
