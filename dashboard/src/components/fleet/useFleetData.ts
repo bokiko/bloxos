@@ -6,11 +6,13 @@ import { useAISessions } from "@/contexts/AISessionsContext";
 import { DEMO_MODE } from "@/lib/session";
 import { demoMachines, type MachineMetrics } from "@/lib/demo-data";
 import { STATUS_ORDER } from "@/components/StatusBadge";
+import { usePreferences } from "@/contexts/PreferencesContext";
+import { orderMachines } from "@/lib/machine-order.mjs";
 import { aggregate, statusOf, type FleetAggregate, type Metric } from "./fleetModel";
 
 export interface FleetData {
   machines: MachineMetrics[];
-  /** Problem-first ordering (critical -> warning -> offline -> stale -> live). */
+  /** Same user-selected order as the machine-management grid/list. */
   sorted: MachineMetrics[];
   agg: FleetAggregate;
   /** Live AI session count, or null when monitoring is off/failed/not loaded. */
@@ -30,6 +32,7 @@ export interface FleetData {
 export function useFleetData(): FleetData {
   const { machines: live, hasReceivedData, alertCount } = useSSE();
   const ai = useAISessions();
+  const { preferences } = usePreferences();
 
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -51,15 +54,16 @@ export function useFleetData(): FleetData {
 
   const sorted = useMemo(
     () =>
-      [...machines].sort(
-        (a, b) =>
-          STATUS_ORDER[statusOf(a)] - STATUS_ORDER[statusOf(b)] ||
-          (a.hostname ?? "").localeCompare(b.hostname ?? ""),
-      ),
+      orderMachines(machines, {
+        sort: preferences.default_sort,
+        order: preferences.machine_order,
+        pinned: preferences.pinned_machines,
+        status: m => STATUS_ORDER[statusOf(m)],
+      }),
     // `now` re-sorts as machines age even when SSE is quiet; statusOf reads the
     // wall clock internally, so it is a deliberate extra dependency.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [machines, now],
+    [machines, now, preferences.default_sort, preferences.machine_order, preferences.pinned_machines],
   );
 
   const { sessionCount, sessionMachines } = useMemo(() => {

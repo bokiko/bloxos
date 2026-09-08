@@ -4,6 +4,8 @@ import { useState, useMemo, useCallback, useEffect } from "react";
 import { useSSE } from "@/contexts/SSEContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { usePreferences } from "@/contexts/PreferencesContext";
+import { ArrangeMachinesDialog } from "@/components/ArrangeMachinesDialog";
+import { orderMachines } from "@/lib/machine-order.mjs";
 import { SaveFilterButton } from "@/components/SaveFilterButton";
 import { SavedFiltersDropdown } from "@/components/SavedFiltersDropdown";
 import { demoMachines, MachineMetrics, AlertData } from "@/lib/demo-data";
@@ -53,7 +55,7 @@ import { FleetWall } from "@/components/fleet/FleetWall";
 import { FleetGrove, FleetGroveRail } from "@/components/fleet/FleetGrove";
 import { FleetConsole } from "@/components/fleet/FleetConsole";
 
-type SortOption = "name" | "status" | "cpu" | "gpu_temp";
+type SortOption = "manual" | "name" | "status" | "cpu" | "gpu_temp";
 type StatusFilter = "all" | "live" | "warning" | "critical" | "offline" | "stale";
 type ViewMode = "grid" | "list";
 
@@ -80,6 +82,7 @@ function timeSince(ms: number): string {
 }
 
 const sortLabels: Record<SortOption, string> = {
+  manual: "My order",
   name: "Name (A-Z)",
   status: "Status",
   cpu: "CPU %",
@@ -89,7 +92,7 @@ const sortLabels: Record<SortOption, string> = {
 function DashboardContent() {
   const { addToast } = useToast();
   const { machines: liveMachines, connected, hasReceivedData, alerts, setAlerts, setAlertCount, refreshMachine, refreshFleet } = useSSE();
-  const { authFetch, hasScope } = useAuth();
+  const { authFetch, hasScope, token } = useAuth();
   // One shared controller serves every layout. Classic renders its own header
   // and the FleetPulse/overview summary; the live layouts render their summary
   // composition instead. The machine-management section below (search, filter,
@@ -104,7 +107,8 @@ function DashboardContent() {
   // Phase 11 — hydrate viewMode/sortBy from per-user preferences. The
   // PreferencesContext lazy-init reads from localStorage so the defaults
   // are correct on first paint after a reload (no flash).
-  const { preferences, updateScalar } = usePreferences();
+  const { preferences, updateScalar, saveMachineOrder, loading: preferencesLoading } = usePreferences();
+  const [arrangeOpen, setArrangeOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [sortBy, setSortBy] = useState<SortOption>(() => preferences.default_sort);
@@ -136,9 +140,9 @@ function DashboardContent() {
   const changeSort = useCallback(
     (next: SortOption) => {
       setSortBy(next);
-      void updateScalar({ default_sort: next });
+      void updateScalar({ default_sort: next }).catch(() => addToast("error", "Sort changed locally but could not be saved. Please retry."));
     },
-    [updateScalar],
+    [updateScalar, addToast],
   );
 
   const applySavedFilter = useCallback(
@@ -156,7 +160,7 @@ function DashboardContent() {
         setStatusFilter(f.statusFilter === "online" ? "live" : f.statusFilter);
       }
       setTagFilter(typeof f.tagFilter === "string" ? f.tagFilter : null);
-      if (f.sortBy === "name" || f.sortBy === "status" || f.sortBy === "cpu" || f.sortBy === "gpu_temp") {
+      if (f.sortBy === "manual" || f.sortBy === "name" || f.sortBy === "status" || f.sortBy === "cpu" || f.sortBy === "gpu_temp") {
         changeSort(f.sortBy);
       }
     },
@@ -278,43 +282,13 @@ function DashboardContent() {
       );
     }
 
-    const primaryCompare = (a: MachineMetrics, b: MachineMetrics) => {
-      switch (sortBy) {
-        case "name":
-          return (a.hostname ?? "").localeCompare(b.hostname ?? "");
-        case "status":
-          return STATUS_ORDER[getStatus(a)] - STATUS_ORDER[getStatus(b)];
-        case "cpu":
-          return (b.cpu_percent ?? 0) - (a.cpu_percent ?? 0);
-        case "gpu_temp":
-          return (b.gpu_temp || 0) - (a.gpu_temp || 0);
-        default:
-          return 0;
-      }
-    };
-
-    // Composite ordering — applied as a single comparator so each priority
-    // is strictly higher than the next:
-    //   1. status severity (critical → warning → offline → stale → live)
-    //   2. pinned before unpinned within the same status bucket
-    //   3. user's chosen sort key within the same status+pin bucket
-    //
-    // Done as one sort to avoid the bug from the prior two-phase impl,
-    // where a healthy-pinned machine could outrank a critical-unpinned
-    // one — directly contradicting the PR's "problem-first" promise.
-    const pinnedSet = new Set(preferences.pinned_machines);
-    result = [...result].sort((a, b) => {
-      const statusDiff = STATUS_ORDER[getStatus(a)] - STATUS_ORDER[getStatus(b)];
-      if (statusDiff !== 0) return statusDiff;
-
-      const pinDiff = Number(pinnedSet.has(b.machine_id)) - Number(pinnedSet.has(a.machine_id));
-      if (pinDiff !== 0) return pinDiff;
-
-      return primaryCompare(a, b);
+    return orderMachines(result, {
+      sort: sortBy,
+      order: preferences.machine_order,
+      pinned: preferences.pinned_machines,
+      status: m => STATUS_ORDER[getStatus(m)],
     });
-
-    return result;
-  }, [machines, search, statusFilter, sortBy, tagFilter, preferences.pinned_machines]);
+  }, [machines, search, statusFilter, sortBy, tagFilter, preferences.pinned_machines, preferences.machine_order]);
 
 
   const handleAcknowledge = useCallback(async (id: string) => {
@@ -772,6 +746,9 @@ function DashboardContent() {
             </button>
           </div>
 
+          <Button variant="outline" size="sm" onClick={() => setArrangeOpen(true)} disabled={preferencesLoading || !hasReceivedData || machines.length < 2}
+            className="text-xs border-blox-border text-blox-text">Arrange machines</Button>
+
           <span className="text-[10px] text-blox-muted font-mono tabular-nums">
             {filteredMachines.length} machine{filteredMachines.length !== 1 ? "s" : ""}
           </span>
@@ -990,6 +967,13 @@ function DashboardContent() {
       </section>
 
       {/* Delete confirmation dialog */}
+      {arrangeOpen && <ArrangeMachinesDialog key={token}
+        machines={orderMachines(machines.filter(m => m && typeof m.machine_id === "string"), {
+          sort: sortBy, order: preferences.machine_order, pinned: preferences.pinned_machines,
+          status: m => STATUS_ORDER[getStatus(m)],
+        })}
+        onClose={() => setArrangeOpen(false)} onSave={saveMachineOrder} />}
+
       <Dialog open={!!deleteTarget} onOpenChange={(o) => { if (!o) setDeleteTarget(null); }}>
         <DialogContent className="bg-blox-card border-blox-border text-blox-text ring-0 sm:max-w-md" showCloseButton={false}>
           <DialogHeader>

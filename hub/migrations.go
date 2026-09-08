@@ -509,6 +509,20 @@ var migrations = []migration{
 			return nil
 		},
 	},
+	{
+		description: "per-user persistent machine order",
+		apply: func(tx *sql.Tx) error {
+			// A JSON array of machine IDs in the user's chosen display order.
+			// Empty array = no manual order. Stored on the users row so it is
+			// written atomically alongside default_sort='manual'.
+			if _, err := tx.Exec(
+				`ALTER TABLE users ADD COLUMN machine_order TEXT NOT NULL DEFAULT '[]'`,
+			); err != nil && !isDuplicateColumnErr(err) {
+				return err
+			}
+			return nil
+		},
+	},
 }
 
 // isDuplicateColumnErr returns true when SQLite rejects an ALTER TABLE ADD
