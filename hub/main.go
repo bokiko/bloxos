@@ -272,7 +272,7 @@ func (s *Server) registerRoutes(e *echo.Echo) {
 	e.GET("/join/:code", s.handleJoinScript)
 	e.GET("/api/join/:code", s.handleJoinScript)
 	e.GET("/download/agent", handleDownloadAgent)
-	e.GET("/download/ca.crt", handleDownloadCACert)
+	e.GET("/download/ca.crt", s.handleDownloadCACert)
 	e.GET("/api/setup/status", s.handleSetupStatus)
 	e.POST("/api/setup", s.handleSetup)
 
