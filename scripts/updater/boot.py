@@ -47,7 +47,7 @@ def _native_boot_adapter(config, transaction_dir):
     # synchronously (no deadlock), so recovery must confirm the restored
     # originals actually answer before finalize reopens the proxy. ONLY the
     # proxy start is made non-blocking (it alone is ordered After= this gate).
-    return NativeAdapter(merged, transaction_dir, runner=boot_runner)
+    return NativeAdapter(merged, transaction_dir, runner=boot_runner, defer_proxy_ready=True)
 
 
 def recover_boot(config) -> int:

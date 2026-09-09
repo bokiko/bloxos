@@ -59,7 +59,7 @@ class NativeAdapter:
     def __init__(self, config, transaction_dir, *, runner=default_runner,
                  fetch_bytes=None, identity_fetch=None, arch=None, discover=None,
                  ready_check=None, readiness_timeout=120.0, poll_interval=3.0,
-                 sleep=None, monotonic=None):
+                 sleep=None, monotonic=None, defer_proxy_ready=False):
         self.cfg = engine.as_config_dict(config)
         self.transaction_dir = transaction_dir
         self.backup_dir = os.path.join(transaction_dir, "backup")
@@ -75,7 +75,8 @@ class NativeAdapter:
         self._discover = discover or discover_native
         # Readiness probe: a restarted ORIGINAL must actually serve before we
         # claim a rollback/resume succeeded (systemctl start alone is not proof).
-        self._ready = ready_check or _default_ready
+        self._ready = ready_check or (lambda url: _default_ready(url, self.cfg.get("ca_file")))
+        self.defer_proxy_ready = defer_proxy_ready
         self.readiness_timeout = readiness_timeout
         self.poll_interval = poll_interval
         self._sleep = sleep or time.sleep
@@ -382,17 +383,16 @@ class NativeAdapter:
         so restarting the gate after a fixed failure re-opens Caddy; forward
         `Requires=` never restarts a cancelled proxy job on its own.
 
-        No HTTP readiness probe: on the success path the engine already verified
-        public identities through the proxy before finalize; on rollback the
-        original Caddy config is restored and its active state is the proof; and
-        at boot the proxy starts only AFTER this gate exits, so a synchronous
-        probe here could not observe it. `systemctl start` blocking until the
-        unit is active is the runtime readiness."""
+        Runtime checks public TLS health because a Type=simple proxy may be
+        "active" before binding its listener. Only the boot adapter defers this
+        probe: its proxy cannot start until the recovery gate exits."""
         self._systemctl("start", self._unit("proxy_unit"))
+        if not self.defer_proxy_ready:
+            self._wait_ready([self._f("public_url").rstrip("/") + "/health"])
 
-    def _wait_ready(self):
-        targets = [self._f("hub_url").rstrip("/") + "/health",
-                   self._f("dashboard_url").rstrip("/") + "/"]
+    def _wait_ready(self, targets=None):
+        targets = targets or [self._f("hub_url").rstrip("/") + "/health",
+                              self._f("dashboard_url").rstrip("/") + "/"]
         deadline = self._monotonic() + self.readiness_timeout
         while True:
             try:
@@ -420,12 +420,17 @@ def _verify_elf_arch(path, arch):
         raise engine.UpdaterError(f"staged hub binary is the wrong architecture for {arch}")
 
 
-def _default_ready(url):
+def _default_ready(url, ca_file=None):
     """Liveness probe for a restarted original: reachable and not 5xx."""
     import urllib.error
     import urllib.request
+    import ssl
     try:
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        context = ssl.create_default_context()
+        if ca_file:
+            context.load_verify_locations(cafile=ca_file)
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
+                                            urllib.request.HTTPSHandler(context=context))
         with opener.open(url, timeout=5) as resp:
             if getattr(resp, "status", 200) >= 500:
                 raise engine.UpdaterError("service returned a server error")

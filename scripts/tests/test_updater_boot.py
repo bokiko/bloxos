@@ -98,7 +98,10 @@ class NativeBootAdapterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.object(native, "default_runner", lambda cmd: (0, "", "")):
                 ad = boot._native_boot_adapter(_config(tmp), os.path.join(tmp, "transaction"))
-            self.assertIs(ad._ready, native._default_ready)
+            with patch.object(native, "_default_ready") as readiness:
+                ad._ready("http://127.0.0.1:4000/health")
+                readiness.assert_called_once_with("http://127.0.0.1:4000/health", None)
+            self.assertTrue(ad.defer_proxy_ready)
 
 
 if __name__ == "__main__":

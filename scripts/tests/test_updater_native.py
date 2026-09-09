@@ -309,6 +309,22 @@ class BackupRollbackTests(unittest.TestCase):
                              [["systemctl", "start", "caddy.service"],
                               ["systemctl", "start", "caddy.service"]])
 
+    def test_finalize_waits_for_proxy_listener_unless_boot_defers_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = native_config(tmp)
+            probes = []
+            def ready(url):
+                probes.append(url)
+                if len(probes) == 1:
+                    raise engine.UpdaterError("proxy has not bound its listener")
+            ad = native.NativeAdapter(cfg, tmp, runner=Runner(), ready_check=ready,
+                                      sleep=lambda _: None)
+            ad.finalize()
+            self.assertEqual(probes, [cfg["public_url"] + "/health"] * 2)
+            ad.defer_proxy_ready = True
+            ad.finalize()
+            self.assertEqual(len(probes), 2)
+
     def test_start_candidate_still_starts_proxy(self):
         # start_candidate MUST keep opening the proxy: engine._verify needs the
         # candidate's PUBLIC identity (served through the proxy), and the
