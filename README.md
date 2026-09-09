@@ -99,7 +99,7 @@ dashboard support **Linux amd64 and arm64**. Ports **80 and 443** must be availa
 ### 1. Download BloxOS
 
 ```sh
-git clone --branch v1.2.1 --depth 1 https://github.com/bokiko/bloxos.git
+git clone --branch v1.2.2 --depth 1 https://github.com/bokiko/bloxos.git
 cd bloxos/docker
 cp .env.example .env
 ```
@@ -111,7 +111,7 @@ hostname or IP—without `https://`, a path, or a port—and add the version:
 
 ```dotenv
 HUB_HOST=192.168.1.50
-BLOXOS_VERSION=1.2.1
+BLOXOS_VERSION=1.2.2
 ```
 
 Replace the example IP with your own address. Do not use `localhost` if other
@@ -165,7 +165,7 @@ second hub. A public one-line *hub* installer is not shipped.
 which preserves the database, secrets, signing identity and Caddy CA. Never
 use `docker compose down -v` to update.
 
-In your existing Compose directory, set `BLOXOS_VERSION=1.2.1` in your existing
+In your existing Compose directory, set `BLOXOS_VERSION=1.2.2` in your existing
 `.env`, then run these with the same project name and any existing overrides:
 
 ```sh
@@ -182,6 +182,13 @@ Since v1.2.0, new commands use `/api/join/`, so older proxies that already forwa
 or have expired.
 See the [Docker upgrade guide](docker/README.md#upgrades) for details.
 
+v1.2.2 adds Linux recovery for a saved CA from an older hub and stops fresh
+installs from receiving unnumbered agents whose enrollment compatibility cannot
+be verified. Generate a fresh command after updating. To keep pinned commands
+valid across routine Caddy renewal, also apply the bundled Caddyfile's key-reuse
+setting to your existing configuration; pulling images does not update that
+bind-mounted file. See [onboarding trust recovery](docs/configuration.md#tls-trust-for-onboarding).
+
 The hub serves agent updates too: eligible older agents can update and restart
 after a hub upgrade. Legacy agents may need update-key pinning; offline-signing
 installations have a separate procedure. Very old or customized deployments
@@ -191,7 +198,7 @@ On a native installation, replacing the hub executable does **not** replace
 separate agent files. Use the [native agent check-and-stage guide](docs/native-agent-upgrades.md)
 to prepare the published payloads without starting a fleet rollout.
 
-[Release notes](https://github.com/bokiko/bloxos/releases/tag/v1.2.1) ·
+[Release notes](https://github.com/bokiko/bloxos/releases/tag/v1.2.2) ·
 [Update signing](docs/offline-update-signing.md) ·
 [Agent recovery](docs/agent-update-recovery.md)
 
