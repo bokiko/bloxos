@@ -20,6 +20,10 @@ type Server struct {
 	// Serializes agent authentication/registration with credential revocation.
 	agentAuthMu sync.RWMutex
 
+	// Serializes durable operator pause/resume with queuing update announcements.
+	// The persisted row is authoritative; there is no restart-sensitive cache.
+	operatorRolloutMu sync.RWMutex
+
 	// Alert evaluations are serialized; pending duration state is bounded by
 	// currently observable enabled rule/machine pairs and resets on restart.
 	alertEvalMu  sync.Mutex

@@ -294,7 +294,7 @@ func (s *Server) registerRoutes(e *echo.Echo) {
 
 	// Phase 8 — agent version tracking and rollout control
 	api.GET("/api/versions", s.handleListVersions)
-	api.POST("/api/versions/pause", handlePauseRollout)
+	api.POST("/api/versions/pause", s.handlePauseRollout)
 	api.POST("/api/versions/resume", s.handleResumeRollout)
 	api.PUT("/api/machines/:id/tags", s.handleSetTags)
 	api.GET("/api/machines/:id/notes", s.handleGetMachineNotes)

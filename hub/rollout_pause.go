@@ -1,0 +1,48 @@
+package main
+
+import (
+	"database/sql"
+	"errors"
+	"log"
+)
+
+const operatorRolloutPauseKey = "agent_rollout_operator_paused"
+
+// operatorRolloutPause reads the durable operator intent, separate from the
+// automatic per-build failure breaker. Missing means never paused. Unreadable
+// or corrupt state withholds announcements rather than silently resuming.
+func (s *Server) operatorRolloutPause() (bool, string) {
+	var value string
+	err := s.db.QueryRow(`SELECT value FROM hub_settings WHERE key = ?`, operatorRolloutPauseKey).Scan(&value)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, ""
+	}
+	if err != nil {
+		log.Printf("rollout: operator pause state unreadable: %v", err)
+		return true, "operator pause state unreadable; check hub database health before resuming"
+	}
+	switch value {
+	case "0":
+		return false, ""
+	case "1":
+		return true, "manually paused by operator (saved across restarts)"
+	default:
+		return true, "operator pause state invalid; explicitly pause or resume after checking hub database health"
+	}
+}
+
+// Callers hold operatorRolloutMu exclusively through persistence and any
+// automatic-breaker reset. Announcements hold its read side through enqueue,
+// so a successful pause response is a barrier for new announcements. It cannot
+// cancel an update frame already queued or an agent update already in flight.
+func (s *Server) setOperatorRolloutPause(paused bool) error {
+	value := "0"
+	if paused {
+		value = "1"
+	}
+	_, err := s.db.Exec(`INSERT INTO hub_settings (key, value, updated_at)
+		VALUES (?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`,
+		operatorRolloutPauseKey, value)
+	return err
+}
