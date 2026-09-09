@@ -17,7 +17,7 @@ See what is running, understand your hardware, and manage your fleet from one da
 
 </div>
 
-![Operations Wall showing connected Linux and Windows demo machines, fleet resource usage, and machine controls](docs/screenshots/operations-wall.png)
+![Operations Wall showing connected Linux and Windows demo machines, fleet resource usage, and machine controls](https://cdn.jsdelivr.net/gh/bokiko/bloxos@bca13c456ecc1e5bd89282f96486a43b602bc4f9/docs/screenshots/operations-wall.png)
 
 *Actual v1.1.0 dashboard with synthetic demo machines. Missing GPU sensors display N/A; no private fleet data is shown.*
 
@@ -46,7 +46,7 @@ accounts keep Classic until they choose another design.
 
 | Grove Workspace · Original | Precision Console · Bright |
 | --- | --- |
-| [![Grove Workspace dashboard with synthetic demo machines](docs/screenshots/grove-workspace.png)](docs/screenshots/grove-workspace.png) | [![Precision Console dashboard with synthetic demo machines](docs/screenshots/precision-console.png)](docs/screenshots/precision-console.png) |
+| [![Grove Workspace dashboard with synthetic demo machines](https://cdn.jsdelivr.net/gh/bokiko/bloxos@bca13c456ecc1e5bd89282f96486a43b602bc4f9/docs/screenshots/grove-workspace.png)](https://cdn.jsdelivr.net/gh/bokiko/bloxos@bca13c456ecc1e5bd89282f96486a43b602bc4f9/docs/screenshots/grove-workspace.png) | [![Precision Console dashboard with synthetic demo machines](https://cdn.jsdelivr.net/gh/bokiko/bloxos@bca13c456ecc1e5bd89282f96486a43b602bc4f9/docs/screenshots/precision-console.png)](https://cdn.jsdelivr.net/gh/bokiko/bloxos@bca13c456ecc1e5bd89282f96486a43b602bc4f9/docs/screenshots/precision-console.png) |
 
 [See all three dashboards →](docs/screenshots/README.md) · [Design and color guide →](docs/themes/README.md)
 
