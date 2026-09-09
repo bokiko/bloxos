@@ -45,7 +45,6 @@ export interface FleetAggregate {
    * total above is a partial sum and must not be labelled a complete total. */
   gpuPowerComplete: boolean;
   topGpu: RankRow[];
-  topVram: RankRow[];
 }
 
 function mean(nums: number[]): Metric {
@@ -85,25 +84,6 @@ export function machineGpuUtil(m: MachineMetrics): Metric {
     return m.gpu_util_percent as number;
   }
   return null;
-}
-
-/** VRAM usage % for one machine — summed across devices (used/total),
- * preferring gpus[]; null when no VRAM is reported. */
-export function machineVramPct(m: MachineMetrics): Metric {
-  if (m.gpus && m.gpus.length > 0) {
-    let used = 0;
-    let total = 0;
-    for (const g of m.gpus) {
-      if ((g.mem_total_bytes ?? 0) > 0) {
-        used += g.mem_used_bytes ?? 0;
-        total += g.mem_total_bytes;
-      }
-    }
-    return total > 0 ? finiteOrNull((used / total) * 100) : null;
-  }
-  const total = m.gpu_vram_total_bytes ?? 0;
-  if (!(total > 0)) return null;
-  return finiteOrNull(((m.gpu_vram_used_bytes ?? 0) / total) * 100);
 }
 
 /** Hottest GPU on one machine, preferring per-device temps; null if none. */
@@ -198,7 +178,6 @@ export function aggregate(machines: MachineMetrics[], now: number = Date.now()):
     gpuPowerTotal: powerDevices > 0 ? power : null,
     gpuPowerComplete: gpuDevices > 0 && powerDevices === gpuDevices,
     topGpu: rank(machineGpuUtil),
-    topVram: rank(machineVramPct),
   };
 }
 

@@ -48,39 +48,6 @@ export function FleetOverview({ machines }: FleetOverviewProps) {
     return items;
   }, [activeMachines]);
 
-  const topVram = useMemo(() => {
-    const items: Array<{ id: string; label: string; value: number }> = [];
-
-    for (const m of activeMachines) {
-      if (m.gpus && m.gpus.length > 0) {
-        // For multi-GPU machines, use max VRAM utilization
-        const maxVram = Math.max(
-          ...m.gpus.map((g) =>
-            (g.mem_total_bytes ?? 0) > 0
-              ? ((g.mem_used_bytes ?? 0) / g.mem_total_bytes) * 100
-              : 0
-          )
-        );
-        if (maxVram > 0) {
-          items.push({
-            id: m.machine_id,
-            label: m.hostname || m.machine_id,
-            value: maxVram,
-          });
-        }
-      } else if ((m.gpu_vram_total_bytes ?? 0) > 0) {
-        const vramPct = ((m.gpu_vram_used_bytes ?? 0) / (m.gpu_vram_total_bytes ?? 1)) * 100;
-        items.push({
-          id: m.machine_id,
-          label: m.hostname || m.machine_id,
-          value: vramPct,
-        });
-      }
-    }
-
-    return items;
-  }, [activeMachines]);
-
   const gauges = useMemo(() => {
     const base = [
       {
@@ -164,20 +131,13 @@ export function FleetOverview({ machines }: FleetOverviewProps) {
       </div>
 
       {/* Resource attribution */}
-      {metrics.hasGpu && (topGpuUtil.length > 0 || topVram.length > 0) && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      {metrics.hasGpu && topGpuUtil.length > 0 && (
+        <div className="grid grid-cols-1 gap-4">
           {topGpuUtil.length > 0 && (
             <RankedBar
               items={topGpuUtil}
               maxItems={5}
               title="Top GPU Utilization"
-            />
-          )}
-          {topVram.length > 0 && (
-            <RankedBar
-              items={topVram}
-              maxItems={5}
-              title="Top VRAM Usage"
             />
           )}
         </div>
