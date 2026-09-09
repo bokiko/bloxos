@@ -76,6 +76,20 @@ Unavailable readings stay unavailable, and incomplete totals are labelled.
 **Component power is not wall power.** CPU and GPU readings do not include every
 part of a machine or power-supply losses. [How power history works →](docs/power-history.md)
 
+### Know what your agents are running
+
+The **Versions** page shows the agent builds your hub offers for Linux x86-64,
+Linux ARM64 and Windows x86-64, including missing platform binaries. It
+distinguishes numbered releases, legacy unnumbered builds and unknown versions.
+**Matches offered build** means a machine matches its hub's offered file—not
+necessarily the newest BloxOS release. Older hubs without enough information
+show an unknown status instead of guessing. [Version labels explained →](docs/versions.md)
+
+An operator's **Pause rollout** is saved across hub restarts and changes to
+served agent files in v1.2.1 and later. It stops new update announcements; it
+cannot cancel updates already announced. Downgrading to an older hub loses
+enforcement of that saved pause. [Rollout control →](docs/versions.md#rollout-control)
+
 ## Get started
 
 You need a Docker host with **Docker Compose v2**, Git, and a hostname or IP
@@ -118,6 +132,12 @@ The default stack uses a private certificate authority. Your browser will need
 to trust its root certificate; follow the [browser trust instructions](docker/README.md#browser-trust).
 The generated agent command already includes the required verification.
 
+Using a publicly trusted certificate, such as Let's Encrypt, instead of the
+default private CA? Leave `BLOXOS_CA_CERT` unset in the hub configuration.
+An invalid explicit CA setting stops install-command generation with an error;
+private-CA installations should keep their correct CA configuration.
+[TLS configuration guidance →](docs/configuration.md#tls-trust-for-onboarding)
+
 [Full installation guide and troubleshooting →](docker/README.md)
 
 ## Add your first machine
@@ -157,8 +177,9 @@ Refresh your browser when the services are healthy. Keep your existing volumes
 and keys; normal upgrades do not require enrolling every machine again.
 
 For new machines, generate a **fresh** Add Machine command after upgrading.
-v1.2.0 uses `/api/join/`, so older proxies that already forward `/api/*` need
-no route edit. Previously copied `/join/` commands may still fail or have expired.
+Since v1.2.0, new commands use `/api/join/`, so older proxies that already forward
+`/api/*` need no route edit. Previously copied `/join/` commands may still fail
+or have expired.
 See the [Docker upgrade guide](docker/README.md#upgrades) for details.
 
 The hub serves agent updates too: eligible older agents can update and restart

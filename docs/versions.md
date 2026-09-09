@@ -29,6 +29,9 @@ legacy SHAs).
   existence is running; only the hub's current offer is the reference.
 - **Version unknown** — the hub has no reported running SHA for this agent
   (older hub response or no report yet), so no match is claimed.
+- **Status unknown (older hub)** — the hub predates per-architecture availability
+  reporting. Even if it reports no pending update, the dashboard does not infer
+  that the agent matches an available build.
 - **Update pending** — the offered SHA differs and nothing blocks the update.
 - **Withheld / Unavailable** — the hub refuses to announce (see the blocked
   reason: missing pinned key, unreadable release floor, transport policy,
@@ -41,8 +44,15 @@ legacy SHAs).
 
 ## Rollout control
 
-Pause halts update announcements fleet-wide; the automatic circuit breaker
-can also pause after repeated rollout failures. See
+In v1.2.1 and later, an operator's **Pause rollout** is saved in the hub database
+and survives hub restarts and changes to served agent files. A successful pause
+stops new update announcements fleet-wide; it cannot cancel an update already
+announced or in progress. Failed pause/resume writes return an error instead of
+claiming success, and unreadable saved state withholds announcements.
+
+The automatic circuit breaker can also pause after repeated rollout failures;
+it is separate from the saved operator pause. v1.2.0 and earlier do not enforce
+the durable pause, including after a downgrade. See
 [update recovery](agent-update-recovery.md) for the failure/rollback paths and
 [offline update signing](offline-update-signing.md) for detached-signature
 operation.
