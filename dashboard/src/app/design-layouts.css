@@ -415,6 +415,34 @@ html[data-layout="ledger"] {
 
 html[data-layout="ledger"] body { background: var(--ll-canvas); color: var(--ll-ink); }
 
+/* ---- Shell chrome ---------------------------------------------------- */
+/* One rule under a slim bar; no rail, no cards. AppShell mounts the page
+ * through this, so it must exist for the layout to render at all. */
+[data-layout="ledger"] .ll-shell { min-height: 100vh; background: var(--ll-canvas); color: var(--ll-ink); }
+[data-layout="ledger"] .ll-topbar {
+  display: flex; align-items: center; gap: 2rem; flex-wrap: wrap;
+  padding: 0.85rem 2rem; border-bottom: 1px solid var(--ll-rule-strong);
+}
+[data-layout="ledger"] .ll-brand {
+  display: inline-flex; align-items: center; gap: 0.55rem;
+  color: var(--ll-ink); text-decoration: none; font-weight: 600; font-size: 0.9rem;
+}
+[data-layout="ledger"] .ll-nav { display: flex; align-items: center; gap: 1.4rem; flex-wrap: wrap; }
+[data-layout="ledger"] .ll-nav a {
+  color: var(--ll-secondary); text-decoration: none; font-size: 0.82rem;
+  padding-bottom: 0.15rem; border-bottom: 1px solid transparent;
+}
+[data-layout="ledger"] .ll-nav a:hover { color: var(--ll-ink); }
+/* The active item is marked by a rule, not a filled pill: colour stays
+ * reserved for severity. */
+[data-layout="ledger"] .ll-nav a.is-active { color: var(--ll-ink); border-bottom-color: var(--ll-ink); }
+[data-layout="ledger"] .ll-actions { margin-left: auto; display: flex; align-items: center; gap: 0.5rem; }
+[data-layout="ledger"] .ll-content { display: block; }
+
+@media (max-width: 720px) {
+  [data-layout="ledger"] .ll-topbar { padding: 0.75rem 1rem; gap: 1rem; }
+}
+
 [data-layout="ledger"] .ll {
   max-width: 1400px;
   margin: 0 auto;

@@ -72,7 +72,7 @@ const themeBootstrapScript = `
         user = JSON.parse(new TextDecoder().decode(Uint8Array.from(binary, function(c) { return c.charCodeAt(0); }))).user_id;
       }
       var saved = JSON.parse(localStorage.getItem('bloxos-design:' + (typeof user === 'string' ? user : 'guest')) || '{}');
-      if (['wall','grove','console'].indexOf(saved.layout) !== -1) {
+      if (['wall','grove','console','ledger'].indexOf(saved.layout) !== -1) {
         design = saved.layout;
         var color = saved.colors && saved.colors[design];
         if (['original','bright','dark'].indexOf(color) !== -1) designColor = color;

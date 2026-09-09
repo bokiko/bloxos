@@ -2,9 +2,11 @@
 
 // Shared authenticated navigation shell. Classic is a pure passthrough so the
 // existing pages (their own headers, modals and behavior) are untouched. The
-// three live layouts render persistent navigation chrome — Wall header, Grove
-// sidebar (+ optional context rail), Console icon rail + tabs — around the
-// page content, so navigation does not vanish on a machine click. The chrome's
+// live layouts render persistent navigation chrome — Wall header, Grove
+// sidebar (+ optional context rail), Console icon rail + tabs, Ledger top
+// rule — around the page content, so navigation does not vanish on a machine
+// click. EVERY non-classic layout must mount children through some chrome
+// here; a layout missing from the list below renders an empty shell. The chrome's
 // global actions and modals are owned by ShellActionsProvider and reachable on
 // every route, including mobile.
 
@@ -44,6 +46,7 @@ export function AppShell({ children, rail }: { children: ReactNode; rail?: React
       {layout === "wall" && <WallChrome>{children}</WallChrome>}
       {layout === "grove" && <GroveChrome rail={rail}>{children}</GroveChrome>}
       {layout === "console" && <ConsoleChrome>{children}</ConsoleChrome>}
+      {layout === "ledger" && <LedgerChrome>{children}</LedgerChrome>}
     </ShellActionsProvider>
   );
 }
@@ -203,6 +206,38 @@ function GroveChrome({ children, rail }: { children: ReactNode; rail?: ReactNode
 }
 
 /* ---- 03 Precision Console: icon rail + tabs ----------------------------- */
+function LedgerChrome({ children }: { children: ReactNode }) {
+  const pathname = usePathname();
+  const nav = useVisibleNav();
+  const { logoUrl, branding } = useBranding();
+  return (
+    <div className="ld-shell ll-shell">
+      <header className="ll-topbar">
+        <Link href="/" className="ll-brand" aria-label={branding.title || "Fleet"}>
+          {logoUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={logoUrl} alt={branding.title || "BloxOS"} className="ld-mark w-6 h-6 object-contain" />
+          ) : (
+            <BloxosMark className="ld-mark w-6 h-6" />
+          )}
+          <span>{branding.title || "BloxOS"}</span>
+        </Link>
+        <nav className="ll-nav" aria-label="Primary">
+          {nav.map(({ href, label }) => (
+            <Link key={href} href={href} className={isNavActive(pathname, href) ? "is-active" : ""}>
+              {label.replace(" overview", "")}
+            </Link>
+          ))}
+        </nav>
+        <div className="ll-actions">
+          <ShellActionCluster />
+        </div>
+      </header>
+      <main className="ll-content">{children}</main>
+    </div>
+  );
+}
+
 function ConsoleChrome({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const nav = useVisibleNav();
