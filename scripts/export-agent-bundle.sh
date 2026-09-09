@@ -11,9 +11,9 @@ release_tag=$3
 output_dir=$4
 [[ "$image_ref" =~ @sha256:[0-9a-f]{64}$ ]] || { echo "image must be digest-pinned" >&2; exit 2; }
 [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "source must be full commit SHA" >&2; exit 2; }
-[[ "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "invalid release tag" >&2; exit 2; }
 [[ ! -e "$output_dir" && ! -L "$output_dir" ]] || { echo "output already exists; refusing overwrite" >&2; exit 2; }
 script_dir=$(cd -- "$(dirname -- "$0")" && pwd)
+python3 "$script_dir/agent_bundle.py" validate-tag --version "$release_tag" >/dev/null
 docker pull --platform linux/amd64 "$image_ref"
 actual_source=$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image_ref")
 [[ "$actual_source" == "$source_sha" ]] || { echo "image source revision mismatch" >&2; exit 1; }

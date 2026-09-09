@@ -172,7 +172,14 @@ class BundleTests(unittest.TestCase):
         with self.assertRaises(FileExistsError):
             bundle.create_manifest(self.source, "a" * 40, "v1.2.1", "sha256:" + "b" * 64)
 
-    def run_export(self, failure=""):
+    def test_release_tag_contract(self):
+        for tag in ("v1.2.1", "v1.2.1-rc.1", "v2.0.0-preview-2"):
+            self.assertEqual(bundle.validate_tag(tag), tag)
+        for tag in (None, "vnext", "v1.2", "v1.2.1+build.1", "v1.2.1-", "v1.2.1-rc..1", "v1.2.1-" + "x" * 130):
+            with self.subTest(tag=tag), self.assertRaises(ValueError):
+                bundle.validate_tag(tag)
+
+    def run_export(self, failure="", release_tag="v1.2.1"):
         bin_dir = self.root / "bin"
         bin_dir.mkdir()
         docker = bin_dir / "docker"
@@ -201,11 +208,23 @@ esac
         log = self.root / "docker.log"
         result = subprocess.run([
             "bash", str(Path(__file__).with_name("export-agent-bundle.sh")),
-            "ghcr.io/example/hub@sha256:" + "b" * 64, "0" * 40, "v1.2.1", str(output),
+            "ghcr.io/example/hub@sha256:" + "b" * 64, "0" * 40, release_tag, str(output),
         ], env={**os.environ, "PATH": str(bin_dir) + os.pathsep + os.environ["PATH"],
                 "DOCKER_LOG": str(log), "FIXTURES": str(self.source), "FAIL_EXPORT": failure},
             capture_output=True, text=True)
-        return result, output, log.read_text()
+        return result, output, log.read_text() if log.exists() else ""
+
+    def test_export_prerelease_roundtrip(self):
+        result, output, _ = self.run_export(release_tag="v1.2.1-rc.1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        sha = (output / "agent-manifest.sha256").read_text().split()[0]
+        self.assertEqual(bundle.check(output, sha)["version"], "v1.2.1-rc.1")
+
+    def test_export_invalid_tag_stops_before_docker(self):
+        result, output, log = self.run_export(release_tag="vnext")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(output.exists())
+        self.assertEqual(log, "")
 
     def test_export_extracts_all_targets_without_starting_container(self):
         result, output, log = self.run_export()

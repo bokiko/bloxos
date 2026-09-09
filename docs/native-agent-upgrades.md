@@ -97,6 +97,12 @@ compile new binaries. The tagged release workflow uploads these assets to a
 draft GitHub release after the image checks pass. Review that draft and its
 checksums before publishing; fleet-specific signatures are not included.
 
+Tags use `vX.Y.Z` or a Docker-compatible prerelease such as `vX.Y.Z-rc.1`.
+The shared tag validator runs before any images are published. Prereleases
+get versioned image tags and a prerelease draft, but do not replace `latest`.
+Build-metadata suffixes (`+...`) and arbitrary `v...` names are rejected before
+publication because they cannot be used as these release image tags.
+
 Uploads deliberately do not overwrite existing assets or modify a published
 release. A rerun encountering either condition stops for maintainer review.
 For a partial draft upload, compare the existing asset hashes first; do not

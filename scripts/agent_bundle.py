@@ -25,11 +25,18 @@ MANIFEST = "agent-manifest.json"
 MAX_BINARY = 128 * 1024 * 1024
 HEX = re.compile(r"[0-9a-f]{64}\Z")
 MARKER = re.compile(rb"BLOXOS-AGENT-RELEASE:([0-9]{10}):")
+VERSION = re.compile(r"v\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\Z")
 
 
 def require(condition, message):
     if not condition:
         raise ValueError(message)
+
+
+def validate_tag(version):
+    require(isinstance(version, str) and VERSION.fullmatch(version) and len(version) <= 129,
+            "expected vX.Y.Z or vX.Y.Z-prerelease (Docker-compatible, no build metadata)")
+    return version
 
 
 def read_regular(path, limit):
@@ -79,7 +86,7 @@ def inspect_payloads(directory):
 
 def create_manifest(directory, source, version, image_digest):
     require(re.fullmatch(r"[0-9a-f]{40}", source), "expected full source commit SHA")
-    require(re.fullmatch(r"v\d+\.\d+\.\d+", version), "expected vX.Y.Z release tag")
+    validate_tag(version)
     require(re.fullmatch(r"sha256:[0-9a-f]{64}", image_digest), "expected image digest")
     release, artifacts = inspect_payloads(directory)
     manifest = {"schema": 1, "version": version, "source": source,
@@ -97,7 +104,7 @@ def check(directory, manifest_sha):
     require(hashlib.sha256(data).hexdigest() == manifest_sha, "manifest SHA256 mismatch")
     manifest = json.loads(data)
     require(isinstance(manifest, dict) and manifest.get("schema") == 1, "unsupported manifest")
-    require(re.fullmatch(r"v\d+\.\d+\.\d+", str(manifest.get("version", ""))), "invalid release tag")
+    validate_tag(manifest.get("version"))
     require(re.fullmatch(r"[0-9a-f]{40}", str(manifest.get("source", ""))), "invalid source SHA")
     require(re.fullmatch(r"sha256:[0-9a-f]{64}", str(manifest.get("image_digest", ""))), "invalid image digest")
     release, artifacts = inspect_payloads(directory)
@@ -160,6 +167,8 @@ def stage(directory, manifest_sha, root):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    p = commands.add_parser("validate-tag", help="release-builder preflight; no files or network")
+    p.add_argument("--version", required=True)
     for name in ("check", "stage", "manifest"):
         p = commands.add_parser(name)
         p.add_argument("--bundle", required=True, type=Path)
@@ -173,7 +182,9 @@ def main():
             p.add_argument("--staging-root", required=True, type=Path)
     args = parser.parse_args()
     try:
-        if args.command == "manifest":
+        if args.command == "validate-tag":
+            print(validate_tag(args.version))
+        elif args.command == "manifest":
             print(create_manifest(args.bundle, args.source, args.version, args.image_digest))
         elif args.command == "check":
             print(json.dumps(check(args.bundle, args.manifest_sha256), indent=2))
