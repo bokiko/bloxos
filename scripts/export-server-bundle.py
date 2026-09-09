@@ -16,8 +16,28 @@ def run(args):
     return subprocess.check_output(args, text=True).strip()
 
 
+def platform_image(image, platform):
+    """Resolve the immutable index to one child, avoiding classic-store collisions."""
+    index = json.loads(run(["docker", "manifest", "inspect", image]))
+    os_name, arch = platform.split("/")
+    matches = []
+    for item in index.get("manifests", []):
+        target = item.get("platform", {})
+        if target.get("os") == os_name and target.get("architecture") == arch:
+            if target.get("variant", "") not in (("", "v8") if arch == "arm64" else ("",)):
+                continue
+            matches.append(item.get("digest", ""))
+    if len(matches) != 1 or not re.fullmatch(r"sha256:[0-9a-f]{64}", matches[0]):
+        raise ValueError("Published image index must contain exactly one supported " + platform + " manifest")
+    return image.split("@", 1)[0] + "@" + matches[0]
+
+
 def export(image, platform, source, destination, revision):
+    image = platform_image(image, platform)
     subprocess.run(["docker", "pull", "--platform", platform, image], check=True)
+    actual_platform = run(["docker", "image", "inspect", "--format", '{{.Os}}/{{.Architecture}}', image])
+    if actual_platform != platform:
+        raise ValueError("Published image platform does not match requested platform")
     actual = run(["docker", "image", "inspect", "--format", '{{index .Config.Labels "org.opencontainers.image.revision"}}', image])
     if actual != revision:
         raise ValueError("Published image revision does not match release")

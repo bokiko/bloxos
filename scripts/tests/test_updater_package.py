@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from pathlib import Path
 import tarfile
 import shutil
@@ -6,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location("server_bundle", Path(__file__).resolve().parents[1] / "export-server-bundle.py")
 bundle = importlib.util.module_from_spec(spec)
@@ -13,6 +15,44 @@ spec.loader.exec_module(bundle)
 
 
 class PackageTests(unittest.TestCase):
+    def test_platform_children_are_distinct_and_attestations_ignored(self):
+        index = {"manifests": [
+            {"platform": {"os": "linux", "architecture": "amd64"}, "digest": "sha256:" + "a" * 64},
+            {"platform": {"os": "linux", "architecture": "arm64", "variant": "v8"}, "digest": "sha256:" + "b" * 64},
+            {"platform": {"os": "unknown", "architecture": "unknown"}, "digest": "sha256:" + "c" * 64},
+        ]}
+        image = "ghcr.io/bokiko/bloxos-hub@sha256:" + "d" * 64
+        with patch.object(bundle, "run", return_value=json.dumps(index)) as run:
+            for arch, digest in (("amd64", "a"), ("arm64", "b")):
+                self.assertEqual(bundle.platform_image(image, "linux/" + arch),
+                                 "ghcr.io/bokiko/bloxos-hub@sha256:" + digest * 64)
+            run.assert_called_with(["docker", "manifest", "inspect", image])
+
+    def test_missing_ambiguous_or_invalid_child_fails_closed(self):
+        valid = {"platform": {"os": "linux", "architecture": "arm64"}, "digest": "sha256:" + "a" * 64}
+        for entries in ([], [valid, valid], [dict(valid, digest="latest")],
+                        [dict(valid, platform={"os": "linux", "architecture": "arm64", "variant": "v9"})]):
+            with self.subTest(entries=entries), patch.object(bundle, "run", return_value=json.dumps({"manifests": entries})):
+                with self.assertRaises(ValueError):
+                    bundle.platform_image("ghcr.io/bokiko/bloxos-hub@sha256:" + "d" * 64, "linux/arm64")
+
+    def test_export_uses_child_for_pull_inspect_and_create(self):
+        child = "ghcr.io/bokiko/bloxos-hub@sha256:" + "b" * 64
+        with patch.object(bundle, "platform_image", return_value=child), \
+             patch.object(bundle, "run", side_effect=["linux/arm64", "revision", "c" * 64]) as run, \
+             patch.object(bundle.subprocess, "run") as command:
+            bundle.export("index", "linux/arm64", "/binary", Path("/out"), "revision")
+            self.assertEqual(command.call_args_list[0].args[0], ["docker", "pull", "--platform", "linux/arm64", child])
+            self.assertEqual(run.call_args_list[-1].args[0], ["docker", "create", "--platform", "linux/arm64", "--network", "none", child])
+
+    def test_wrong_child_platform_is_rejected_before_create(self):
+        with patch.object(bundle, "platform_image", return_value="child"), \
+             patch.object(bundle, "run", return_value="linux/amd64"), \
+             patch.object(bundle.subprocess, "run") as command:
+            with self.assertRaisesRegex(ValueError, "platform"):
+                bundle.export("index", "linux/arm64", "/binary", Path("/out"), "revision")
+            self.assertEqual(command.call_count, 1)
+
     @unittest.skipUnless(shutil.which("node"), "Node runtime required")
     def test_pnpm_dependency_resolution_survives_export_and_extraction(self):
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
