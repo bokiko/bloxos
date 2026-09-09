@@ -31,7 +31,11 @@ export function DesignProvider({ children }: { children: ReactNode }) {
   const queue = useRef(Promise.resolve());
   const ready = state.ready && state.owner === userID;
   const prefs = ready ? state.prefs : normalizeDesign(null);
-  const color = prefs.layout === "classic" ? "original" : prefs.colors[prefs.layout];
+  // Ledger ships one fixed palette (colour is reserved for severity), so
+  // like Classic it exposes no colour choice and stores no colour column.
+  const color = prefs.layout === "classic" || prefs.layout === "ledger"
+    ? "original"
+    : prefs.colors[prefs.layout];
 
   // Bind both queued and in-flight requests to the login that initiated them.
   // Another tab may change storage at any time; never borrow its credentials.

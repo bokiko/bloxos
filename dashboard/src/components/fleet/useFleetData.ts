@@ -23,6 +23,10 @@ export interface FleetData {
   hasReceivedData: boolean;
   /** No machines are known yet (waiting for telemetry). */
   isEmpty: boolean;
+  /** The shared one-second clock already used to re-derive freshness.
+   * Exposed so a layout can render an age without calling Date.now()
+   * during render, which is impure and re-reads on every paint. */
+  now: number;
 }
 
 /** Single source of truth for the live layout bodies. Everything is real SSE
@@ -101,5 +105,6 @@ export function useFleetData(): FleetData {
     isDemo,
     hasReceivedData,
     isEmpty: machines.length === 0,
+    now,
   };
 }

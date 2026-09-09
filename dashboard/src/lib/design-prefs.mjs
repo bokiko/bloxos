@@ -1,4 +1,4 @@
-export const DESIGN_LAYOUTS = ['classic', 'wall', 'grove', 'console'];
+export const DESIGN_LAYOUTS = ['classic', 'wall', 'grove', 'console', 'ledger'];
 export const DESIGN_COLORS = ['original', 'bright', 'dark'];
 export function normalizeDesign(value) {
   return {

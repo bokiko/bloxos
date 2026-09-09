@@ -54,6 +54,7 @@ import { OPEN_ALERTS, OPEN_COMMAND, API_MACHINES_CHANGED } from "@/components/sh
 import { FleetWall } from "@/components/fleet/FleetWall";
 import { FleetGrove, FleetGroveRail } from "@/components/fleet/FleetGrove";
 import { FleetConsole } from "@/components/fleet/FleetConsole";
+import { FleetLedger } from "@/components/fleet/FleetLedger";
 
 type SortOption = "manual" | "name" | "status" | "cpu" | "gpu_temp";
 type StatusFilter = "all" | "live" | "warning" | "critical" | "offline" | "stale";
@@ -529,6 +530,7 @@ function DashboardContent() {
           {layout === "wall" && <FleetWall />}
           {layout === "grove" && <FleetGrove />}
           {layout === "console" && <FleetConsole />}
+          {layout === "ledger" && <FleetLedger />}
         </>
       )}
 
