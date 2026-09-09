@@ -173,7 +173,12 @@ func TestJoinCommandShapes(t *testing.T) {
 		e, s := setupTestServer(t)
 		s.markCredentialsRotated(t)
 		t.Setenv("PUBLIC_URL", "https://hub.lan:8443")
-		t.Setenv("BLOXOS_CA_CERT", testCAFile(t))
+		caPath := testCAFile(t)
+		t.Setenv("BLOXOS_CA_CERT", caPath)
+		wantPEM, err := os.ReadFile(caPath)
+		if err != nil {
+			t.Fatalf("read configured CA: %v", err)
+		}
 		var sawURL string
 		var sawPEM []byte
 		withJoinPinResolver(t, func(_ context.Context, u *url.URL, caPEM []byte) (string, error) {
@@ -181,7 +186,7 @@ func TestJoinCommandShapes(t *testing.T) {
 			return testJoinPin, nil
 		})
 		got := mintJoinToken(t, e, loginAndGetToken(t, e), "evil.example")
-		if sawURL != "https://hub.lan:8443" || string(sawPEM) != "test-private-ca" {
+		if sawURL != "https://hub.lan:8443" || string(sawPEM) != string(wantPEM) {
 			t.Fatalf("resolver saw url=%q pem=%q; must be the explicit PUBLIC_URL and the configured CA", sawURL, sawPEM)
 		}
 		want := `bash -c 's=$(curl -fsSk --pinnedpubkey sha256//` + testJoinPin + ` https://hub.lan:8443/api/join/` + got.Token + `) && bash -c "$s"'`
@@ -203,7 +208,7 @@ func TestJoinCommandShapes(t *testing.T) {
 		e, s := setupTestServer(t)
 		s.markCredentialsRotated(t)
 		t.Setenv("PUBLIC_URL", "https://hub.example.com")
-		t.Setenv("BLOXOS_CA_CERT", filepath.Join(t.TempDir(), "missing.crt"))
+		t.Setenv("BLOXOS_CA_CERT", "")
 		withJoinPinResolver(t, func(context.Context, *url.URL, []byte) (string, error) {
 			t.Fatal("pin resolver must not run without a private CA")
 			return "", nil
@@ -222,7 +227,7 @@ func TestJoinCommandShapes(t *testing.T) {
 		e, s := setupTestServer(t)
 		s.markCredentialsRotated(t)
 		t.Setenv("PUBLIC_URL", "http://127.0.0.1:4000")
-		t.Setenv("BLOXOS_CA_CERT", filepath.Join(t.TempDir(), "missing.crt"))
+		t.Setenv("BLOXOS_CA_CERT", "")
 		got := mintJoinToken(t, e, loginAndGetToken(t, e), "evil.example")
 		want := `bash -c 's=$(curl -fsS http://127.0.0.1:4000/api/join/` + got.Token + `) && bash -c "$s"'`
 		if got.Command != want {
@@ -236,8 +241,8 @@ func TestJoinCommandShapes(t *testing.T) {
 	t.Run("no trust-all pipe in any command", func(t *testing.T) {
 		for _, tc := range []struct{ url, ca string }{
 			{"https://hub.lan", testCAFile(t)},
-			{"https://hub.example.com", filepath.Join(t.TempDir(), "missing.crt")},
-			{"http://127.0.0.1:4000", filepath.Join(t.TempDir(), "missing.crt")},
+			{"https://hub.example.com", ""},
+			{"http://127.0.0.1:4000", ""},
 		} {
 			e, s := setupTestServer(t)
 			s.markCredentialsRotated(t)
@@ -948,7 +953,7 @@ func TestJoinRebuildByteEquivalenceAcrossTransports(t *testing.T) {
 			if tc.setCA {
 				t.Setenv("BLOXOS_CA_CERT", testCAFile(t))
 			} else {
-				t.Setenv("BLOXOS_CA_CERT", filepath.Join(t.TempDir(), "absent.crt"))
+				t.Setenv("BLOXOS_CA_CERT", "")
 			}
 			got := mintJoinToken(t, e, loginAndGetToken(t, e), "client.example")
 			rec := getJoin(t, e, got.Token, "")
@@ -1075,9 +1080,11 @@ func TestJoinRejectsAfterCACertChange(t *testing.T) {
 		t.Fatal("mint-time script does not contain the mint-time CA SHA")
 	}
 
-	// Replace the CA file with different content (simulating cert rotation)
+	// Replace the CA file with a different, real certificate (simulating an
+	// operator swapping the bootstrap CA). Its SHA differs, so the classified
+	// binding no longer matches the mint-time one.
 	newCA := filepath.Join(t.TempDir(), "new-ca.crt")
-	if err := os.WriteFile(newCA, []byte("new-test-private-ca-cert"), 0644); err != nil {
+	if err := os.WriteFile(newCA, []byte(generateTestCertPEM(t)), 0644); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("BLOXOS_CA_CERT", newCA)

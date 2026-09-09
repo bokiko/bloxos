@@ -33,8 +33,17 @@ func (s *Server) seedTokenValue(t *testing.T, raw string) string {
 	httpBase, _ := publicAndWebsocketBase()
 	var mintHTTPBase, mintCASHA256 interface{}
 	if httpBase != "" {
-		_, caSHA256 := s.bootstrapCAFor(httpBase)
 		mintHTTPBase = httpBase
+		// Mirror production's stored binding without a live probe: the hash of
+		// the strictly-selected CA for an https hub with one, else the empty
+		// (public/http) binding. Same selection rules as classification.
+		caSHA256 := ""
+		if strings.HasPrefix(httpBase, "https://") {
+			if caPEM, _, source, err := s.loadBootstrapCAClassified(); err == nil && source != caSourceNone {
+				sum := sha256.Sum256(caPEM)
+				caSHA256 = hex.EncodeToString(sum[:])
+			}
+		}
 		mintCASHA256 = caSHA256
 	}
 	if _, err := s.db.Exec(`INSERT INTO tokens (token_hash, expires_at, used, mint_time_http_base, mint_time_ca_sha256) VALUES (?, ?, FALSE, ?, ?)`,

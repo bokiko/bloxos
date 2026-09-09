@@ -164,6 +164,9 @@ func setupTestServer(t *testing.T) (*echo.Echo, *Server) {
 	// that need an auto-discovered ambient CA override s.caCertCandidates
 	// directly (see injectAmbientCACandidate in ca_isolation_test.go).
 	s.caCertCandidates = isolatedCACandidates
+	// Fail the system-trust probe by default so no test silently dials the
+	// network; the auto-discovered-CA fallback tests inject a passing one.
+	s.systemTrustProbe = failingSystemTrustProbe
 	// Registered after the db.Close() cleanup above so it runs BEFORE it:
 	// t.Cleanup is LIFO, and background work must drain while the database
 	// it queries is still open.
@@ -220,6 +223,9 @@ func setupEmptyTestServer(t *testing.T) (*echo.Echo, *Server) {
 	// Isolate bootstrap-CA discovery from the host's real Caddy roots, exactly
 	// as setupTestServer does — see the rationale there.
 	s.caCertCandidates = isolatedCACandidates
+	// Fail the system-trust probe by default so no test silently dials the
+	// network; the auto-discovered-CA fallback tests inject a passing one.
+	s.systemTrustProbe = failingSystemTrustProbe
 	// Registered after the db.Close() cleanup above so it runs BEFORE it:
 	// t.Cleanup is LIFO, and background work must drain while the database
 	// it queries is still open.
@@ -841,7 +847,7 @@ func TestCreateTokenIncludesCABootstrapForHTTPS(t *testing.T) {
 
 	caDir := t.TempDir()
 	caPath := filepath.Join(caDir, "root.crt")
-	caPEM := []byte("-----BEGIN CERTIFICATE-----\nZmFrZS1ibG94b3MtY2E=\n-----END CERTIFICATE-----\n")
+	caPEM := []byte(generateTestCertPEM(t))
 	if err := os.WriteFile(caPath, caPEM, 0600); err != nil {
 		t.Fatalf("write CA cert: %v", err)
 	}
@@ -894,7 +900,7 @@ func TestDownloadCACert(t *testing.T) {
 
 	caDir := t.TempDir()
 	caPath := filepath.Join(caDir, "root.crt")
-	caPEM := []byte("-----BEGIN CERTIFICATE-----\nZmFrZS1ibG94b3MtY2E=\n-----END CERTIFICATE-----\n")
+	caPEM := []byte(generateTestCertPEM(t))
 	if err := os.WriteFile(caPath, caPEM, 0600); err != nil {
 		t.Fatalf("write CA cert: %v", err)
 	}

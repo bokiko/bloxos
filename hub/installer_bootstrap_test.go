@@ -48,10 +48,14 @@ func createInstallerToken(t *testing.T, publicURL, host, caPath string) installe
 	return got
 }
 
+// testCAFile writes a real, parseable CA certificate PEM and returns its path.
+// Bootstrap-CA classification now parses the candidate (not just hashes its
+// bytes), so a private-CA test needs a genuine certificate here; the stubbed
+// pin resolver still stands in for the live TLS handshake.
 func testCAFile(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "root.crt")
-	if err := os.WriteFile(path, []byte("test-private-ca"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(generateTestCertPEM(t)), 0o600); err != nil {
 		t.Fatalf("write CA: %v", err)
 	}
 	return path
@@ -120,7 +124,10 @@ func TestPublicTrustedHTTPSAndHTTPCommandsDoNotFetchLocalCA(t *testing.T) {
 		{name: "loopback HTTP", url: "http://127.0.0.1:4000"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := createInstallerToken(t, tc.url, "evil.example", filepath.Join(t.TempDir(), "missing.crt"))
+			// No CA configured (empty BLOXOS_CA_CERT) is how a public hub is
+			// expressed; an explicit-but-missing path is now a hard error, not
+			// a public fallback.
+			got := createInstallerToken(t, tc.url, "evil.example", "")
 			if got.CAURL != "" || got.CASHA256 != "" || got.JoinPin != "" || strings.Contains(got.AdvancedCommand, "/download/ca.crt") || strings.Contains(got.WindowsCommand, "/download/ca.crt") {
 				t.Fatalf("system-trust/direct-HTTP command unexpectedly bootstraps local CA: %+v", got)
 			}

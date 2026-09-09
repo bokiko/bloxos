@@ -42,6 +42,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -201,20 +202,241 @@ func parsePublicURL(raw string) (*url.URL, error) {
 	return u, nil
 }
 
-// joinPinForPrivateCA verifies PUBLIC_URL's presented leaf against the
-// bootstrap CA and returns its SPKI pin. It is only called when the hub is
-// behind a private CA (bootstrapCAFor found one); a publicly trusted hub
-// needs no pin.
-func (s *Server) joinPinForPrivateCA(ctx context.Context, publicURL *url.URL) (string, error) {
-	caPEM, caPath, err := s.loadBootstrapCACert()
-	if err != nil {
-		return "", fmt.Errorf("load bootstrap CA: %w", err)
+// bootstrapCASource records where a bootstrap CA candidate came from, because
+// the two are held to different standards: an explicitly-configured CA is
+// authoritative (a mismatch or an unreadable/malformed file fails the mint
+// closed), while an auto-discovered one is a best-effort guess that may be
+// overruled by system trust.
+type bootstrapCASource int
+
+const (
+	caSourceNone     bootstrapCASource = iota // no candidate on this hub
+	caSourceExplicit                          // operator set BLOXOS_CA_CERT
+	caSourceAuto                              // discovered on a default host path
+)
+
+// loadBootstrapCAClassified selects the bootstrap CA and reports its source.
+// An explicit BLOXOS_CA_CERT is authoritative: it is never silently skipped for
+// an auto-discovered path, and if it is missing, unreadable, or not a PEM
+// certificate the mint fails closed rather than falling back. Auto-discovered
+// candidates on the default host paths are best-effort: a stray file that is
+// absent, unreadable, or not a certificate is skipped, so an unrelated file on
+// disk never turns a public hub private.
+func (s *Server) loadBootstrapCAClassified() ([]byte, string, bootstrapCASource, error) {
+	if env := strings.TrimSpace(os.Getenv("BLOXOS_CA_CERT")); env != "" {
+		data, err := os.ReadFile(env)
+		if err != nil {
+			return nil, env, caSourceExplicit, fmt.Errorf("BLOXOS_CA_CERT %s cannot be read: %w", env, err)
+		}
+		if !x509.NewCertPool().AppendCertsFromPEM(data) {
+			return nil, env, caSourceExplicit, fmt.Errorf("BLOXOS_CA_CERT %s holds no PEM certificate", env)
+		}
+		return data, env, caSourceExplicit, nil
 	}
-	pin, err := resolveJoinPin(ctx, publicURL, caPEM)
-	if err != nil {
-		return "", fmt.Errorf("%w (CA: %s)", err, caPath)
+	for _, path := range s.caCertCandidatePaths() {
+		if path == "" {
+			continue
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue // absent or unreadable stray file: not this hub's CA
+		}
+		if !x509.NewCertPool().AppendCertsFromPEM(data) {
+			continue // present but not a certificate: ignore it
+		}
+		return data, path, caSourceAuto, nil
 	}
-	return pin, nil
+	return nil, "", caSourceNone, nil
+}
+
+// bootstrapCADecision is how a join command will authenticate the fetch,
+// computed once per mint from a single classification of PUBLIC_URL's TLS
+// trust and reused for the whole response. It is never cached across requests,
+// so a re-keyed leaf is re-pinned on the next mint.
+type bootstrapCADecision struct {
+	caURL    string // "/download/ca.crt" URL when private; "" when public/http
+	caSHA256 string // sha256 of the bound CA PEM when private; "" otherwise
+	joinPin  string // leaf SPKI pin when private; "" otherwise
+}
+
+// errJoinCAChainMismatch marks a pin resolution that failed because the leaf
+// the endpoint presented does not chain to (or match the hostname of) the CA
+// it was verified against — a completed handshake with a mismatching cert — as
+// opposed to a network/handshake failure that never established what the
+// endpoint presents. Only a genuine mismatch against an auto-discovered CA
+// falls back to system trust; a network failure never does. Tests inject this
+// to exercise that fallback without a real endpoint.
+var errJoinCAChainMismatch = errors.New("presented certificate does not verify against the candidate CA")
+
+// isCAChainMismatch reports whether err is a certificate-verification failure
+// (the endpoint answered but its chain/hostname does not verify) rather than a
+// failure to reach or handshake with the endpoint at all.
+func isCAChainMismatch(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, errJoinCAChainMismatch) {
+		return true
+	}
+	var cve *tls.CertificateVerificationError
+	if errors.As(err, &cve) {
+		return true
+	}
+	var ua x509.UnknownAuthorityError
+	var ci x509.CertificateInvalidError
+	var he x509.HostnameError
+	return errors.As(err, &ua) || errors.As(err, &ci) || errors.As(err, &he)
+}
+
+// joinSystemTrustVerifier verifies PUBLIC_URL's presented chain against the
+// hub's OS trust store (and the URL hostname) in one TLS handshake, returning
+// nil only if that store verifies it. Verifying there means the hub's own
+// operating system trusts the issuer — not proof the CA is globally public —
+// which is the right signal for whether this hub needs a bootstrap CA.
+type joinSystemTrustVerifier func(ctx context.Context, publicURL *url.URL) error
+
+// verifySystemTrust runs the per-server system-trust probe (tests inject one
+// via s.systemTrustProbe) or the default live handshake.
+func (s *Server) verifySystemTrust(ctx context.Context, publicURL *url.URL) error {
+	if s != nil && s.systemTrustProbe != nil {
+		return s.systemTrustProbe(ctx, publicURL)
+	}
+	return verifyEndpointSystemTrust(ctx, publicURL)
+}
+
+// verifyEndpointSystemTrust performs a single TLS handshake to PUBLIC_URL's
+// endpoint verified against the hub's OS trust store. Like the pin resolver it
+// makes no HTTP request and dials only PUBLIC_URL (or the operator-configured
+// BLOXOS_PIN_DIAL_ADDR), so nothing beyond the configured endpoint is
+// contacted, and a wrong dial target can only fail the handshake.
+func verifyEndpointSystemTrust(ctx context.Context, publicURL *url.URL) error {
+	if publicURL == nil || publicURL.Scheme != "https" {
+		return fmt.Errorf("PUBLIC_URL is not https")
+	}
+	host := publicURL.Hostname()
+	if host == "" {
+		return fmt.Errorf("PUBLIC_URL has no host")
+	}
+	dialAddr, err := pinDialAddress(publicURL)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, joinPinDialTimeout)
+	defer cancel()
+	dialer := &tls.Dialer{
+		NetDialer: &net.Dialer{Timeout: joinPinDialTimeout},
+		Config: &tls.Config{
+			ServerName: host, // RootCAs nil = system trust; full verification
+			MinVersion: tls.VersionTLS12,
+		},
+	}
+	conn, err := dialer.DialContext(ctx, "tcp", dialAddr)
+	if err != nil {
+		return fmt.Errorf("system-trust TLS handshake with %s (verifying SNI %q) failed: %w", dialAddr, host, err)
+	}
+	conn.Close()
+	return nil
+}
+
+// classifyBootstrapCA decides, once per request, how a join command for
+// PUBLIC_URL authenticates its fetch. The contract:
+//
+//   - http or no PUBLIC_URL: plain, no CA material, no probe.
+//   - https with no CA candidate: publicly trusted HTTPS, no probe added.
+//   - https with a CA candidate: verify the live leaf against it (one
+//     handshake).
+//   - verifies → private CA: bind its SHA-256 and pin the verified leaf.
+//   - explicit CA that does not verify (mismatch, unreachable, or invalid):
+//     fail closed — an operator-configured CA is authoritative and is never
+//     downgraded to system trust.
+//   - auto-discovered CA that the leaf does not chain to: consult the hub's
+//     OS trust store with the same endpoint. Verified there → classify public
+//     (plain verified TLS, no CA, no -k). Not verified there either → refuse.
+//   - auto-discovered CA but the endpoint is unreachable: refuse — we never
+//     learned what it presents, so we do not guess.
+//
+// A refusal returns an error the caller surfaces as an actionable 503 with no
+// token minted. The single verified handshake is reused within the request; no
+// SPKI is cached across requests.
+func (s *Server) classifyBootstrapCA(ctx context.Context, httpBase string, publicURL *url.URL) (bootstrapCADecision, error) {
+	if !strings.HasPrefix(httpBase, "https://") {
+		return bootstrapCADecision{}, nil
+	}
+	caPEM, caPath, source, err := s.loadBootstrapCAClassified()
+	if err != nil {
+		return bootstrapCADecision{}, err // explicit CA invalid: fail closed
+	}
+	if source == caSourceNone {
+		return bootstrapCADecision{}, nil // publicly trusted HTTPS, no probe
+	}
+
+	pin, perr := resolveJoinPin(ctx, publicURL, caPEM)
+	if perr == nil {
+		sum := sha256.Sum256(caPEM)
+		return bootstrapCADecision{
+			caURL:    httpBase + "/download/ca.crt",
+			caSHA256: hex.EncodeToString(sum[:]),
+			joinPin:  pin,
+		}, nil
+	}
+
+	if source == caSourceExplicit {
+		return bootstrapCADecision{}, fmt.Errorf(
+			"PUBLIC_URL's certificate does not verify against BLOXOS_CA_CERT (%s): %w", caPath, perr)
+	}
+
+	// Auto-discovered candidate. Only a completed-but-mismatching handshake is
+	// a reason to consult the hub's OS trust store; an unreachable endpoint is
+	// refused rather than guessed.
+	if !isCAChainMismatch(perr) {
+		return bootstrapCADecision{}, fmt.Errorf(
+			"cannot reach PUBLIC_URL over TLS to classify its certificate: %w", perr)
+	}
+	if verr := s.verifySystemTrust(ctx, publicURL); verr != nil {
+		return bootstrapCADecision{}, fmt.Errorf(
+			"PUBLIC_URL's certificate verifies against neither the discovered local CA (%s) nor the hub's OS trust store: %w", caPath, verr)
+	}
+	// The hub's OS trust store verifies the leaf, so the discovered local CA is
+	// unrelated to how this hub is actually served: plain verified TLS, no CA
+	// material.
+	return bootstrapCADecision{}, nil
+}
+
+// currentJoinCABinding recomputes the CA-binding value to compare against a
+// join token's mint-time binding, WITHOUT re-pinning the leaf. It returns the
+// current value and whether it could be established at all.
+//
+// The distinction matters at serve time: curl already authenticated the
+// mint-time leaf (via the pinned command for a private hub, or ordinary TLS
+// for a public one) before this GET runs, so re-probing/re-pinning here would
+// wrongly reject a still-valid link on a near-expiry leaf or a transient hub
+// outage. So:
+//
+//   - Private mint binding (non-empty): recompute the SELECTED CA's SHA-256
+//     using the same strict source rules as mint (explicit-authoritative,
+//     PEM-validated, malformed ambient skipped) — but no TLS probe and no
+//     leaf-lifetime guard. A removed or now-unreadable CA is genuine drift.
+//   - Public mint binding (empty): classify only to tell an unrelated ambient
+//     CA (still public → "") from a real private CA the leaf now chains to
+//     (drift). With no CA candidate this does no probe and returns "".
+func (s *Server) currentJoinCABinding(ctx context.Context, httpBase, mintTimeCASHA256 string) (string, bool) {
+	if mintTimeCASHA256 != "" {
+		caPEM, _, source, err := s.loadBootstrapCAClassified()
+		if err != nil || source == caSourceNone {
+			return "", false
+		}
+		sum := sha256.Sum256(caPEM)
+		return hex.EncodeToString(sum[:]), true
+	}
+	publicURL, err := parsePublicURL(httpBase)
+	if err != nil {
+		return "", false
+	}
+	decision, err := s.classifyBootstrapCA(ctx, httpBase, publicURL)
+	if err != nil {
+		return "", false
+	}
+	return decision.caSHA256, true
 }
 
 // joinURLFor is the link the short command fetches. The code is the install
@@ -354,8 +576,8 @@ func (s *Server) joinCodeUsable(code string) (bool, joinTokenInfo) {
 // rebuildLinuxJoinScript reconstructs the mint-time bootstrap script from the
 // stored config binding plus the token supplied in the join request. It never
 // reads a stored script, so the raw install token is not persisted; the
-// derivations mirror publicAndWebsocketBase and bootstrapCAFor exactly, so the
-// output is byte-identical to what was minted.
+// derivations mirror publicAndWebsocketBase and the mint-time CA classification
+// exactly, so the output is byte-identical to what was minted.
 func rebuildLinuxJoinScript(httpBase, caSHA256, token string) string {
 	wsBase := strings.Replace(httpBase, "https://", "wss://", 1)
 	wsBase = strings.Replace(wsBase, "http://", "ws://", 1)
@@ -399,19 +621,25 @@ func (s *Server) handleJoinScript(c echo.Context) error {
 	// a pin for the mint-time cert and a URL for the mint-time hub, and serving
 	// a script with different values would either fail the pin check or redirect
 	// the agent to a different authority than what was authenticated at mint.
-	currentCAURL, currentCASHA256 := s.bootstrapCAFor(currentHTTPBase)
-	_ = currentCAURL // URL derivation is deterministic; SHA is the binding value
 
-	// Tokens minted before origin normalization may carry a trailing slash;
-	// compare origins, not spellings.
+	// Origin drift first (cheap, no I/O).
 	if currentHTTPBase != strings.TrimRight(info.MintTimeHTTPBase, "/") {
 		// PUBLIC_URL has changed. The join command has the mint-time URL
 		// embedded, but if it somehow reaches this hub on the new URL, reject
 		// rather than serve a script that points to a different authority.
 		return c.String(http.StatusNotFound, joinUnavailableBody)
 	}
+
+	// CA drift. How we recompute the current binding depends on what was bound:
+	currentCASHA256, ok := s.currentJoinCABinding(c.Request().Context(), currentHTTPBase, info.MintTimeCASHA256)
+	if !ok {
+		// The hub cannot currently establish the binding (CA removed/unreadable,
+		// or — for a public binding with an ambient CA — PUBLIC_URL unreachable):
+		// treat the link as unavailable, like any other unusable code.
+		return c.String(http.StatusNotFound, joinUnavailableBody)
+	}
 	if currentCASHA256 != info.MintTimeCASHA256 {
-		// The bootstrap CA cert has changed. The join command has a pin for the
+		// The bootstrap CA has changed. The join command has a pin for the
 		// mint-time leaf, and a script with a different CA would fail bootstrap
 		// or redirect the agent to trust a different CA than was pinned.
 		return c.String(http.StatusNotFound, joinUnavailableBody)
