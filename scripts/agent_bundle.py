@@ -122,8 +122,15 @@ def safe_staging_root(root):
             "staging root must be owned by the invoking user and not writable by group/others")
     forbidden = [Path("/usr/local/lib/bloxos/linux"), Path("/usr/local/lib/bloxos/windows")]
     for name in ("BLOXOS_AGENT_BINARY", "BLOXOS_AGENT_BINARY_ARM64", "BLOXOS_AGENT_BINARY_WINDOWS"):
-        if os.environ.get(name):
-            forbidden.append(Path(os.environ[name]).resolve().parent)
+        # Match Go strings.TrimSpace in the hub resolver (Unicode White_Space,
+        # unlike Python's extra U+001C..U+001F separators). Relative overrides
+        # are rejected by the hub; never interpret them against our own cwd.
+        value = os.environ.get(name, "").strip(
+            "\t\n\v\f\r \u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004"
+            "\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000")
+        if value:
+            require(Path(value).is_absolute(), f"{name} must be an absolute path")
+            forbidden.append(Path(value).resolve().parent)
     for directory in forbidden:
         directory = directory.resolve()
         require(resolved != directory and directory not in resolved.parents

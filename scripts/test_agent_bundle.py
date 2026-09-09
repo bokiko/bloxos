@@ -162,6 +162,26 @@ class BundleTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"BLOXOS_AGENT_BINARY": str(self.active / "bloxos-agent")}):
             self.assertTrue(bundle.stage(self.source, self.sha, self.staging).is_dir())
 
+    def test_whitespace_wrapped_future_override_cannot_activate(self):
+        for env in ("BLOXOS_AGENT_BINARY", "BLOXOS_AGENT_BINARY_ARM64", "BLOXOS_AGENT_BINARY_WINDOWS"):
+            for padding in (" ", "\t\n", "\u0085\u00a0\u2003\u3000"):
+                with self.subTest(env=env, padding=repr(padding)):
+                    target = self.staging / "agent-release-7" / "bloxos-agent-linux-amd64"
+                    with mock.patch.dict(os.environ, {env: padding + str(target) + padding}):
+                        with self.assertRaisesRegex(ValueError, "active agent directory"):
+                            bundle.stage(self.source, self.sha, self.staging)
+                    self.assertEqual(list(self.staging.iterdir()), [])
+
+    def test_relative_visible_override_is_rejected(self):
+        with mock.patch.dict(os.environ, {"BLOXOS_AGENT_BINARY": " ../active/bloxos-agent "}):
+            with self.assertRaisesRegex(ValueError, "absolute path"):
+                bundle.stage(self.source, self.sha, self.staging)
+        self.assertEqual(list(self.staging.iterdir()), [])
+
+    def test_whitespace_only_override_matches_hub_unset_behavior(self):
+        with mock.patch.dict(os.environ, {"BLOXOS_AGENT_BINARY": " \t\n\u00a0"}):
+            self.assertTrue(bundle.stage(self.source, self.sha, self.staging).is_dir())
+
     def test_source_change_during_copy_leaves_no_stage(self):
         original = bundle.read_regular
         counts = {}
