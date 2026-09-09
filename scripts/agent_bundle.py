@@ -25,7 +25,7 @@ MANIFEST = "agent-manifest.json"
 MAX_BINARY = 128 * 1024 * 1024
 HEX = re.compile(r"[0-9a-f]{64}\Z")
 MARKER = re.compile(rb"BLOXOS-AGENT-RELEASE:([0-9]{10}):")
-VERSION = re.compile(r"v\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\Z")
+VERSION = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\Z")
 
 
 def require(condition, message):

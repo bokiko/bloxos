@@ -211,7 +211,7 @@ class BundleTests(unittest.TestCase):
     def test_release_tag_contract(self):
         for tag in ("v1.2.1", "v1.2.1-rc.1", "v2.0.0-preview-2"):
             self.assertEqual(bundle.validate_tag(tag), tag)
-        for tag in (None, "vnext", "v1.2", "v1.2.1+build.1", "v1.2.1-", "v1.2.1-rc..1", "v1.2.1-" + "x" * 130):
+        for tag in (None, "vnext", "v1.2", "v١.٢.٣", "v1.２.3", "v1.2.٣", "v1.2.1+build.1", "v1.2.1-", "v1.2.1-rc..1", "v1.2.1-" + "x" * 130):
             with self.subTest(tag=tag), self.assertRaises(ValueError):
                 bundle.validate_tag(tag)
 
@@ -258,6 +258,12 @@ esac
 
     def test_export_invalid_tag_stops_before_docker(self):
         result, output, log = self.run_export(release_tag="vnext")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(output.exists())
+        self.assertEqual(log, "")
+
+    def test_export_unicode_digits_stops_before_docker(self):
+        result, output, log = self.run_export(release_tag="v١.٢.٣")
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(output.exists())
         self.assertEqual(log, "")
