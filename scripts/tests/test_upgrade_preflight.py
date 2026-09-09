@@ -63,6 +63,15 @@ def make_handler(routes):
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
                 self.wfile.write(b"{not json")
+            elif kind == "interrupted":
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Transfer-Encoding", "chunked")
+                self.end_headers()
+                # Announce a 16-byte chunk, then close after just one byte.
+                self.wfile.write(b"10\r\n{")
+                self.wfile.flush()
+                self.close_connection = True
             elif kind == "missing-fields":
                 json_response(self, {"component": payload, "version": "1.2.2"})
             elif kind == "nonstring":
@@ -190,6 +199,17 @@ class PreflightTests(unittest.TestCase):
             res = subprocess.run([sys.executable, str(SCRIPT), "--public-url", base],
                                  capture_output=True, text=True, timeout=60)
             self.assertNotEqual(res.returncode, 0, "public-only must not be a verified PASS")
+
+    def test_interrupted_response_is_unknown_without_traceback(self):
+        routes = self.routes()
+        routes["/api/build-info"] = ("interrupted", None)
+        with server(self.routes()) as local, server(routes) as public:
+            res = run_cli("--public-url", public, "--local-hub-url", local,
+                          "--local-dashboard-url", local)
+            self.assertEqual(res.returncode, UNKNOWN, res.stdout + res.stderr)
+            self.assertIn("interrupted HTTP response", res.stdout)
+            self.assertIn("result  UNKNOWN", res.stdout)
+            self.assertNotIn("Traceback", res.stderr)
 
     def test_dashboard_build_mismatch_fails(self):
         old_dash = dict(DASH_INFO, version="1.2.0")

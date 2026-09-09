@@ -21,6 +21,7 @@ Exit codes: 0 verified PASS, 1 FAIL (wrong build/instance/untrusted), 2 UNKNOWN
 (missing metadata, unreachable, invalid response, tooling/permission error).
 """
 import argparse
+import http.client
 import json
 import math
 import os
@@ -107,6 +108,8 @@ def fetch_json(url, timeout, opener):
         raise PreflightError(UNKNOWN, f"unreachable: {type(err).__name__}")
     except ssl.SSLError:
         raise PreflightError(FAIL, "TLS verification failed (certificate not trusted; supply --ca-file or fix trust)")
+    except http.client.HTTPException:
+        raise PreflightError(UNKNOWN, "interrupted HTTP response; retry verification")
     except (socket.timeout, TimeoutError, OSError) as err:
         raise PreflightError(UNKNOWN, f"unreachable: {type(err).__name__}")
     if status in (301, 302, 303, 307, 308):
