@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"log"
+	"time"
 )
 
 const operatorRolloutPauseKey = "agent_rollout_operator_paused"
@@ -13,7 +15,9 @@ const operatorRolloutPauseKey = "agent_rollout_operator_paused"
 // or corrupt state withholds announcements rather than silently resuming.
 func (s *Server) operatorRolloutPause() (bool, string) {
 	var value string
-	err := s.db.QueryRow(`SELECT value FROM hub_settings WHERE key = ?`, operatorRolloutPauseKey).Scan(&value)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM hub_settings WHERE key = ?`, operatorRolloutPauseKey).Scan(&value)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, ""
 	}
@@ -40,7 +44,9 @@ func (s *Server) setOperatorRolloutPause(paused bool) error {
 	if paused {
 		value = "1"
 	}
-	_, err := s.db.Exec(`INSERT INTO hub_settings (key, value, updated_at)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := s.db.ExecContext(ctx, `INSERT INTO hub_settings (key, value, updated_at)
 		VALUES (?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`,
 		operatorRolloutPauseKey, value)

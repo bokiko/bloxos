@@ -275,4 +275,41 @@ func TestOperatorPauseSurvivesSHAChangeAndSuppressesAnnouncements(t *testing.T) 
 	case <-time.After(time.Second):
 		t.Fatal("explicit resume did not allow announcement")
 	}
+
+	// A different socket writer must not hold Pause hostage. The announcement
+	// waiting behind it must recheck the pause before sending anything.
+	agent.WriteMu.Lock()
+	announceDone := make(chan struct{})
+	go func() { s.announceVersionToAgent("pause-regression", agent); close(announceDone) }()
+	time.Sleep(50 * time.Millisecond)
+	pauseDone := make(chan int, 1)
+	go func() {
+		r := httptest.NewRecorder()
+		c := echo.New().NewContext(httptest.NewRequest(http.MethodPost, "/", nil), r)
+		if err := s.handlePauseRollout(c); err != nil {
+			pauseDone <- 500
+			return
+		}
+		pauseDone <- r.Code
+	}()
+	select {
+	case status := <-pauseDone:
+		if status != 200 {
+			agent.WriteMu.Unlock()
+			t.Fatal(status)
+		}
+	case <-time.After(time.Second):
+		agent.WriteMu.Unlock()
+		t.Fatal("Pause waited behind an unrelated agent socket writer")
+	}
+	agent.WriteMu.Unlock()
+	select {
+	case <-announceDone:
+	case <-time.After(time.Second):
+		t.Fatal("queued announcement did not drain")
+	}
+	_ = client.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+	if _, data, err := client.ReadMessage(); err == nil {
+		t.Fatalf("queued announcement escaped pause: %s", data)
+	}
 }

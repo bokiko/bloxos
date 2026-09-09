@@ -299,8 +299,6 @@ func agentBinaryPathForArch(osName, arch string) string {
 // Linux agents get the SHA for the architecture the hub has recorded for
 // them (amd64 when none is known, matching the arch-less download).
 func (s *Server) announceVersionToAgent(machineID string, agent *ConnectedAgent) {
-	s.operatorRolloutMu.RLock()
-	defer s.operatorRolloutMu.RUnlock()
 	if paused, reason := s.operatorRolloutPause(); paused {
 		log.Printf("rollout: not announcing version to %s: %s", machineID, reason)
 		return
@@ -359,7 +357,20 @@ func (s *Server) announceVersionToAgent(machineID string, agent *ConnectedAgent)
 	data, _ := json.Marshal(msg)
 
 	agent.WriteMu.Lock()
+	// Do not hold the operator gate while waiting behind unrelated socket
+	// writes. Recheck durable intent after acquiring the agent's write lock.
+	s.operatorRolloutMu.RLock()
+	if paused, _ := s.operatorRolloutPause(); paused || announcedSHAForArch(osName, v.Arch) != sha {
+		s.operatorRolloutMu.RUnlock()
+		agent.WriteMu.Unlock()
+		return
+	}
+	// Bound the only network I/O inside the pause barrier, matching the
+	// existing power-history ACK writer's deadline discipline.
+	_ = agent.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	err := agent.Conn.WriteMessage(websocket.TextMessage, data)
+	_ = agent.Conn.SetWriteDeadline(time.Time{})
+	s.operatorRolloutMu.RUnlock()
 	agent.WriteMu.Unlock()
 	if err != nil {
 		log.Printf("rollout: failed to announce version to %s: %v", machineID, err)
