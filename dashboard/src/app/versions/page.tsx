@@ -17,6 +17,13 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { AgentBinaryInfo, useVersions } from "@/contexts/VersionsContext";
+import {
+  agentProtocolNote,
+  agentStatusLabel,
+  binaryReleaseLabel,
+  binaryStateLabel,
+  buildBinaryCards,
+} from "@/lib/versions-honesty.mjs";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import {
@@ -57,7 +64,12 @@ function AgentBinaryCard({
   testId: string;
   binary: AgentBinaryInfo;
 }) {
-  const available = Boolean(binary.sha) && !binary.error;
+  // Available means only that the hub resolved bytes on a validated path.
+  // Signing is a separate, hub-wide property shown by the signing banner;
+  // a resolved path alone never earns a "trusted" label.
+  const state = binaryStateLabel(binary);
+  const available = state.available;
+  const releaseLabel = binaryReleaseLabel(binary, Boolean(binary && "release" in binary));
 
   return (
     <div
@@ -81,7 +93,7 @@ function AgentBinaryCard({
               : "border-red-500/30 bg-red-500/10 text-red-400 text-[10px]"
           }
         >
-          {available ? "Trusted" : "Unavailable"}
+          {state.label}
         </Badge>
       </div>
       {available ? (
@@ -91,10 +103,14 @@ function AgentBinaryCard({
               {shortSHA(binary.sha)}
             </code>
             <span className="text-[11px] text-blox-muted">
-              checked {timeSince(binary.mtime)}
+              file modified {timeSince(binary.mtime)}
             </span>
           </div>
           <dl className="mt-3 grid gap-2 text-[11px]">
+            <div>
+              <dt className="text-blox-muted">Release</dt>
+              <dd className="text-blox-text">{releaseLabel}</dd>
+            </div>
             <div>
               <dt className="text-blox-muted">Source</dt>
               <dd className="text-blox-text font-mono break-all">{binary.source}</dd>
@@ -107,7 +123,7 @@ function AgentBinaryCard({
         </>
       ) : (
         <p className="text-xs text-red-300 mt-3 break-words">
-          {binary.error || "No trusted binary resolved for this platform."}
+          {state.detail}
         </p>
       )}
     </div>
@@ -122,51 +138,13 @@ function VersionsContent() {
   const { data, loading, error, refresh, pauseRollout, resumeRollout } = useVersions();
   const { hasScope } = useAuth();
   const canManageRollout = hasScope("fleet.admin");
-  const binaries = data
-    ? data.agent_binaries ?? {
-        linux: {
-          path: "",
-          source: "legacy API",
-          sha: data.hub_sha,
-          mtime: data.hub_mtime,
-          error: "Resolver details require an updated hub.",
-        },
-        windows: {
-          path: "",
-          source: "legacy API",
-          sha: data.hub_windows_sha,
-          mtime: data.hub_windows_mtime,
-          error: "Resolver details require an updated hub.",
-        },
-      }
-    : null;
 
   // Per-architecture cards from a per-arch hub (clear CPU labels); legacy
   // two-card fallback for older hubs, whose "Linux" binary is whatever the
   // hub serves without an arch key — its CPU is not reported, so the card
   // stays unlabeled. A platform the hub has no binary for still renders a
   // card — its error names the missing build.
-  const binaryCards: { key: string; label: string; binary: AgentBinaryInfo }[] = [];
-  if (data) {
-    if (data.agent_binaries_by_arch) {
-      const byArch = data.agent_binaries_by_arch;
-      const linuxArches: [string, string][] = [
-        ["amd64", "Linux · x86-64"],
-        ["arm64", "Linux · ARM64"],
-      ];
-      for (const [arch, label] of linuxArches) {
-        const binary = byArch.linux?.[arch];
-        if (binary) binaryCards.push({ key: `linux-${arch}`, label, binary });
-      }
-      const windows = byArch.windows?.amd64;
-      if (windows) binaryCards.push({ key: "windows-amd64", label: "Windows · x86-64", binary: windows });
-    } else if (binaries) {
-      binaryCards.push(
-        { key: "linux", label: "Linux", binary: binaries.linux },
-        { key: "windows", label: "Windows", binary: binaries.windows }
-      );
-    }
-  }
+  const binaryCards = buildBinaryCards(data);
 
   useEffect(() => {
     refresh();
@@ -222,7 +200,8 @@ function VersionsContent() {
           <p className="text-[12px] text-blox-muted mt-1.5">
             Auto-update status and version visibility across the fleet.
             Protocol-v1 agents verify signed updates against their pinned key.
-            Windows revalidates the staged binary&apos;s SHA and signature on service restart, but still requires manual rollback.
+            Protocol-v2 agents also enforce a signed release floor against downgrades;
+            protocol-v1 agents do not. Windows revalidates the staged binary&apos;s SHA and signature on service restart, but still requires manual rollback.
           </p>
         </div>
       </section>
@@ -426,7 +405,7 @@ function VersionsContent() {
                                 className="border-red-500/30 bg-red-500/10 text-red-400 text-[10px]"
                               >
                                 <AlertTriangle className="w-2.5 h-2.5 mr-1" />
-                                {agent.update_pending ? "Withheld" : "Unavailable"}
+                                {agentStatusLabel(agent, data).label}
                               </Badge>
                             ) : agent.update_pending ? (
                               <Badge
@@ -434,15 +413,22 @@ function VersionsContent() {
                                 className="border-amber-500/30 bg-amber-500/10 text-amber-400 text-[10px]"
                               >
                                 <Clock className="w-2.5 h-2.5 mr-1" />
-                                Update pending
+                                {agentStatusLabel(agent, data).label}
                               </Badge>
                             ) : (
                               <Badge
                                 variant="outline"
-                                className="border-emerald-500/30 bg-emerald-500/10 text-emerald-400 text-[10px]"
+                                className={
+                                  agentStatusLabel(agent, data).kind === "current"
+                                    ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400 text-[10px]"
+                                    : "border-blox-border text-blox-muted text-[10px]"
+                                }
                               >
-                                <CheckCircle2 className="w-2.5 h-2.5 mr-1" />
-                                Up to date
+                                {/* current-hub contract: not pending and not
+                                    blocked already means running == offered;
+                                    older hubs lack this guarantee, so show
+                                    unknown rather than infer a match. */}
+                                {agentStatusLabel(agent, data).label}
                               </Badge>
                             )}
                           </TableCell>
@@ -470,6 +456,11 @@ function VersionsContent() {
                                 <AlertTriangle className="w-2.5 h-2.5 mr-1" />
                                 Missing
                               </Badge>
+                            )}
+                            {agentProtocolNote(agent) && (
+                              <div className="text-[10px] text-blox-muted mt-1">
+                                {agentProtocolNote(agent)}
+                              </div>
                             )}
                           </TableCell>
                           <TableCell

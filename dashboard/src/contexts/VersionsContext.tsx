@@ -35,6 +35,10 @@ export interface AgentBinaryInfo {
   sha: string;
   mtime: string;
   error: string;
+  /** Release number embedded in the binary's marker; 0 = legacy/unnumbered.
+   *  Older hubs omit the field entirely (unknown — not legacy). Presence of
+   *  the marker is not proof the bytes are signed or verified. */
+  release?: number;
 }
 
 export interface VersionsResponse {

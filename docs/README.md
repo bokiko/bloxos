@@ -11,6 +11,7 @@ Start with the [project overview](../README.md) or choose the task you need.
 | Back up or restore your hub and its identity | [Backup and restore](backup-restore.md) |
 | Configure the hub and agents | [Configuration reference](configuration.md) and [environment template](../.env.example) |
 | Diagnose a refused agent update or recover an agent | [Agent update recovery](agent-update-recovery.md) |
+| Read the Versions page labels (served builds, rollout states) | [Agent versions and rollout](versions.md) |
 | Operate without a hub-held signing key | [Offline update signing](offline-update-signing.md) |
 
 ## Explore the app
