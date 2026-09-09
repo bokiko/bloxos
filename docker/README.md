@@ -8,21 +8,22 @@ they are not containerized.
 
 Use Docker Compose v2 on a Linux amd64 or arm64 host. Ports 80 and 443 must
 be free, and browsers and agents must be able to reach the host. From a
-clone of the released `v1.2.0` tag:
+clone of the released `v1.2.1` tag:
 
 ```bash
 cd docker
 cp .env.example .env
 # Edit .env: set HUB_HOST to this machine's reachable hostname or IP.
-# Add BLOXOS_VERSION=1.2.0 to use this release's images.
+# Add BLOXOS_VERSION=1.2.1 to use this release's images.
 docker compose pull
 docker compose up -d --no-build
 ```
 
-After full CI and the Compose smoke test pass, release tags publish
+After full CI and the Compose smoke test pass, stable release tags publish
 `ghcr.io/bokiko/bloxos-hub` and `ghcr.io/bokiko/bloxos-dashboard` for
 amd64 and arm64, tagged with the version (without `v`) and `latest`. Pin
-`BLOXOS_VERSION` in `.env` for a predictable upgrade target. A merge to `main`
+`BLOXOS_VERSION` in `.env` for a predictable upgrade target. Prerelease tags
+such as `1.2.1-rc.1` do not replace `latest`. A merge to `main`
 does not publish images. To build your chosen source revision instead, use
 `docker compose up -d --build` in place of the pull/start commands.
 
