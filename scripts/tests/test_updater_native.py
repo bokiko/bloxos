@@ -439,6 +439,60 @@ class DiscoverTests(unittest.TestCase):
         self.assertFalse(valid)
         self.assertNotEqual(native._norm_hostport("[::1]:4000"), native._norm_hostport("127.0.0.1:4000"))
 
+    # --- bare-IP public edge (LAN installs) --------------------------------
+    # SNI may not carry an IP literal (RFC 6066), so Python sends NO SNI for one
+    # and a Caddy site keyed by an IP kills the handshake. A bare-IP edge must
+    # therefore be proven by local address ownership, never by a TLS probe.
+    LOOPBACK_UPSTREAMS = {"upstreams": [{"dial": "127.0.0.1:4000"}, {"dial": "127.0.0.1:3000"}]}
+
+    def _route_ip(self, public_url, is_local):
+        probed = []
+
+        def leaf_cert(*args):
+            probed.append(args)
+            raise AssertionError("a bare-IP edge must never be probed over TLS")
+
+        valid, reason = native._verify_routing(
+            public_url, "http://127.0.0.1:4000", "http://127.0.0.1:3000", None,
+            lambda: self.LOOPBACK_UPSTREAMS, leaf_cert, lambda host: is_local)
+        self.assertEqual(probed, [])
+        return valid, reason
+
+    def test_bare_ip_edge_is_proven_by_local_address_not_tls(self):
+        for url in ("https://192.168.16.113", "https://192.168.16.113:8443", "https://[fd00::1]"):
+            with self.subTest(url=url):
+                valid, reason = self._route_ip(url, True)
+                self.assertTrue(valid, reason)
+                self.assertIn("bound to this host", reason)
+
+    def test_bare_ip_edge_not_on_this_host_is_refused(self):
+        valid, reason = self._route_ip("https://192.168.16.113", False)
+        self.assertFalse(valid)
+        self.assertIn("not configured on this host", reason)
+
+    def test_dns_edge_still_compared_by_certificate(self):
+        probed = []
+
+        def leaf_cert(host, port, server_name, ca_file):
+            probed.append((host, server_name))
+            return b"same verified certificate"
+
+        valid, _ = native._verify_routing(
+            "https://hub.example", "http://127.0.0.1:4000", "http://127.0.0.1:3000", None,
+            lambda: self.LOOPBACK_UPSTREAMS, leaf_cert,
+            lambda host: self.fail("a DNS edge must be proven by certificate"))
+        self.assertTrue(valid)
+        self.assertEqual(probed, [("127.0.0.1", "hub.example"), ("hub.example", "hub.example")])
+
+    def test_ip_literal_detection_and_real_local_address_check(self):
+        for host in ("192.168.16.113", "127.0.0.1", "fd00::1", "[fd00::1]", "::1"):
+            self.assertTrue(native._is_ip_literal(host), host)
+        for host in ("hub.example", "localhost", ""):
+            self.assertFalse(native._is_ip_literal(host), host)
+        # Loopback is always assigned here; TEST-NET-1 (RFC 5737) never is.
+        self.assertTrue(native._address_is_local("127.0.0.1"))
+        self.assertFalse(native._address_is_local("192.0.2.1"))
+
     def _seams(self, *, caddy_ok=True, cert_match=True,
                dash_owner="bloxos-dashboard.service", caddy443_owner="caddy.service",
                hub_env=None):
