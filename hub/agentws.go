@@ -165,10 +165,10 @@ func (s *Server) handleCreateToken(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
-	caURL, caSHA256 := bootstrapCAFor(httpBase)
+	caURL, caSHA256 := s.bootstrapCAFor(httpBase)
 	joinPin := ""
 	if caSHA256 != "" {
-		joinPin, err = joinPinForPrivateCA(c.Request().Context(), publicURL)
+		joinPin, err = s.joinPinForPrivateCA(c.Request().Context(), publicURL)
 		if err != nil {
 			log.Printf("token_create: refusing to mint, cannot pin the hub's TLS key for the join command: %v", err)
 			return c.JSON(http.StatusServiceUnavailable, map[string]string{
@@ -267,7 +267,7 @@ func (s *Server) handleWindowsReenrollment(c echo.Context) error {
 	}
 
 	httpBase, wsBase := publicAndWebsocketBase()
-	caURL, caSHA256 := bootstrapCAFor(httpBase)
+	caURL, caSHA256 := s.bootstrapCAFor(httpBase)
 	return c.JSON(http.StatusOK, windowsReenrollmentResponse{
 		MachineID:      machineID,
 		Token:          token,
@@ -600,8 +600,20 @@ func bootstrapCACertCandidates() []string {
 	return candidates
 }
 
-func loadBootstrapCACert() ([]byte, string, error) {
-	for _, path := range bootstrapCACertCandidates() {
+// caCertCandidatePaths is the bootstrap-CA search path for this server. In
+// production s.caCertCandidates is nil and it returns the default host
+// candidates; tests inject an isolated list so the machine's real Caddy roots
+// never reach a test's classification. A nil receiver also falls back to the
+// default, so any caller that predates a *Server keeps the old behavior.
+func (s *Server) caCertCandidatePaths() []string {
+	if s != nil && s.caCertCandidates != nil {
+		return s.caCertCandidates()
+	}
+	return bootstrapCACertCandidates()
+}
+
+func (s *Server) loadBootstrapCACert() ([]byte, string, error) {
+	for _, path := range s.caCertCandidatePaths() {
 		if path == "" {
 			continue
 		}
@@ -617,9 +629,9 @@ func loadBootstrapCACert() ([]byte, string, error) {
 	return nil, "", os.ErrNotExist
 }
 
-func bootstrapCAFor(httpBase string) (caURL string, caSHA256 string) {
+func (s *Server) bootstrapCAFor(httpBase string) (caURL string, caSHA256 string) {
 	if strings.HasPrefix(httpBase, "https://") {
-		if caPEM, caPath, err := loadBootstrapCACert(); err == nil {
+		if caPEM, caPath, err := s.loadBootstrapCACert(); err == nil {
 			caURL = httpBase + "/download/ca.crt"
 			sum := sha256.Sum256(caPEM)
 			caSHA256 = hex.EncodeToString(sum[:])
@@ -678,8 +690,8 @@ func handleDownloadAgent(c echo.Context) error {
 	return c.File(state.Path)
 }
 
-func handleDownloadCACert(c echo.Context) error {
-	caPEM, _, err := loadBootstrapCACert()
+func (s *Server) handleDownloadCACert(c echo.Context) error {
+	caPEM, _, err := s.loadBootstrapCACert()
 	if err != nil {
 		if os.IsNotExist(err) {
 			return c.JSON(http.StatusNotFound, map[string]string{"error": "CA certificate not configured; set BLOXOS_CA_CERT"})

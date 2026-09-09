@@ -36,6 +36,15 @@ type Server struct {
 	aiSessions    *aiSessionStore
 	aiSessionsCfg aiSessionsConfig
 
+	// caCertCandidates, when non-nil, replaces the default filesystem search
+	// path for the bootstrap CA certificate (see bootstrapCACertCandidates).
+	// Production leaves it nil and uses the default host candidates; tests set
+	// it so CA discovery is isolated from the machine's real Caddy roots
+	// (~/.local/share/caddy, /var/lib/caddy, /root) and a public test hub is
+	// never mis-classified private because the developer or CI runner happens
+	// to have a local Caddy CA on disk. See caCertCandidatePaths.
+	caCertCandidates func() []string
+
 	// Tracks background work this server spawned, so a caller can wait for
 	// it to finish before tearing the server down. See goTracked/Shutdown.
 	//

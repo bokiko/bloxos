@@ -205,8 +205,8 @@ func parsePublicURL(raw string) (*url.URL, error) {
 // bootstrap CA and returns its SPKI pin. It is only called when the hub is
 // behind a private CA (bootstrapCAFor found one); a publicly trusted hub
 // needs no pin.
-func joinPinForPrivateCA(ctx context.Context, publicURL *url.URL) (string, error) {
-	caPEM, caPath, err := loadBootstrapCACert()
+func (s *Server) joinPinForPrivateCA(ctx context.Context, publicURL *url.URL) (string, error) {
+	caPEM, caPath, err := s.loadBootstrapCACert()
 	if err != nil {
 		return "", fmt.Errorf("load bootstrap CA: %w", err)
 	}
@@ -399,7 +399,7 @@ func (s *Server) handleJoinScript(c echo.Context) error {
 	// a pin for the mint-time cert and a URL for the mint-time hub, and serving
 	// a script with different values would either fail the pin check or redirect
 	// the agent to a different authority than what was authenticated at mint.
-	currentCAURL, currentCASHA256 := bootstrapCAFor(currentHTTPBase)
+	currentCAURL, currentCASHA256 := s.bootstrapCAFor(currentHTTPBase)
 	_ = currentCAURL // URL derivation is deterministic; SHA is the binding value
 
 	// Tokens minted before origin normalization may carry a trailing slash;

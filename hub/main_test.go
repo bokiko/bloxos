@@ -154,6 +154,16 @@ func setupTestServer(t *testing.T) (*echo.Echo, *Server) {
 	}
 
 	s := newServer(db)
+	// Isolate bootstrap-CA discovery from the host's real Caddy roots. Without
+	// this, a developer or CI machine that happens to have a local Caddy CA at
+	// ~/.local/share/caddy (or /var/lib/caddy, /root) leaks that cert into the
+	// candidate list, so a public test hub is mis-classified private-CA and
+	// tests asserting public behavior fail depending on where they run. The
+	// isolated path still honors an explicitly-set BLOXOS_CA_CERT (the many
+	// private-CA tests rely on that) but never reads ambient host paths. Tests
+	// that need an auto-discovered ambient CA override s.caCertCandidates
+	// directly (see injectAmbientCACandidate in ca_isolation_test.go).
+	s.caCertCandidates = isolatedCACandidates
 	// Registered after the db.Close() cleanup above so it runs BEFORE it:
 	// t.Cleanup is LIFO, and background work must drain while the database
 	// it queries is still open.
@@ -207,6 +217,9 @@ func setupEmptyTestServer(t *testing.T) (*echo.Echo, *Server) {
 	setupTokenValue = "test-setup-token-abc123"
 
 	s := newServer(db)
+	// Isolate bootstrap-CA discovery from the host's real Caddy roots, exactly
+	// as setupTestServer does — see the rationale there.
+	s.caCertCandidates = isolatedCACandidates
 	// Registered after the db.Close() cleanup above so it runs BEFORE it:
 	// t.Cleanup is LIFO, and background work must drain while the database
 	// it queries is still open.

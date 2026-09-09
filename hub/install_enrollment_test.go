@@ -33,7 +33,7 @@ func (s *Server) seedTokenValue(t *testing.T, raw string) string {
 	httpBase, _ := publicAndWebsocketBase()
 	var mintHTTPBase, mintCASHA256 interface{}
 	if httpBase != "" {
-		_, caSHA256 := bootstrapCAFor(httpBase)
+		_, caSHA256 := s.bootstrapCAFor(httpBase)
 		mintHTTPBase = httpBase
 		mintCASHA256 = caSHA256
 	}
