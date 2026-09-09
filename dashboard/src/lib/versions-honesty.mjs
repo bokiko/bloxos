@@ -63,14 +63,16 @@ export function buildBinaryCards(data) {
 // agentStatusLabel: with a current hub, no-blocker + no-pending already
 // implies running SHA == offered SHA (handleListVersions computes
 // update_pending = expected != "" && running_sha != expected). The label only
-// refuses a green match when running_sha is absent (older/malformed
-// response). Never a claim about the newest release anywhere.
-export function agentStatusLabel(agent) {
+// refuses a green match when running_sha is absent or the hub predates
+// per-architecture availability/blocker reporting. Older hubs can report
+// no pending update even when no build is offered. Never infer a match then.
+export function agentStatusLabel(agent, data) {
   if (agent.update_blocked_reason) {
     return { kind: "blocked", label: agent.update_pending ? "Withheld" : "Unavailable" };
   }
   if (agent.update_pending) return { kind: "pending", label: "Update pending" };
   if (!agent.running_sha) return { kind: "unknown", label: "Version unknown" };
+  if (!data?.agent_binaries_by_arch) return { kind: "unknown", label: "Status unknown (older hub)" };
   return { kind: "current", label: "Matches offered build" };
 }
 

@@ -60,10 +60,18 @@ test("agent status is offered-build truth, not 'latest'", () => {
   assert.equal(agentStatusLabel({ update_pending: true, update_blocked_reason: "x" }).label, "Withheld");
   assert.equal(agentStatusLabel({ update_pending: false, update_blocked_reason: "x" }).label, "Unavailable");
   // Current-hub contract: not pending and not blocked implies the match.
-  assert.equal(agentStatusLabel({ update_pending: false, running_sha: "aaa" }).label, "Matches offered build");
+  assert.equal(agentStatusLabel({ update_pending: false, running_sha: "aaa" }, { agent_binaries_by_arch: { linux: { amd64: { sha: "aaa" } } } }).label, "Matches offered build");
   // Older/malformed responses without a running SHA must not go green.
   assert.equal(agentStatusLabel({ update_pending: false, running_sha: "" }).label, "Version unknown");
   assert.equal(agentStatusLabel({ update_pending: false }).label, "Version unknown");
+});
+
+test("older hubs never infer a match from no pending update", () => {
+  const agent = { os: "linux", running_sha: "aaa", update_pending: false };
+  for (const data of [undefined, {}, { hub_sha: "" }, { agent_binaries: { linux: { sha: "" } } }, { hub_sha: "aaa" }]) {
+    assert.equal(agentStatusLabel(agent, data).kind, "unknown");
+    assert.equal(agentStatusLabel(agent, data).label, "Status unknown (older hub)");
+  }
 });
 
 test("missing platform entries never throw", () => {

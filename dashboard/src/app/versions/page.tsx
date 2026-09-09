@@ -405,7 +405,7 @@ function VersionsContent() {
                                 className="border-red-500/30 bg-red-500/10 text-red-400 text-[10px]"
                               >
                                 <AlertTriangle className="w-2.5 h-2.5 mr-1" />
-                                {agentStatusLabel(agent).label}
+                                {agentStatusLabel(agent, data).label}
                               </Badge>
                             ) : agent.update_pending ? (
                               <Badge
@@ -413,22 +413,22 @@ function VersionsContent() {
                                 className="border-amber-500/30 bg-amber-500/10 text-amber-400 text-[10px]"
                               >
                                 <Clock className="w-2.5 h-2.5 mr-1" />
-                                {agentStatusLabel(agent).label}
+                                {agentStatusLabel(agent, data).label}
                               </Badge>
                             ) : (
                               <Badge
                                 variant="outline"
                                 className={
-                                  agentStatusLabel(agent).kind === "current"
+                                  agentStatusLabel(agent, data).kind === "current"
                                     ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400 text-[10px]"
                                     : "border-blox-border text-blox-muted text-[10px]"
                                 }
                               >
                                 {/* current-hub contract: not pending and not
                                     blocked already means running == offered;
-                                    we only refuse the green label when the
-                                    running SHA is missing (older/malformed) */}
-                                {agentStatusLabel(agent).label}
+                                    older hubs lack this guarantee, so show
+                                    unknown rather than infer a match. */}
+                                {agentStatusLabel(agent, data).label}
                               </Badge>
                             )}
                           </TableCell>
