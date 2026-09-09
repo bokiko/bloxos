@@ -61,6 +61,9 @@ jobs:
       - name: Test backup failure and restart handling
         run: python3 ../scripts/test_backup_compose.py
 
+      - name: Test wrong-installation upgrade safeguards
+        run: python3 -m unittest discover -s ../scripts/tests -p 'test_upgrade*.py'
+
       - name: Test native agent bundle validation and staging
         run: |
           python3 ../scripts/test_agent_bundle.py
@@ -202,4 +205,13 @@ jobs:
         run: pnpm test
 
       - name: Build dashboard
+        env:
+          BLOXOS_BUILD_VERSION: ${{ github.ref_name }}
+          BLOXOS_BUILD_REVISION: ${{ github.sha }}
         run: pnpm build
+
+      - name: Verify production dashboard build identity
+        env:
+          EXPECT_VERSION: ${{ github.ref_name }}
+          EXPECT_REVISION: ${{ github.sha }}
+        run: node scripts/test-build-info.mjs

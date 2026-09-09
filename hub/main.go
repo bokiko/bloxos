@@ -257,6 +257,9 @@ func main() {
 func (s *Server) registerRoutes(e *echo.Echo) {
 	// Public endpoints (no auth).
 	e.GET("/health", handleHealth)
+	// Build identity for upgrade verification (public, uncached; see
+	// build_info.go). Distinct from /health, which proves liveness only.
+	e.GET("/api/build-info", handleBuildInfo)
 	e.GET("/ws/agent", s.handleAgentWS)
 	e.POST("/api/auth/login", s.handleLogin)
 	e.GET("/install.sh", handleInstallScript)
