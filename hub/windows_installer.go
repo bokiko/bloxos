@@ -101,7 +101,7 @@ function Invoke-CurlDownload([string]$Url, [string]$OutputPath) {
     if ($LASTEXITCODE -ne 0) { throw "Download failed for $Url (curl exit $LASTEXITCODE)" }
 }
 
-$DownloadUrl = "$HubHttp/download/agent?os=windows"
+$DownloadUrl = "$HubHttp/download/agent?os=windows&enrollment=1"
 $StagingExe = "$AgentExe.installing"
 Remove-Item -LiteralPath $StagingExe -Force -ErrorAction SilentlyContinue
 Invoke-CurlDownload $DownloadUrl $StagingExe

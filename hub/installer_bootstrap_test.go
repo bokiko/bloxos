@@ -211,6 +211,23 @@ func TestCaddyRoutesBothInstallerPaths(t *testing.T) {
 	}
 }
 
+func TestBundledCaddyPreservesOnboardingPins(t *testing.T) {
+	for _, path := range []string{
+		filepath.Join("..", "scripts", "caddy", "Caddyfile"),
+		filepath.Join("..", "docker", "Caddyfile"),
+	} {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, directive := range []string{"default_sni {$HUB_HOST}", "key_type rsa2048", "reuse_private_keys"} {
+			if !strings.Contains(string(body), directive) {
+				t.Errorf("%s missing %s", path, directive)
+			}
+		}
+	}
+}
+
 func TestDashboardRendersOnlyServerGeneratedCommands(t *testing.T) {
 	body, err := os.ReadFile(filepath.Join("..", "dashboard", "src", "components", "AddMachineModal.tsx"))
 	if err != nil {
@@ -285,7 +302,7 @@ func TestLinuxInstallerConsumesPasteBlockCAContract(t *testing.T) {
 		`CA fingerprint mismatch at $CA_PATH`,
 		`CA_CURL_ARGS+=(--cacert "$CA_PATH")`,
 		`AGENT_CA_ENV="Environment=\"BLOXOS_CA_CERT=$CA_PATH\""`,
-		`DOWNLOAD_URL="${HUB_HTTP}/download/agent?os=linux&arch=${ARCH}"`,
+		`DOWNLOAD_URL="${HUB_HTTP}/download/agent?os=linux&arch=${ARCH}&enrollment=1"`,
 		`curl_fetch_status "$DOWNLOAD_URL" "${CA_CURL_ARGS[@]}" -o /tmp/bloxos-agent`,
 		"[Service]",
 		"${AGENT_CA_ENV}",
@@ -331,7 +348,7 @@ func TestLinuxInstallerRequestsArchAndVerifiesELF(t *testing.T) {
 	assertOrdered(t, script,
 		`x86_64)  ARCH="amd64"; ELF_MACHINE_WANT="3e00" ;;`,
 		`aarch64) ARCH="arm64"; ELF_MACHINE_WANT="b700" ;;`,
-		`DOWNLOAD_URL="${HUB_HTTP}/download/agent?os=linux&arch=${ARCH}"`,
+		`DOWNLOAD_URL="${HUB_HTTP}/download/agent?os=linux&arch=${ARCH}&enrollment=1"`,
 		`HTTP_STATUS=$(curl_fetch_status "$DOWNLOAD_URL"`,
 		`if [[ "$HTTP_STATUS" != "200" ]]; then`,
 		`echo "Hub response: $(cat /tmp/bloxos-agent)" >&2`,

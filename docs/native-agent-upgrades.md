@@ -4,6 +4,28 @@ Updating the hub executable does **not** update separately installed agent
 files. A machine that matches the hub's offered SHA is up to date **with that
 offered file**, not necessarily with the latest BloxOS release.
 
+### Agent is running, but drops offline after enrollment
+
+Very old agents save the issued secret without sending the enrollment
+confirmation required by newer hubs. The symptom is a successful first
+connection followed by a disconnect about 30 seconds later and repeated
+WebSocket handshake failures. `systemctl` can still report `active (running)`:
+that describes the process, not its connection to BloxOS. Hub logs are needed
+to distinguish this from proxy, network or other authentication failures.
+
+Use the current official agent payloads, not a rebuild of an old source tree.
+The onboarding download rejects unnumbered payloads because their enrollment
+compatibility cannot be established. Normal signed-update downloads remain
+available for existing agents; this check is specific to new installations.
+
+For a stranded machine, stage and activate compatible payloads using the steps
+below, then generate a fresh **Add Machine** command and run it again. A secret
+issued by the old incomplete handshake was never committed by the hub; merely
+restarting that old agent does not repair it. Do not delete the machine's CA,
+update key or rollback floor. If the hub already has an active credential for
+that machine, use explicit credential recovery instead of attempting to replace
+it with a generic install token.
+
 Docker hub images include the agent payloads. Native installations can use the
 three payloads attached to newer GitHub releases, extracted from those exact
 images without rebuilding:

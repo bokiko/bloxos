@@ -58,6 +58,43 @@ treats the hub as public. If the hub cannot reach `PUBLIC_URL` over TLS at all,
 it refuses to mint rather than guess — this is a connectivity problem to fix,
 not a trust decision.
 
+### A copied command reports a TLS key mismatch
+
+`curl: (90)` means the endpoint's key does not match the key authenticated when
+the command was generated. Nothing from that command has run. Generate a fresh
+command in **Add Machine**; never remove `--pinnedpubkey`. If a fresh command
+also fails, check that `PUBLIC_URL` and `BLOXOS_PIN_DIAL_ADDR` reach the same TLS
+terminator and certificate seen by clients. Multiple proxies must present a
+consistent key, not merely certificates signed by the same CA.
+
+The bundled native and Compose Caddyfiles reuse the leaf key across routine
+renewals, keeping a fresh, 15-minute onboarding command valid during renewal.
+Certificates still renew and expire normally. This trades per-renewal key
+rotation for short-command stability; deliberate key rotation still requires
+fresh commands. Caddy currently documents `reuse_private_keys` as a temporary
+option: review its support when upgrading Caddy. See the
+[Caddy TLS policy documentation](https://caddyserver.com/docs/modules/tls).
+Existing deployments must apply the Caddyfile change separately from updating
+the hub; replacing the hub executable does not reload the proxy configuration.
+
+Keep Caddy's data volume or native data directory when upgrading. Recreating
+its private CA invalidates the trust saved by existing agents; leaf renewal
+alone does not require replacing their CA.
+
+### A Linux machine still has an older hub CA
+
+A fresh authenticated Add Machine command verifies the new CA against the
+fingerprint embedded in that command. If `/etc/bloxos/ca.crt` belongs to an older
+hub, the bootstrap keeps it and installs the verified replacement separately at
+`/etc/bloxos/certs/<sha256>.crt`. The installer configures the agent service to
+use that path. It does not delete secrets, update keys or rollback floors, and
+it refuses to overwrite a corrupt file at the fingerprint-specific path.
+
+This happens only when you run a new onboarding command; running agents do not
+silently accept a changed CA. An old copied script still has its original
+behavior, so generate a fresh command after updating the hub. Windows still
+refuses a mismatching saved CA and requires operator-managed trust recovery.
+
 For specialized power-history and update-floor settings, see
 [power history](power-history.md) and [agent recovery](agent-update-recovery.md).
 Do not commit filled environment files or include tokens/private keys in issue reports.

@@ -377,7 +377,7 @@ fi
 # install here, with the hub's own explanation, rather than after a
 # service has been written.
 echo "Downloading agent binary..."
-DOWNLOAD_URL="${HUB_HTTP}/download/agent?os=linux&arch=${ARCH}"
+DOWNLOAD_URL="${HUB_HTTP}/download/agent?os=linux&arch=${ARCH}&enrollment=1"
 HTTP_STATUS=$(curl_fetch_status "$DOWNLOAD_URL" "${CA_CURL_ARGS[@]}" -o /tmp/bloxos-agent) || HTTP_STATUS="000"
 if [[ "$HTTP_STATUS" != "200" ]]; then
   echo "Agent download failed (HTTP ${HTTP_STATUS}) for arch=${ARCH}: ${DOWNLOAD_URL}" >&2
@@ -625,6 +625,18 @@ func (s *Server) caCertCandidatePaths() []string {
 	return bootstrapCACertCandidates()
 }
 
+// minEnrollmentAgentRelease is the lowest agent release marker a FRESH install
+// may receive. The agent's enrollment_committed handshake shipped first (agent
+// #169) and the source-controlled release marker was introduced later (#180),
+// so ANY release-marked binary (>= 1) is guaranteed to speak that handshake. A
+// markerless binary (release 0) MAY still support it — builds between those two
+// changes are markerless yet compatible — so the hub cannot VERIFY a markerless
+// binary's enrollment compatibility and refuses it for a fresh install rather
+// than risk stranding the machine, not because it is known incompatible. The
+// self-update path carries no enrollment flag and is never gated, so eligible
+// agents (including markerless ones) still download updates.
+const minEnrollmentAgentRelease uint64 = 1
+
 func handleDownloadAgent(c echo.Context) error {
 	// The target OS is detected from either the explicit ?os= query parameter
 	// or the User-Agent string. The architecture comes from ?arch= (GOARCH
@@ -661,6 +673,25 @@ func handleDownloadAgent(c echo.Context) error {
 		// through the resolver error, every path the hub looked at.
 		return c.JSON(http.StatusNotFound, map[string]string{
 			"error":  fmt.Sprintf("no %s agent binary is available for arch=%s: %s", platform.OS, platform.Arch, reason),
+			"os":     platform.OS,
+			"arch":   platform.Arch,
+			"source": state.Source,
+		})
+	}
+
+	// Enrollment compatibility gate. A fresh install (the installer requests
+	// ?enrollment=1) must not receive an agent that predates the mandatory
+	// enrollment_committed handshake: such a build saves a secret locally,
+	// then the hub drops it at the auth window with no credential stored, and
+	// every subsequent secret reconnect fails. The release marker is the
+	// reliable signal (see minEnrollmentAgentRelease). The flagless self-update
+	// path is unaffected, so already-enrolled agents keep updating.
+	if c.QueryParam("enrollment") == "1" && state.Release < minEnrollmentAgentRelease {
+		log.Printf("refusing enrollment download: %s/%s binary (source %s) carries no release marker; enrollment compatibility cannot be verified",
+			platform.OS, platform.Arch, state.Source)
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": fmt.Sprintf("this hub's %s/%s agent binary (source %s) carries no release marker, so the hub cannot verify it supports the enrollment handshake; installing it risks a machine that enrolls but never completes and then fails every reconnect. Stage the official current agent bundle following docs/native-agent-upgrades.md, then generate a fresh Add Machine command. Already-enrolled agents continue to update normally.",
+				platform.OS, platform.Arch, state.Source),
 			"os":     platform.OS,
 			"arch":   platform.Arch,
 			"source": state.Source,
@@ -955,7 +986,20 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 	for {
 		_, msg, err := ws.ReadMessage()
 		if err != nil {
-			log.Printf("agent disconnected: %v", err)
+			if authPending && freshPendingTokenHash != "" {
+				// Fact: a secret was issued ("enrolled") but the socket closed
+				// — typically at the fixed auth window — before any
+				// "enrollment_committed" arrived, so no credential was stored
+				// and the token was not consumed. The cause is not certain from
+				// here: an agent that predates the enrollment commit handshake
+				// never sends it, but a modern agent that could not durably
+				// save its secret (disk/network/interrupted) also, correctly,
+				// withholds it. Name the fact and the next steps, not a
+				// presumed cause.
+				log.Printf("enrollment did not complete for %s: no enrollment_committed received before the socket closed (%v); no credential was stored and every secret reconnect will fail. Possible causes: an outdated agent that cannot send the commit, or an interrupted enrollment (disk/network). Check the agent's logs; to recover, install a current release-numbered agent (see docs/native-agent-upgrades.md) and generate a fresh Add Machine command.", machineID, err)
+			} else {
+				log.Printf("agent disconnected: %v", err)
+			}
 			return nil
 		}
 		// A frame arrived — extend the deadline to the idle timeout, but only
