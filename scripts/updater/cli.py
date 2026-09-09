@@ -324,6 +324,7 @@ def request_update():
         os.link(temporary, mailbox.request_path, follow_symlinks=False)
     finally:
         temporary.unlink(missing_ok=True)
+        _fsync_parent(mailbox.request_path)
     run(["systemctl", "start", "--no-block", "bloxos-updater.service"])
     print("Update requested. The host worker continues if this terminal disconnects.")
     previous = None

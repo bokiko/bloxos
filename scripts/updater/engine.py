@@ -177,6 +177,10 @@ class Mailbox:
     def consume_request(self):
         with contextlib.suppress(FileNotFoundError):
             os.remove(self.request_path)
+        # Sync even on an idempotent retry: the prior unlink may have succeeded
+        # while its fsync failed. Never clear the terminal journal before this
+        # directory is durable, or a reboot could replay the old request.
+        _fsync_parent(self.request_path)
 
     def write_status(self, state, *, version="", message="", request_id=""):
         payload = {
@@ -202,7 +206,7 @@ class Mailbox:
     def clear_maintenance(self):
         with contextlib.suppress(FileNotFoundError):
             os.remove(self.maintenance_path)
-            _fsync_parent(self.maintenance_path)
+        _fsync_parent(self.maintenance_path)
 
     def maintenance_present(self) -> bool:
         return os.path.exists(self.maintenance_path)
@@ -267,6 +271,7 @@ class Journal:
     def clear(self):
         with contextlib.suppress(FileNotFoundError):
             os.remove(self.path)
+        _fsync_parent(self.path)
 
 
 # ----- release resolution & artifact safety -------------------------------
@@ -648,9 +653,9 @@ class Transaction:
 
     def _fail(self, rid, version, message) -> str:
         self.journal.set_phase(FAILED)
-        self.journal.clear()
         self.mailbox.consume_request()
         self.mailbox.write_status(FAILED, version=version, message=_short(message), request_id=rid)
+        self.journal.clear()
         return FAILED
 
     # recover runs at worker startup: an existing journal means a prior run was
@@ -761,6 +766,7 @@ def archive_completed_transaction(state_dir: str):
     name = "backup-" + time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + uuid.uuid4().hex[:8]
     dest = os.path.join(state_dir, name)
     os.replace(transaction_dir, dest)
+    _fsync_parent(dest)
     return dest
 
 
@@ -822,10 +828,8 @@ def _atomic_write_json(path: str, obj: dict, mode: int = 0o600):
 
 def _fsync_parent(path: str):
     """fsync the directory holding path so a rename/create is durable, not just
-    the file's data. A real fsync failure PROPAGATES (durability is promised
-    before we accept traffic); only EINVAL — a filesystem that does not support
-    directory fsync — is tolerated, since that is not a durability loss."""
-    import errno
+    the file's data. Every fsync failure propagates: a filesystem without
+    directory fsync cannot provide the durability this updater promises."""
     parent = os.path.dirname(path) or "."
     try:
         fd = os.open(parent, os.O_RDONLY)
@@ -834,8 +838,6 @@ def _fsync_parent(path: str):
     try:
         os.fsync(fd)
     except OSError as err:
-        if err.errno == errno.EINVAL:
-            return
         raise UpdaterError(f"durable directory fsync failed: {type(err).__name__}")
     finally:
         os.close(fd)

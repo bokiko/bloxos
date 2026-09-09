@@ -6,6 +6,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -271,6 +272,102 @@ func TestSystemUpdateRBAC(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated: want 401, got %d", rec.Code)
 	}
+}
+
+// TestCommitRequestDurability proves the P2 fix: an accepted request is made
+// durable by fsyncing the inbox directory AFTER the atomic hardlink and the
+// temp-link removal, and a durability-sync failure propagates WITHOUT deleting
+// the (possibly already pending) request. syncDir is injected as a parameter,
+// so there is no shared, racy package-level seam.
+func TestCommitRequestDurability(t *testing.T) {
+	// Happy path: request.json published, temp link removed, and the inbox is
+	// fsync'd once AFTER both — proving the ordering.
+	t.Run("syncs_after_publication_and_temp_removal", func(t *testing.T) {
+		inbox := t.TempDir()
+		tmp := filepath.Join(inbox, "request.tmp.a")
+		req := filepath.Join(inbox, "request.json")
+		if err := os.WriteFile(tmp, []byte(`{"request_id":"a"}`), 0600); err != nil {
+			t.Fatal(err)
+		}
+		var synced []string
+		err := commitRequest(inbox, tmp, req, func(p string) error {
+			// At sync time the published request must exist and the temp link
+			// must already be gone.
+			if _, e := os.Stat(req); e != nil {
+				t.Fatalf("request.json not published before sync: %v", e)
+			}
+			if _, e := os.Stat(tmp); !os.IsNotExist(e) {
+				t.Fatalf("temp link not removed before sync")
+			}
+			synced = append(synced, p)
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("commitRequest: %v", err)
+		}
+		if len(synced) != 1 || synced[0] != inbox {
+			t.Fatalf("inbox not fsync'd exactly once: %v", synced)
+		}
+	})
+
+	// Durability failure AFTER publication: the error propagates and the
+	// accepted request is LEFT IN PLACE (never deleted), so a request the
+	// worker may already see is not silently dropped.
+	t.Run("sync_failure_propagates_and_keeps_request", func(t *testing.T) {
+		inbox := t.TempDir()
+		tmp := filepath.Join(inbox, "request.tmp.b")
+		req := filepath.Join(inbox, "request.json")
+		if err := os.WriteFile(tmp, []byte(`{"request_id":"b"}`), 0600); err != nil {
+			t.Fatal(err)
+		}
+		wantErr := errors.New("simulated inbox fsync failure")
+		err := commitRequest(inbox, tmp, req, func(string) error { return wantErr })
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("durability failure must propagate, got %v", err)
+		}
+		if _, e := os.Stat(req); e != nil {
+			t.Fatal("accepted request must NOT be deleted on an ambiguous durability failure")
+		}
+		if _, e := os.Stat(tmp); !os.IsNotExist(e) {
+			t.Fatal("temp link should be removed")
+		}
+	})
+
+	// A second publication conflicts (EEXIST) and never clobbers the pending
+	// request or its temp source.
+	t.Run("conflict_is_reported_and_nothing_clobbered", func(t *testing.T) {
+		inbox := t.TempDir()
+		req := filepath.Join(inbox, "request.json")
+		if err := os.WriteFile(req, []byte(`{"request_id":"pending"}`), 0600); err != nil {
+			t.Fatal(err)
+		}
+		tmp := filepath.Join(inbox, "request.tmp.c")
+		if err := os.WriteFile(tmp, []byte(`{"request_id":"c"}`), 0600); err != nil {
+			t.Fatal(err)
+		}
+		err := commitRequest(inbox, tmp, req, func(string) error {
+			t.Fatal("syncDir must not run when the link conflicts")
+			return nil
+		})
+		if !errors.Is(err, os.ErrExist) {
+			t.Fatalf("want ErrExist on a pending request, got %v", err)
+		}
+		if data, _ := os.ReadFile(req); !strings.Contains(string(data), "pending") {
+			t.Fatal("pending request was overwritten")
+		}
+		if _, e := os.Stat(tmp); !os.IsNotExist(e) {
+			t.Fatal("conflicting temp link should be removed")
+		}
+	})
+
+	// The real syncDir succeeds on an ordinary directory on the supported
+	// (Linux/local) filesystems; every error, including an unsupported-fsync
+	// EINVAL, is surfaced rather than swallowed.
+	t.Run("real_syncDir_succeeds_on_a_directory", func(t *testing.T) {
+		if err := syncDir(t.TempDir()); err != nil {
+			t.Fatalf("syncDir on a real directory: %v", err)
+		}
+	})
 }
 
 func TestMaintenanceMiddlewareBlocksApplicationTraffic(t *testing.T) {

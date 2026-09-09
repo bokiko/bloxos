@@ -77,7 +77,15 @@ class CLITests(unittest.TestCase):
             outbox = self.root / "mailbox/outbox"
             outbox.mkdir()
             (outbox / "status.json").write_text(json.dumps({"request_id": body["request_id"], "state": "succeeded"}))
-        with patch.object(cli.Config, "load", return_value=config), patch.object(cli.os, "link", side_effect=publish), patch.object(cli, "run"):
+        synced = []
+        def sync(path):
+            self.assertEqual(Path(path), inbox / "request.json")
+            self.assertTrue(Path(path).exists())
+            self.assertEqual(list(inbox.glob(".request-*")), [])
+            synced.append(path)
+        def start(_args):
+            self.assertEqual(synced, [str(inbox / "request.json")])
+        with patch.object(cli.Config, "load", return_value=config), patch.object(cli.os, "link", side_effect=publish), patch.object(cli, "_fsync_parent", side_effect=sync), patch.object(cli, "run", side_effect=start):
             self.assertEqual(cli.request_update(), 0)
         self.assertEqual(seen[0]["target_version"], "latest")
         self.assertEqual(list(inbox.glob(".request-*")), [])

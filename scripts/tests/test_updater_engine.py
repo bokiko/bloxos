@@ -3,6 +3,7 @@
 and request boundary, secure config, the phase machine, rollback, bounded
 readiness verification, and interruption recovery. No network, no subprocess."""
 import io
+import errno
 import json
 import os
 import sys
@@ -28,6 +29,8 @@ def make_config(tmp, **over):
          "mailbox_dir": os.path.join(tmp, "mailbox"),
          "state_dir": os.path.join(tmp, "state")}
     d.update(over)
+    # A configured host always has the mailbox directories installed already.
+    engine.Mailbox(d["mailbox_dir"]).ensure()
     return engine.Config.from_dict(d)
 
 
@@ -255,6 +258,12 @@ class ConfigSecurityTests(unittest.TestCase):
 
 
 class LockTests(unittest.TestCase):
+    def test_unsupported_directory_fsync_is_not_reported_as_durable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(engine.os, "fsync", side_effect=OSError(errno.EINVAL, "unsupported")):
+                with self.assertRaises(engine.UpdaterError):
+                    engine._fsync_parent(os.path.join(tmp, "request.json"))
+
     def test_exclusive(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "l")
@@ -265,6 +274,52 @@ class LockTests(unittest.TestCase):
 
 
 class TransactionTests(unittest.TestCase):
+    def test_request_unlink_is_durable_before_terminal_journal_is_removed(self):
+        for failure in (None, "install", "backup", "stage"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
+                cfg = make_config(tmp)
+                rid = engine.write_update_request(cfg)
+                adapter = FakeAdapter(matching_identities(), fail_at=failure)
+                transaction = txn(cfg, adapter)
+                mailbox = transaction.mailbox
+                observed = []
+                real_sync = engine._fsync_parent
+                def sync(path):
+                    if path == mailbox.request_path:
+                        self.assertFalse(os.path.exists(path))
+                        self.assertTrue(transaction.journal.exists())
+                        observed.append("request")
+                    if path == transaction.journal.path and not os.path.exists(path):
+                        self.assertFalse(os.path.exists(mailbox.request_path))
+                        self.assertEqual(observed, ["request"])
+                        observed.append("journal")
+                    real_sync(path)
+                with patch.object(engine, "_fsync_parent", side_effect=sync):
+                    transaction.apply(rid)
+                self.assertEqual(observed, ["request", "journal"])
+
+    def test_failed_request_unlink_fsync_keeps_terminal_journal_and_retry_syncs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = make_config(tmp)
+            rid = engine.write_update_request(cfg)
+            adapter = FakeAdapter(matching_identities())
+            transaction = txn(cfg, adapter)
+            real_sync = engine._fsync_parent
+            def failed_sync(path):
+                if path == transaction.mailbox.request_path:
+                    raise engine.UpdaterError("disk failure")
+                real_sync(path)
+            with patch.object(engine, "_fsync_parent", side_effect=failed_sync):
+                with self.assertRaises(engine.UpdaterError):
+                    transaction.apply(rid)
+            self.assertEqual(transaction.journal.phase(), engine.SUCCEEDED)
+            self.assertFalse(os.path.exists(transaction.mailbox.request_path))
+            calls = list(adapter.calls)
+            with patch.object(engine, "_fsync_parent", wraps=real_sync) as sync:
+                self.assertEqual(transaction.recover(), engine.SUCCEEDED)
+                sync.assert_any_call(transaction.mailbox.request_path)
+            self.assertEqual(adapter.calls, calls, "recovery must not replay the update")
+
     def test_corrupt_or_unknown_journal_never_restarts_originals(self):
         for raw in ("{broken", "[]", "{}", '{"phase":"unknown"}'):
             with self.subTest(raw=raw), tempfile.TemporaryDirectory() as tmp:

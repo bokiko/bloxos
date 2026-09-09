@@ -258,20 +258,70 @@ func (s *Server) handlePostSystemUpdate(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not stage update request"})
 	}
 	reqPath := filepath.Join(inbox, "request.json")
-	if err := os.Link(tmpPath, reqPath); err != nil {
-		os.Remove(tmpPath)
+	if err := commitRequest(inbox, tmpPath, reqPath, syncDir); err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return c.JSON(http.StatusConflict, map[string]string{"error": "an update request is already pending"})
 		}
+		// Either the link failed (nothing was published) or the inbox
+		// directory sync failed AFTER publishing. In the latter case
+		// commitRequest deliberately LEAVES request.json in place — it may be
+		// durably pending and the worker may already be acting on it, so it is
+		// never deleted and we never return a false 202. A retry will observe
+		// the pending request (409) or succeed once the durability sync does.
+		log.Printf("system update: request %s not confirmed durable: %v", requestID, err)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not publish update request"})
 	}
-	os.Remove(tmpPath)
 	log.Printf("system update: request %s accepted for %s by %s", requestID, body.TargetVersion, c.RealIP())
 	return c.JSON(http.StatusAccepted, map[string]any{
 		"request_id": requestID,
 		"state":      "accepted",
 		"message":    "update requested; the host worker will stage a backup before the short downtime",
 	})
+}
+
+// syncDir fsyncs a directory so a create/link/remove within it is durable, not
+// just the file contents. EVERY error is returned, including EINVAL: a
+// filesystem that cannot fsync a directory cannot back a durable "accepted"
+// (202) response, so the caller must report failure rather than promise
+// durability it cannot guarantee.
+func syncDir(path string) error {
+	d, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	err = d.Sync()
+	if cerr := d.Close(); err == nil {
+		err = cerr
+	}
+	return err
+}
+
+// commitRequest publishes the staged temp file as the exclusive request.json
+// and makes an accepted request DURABLE before the caller returns 202: the
+// worker's systemd.path fires on request.json's existence, and a hub that told
+// the operator "accepted" must not lose the request to a power cut. It links
+// tmp -> request.json (EEXIST => a request is already pending), removes the
+// temp link, then fsyncs the inbox directory so the new directory entry is on
+// disk.
+//
+// Once the link succeeds the request is published, so on ANY later error — the
+// temp-link removal or the directory sync — it deliberately LEAVES
+// request.json in place: the link may already be durable and the worker may
+// already be acting on it, so removing it could drop an accepted request. The
+// error is returned so the caller reports failure rather than a false 202; a
+// retry then sees the pending request (409) or succeeds once the sync does.
+// syncDir is a parameter so tests inject a failure per call, without a shared,
+// racy package-level seam.
+func commitRequest(inbox, tmpPath, reqPath string, syncDir func(string) error) error {
+	if err := os.Link(tmpPath, reqPath); err != nil {
+		os.Remove(tmpPath) // link failed: nothing published, drop the temp
+		return err
+	}
+	// Published. request.json must now survive every path below unremoved.
+	if err := os.Remove(tmpPath); err != nil {
+		return err
+	}
+	return syncDir(inbox)
 }
 
 // maintenanceMiddleware blocks all hub application traffic while the worker's

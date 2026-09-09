@@ -457,8 +457,7 @@ def _rmdir_if_empty(path):
 # ----- durability + one-time setup evidence --------------------------------
 
 def _fsync_dir(path):
-    """Propagate a real dir fsync failure (durability); tolerate only EINVAL."""
-    import errno
+    """Propagate all directory fsync failures, including unsupported filesystems."""
     try:
         fd = os.open(path, os.O_RDONLY)
     except OSError as err:
@@ -466,8 +465,6 @@ def _fsync_dir(path):
     try:
         os.fsync(fd)
     except OSError as err:
-        if err.errno == errno.EINVAL:
-            return
         raise engine.UpdaterError("durable backup fsync failed: %s" % type(err).__name__)
     finally:
         os.close(fd)
