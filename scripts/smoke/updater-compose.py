@@ -79,6 +79,8 @@ def main():
         assert actual == expected, (actual, engine.read_status(config))
         assert not mailbox.maintenance_present()
         after = adapter.containers()
+        assert {n: c["HostConfig"]["RestartPolicy"] for n, c in before.items()} == {
+            n: c["HostConfig"]["RestartPolicy"] for n, c in after.items()}, "restart policies changed"
         assert mount_identities(before) == mount_identities(after), (
             "persistent mounts changed", mount_identities(before), mount_identities(after))
         for name in images:
@@ -87,6 +89,39 @@ def main():
         ca = run(adapter.command("exec", "-T", "caddy", "cat", "/data/caddy/pki/authorities/local/root.crt"))
         assert ca == original_ca, "Caddy CA changed"
         print("PASS:", expected, "with preserved users, CA, mounts and no maintenance marker", flush=True)
+
+    if os.environ.get("SMOKE_TEST_DAEMON_RESTART") == "1":
+        class SimulatedWorkerLoss(BaseException):
+            pass
+
+        class InterruptedAdapter(LocalFixtureAdapter):
+            def start_candidate(self):
+                super().start_candidate()
+                run(["systemctl", "restart", "docker.service"])
+                current = self.containers()
+                assert all(not c["State"]["Running"] for c in current.values()), "unsafe automatic restart before recovery"
+                raise SimulatedWorkerLoss()
+
+        engine.archive_completed_transaction(config.state_dir)
+        adapter = InterruptedAdapter(engine.as_config_dict(config), Path(config.state_dir) / "transaction")
+        before = adapter.containers()
+        manifest["revision"] = os.environ.get("BLOXOS_EXPECT_REVISION", "4b96ad6564c24b089b30b41ee74557fd03e9aaa7")
+        try:
+            engine.Transaction(config, adapter, fetch_bytes=lambda *_: json.dumps(manifest).encode()).apply(str(uuid.uuid4()))
+            raise AssertionError("worker loss was not exercised")
+        except SimulatedWorkerLoss:
+            pass
+        recovered = LocalFixtureAdapter(engine.as_config_dict(config), Path(config.state_dir) / "transaction")
+        result = engine.Transaction(config, recovered).recover()
+        assert result == "rolled_back", (result, engine.read_status(config))
+        after = recovered.containers()
+        assert all(c["State"]["Running"] for c in after.values())
+        assert mount_identities(before) == mount_identities(after)
+        assert {n: c["HostConfig"]["RestartPolicy"] for n, c in before.items()} == {
+            n: c["HostConfig"]["RestartPolicy"] for n, c in after.items()}
+        assert users() == original_users
+        assert run(recovered.command("exec", "-T", "caddy", "cat", "/data/caddy/pki/authorities/local/root.crt")) == original_ca
+        print("PASS: daemon restart held all BloxOS containers stopped until durable recovery; data and policies preserved", flush=True)
 
 
 if __name__ == "__main__":

@@ -197,10 +197,12 @@ class Mailbox:
             os.fsync(fh.fileno())
         os.chmod(tmp, OUTBOX_MODE)
         os.replace(tmp, self.maintenance_path)
+        _fsync_parent(self.maintenance_path)
 
     def clear_maintenance(self):
         with contextlib.suppress(FileNotFoundError):
             os.remove(self.maintenance_path)
+            _fsync_parent(self.maintenance_path)
 
     def maintenance_present(self) -> bool:
         return os.path.exists(self.maintenance_path)
@@ -538,8 +540,7 @@ class Transaction:
                             "manual recovery required (journal retained): "
                             + self._reason(reserr, "restart error"))
                 return FAILED
-            self.mailbox.clear_maintenance()
-            return self._fail(rid, version, self._reason(err, "backup failed before install"))
+            return self._finish(FAILED, rid, version, self._reason(err, "backup failed before install"))
 
         # --- install + verify: the mutating region; any failure rolls back.
         status(INSTALLING, version)
@@ -557,12 +558,27 @@ class Transaction:
         # --- accept: durably record the commit BEFORE reopening traffic. A
         #     crash after this line recovers as SUCCEEDED (finalize), never a
         #     rollback that would discard writes accepted once traffic resumed.
-        self.journal.set_phase(SUCCEEDED)
-        self.mailbox.clear_maintenance()
+        return self._finish(SUCCEEDED, rid, version, "update verified on the public endpoint")
+
+    def _finish(self, state, rid, version, message):
+        # Legacy originals cannot read the maintenance marker. Keep the public
+        # proxy closed until rollback is DURABLY committed; a second crash must
+        # never restore a snapshot over writes accepted after rollback.
+        self.journal.set_phase(state)
+        try:
+            finalize = getattr(self.adapter, "finalize", None)
+            if finalize:
+                finalize()
+            self.mailbox.clear_maintenance()
+        except Exception as err:
+            self.mailbox.write_status(FAILED, version=version, request_id=rid,
+                message="release state committed but reopening failed; retry recovery (journal retained): "
+                        + self._reason(err, "finalization error"))
+            return FAILED
         self.mailbox.consume_request()
-        status(SUCCEEDED, version, "update verified on the public endpoint")
+        self.mailbox.write_status(state, version=version, message=_short(message), request_id=rid)
         self.journal.clear()
-        return SUCCEEDED
+        return state
 
     def _verify(self, manifest):
         # Bounded readiness: a just-restarted candidate (systemctl start /
@@ -623,12 +639,7 @@ class Transaction:
             return FAILED
         # Durably record ROLLED_BACK BEFORE clearing the marker, so a crash
         # here recovers as a completed rollback (finalize), never re-rolls.
-        self.journal.set_phase(ROLLED_BACK)
-        self.mailbox.clear_maintenance()
-        self.mailbox.consume_request()
-        self.mailbox.write_status(ROLLED_BACK, version=version, message=_short(message), request_id=rid)
-        self.journal.clear()
-        return ROLLED_BACK
+        return self._finish(ROLLED_BACK, rid, version, message)
 
     def _fail(self, rid, version, message) -> str:
         self.journal.set_phase(FAILED)
@@ -645,21 +656,10 @@ class Transaction:
         phase = self.journal.phase()
         rid = self.journal.get("request_id", "")
         version = self.journal.get("version", "")
-        if phase == SUCCEEDED:
-            # Committed before the crash: finalize, never roll back.
-            self.mailbox.clear_maintenance()
-            self.mailbox.consume_request()
-            self.mailbox.write_status(SUCCEEDED, version=version, request_id=rid,
-                                      message="recovered a committed update")
-            self.journal.clear()
-            return SUCCEEDED
-        if phase == ROLLED_BACK:
-            self.mailbox.clear_maintenance()
-            self.mailbox.consume_request()
-            self.mailbox.write_status(ROLLED_BACK, version=version, request_id=rid,
-                                      message="recovered a completed rollback")
-            self.journal.clear()
-            return ROLLED_BACK
+        if phase in (SUCCEEDED, ROLLED_BACK, FAILED):
+            # Finalization is idempotent. Never restore a committed snapshot
+            # again, even if traffic reopened just before a second power loss.
+            return self._finish(phase, rid, version, "recovered a committed transaction")
         if phase in _MUTATING or phase == ROLLING_BACK:
             try:
                 self.adapter.rollback()
@@ -674,13 +674,7 @@ class Transaction:
             # Durably record ROLLED_BACK BEFORE clearing the marker so a crash
             # here re-enters as a completed rollback, never re-rolls or loses
             # accepted writes.
-            self.journal.set_phase(ROLLED_BACK)
-            self.mailbox.clear_maintenance()
-            self.mailbox.consume_request()
-            self.mailbox.write_status(ROLLED_BACK, version=version, request_id=rid,
-                                      message="recovered an interrupted update")
-            self.journal.clear()
-            return ROLLED_BACK
+            return self._finish(ROLLED_BACK, rid, version, "recovered an interrupted update")
         # Pre-install interruption: originals may be stopped but never replaced.
         try:
             self.adapter.resume_original()
@@ -691,12 +685,7 @@ class Transaction:
                 message="could not restart original services during recovery; manual recovery "
                         "required (journal retained): " + self._reason(err, "restart error"))
             return FAILED
-        self.mailbox.clear_maintenance()
-        self.mailbox.consume_request()
-        self.mailbox.write_status(FAILED, version=version, request_id=rid,
-                                  message="recovered an interrupted update before install")
-        self.journal.clear()
-        return FAILED
+        return self._finish(FAILED, rid, version, "recovered an interrupted update before install")
 
 
 # ----- CLI / worker entry points -------------------------------------------

@@ -34,6 +34,7 @@ class ComposeTests(unittest.TestCase):
         self.containers = {}
         for name in ("hub", "dashboard", "caddy"):
             self.containers[name] = {"Id": name + "-id", "Image": "sha256:" + "a" * 64,
+                                     "HostConfig": {"RestartPolicy": {"Name": "unless-stopped", "MaximumRetryCount": 0}},
                                      "State": {"Running": True},
                                      "Config": {"Labels": {"com.docker.compose.project": "fleet"},
                                                 "Env": ["PUBLIC_URL=https://hub.example"]},
@@ -112,10 +113,36 @@ class ComposeTests(unittest.TestCase):
             command.assert_not_called()
 
     def test_quiesce_stops_edge_before_components(self):
-        with patch("updater.compose.run") as command:
+        self.preflight()
+        with patch("updater.compose.run") as command, patch.object(self.adapter, "containers", return_value=self.containers):
             self.adapter.quiesce()
-        self.assertEqual(command.call_args_list[0].args[0][-2:], ["stop", "caddy"])
-        self.assertEqual(command.call_args_list[1].args[0][-3:], ["stop", "hub", "dashboard"])
+        calls = [c.args[0] for c in command.call_args_list]
+        self.assertEqual(calls[:3], [["docker", "update", "--restart=no", name + "-id"] for name in ("caddy", "hub", "dashboard")])
+        self.assertEqual(calls[3][-2:], ["stop", "caddy"])
+        self.assertEqual(calls[4][-3:], ["stop", "hub", "dashboard"])
+        self.assertTrue(json.loads(self.adapter.journal.read_text())["restart_inhibited"])
+        self.assertTrue(all(s["restart"] == "no" for s in json.loads(self.adapter.override.read_text())["services"].values()))
+
+    def test_finalize_restores_only_recorded_container_policies(self):
+        self.preflight()
+        with patch("updater.compose.run"), patch.object(self.adapter, "containers", return_value=self.containers):
+            self.adapter.quiesce()
+        with patch("updater.compose.run") as command, patch.object(self.adapter, "containers", return_value=self.containers), patch.object(self.adapter, "verify_edge"):
+            self.adapter.finalize()
+        calls = [c.args[0] for c in command.call_args_list]
+        self.assertEqual(calls[:3], [["docker", "update", "--restart=unless-stopped", name + "-id"] for name in ("hub", "dashboard", "caddy")])
+        self.assertEqual(calls[-1][-2:], ["start", "caddy"])
+
+    def test_original_resume_does_not_open_proxy_before_commit(self):
+        with patch("updater.compose.run") as command, patch.object(self.adapter, "wait_original"):
+            self.adapter.resume_original()
+        self.assertEqual(len(command.call_args_list), 1)
+        self.assertEqual(command.call_args.args[0][-3:], ["start", "hub", "dashboard"])
+
+    def test_restart_retry_policy_preserved(self):
+        self.assertEqual(self.adapter.restart_argument({"Name": "on-failure", "MaximumRetryCount": 5}), "on-failure:5")
+        with self.assertRaises(RuntimeError):
+            self.adapter.restart_argument({"Name": "foreign"})
 
     def test_incomplete_backup_never_restored(self):
         with patch("updater.compose.run") as command:

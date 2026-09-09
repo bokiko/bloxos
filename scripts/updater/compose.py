@@ -105,6 +105,7 @@ class ComposeAdapter:
         if not self.saved:
             self.saved = {"containers": {k: v["Id"] for k, v in current.items()},
                           "images": {k: v["Image"] for k, v in current.items()},
+                          "restart_policies": {k: v["HostConfig"]["RestartPolicy"] for k, v in current.items()},
                           "volumes": volumes,
                           "override": json.loads(self.override.read_text()) if self.override.exists() else None}
             self.save()
@@ -159,6 +160,20 @@ class ComposeAdapter:
         self.save()
 
     def quiesce(self):
+        # Docker may restart containers before the host worker on reboot. Pin
+        # restart=no DURABLY before stopping/snapshotting so neither legacy nor
+        # candidate processes can accept writes ahead of recovery.
+        if not self.saved.get("restart_policies"):
+            raise RuntimeError("Missing original restart policies; refusing unsafe downtime")
+        self.saved["restart_inhibited"] = True
+        self.save()
+        current = self.containers()
+        for name in ("caddy", "hub", "dashboard"):
+            run(["docker", "update", "--restart=no", current[name]["Id"]])
+        override = json.loads(self.override.read_text()) if self.override.exists() else {"services": {}}
+        for name in ("caddy", "hub", "dashboard"):
+            override.setdefault("services", {}).setdefault(name, {})["restart"] = "no"
+        atomic_json(self.override, override)
         run(self.command("stop", "caddy"))
         run(self.command("stop", "hub", "dashboard"))
 
@@ -185,6 +200,8 @@ class ComposeAdapter:
         override = copy.deepcopy(self.saved["override"]) or {"services": {}}
         for name in ("hub", "dashboard"):
             override.setdefault("services", {}).setdefault(name, {})["image"] = self.saved["candidate"][name]
+        for name in ("hub", "dashboard", "caddy"):
+            override.setdefault("services", {}).setdefault(name, {})["restart"] = "no"
         atomic_json(self.override, override)
 
     def start_candidate(self):
@@ -201,7 +218,6 @@ class ComposeAdapter:
     def resume_original(self):
         # No install was attempted: restart the unchanged containers only.
         run(self.command("start", "hub", "dashboard"))
-        run(self.command("start", "caddy"))
         self.wait_original()
 
     def rollback(self):
@@ -224,13 +240,48 @@ class ComposeAdapter:
         override = copy.deepcopy(self.saved["override"]) or {"services": {}}
         for name in ("hub", "dashboard"):
             override.setdefault("services", {}).setdefault(name, {})["image"] = self.saved["images"][name]
+        for name in ("hub", "dashboard", "caddy"):
+            override.setdefault("services", {}).setdefault(name, {})["restart"] = "no"
         atomic_json(self.override, override)
         self.start_original()
 
     def start_original(self):
         run(self.command("up", "-d", "--no-build", "--pull", "never", "--no-deps", "hub", "dashboard"))
-        run(self.command("start", "caddy"))
         self.wait_original()
+
+    @staticmethod
+    def restart_argument(policy):
+        name = policy.get("Name") or "no"
+        if name not in ("no", "always", "unless-stopped", "on-failure"):
+            raise RuntimeError("Invalid saved restart policy")
+        retries = policy.get("MaximumRetryCount", 0)
+        if not isinstance(retries, int) or retries < 0:
+            raise RuntimeError("Invalid saved restart retry count")
+        return f"on-failure:{retries}" if name == "on-failure" and retries else name
+
+    def finalize(self):
+        if not self.saved.get("restart_inhibited"):
+            return
+        # Called only AFTER the transaction's terminal phase is fsynced. This
+        # is safe to retry after any interruption without re-restoring data.
+        current = self.containers()
+        override = json.loads(self.override.read_text())
+        for name in ("hub", "dashboard", "caddy"):
+            policy = self.restart_argument(self.saved["restart_policies"][name])
+            run(["docker", "update", "--restart=" + policy, current[name]["Id"]])
+            override.setdefault("services", {}).setdefault(name, {})["restart"] = policy
+        atomic_json(self.override, override)
+        run(self.command("start", "hub", "dashboard"))
+        run(self.command("start", "caddy"))
+        deadline = time.monotonic() + 120
+        while True:
+            try:
+                self.verify_edge()
+                return
+            except (RuntimeError, OSError, ValueError):
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("Committed deployment edge did not reopen; recovery state retained")
+                time.sleep(3)
 
     def wait_original(self):
         deadline = time.monotonic() + 120
@@ -241,7 +292,6 @@ class ComposeAdapter:
                     if current[service]["Image"] != self.saved["images"][service]:
                         raise RuntimeError("Restored image does not match the original")
                     run(self.command("exec", "-T", service, "wget", "-qO-", f"http://127.0.0.1:{port}{path}"))
-                self.verify_edge()
                 return
             except (RuntimeError, OSError, ValueError):
                 if time.monotonic() >= deadline:

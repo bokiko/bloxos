@@ -9,6 +9,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from updater import engine  # noqa: E402
@@ -204,6 +205,27 @@ class MailboxTests(unittest.TestCase):
             mb.clear_maintenance()
             self.assertFalse(mb.maintenance_present())
 
+    def test_maintenance_directory_changes_are_durable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            mb = engine.Mailbox(os.path.join(tmp, "mb"))
+            mb.ensure()
+            with patch.object(engine, "_fsync_parent", wraps=engine._fsync_parent) as sync:
+                mb.set_maintenance()
+                sync.assert_called_once_with(mb.maintenance_path)
+                sync.reset_mock()
+                mb.clear_maintenance()
+                sync.assert_called_once_with(mb.maintenance_path)
+
+    def test_maintenance_fsync_failure_is_not_silently_accepted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            mb = engine.Mailbox(os.path.join(tmp, "mb"))
+            mb.ensure()
+            with patch.object(engine, "_fsync_parent", side_effect=engine.UpdaterError("disk failure")):
+                with self.assertRaises(engine.UpdaterError):
+                    mb.set_maintenance()
+                with self.assertRaises(engine.UpdaterError):
+                    mb.clear_maintenance()
+
 
 class ConfigSecurityTests(unittest.TestCase):
     def test_group_writable_rejected(self):
@@ -243,6 +265,28 @@ class LockTests(unittest.TestCase):
 
 
 class TransactionTests(unittest.TestCase):
+    def test_reopen_happens_only_after_durable_commit_and_retries_without_restore(self):
+        for failure, expected in ((None, engine.SUCCEEDED), ("install", engine.ROLLED_BACK), ("backup", engine.FAILED)):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
+                cfg = make_config(tmp)
+                adapter = FakeAdapter(matching_identities(), fail_at=failure)
+                transaction = txn(cfg, adapter)
+                observed = []
+                def finalize():
+                    journal = engine.Journal(transaction.transaction_dir)
+                    self.assertEqual(journal.phase(), expected)
+                    observed.append(journal.phase())
+                    if len(observed) == 1:
+                        raise engine.UpdaterError("proxy temporarily unavailable")
+                adapter.finalize = finalize
+                self.assertEqual(transaction.apply("550e8400-e29b-41d4-a716-446655440000"), engine.FAILED)
+                self.assertTrue(transaction.journal.exists())
+                calls_before = list(adapter.calls)
+                self.assertEqual(transaction.recover(), expected)
+                self.assertEqual(adapter.calls, calls_before, "terminal recovery must not restore or restart the old snapshot")
+                self.assertEqual(observed, [expected, expected])
+                self.assertFalse(transaction.journal.exists())
+
     def test_happy_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = make_config(tmp)

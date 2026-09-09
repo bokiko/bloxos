@@ -93,7 +93,7 @@ jobs:
           docker tag "$DASHBOARD_IMAGE:latest" bloxos-updater-test-dashboard
           sudo env HUB_HOST=127.0.0.1 BLOXOS_VERSION=1.2.2 docker compose --project-directory "$PWD/docker" up -d --no-build --wait
           sudo env HUB_HOST=127.0.0.1 BLOXOS_VERSION=1.2.2 python3 scripts/bloxos-update init --directory "$PWD/docker" --yes
-          sudo env SMOKE_CONFIRM_DISPOSABLE=1 BLOXOS_EXPECT_VERSION="$BLOXOS_EXPECT_VERSION" BLOXOS_EXPECT_REVISION="$BLOXOS_EXPECT_REVISION" python3 scripts/smoke/updater-compose.py
+          sudo env SMOKE_CONFIRM_DISPOSABLE=1 SMOKE_TEST_DAEMON_RESTART=1 BLOXOS_EXPECT_VERSION="$BLOXOS_EXPECT_VERSION" BLOXOS_EXPECT_REVISION="$BLOXOS_EXPECT_REVISION" python3 scripts/smoke/updater-compose.py
 
   # Multi-platform build and push, version tags only. This is the only job
   # with package write permission. Both images are pushed by digest first,
