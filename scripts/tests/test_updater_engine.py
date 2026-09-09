@@ -265,6 +265,20 @@ class LockTests(unittest.TestCase):
 
 
 class TransactionTests(unittest.TestCase):
+    def test_corrupt_or_unknown_journal_never_restarts_originals(self):
+        for raw in ("{broken", "[]", "{}", '{"phase":"unknown"}'):
+            with self.subTest(raw=raw), tempfile.TemporaryDirectory() as tmp:
+                cfg = make_config(tmp)
+                adapter = FakeAdapter()
+                transaction = txn(cfg, adapter)
+                os.makedirs(transaction.transaction_dir)
+                with open(transaction.journal.path, "w") as stream:
+                    stream.write(raw)
+                with self.assertRaises(engine.UpdaterError):
+                    transaction.recover()
+                self.assertTrue(transaction.journal.exists())
+                self.assertEqual(adapter.calls, [])
+
     def test_reopen_happens_only_after_durable_commit_and_retries_without_restore(self):
         for failure, expected in ((None, engine.SUCCEEDED), ("install", engine.ROLLED_BACK), ("backup", engine.FAILED)):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:

@@ -236,9 +236,14 @@ class Journal:
     def _load(self) -> dict:
         try:
             with open(self.path, "rb") as fh:
-                return json.loads(fh.read())
-        except (FileNotFoundError, ValueError):
+                data = json.loads(fh.read())
+        except FileNotFoundError:
             return {}
+        except ValueError:
+            raise UpdaterError("recovery journal is corrupt; refusing to guess the installed state")
+        if not isinstance(data, dict):
+            raise UpdaterError("recovery journal is not an object")
+        return data
 
     def set_phase(self, phase: str):
         data = self._load()
@@ -654,6 +659,8 @@ class Transaction:
         if not self.journal.exists():
             return IDLE
         phase = self.journal.phase()
+        if phase not in (CHECKING, STAGING, BACKING_UP, INSTALLING, VERIFYING, ROLLING_BACK, SUCCEEDED, ROLLED_BACK, FAILED):
+            raise UpdaterError("unknown recovery phase; refusing to reopen traffic")
         rid = self.journal.get("request_id", "")
         version = self.journal.get("version", "")
         if phase in (SUCCEEDED, ROLLED_BACK, FAILED):
