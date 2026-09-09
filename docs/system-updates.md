@@ -28,6 +28,11 @@ Setup displays the detected installation and asks for confirmation. It installs
 use the short command above or the dashboard button. Python 3.10 or newer is
 required. An existing native deployment also needs its supported Node runtime.
 
+The button updates the hub and dashboard. To refresh the separately installed
+host helper itself when release notes call for it, rerun the bootstrap command;
+it preserves the existing deployment configuration and refuses to replace a
+worker that is currently running a transaction.
+
 The worker supports the standard Linux/systemd native hub and dashboard behind
 Caddy, or the standard local Docker Compose stack with its named data volumes.
 It verifies which installation serves the configured public HTTPS address.

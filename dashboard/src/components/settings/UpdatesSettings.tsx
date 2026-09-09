@@ -42,7 +42,7 @@ export function UpdatesSettings() {
   const [requestError, setRequestError] = useState<string | null>(null);
   const [requesting, setRequesting] = useState(false);
   const phaseRef = useRef(phase);
-  phaseRef.current = phase;
+  useEffect(() => { phaseRef.current = phase; }, [phase]);
   const requestIDRef = useRef<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 

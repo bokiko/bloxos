@@ -16,7 +16,7 @@ import zipapp
 import zipfile
 
 from .compose import ComposeAdapter, atomic_json, run
-from .engine import Config, Mailbox, UpdaterError, run_worker
+from .engine import Config, Mailbox, UpdaterError, exclusive_lock, run_worker
 
 CONFIG = Path("/etc/bloxos-updater/config.json")
 ROOT = Path("/var/lib/bloxos-updater")
@@ -303,6 +303,14 @@ def main(argv=None):
         if args.command == "worker":
             return worker()
         if args.command == "update":
+            # Re-running the official bootstrap on an already configured host
+            # refreshes the helper without overwriting deployment identity.
+            # Never replace worker code while a transaction is running.
+            current = Path(sys.argv[0]).resolve()
+            if current != CODE and zipfile.is_zipfile(current):
+                config = Config.load(str(CONFIG))
+                with exclusive_lock(str(Path(config.state_dir) / "worker.lock")):
+                    install_code()
             return request_update()
         config = Config.load(str(CONFIG))
         print(Path(config.mailbox_dir, "outbox", "status.json").read_text())
