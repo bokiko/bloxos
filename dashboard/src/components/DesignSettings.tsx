@@ -9,11 +9,22 @@ const designs: { id: Layout; name: string; description: string }[] = [
   { id: "wall", name: "Operations Wall", description: "An open canvas of fleet health, resources and machines." },
   { id: "grove", name: "Grove Workspace", description: "Sidebar navigation, central analytics and a live context rail." },
   { id: "console", name: "Precision Console", description: "A compact, table-first workspace with telemetry instruments." },
+  { id: "ledger", name: "Ledger", description: "A still, type-led read of the fleet. Nothing animates and colour marks only what needs attention." },
 ];
 
 function DesignPreview({ layout }: { layout: Layout }) {
   return <svg viewBox="0 0 240 120" aria-hidden="true" className="w-full rounded-md mb-3 bg-blox-bg text-blox-blue border border-blox-border">
-    {layout === "grove" ? <>
+    {layout === "ledger" ? <>
+      {/* Rules and text, no cards: the layout's whole idea in one thumbnail. */}
+      <rect x="7" y="10" width="70" height="9" rx="2" fill="currentColor" opacity=".55" />
+      <rect x="7" y="27" width="226" height="1" fill="currentColor" opacity=".35" />
+      {[36,52,68].map((y, i) => <g key={y}>
+        <rect x="7" y={y} width={i === 0 ? 54 : 44} height="6" rx="2" fill="currentColor" opacity=".3" />
+        <rect x="96" y={y} width="137" height="6" rx="2" fill="currentColor" opacity=".16" />
+      </g>)}
+      <rect x="7" y="84" width="226" height="1" fill="currentColor" opacity=".35" />
+      {[93,104].map(y => <rect key={y} x="7" y={y} width="150" height="5" rx="2" fill="currentColor" opacity=".16" />)}
+    </> : layout === "grove" ? <>
       <rect x="7" y="7" width="37" height="106" rx="5" fill="currentColor" opacity=".25" />
       <rect x="51" y="7" width="128" height="43" rx="7" fill="currentColor" opacity=".45" />
       <rect x="186" y="7" width="47" height="106" rx="5" fill="currentColor" opacity=".2" />
@@ -46,7 +57,7 @@ export function DesignSettings({ compact = false }: { compact?: boolean }) {
         {!compact && <p className="text-xs text-blox-muted mt-1">{design.description}</p>}
       </button>)}
     </div>
-    {layout !== "classic" && <div role="group" aria-label="Design color" className="flex flex-wrap gap-2">
+    {layout !== "classic" && layout !== "ledger" && <div role="group" aria-label="Design color" className="flex flex-wrap gap-2">
       {DESIGN_COLORS.map(option => <button key={option} type="button" aria-pressed={color === option}
         aria-label={`Use ${option} design color`} onClick={() => setColor(option)} disabled={!ready}
         className={cn("px-3 py-2 text-xs rounded-md border capitalize", color === option ? "border-blox-blue text-blox-blue bg-blox-blue/10" : "border-blox-border text-blox-muted")}>{option}</button>)}

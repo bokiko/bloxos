@@ -3,7 +3,16 @@ import assert from 'node:assert/strict';
 import { DESIGN_LAYOUTS, DESIGN_COLORS, normalizeDesign, readDesign, writeDesign, hasDesignCache, hasPendingDesign, markDesignSynced } from './design-prefs.mjs';
 
 test('designs and colors are independent and have exactly nine new combinations', () => {
-  assert.equal((DESIGN_LAYOUTS.length - 1) * DESIGN_COLORS.length, 9);
+  // Colour variants belong only to the layouts that carry a colour column.
+  // Classic and Ledger each ship ONE fixed palette and store no colour, so the
+  // nine combinations come from the three that do.
+  const withColors = Object.keys(normalizeDesign(null).colors);
+  assert.deepEqual(withColors, ['wall', 'grove', 'console']);
+  assert.equal(withColors.length * DESIGN_COLORS.length, 9);
+  for (const fixed of ['classic', 'ledger']) {
+    assert.ok(DESIGN_LAYOUTS.includes(fixed));
+    assert.equal(normalizeDesign({ layout: fixed }).colors[fixed], undefined);
+  }
   for (const layout of DESIGN_LAYOUTS) for (const color of DESIGN_COLORS) {
     const prefs = normalizeDesign({ layout, colors: { wall: color, grove: color, console: color } });
     assert.equal(prefs.layout, layout);

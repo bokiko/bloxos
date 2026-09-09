@@ -12,7 +12,11 @@ import (
 
 var designColumns = map[string]string{"wall": "wall_color", "grove": "grove_color", "console": "console_color"}
 
-func validDesignLayout(v string) bool { return v == "classic" || designColumns[v] != "" }
+// Ledger, like classic, has a single fixed palette and therefore no colour
+// column: colour there is reserved for severity, so there is nothing to pick.
+func validDesignLayout(v string) bool {
+	return v == "classic" || v == "ledger" || designColumns[v] != ""
+}
 func validDesignColor(v string) bool  { return v == "original" || v == "bright" || v == "dark" }
 
 type designPrefs struct {

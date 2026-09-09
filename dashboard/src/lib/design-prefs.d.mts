@@ -1,6 +1,9 @@
-export type Layout = 'classic' | 'wall' | 'grove' | 'console';
+export type Layout = 'classic' | 'wall' | 'grove' | 'console' | 'ledger';
 export type DesignColor = 'original' | 'bright' | 'dark';
-export interface DesignPreferences { layout: Layout; colors: Record<Exclude<Layout, 'classic'>, DesignColor>; }
+/** Only the layouts with a colour column carry a colour. Classic and Ledger
+ * each ship one fixed palette, so neither stores nor offers a choice. */
+export type ColorfulLayout = Exclude<Layout, 'classic' | 'ledger'>;
+export interface DesignPreferences { layout: Layout; colors: Record<ColorfulLayout, DesignColor>; }
 export const DESIGN_LAYOUTS: readonly Layout[];
 export const DESIGN_COLORS: readonly DesignColor[];
 export function normalizeDesign(value: unknown): DesignPreferences;
