@@ -11,7 +11,7 @@ test('new layouts report unavailable GPU telemetry for CPU-only and empty fleets
  for(const machines of [[],[cpuOnly()]]){
   const result=aggregate(machines);
   for(const key of ['avgGpuUtil','avgVram','maxGpuTemp','gpuPowerTotal'])assert.equal(result[key],null,key);
-  assert.deepEqual(result.topGpu,[]);assert.deepEqual(result.topVram,[]);
+  assert.deepEqual(result.topGpu,[]);
  }
  assert.equal(aggregate([]).onlinePct,null);
 });
@@ -27,7 +27,6 @@ test('stale and offline machines cannot contribute to current resource or power 
  const result=aggregate([stale,offline]);
  for(const key of ['avgCpu','avgRam','avgGpuUtil','avgVram','maxGpuTemp','gpuPowerTotal'])assert.equal(result[key],null,key);
  assert.deepEqual(result.topGpu,[]);
- assert.deepEqual(result.topVram,[]);
 });
 test('fleet averages count GPUs, not machine averages, when device counts differ',()=>{
  const second={...gpuMachine(),machine_id:'single',gpus:[{name:'GPU0',util_percent:100,mem_used_bytes:8,mem_total_bytes:8,temp_c:70,power_watts:50}]};

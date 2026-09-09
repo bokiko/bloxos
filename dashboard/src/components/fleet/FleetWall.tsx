@@ -123,7 +123,6 @@ export function FleetWall() {
 
         <article className="lw-tile lw-ranks">
           <Ranks title="Top GPU utilization" rows={agg.topGpu} />
-          <Ranks title="Top VRAM usage" rows={agg.topVram} />
         </article>
 
         <article className="lw-tile lw-foot-tile">

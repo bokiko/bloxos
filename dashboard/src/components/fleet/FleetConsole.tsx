@@ -144,7 +144,6 @@ export function FleetConsole() {
           </div>
         </section>
         <Instrument title="Top GPU utilization" rows={agg.topGpu} />
-        <Instrument title="Top VRAM usage" rows={agg.topVram} />
       </div>
 
       <div className="lc-bottom">

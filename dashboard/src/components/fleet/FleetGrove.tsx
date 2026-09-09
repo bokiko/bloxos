@@ -89,7 +89,6 @@ export function FleetGrove() {
 
       <div className="lg-ranks">
         <Ranks title="Top GPU utilization" rows={agg.topGpu} />
-        <Ranks title="Top VRAM usage" rows={agg.topVram} />
       </div>
 
       <section className="lg-fleet">
