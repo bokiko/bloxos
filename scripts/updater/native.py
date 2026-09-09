@@ -472,6 +472,7 @@ def _fsync_dir(path):
 
 def discover_native(repo_dir=None, *, show=None, read_proc=None, listeners=None,
                     caddy_config=None, leaf_cert=None, read_cgroup=None,
+                    address_is_local=None,
                     proxy_candidates=("caddy.service", "bloxos-caddy.service")) -> dict:
     """Read-only evidence for a one-time `init`, grounded in the ACTUAL running
     services and the ACTIVE proxy config — never unit-file text, /home guesses,
@@ -497,6 +498,7 @@ def discover_native(repo_dir=None, *, show=None, read_proc=None, listeners=None,
     caddy_config = caddy_config or _caddy_config
     leaf_cert = leaf_cert or _leaf_cert
     read_cgroup = read_cgroup or _read_cgroup
+    address_is_local = address_is_local or _address_is_local
 
     hub = show("bloxos-hub.service")
     dash = show("bloxos-dashboard.service")
@@ -568,7 +570,7 @@ def discover_native(repo_dir=None, *, show=None, read_proc=None, listeners=None,
     hub_url = listener_url(hub_listener)
     dash_url = listener_url(dash_listener)
     routing_verified, reason = _verify_routing(public_url, hub_url, dash_url, ca_file,
-                                               caddy_config, leaf_cert)
+                                               caddy_config, leaf_cert, address_is_local)
 
     return {
         "mode": "native",
@@ -584,10 +586,12 @@ def discover_native(repo_dir=None, *, show=None, read_proc=None, listeners=None,
     }
 
 
-def _verify_routing(public_url, hub_url, dash_url, ca_file, caddy_config, leaf_cert):
+def _verify_routing(public_url, hub_url, dash_url, ca_file, caddy_config, leaf_cert,
+                    address_is_local=None):
     """Proof, not confirmation: (1) the active Caddy config routes to the owned
-    loopback hub/dashboard; (2) the local :443 leaf equals the public :443 leaf,
-    verified under BLOXOS_CA_CERT (private) or system trust (public)."""
+    loopback hub/dashboard; (2) the public edge is proven to be THIS host —
+    by certificate for a DNS name, by local address ownership for a bare IP."""
+    address_is_local = address_is_local or _address_is_local
     try:
         cfg = caddy_config()
     except engine.UpdaterError as err:
@@ -601,6 +605,24 @@ def _verify_routing(public_url, hub_url, dash_url, ca_file, caddy_config, leaf_c
         return False, "public URL is not https; cannot prove the edge by certificate"
     host = pub.hostname
     port = pub.port or 443
+    if _is_ip_literal(host):
+        # A bare-IP deployment CANNOT be proven by comparing TLS leaves. SNI may
+        # not carry an IP literal (RFC 6066), so Python sends no SNI at all for
+        # one; with no SNI the proxy selects its certificate by the LOCAL address
+        # the connection landed on. Dialling the public IP therefore serves fine,
+        # but the loopback leg of the comparison finds no certificate for
+        # 127.0.0.1 and the handshake dies — the local-vs-public comparison is
+        # simply not expressible for an IP edge. Prove it structurally: the public address
+        # must be assigned to THIS host. Together with the already-proven facts —
+        # the verified-owned Caddy holds :443 and its active config routes to our
+        # owned loopback backends — an IP that is bound here cannot be served
+        # anywhere else, which is a STRONGER claim than certificate equality
+        # (two hosts can share a certificate; one LAN address binds in one place).
+        if not address_is_local(host):
+            return False, ("the public address %s is not configured on this host; "
+                           "re-run init on the machine that serves it" % host)
+        return True, ("proxy routes owned loopback backends and the public address "
+                      "is bound to this host")
     try:
         local = leaf_cert("127.0.0.1", 443, host, ca_file)
         remote = leaf_cert(host, port, host, ca_file)
@@ -681,6 +703,38 @@ def _caddy_config(admin="http://127.0.0.1:2019/config/"):
         return _json.loads(body)
     except ValueError:
         raise engine.UpdaterError("caddy admin config is not JSON")
+
+
+def _is_ip_literal(host):
+    """True when the public host is a bare IP address rather than a DNS name."""
+    try:
+        ipaddress.ip_address((host or "").strip("[]"))
+        return True
+    except ValueError:
+        return False
+
+
+def _address_is_local(host):
+    """True iff `host` is an IP assigned to one of THIS host's interfaces.
+
+    Binding an ephemeral socket to an address succeeds only when the kernel has
+    that address on a local interface; otherwise it fails with EADDRNOTAVAIL.
+    That makes this a definitive ownership check with no extra dependency and
+    no parsing of `ip addr` output. Port 0 is ephemeral and the socket is closed
+    immediately, so nothing is disturbed."""
+    import socket
+    try:
+        infos = socket.getaddrinfo(host, 0, type=socket.SOCK_STREAM)
+    except OSError:
+        return False
+    for family, socktype, proto, _canon, sockaddr in infos:
+        try:
+            with socket.socket(family, socktype, proto) as probe:
+                probe.bind(sockaddr)
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def _leaf_cert(host, port, server_name, ca_file):
