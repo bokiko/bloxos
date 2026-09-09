@@ -77,10 +77,11 @@ jobs:
   hub-race:
     name: Hub Tests (race)
     runs-on: ubuntu-latest
-    # The full suite can exceed 10m on hosted runners with race-instrumented
-    # bcrypt setup. Allow headroom without disabling the hang guard. Keep Go's
+    # The full suite can exceed 15m on hosted runners with race-instrumented
+    # bcrypt setup (PR208 reached the Windows tests before the old deadline).
+    # Allow headroom without disabling the hang guard. Keep Go's
     # deadline below the job limit so failures include goroutine stacks.
-    timeout-minutes: 20
+    timeout-minutes: 25
     defaults:
       run:
         working-directory: hub
@@ -95,7 +96,7 @@ jobs:
           cache-dependency-path: hub/go.sum
 
       - name: Run hub tests with the race detector
-        run: go test -race -count=1 -timeout=15m ./...
+        run: go test -race -count=1 -timeout=20m ./...
 
   agent:
     name: Agent Tests
