@@ -157,6 +157,22 @@ func (s *Server) handleCreateToken(c echo.Context) error {
 		})
 	}
 
+	// A command that cannot deliver an installable agent is not a trustworthy
+	// command either: the operator runs it on a real machine and only there
+	// discovers the hub refuses the download. A markerless binary can never
+	// prove it supports the enrollment handshake, so when no Linux
+	// architecture can be served, mint nothing and say exactly how to fix it.
+	servable, markerless := enrollmentAgentReadiness()
+	if reason := enrollmentRefusal(servable, markerless); reason != "" {
+		log.Printf("token_create: refusing to mint, no Linux agent can prove enrollment support: %s",
+			strings.Join(markerless, "; "))
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": reason})
+	}
+	if len(markerless) > 0 {
+		log.Printf("token_create: minting; these platforms cannot serve a fresh install: %s",
+			strings.Join(markerless, "; "))
+	}
+
 	// Everything the join command needs is settled before the token row
 	// exists, so a hub that cannot produce a trustworthy command mints
 	// nothing: no token, no link, no fallback to an unauthenticated fetch.
@@ -636,6 +652,58 @@ func (s *Server) caCertCandidatePaths() []string {
 // self-update path carries no enrollment flag and is never gated, so eligible
 // agents (including markerless ones) still download updates.
 const minEnrollmentAgentRelease uint64 = 1
+
+// enrollmentAgentReadiness reports which Linux architectures this hub could
+// hand to a FRESH install, and which resolve to a binary the enrollment gate
+// would refuse. It applies exactly the condition handleDownloadAgent enforces,
+// so an Add Machine command is not minted for a download that is certain to
+// fail on the operator's new machine.
+//
+// Only the MARKERLESS case is reported as blocking. An architecture with no
+// resolvable binary at all is a different, pre-existing condition that the
+// download answers with a 404 naming every path it looked at, and is left to
+// that path rather than widened into a reason to mint nothing.
+// enrollmentReadinessFrom is the classification itself, over an injected state
+// lookup so it can be tested without a root-owned binary on disk (the resolver
+// rightly refuses anything else).
+func enrollmentReadinessFrom(stateFor func(agentPlatform) agentBinaryState) (servable []string, markerless []string) {
+	for _, platform := range supportedAgentPlatforms {
+		if platform.OS != "linux" {
+			continue
+		}
+		state := stateFor(platform)
+		if state.Error != "" || state.Path == "" || state.SHA == "" {
+			continue
+		}
+		if state.Release < minEnrollmentAgentRelease {
+			markerless = append(markerless, fmt.Sprintf("%s (source %s)", platform, state.Source))
+			continue
+		}
+		servable = append(servable, platform.String())
+	}
+	return servable, markerless
+}
+
+func enrollmentAgentReadiness() (servable []string, markerless []string) {
+	return enrollmentReadinessFrom(func(platform agentPlatform) agentBinaryState {
+		recomputeBinaryForPlatform(platform)
+		return currentAgentBinaryStateFor(platform.OS, platform.Arch)
+	})
+}
+
+// enrollmentRefusal returns the operator-facing reason Add Machine must mint
+// nothing, or "" to proceed. Refusing needs BOTH halves: something is served
+// for Linux, and nothing served can prove enrollment support.
+func enrollmentRefusal(servable, markerless []string) string {
+	if len(servable) > 0 || len(markerless) == 0 {
+		return ""
+	}
+	return "cannot generate an install command: the agent binary this hub serves for " +
+		strings.Join(markerless, ", ") + " carries no release marker, so the hub cannot verify it " +
+		"supports the enrollment handshake and would refuse the download on the new machine. " +
+		"Stage the official agent bundle following docs/native-agent-upgrades.md, then generate a " +
+		"new Add Machine command. Already-enrolled agents are unaffected and keep updating."
+}
 
 func handleDownloadAgent(c echo.Context) error {
 	// The target OS is detected from either the explicit ?os= query parameter
