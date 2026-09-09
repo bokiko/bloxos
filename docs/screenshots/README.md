@@ -14,26 +14,31 @@ are illustrative, not hardware benchmarks.
 
 An open overview with fleet health, resource bars and a machine register.
 
-![Operations Wall in its original blue palette, with summary panels and Linux and Windows demo machines](operations-wall.png)
+![Operations Wall in its original blue palette, with summary panels and Linux and Windows demo machines](https://cdn.jsdelivr.net/gh/bokiko/bloxos@bca13c456ecc1e5bd89282f96486a43b602bc4f9/docs/screenshots/operations-wall.png)
 
 ## Grove Workspace · Original
 
 A sidebar, central fleet analytics and a separate operational context column.
 
-![Grove Workspace in its original green palette, showing fleet analytics and a right-hand context column](grove-workspace.png)
+![Grove Workspace in its original green palette, showing fleet analytics and a right-hand context column](https://cdn.jsdelivr.net/gh/bokiko/bloxos@bca13c456ecc1e5bd89282f96486a43b602bc4f9/docs/screenshots/grove-workspace.png)
 
 ## Precision Console · Bright
 
 A compact navigation rail and table-first view with telemetry instruments.
 
-![Precision Console in its bright palette, showing a machine table and telemetry panels](precision-console.png)
+![Precision Console in its bright palette, showing a machine table and telemetry panels](https://cdn.jsdelivr.net/gh/bokiko/bloxos@bca13c456ecc1e5bd89282f96486a43b602bc4f9/docs/screenshots/precision-console.png)
 
 ## Asset notes
 
 - Captured from the release candidate whose source tree matches v1.1.0
   (`a46b39954616c8c1cb851412ee46fe05c816ab3e`).
-- Images are unmodified browser captures, 1440 pixels wide, stored locally so
-  the gallery does not depend on an external image host.
+- Images are unmodified browser captures, 1440 pixels wide. Originals remain
+  version-controlled beside this file.
+- Embedded images use commit-pinned jsDelivr copies of these public repository
+  files because GitHub raw-image delivery returned intermittent 503 errors.
+  When replacing captures, commit the new images
+  first, then update the image URLs in this gallery and the root README to that
+  commit. The URL pin identifies the stored files, not the app version captured.
 - Only synthetic fixture machines are visible. No enrollment links, passwords,
   tokens, real network addresses or private machine names are included.
 - The app's canonical [logo SVGs](../../dashboard/public/brand/) are reused by
