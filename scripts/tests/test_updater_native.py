@@ -421,6 +421,24 @@ class PreflightOwnershipTests(unittest.TestCase):
 
 
 class DiscoverTests(unittest.TestCase):
+    def test_ipv6_loopback_upstreams_match_standard_caddy_brackets(self):
+        for dial in ("[::1]", "[0:0:0:0:0:0:0:1]"):
+            with self.subTest(dial=dial):
+                config = {"upstreams": [{"dial": dial + ":4000"}, {"dial": dial + ":3000"}]}
+                valid, reason = native._verify_routing(
+                    "https://hub.example", "http://[::1]:4000", "http://[::1]:3000", None,
+                    lambda: config, lambda *_: b"same verified certificate")
+                self.assertTrue(valid, reason)
+        self.assertEqual(native._hostport("http://[::1]:4000"), "[::1]:4000")
+
+    def test_ipv6_listener_is_not_mistaken_for_ipv4_upstream(self):
+        config = {"upstreams": [{"dial": "127.0.0.1:4000"}, {"dial": "127.0.0.1:3000"}]}
+        valid, _ = native._verify_routing(
+            "https://hub.example", "http://[::1]:4000", "http://[::1]:3000", None,
+            lambda: config, lambda *_: b"same verified certificate")
+        self.assertFalse(valid)
+        self.assertNotEqual(native._norm_hostport("[::1]:4000"), native._norm_hostport("127.0.0.1:4000"))
+
     def _seams(self, *, caddy_ok=True, cert_match=True,
                dash_owner="bloxos-dashboard.service", caddy443_owner="caddy.service",
                hub_env=None):

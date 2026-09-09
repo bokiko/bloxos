@@ -719,13 +719,21 @@ def _caddy_upstreams(node, acc=None):
 
 def _hostport(url):
     parts = engine._split(url)
-    return "%s:%d" % (parts.hostname, parts.port or 80)
+    host = parts.hostname or ""
+    return "%s:%d" % (f"[{host}]" if ":" in host else host, parts.port or 80)
 
 
 def _norm_hostport(hostport):
     host, _, port = hostport.rpartition(":")
-    if host in ("localhost", "::1", ""):
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
+    if host in ("localhost", ""):
         host = "127.0.0.1"
+    try:
+        address = ipaddress.ip_address(host)
+        host = f"[{address.compressed}]" if address.version == 6 else str(address)
+    except ValueError:
+        pass
     return "%s:%s" % (host, port)
 
 
