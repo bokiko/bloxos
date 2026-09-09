@@ -8,13 +8,13 @@ they are not containerized.
 
 Use Docker Compose v2 on a Linux amd64 or arm64 host. Ports 80 and 443 must
 be free, and browsers and agents must be able to reach the host. From a
-clone of the released `v1.2.1` tag:
+clone of the released `v1.2.2` tag:
 
 ```bash
 cd docker
 cp .env.example .env
 # Edit .env: set HUB_HOST to this machine's reachable hostname or IP.
-# Add BLOXOS_VERSION=1.2.1 to use this release's images.
+# Add BLOXOS_VERSION=1.2.2 to use this release's images.
 docker compose pull
 docker compose up -d --no-build
 ```
@@ -89,6 +89,21 @@ docker compose up -d --no-build hub dashboard
 
 Source-build installations instead update to a chosen tested source revision
 and run `docker compose up -d --build`.
+
+For v1.2.2's stable onboarding pins, add `reuse_private_keys` inside your
+existing Caddy `tls internal` block, retaining `key_type rsa2048`. Compare the
+[bundled Caddyfile](Caddyfile); preserve custom routes, settings and CA data.
+Pulling hub/dashboard images does not update this bind-mounted configuration.
+Validate and reload the configuration after editing:
+
+```bash
+docker compose exec caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+```
+
+Without that proxy change, generate a fresh command if renewal changes the key
+after you copied it. Never remove pinning to work around a mismatch. See
+[TLS trust for onboarding](../docs/configuration.md#tls-trust-for-onboarding).
 
 ### 2. Verify
 
