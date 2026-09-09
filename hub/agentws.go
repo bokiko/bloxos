@@ -162,15 +162,15 @@ func (s *Server) handleCreateToken(c echo.Context) error {
 	// discovers the hub refuses the download. A markerless binary can never
 	// prove it supports the enrollment handshake, so when no Linux
 	// architecture can be served, mint nothing and say exactly how to fix it.
-	servable, markerless := enrollmentAgentReadiness()
-	if reason := enrollmentRefusal(servable, markerless); reason != "" {
+	servable, unusable := enrollmentAgentReadiness()
+	if reason := enrollmentRefusal(servable, unusable); reason != "" {
 		log.Printf("token_create: refusing to mint, no Linux agent can prove enrollment support: %s",
-			strings.Join(markerless, "; "))
+			strings.Join(unusable, "; "))
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": reason})
 	}
-	if len(markerless) > 0 {
+	if len(unusable) > 0 {
 		log.Printf("token_create: minting; these platforms cannot serve a fresh install: %s",
-			strings.Join(markerless, "; "))
+			strings.Join(unusable, "; "))
 	}
 
 	// Everything the join command needs is settled before the token row
@@ -219,6 +219,7 @@ func (s *Server) handleCreateToken(c echo.Context) error {
 		JoinURL:         joinURL,
 		JoinPin:         joinPin,
 		WindowsCommand:  buildWindowsInstallCommand(httpBase, wsBase, token, caURL, caSHA256, false),
+		Unusable:        unusable,
 		CAURL:           caURL,
 		CASHA256:        caSHA256,
 		ExpiresAt:       expiresAt.Format(time.RFC3339),
@@ -663,14 +664,15 @@ const minEnrollmentAgentRelease uint64 = 1
 // resolvable binary at all is a different, pre-existing condition that the
 // download answers with a 404 naming every path it looked at, and is left to
 // that path rather than widened into a reason to mint nothing.
-// enrollmentReadinessFrom is the classification itself, over an injected state
-// lookup so it can be tested without a root-owned binary on disk (the resolver
-// rightly refuses anything else).
+// enrollmentReadinessFrom classifies EVERY supported platform over an injected
+// state lookup, so it can be tested without a root-owned binary on disk (the
+// resolver rightly refuses anything else).
+//
+// Every platform is inspected because one response carries a Linux command AND
+// a Windows command: judging both by the Linux payload alone would block a
+// working Windows fleet over a stale Linux binary it never uses.
 func enrollmentReadinessFrom(stateFor func(agentPlatform) agentBinaryState) (servable []string, markerless []string) {
 	for _, platform := range supportedAgentPlatforms {
-		if platform.OS != "linux" {
-			continue
-		}
 		state := stateFor(platform)
 		if state.Error != "" || state.Path == "" || state.SHA == "" {
 			continue
@@ -692,8 +694,15 @@ func enrollmentAgentReadiness() (servable []string, markerless []string) {
 }
 
 // enrollmentRefusal returns the operator-facing reason Add Machine must mint
-// nothing, or "" to proceed. Refusing needs BOTH halves: something is served
-// for Linux, and nothing served can prove enrollment support.
+// nothing, or "" to proceed.
+//
+// Refusing needs BOTH halves: something is served, and NOTHING served can
+// prove enrollment support — no platform in this response could enrol a
+// machine, so there is no usable command to hand over. When some platforms are
+// usable the command IS minted and the unusable ones are named on the
+// response, because a single boolean over a multi-platform payload can only be
+// wrong for somebody: either block a working Windows fleet, or hand over a
+// Linux command already known to fail.
 func enrollmentRefusal(servable, markerless []string) string {
 	if len(servable) > 0 || len(markerless) == 0 {
 		return ""

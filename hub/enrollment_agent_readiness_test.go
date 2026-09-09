@@ -70,13 +70,19 @@ func TestEnrollmentReadinessClassification(t *testing.T) {
 		}
 	})
 
-	t.Run("windows is not consulted for a Linux join command", func(t *testing.T) {
+	// One response carries both a Linux and a Windows command, so Windows is
+	// classified too. Judging both by the Linux payload would block a working
+	// Windows fleet over a stale Linux binary it never uses.
+	t.Run("windows is classified, not ignored", func(t *testing.T) {
 		servable, markerless := enrollmentReadinessFrom(stateFor(map[string]agentBinaryState{
-			"windows/amd64": servedRelease(0),
+			"linux/amd64":   servedRelease(0),
+			"windows/amd64": servedRelease(7),
 		}))
-		if len(servable) != 0 || len(markerless) != 0 {
-			t.Fatalf("windows must not affect Linux readiness, got servable=%v markerless=%v",
-				servable, markerless)
+		if len(servable) != 1 || servable[0] != "windows/amd64" {
+			t.Fatalf("want windows/amd64 servable, got %v", servable)
+		}
+		if len(markerless) != 1 || !strings.Contains(markerless[0], "linux/amd64") {
+			t.Fatalf("want linux/amd64 reported unusable, got %v", markerless)
 		}
 	})
 }
@@ -99,11 +105,16 @@ func TestEnrollmentRefusalDecision(t *testing.T) {
 		}
 	})
 
-	t.Run("proceeds when any architecture is servable", func(t *testing.T) {
-		// A fleet of amd64 machines is legitimately unaffected by a missing or
-		// markerless arm64 payload, so one good architecture is enough.
+	t.Run("proceeds when any platform is servable", func(t *testing.T) {
+		// An amd64 fleet is legitimately unaffected by a missing or markerless
+		// arm64 payload, so one good platform is enough to mint.
 		if reason := enrollmentRefusal([]string{"linux/amd64"}, markerless); reason != "" {
-			t.Fatalf("one servable arch must allow minting, got %q", reason)
+			t.Fatalf("one servable platform must allow minting, got %q", reason)
+		}
+		// The case the second reviewer raised: a Windows-only fleet must not be
+		// blocked by a stale Linux payload it never installs.
+		if reason := enrollmentRefusal([]string{"windows/amd64"}, markerless); reason != "" {
+			t.Fatalf("a working Windows platform must allow minting, got %q", reason)
 		}
 	})
 
