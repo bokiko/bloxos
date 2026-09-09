@@ -85,7 +85,7 @@ dashboard support **Linux amd64 and arm64**. Ports **80 and 443** must be availa
 ### 1. Download BloxOS
 
 ```sh
-git clone --branch v1.2.0 --depth 1 https://github.com/bokiko/bloxos.git
+git clone --branch v1.2.1 --depth 1 https://github.com/bokiko/bloxos.git
 cd bloxos/docker
 cp .env.example .env
 ```
@@ -97,7 +97,7 @@ hostname or IP—without `https://`, a path, or a port—and add the version:
 
 ```dotenv
 HUB_HOST=192.168.1.50
-BLOXOS_VERSION=1.2.0
+BLOXOS_VERSION=1.2.1
 ```
 
 Replace the example IP with your own address. Do not use `localhost` if other
@@ -145,7 +145,7 @@ second hub. A public one-line *hub* installer is not shipped.
 which preserves the database, secrets, signing identity and Caddy CA. Never
 use `docker compose down -v` to update.
 
-In your existing Compose directory, set `BLOXOS_VERSION=1.2.0` in your existing
+In your existing Compose directory, set `BLOXOS_VERSION=1.2.1` in your existing
 `.env`, then run these with the same project name and any existing overrides:
 
 ```sh
@@ -170,7 +170,7 @@ On a native installation, replacing the hub executable does **not** replace
 separate agent files. Use the [native agent check-and-stage guide](docs/native-agent-upgrades.md)
 to prepare the published payloads without starting a fleet rollout.
 
-[Release notes](https://github.com/bokiko/bloxos/releases/tag/v1.2.0) ·
+[Release notes](https://github.com/bokiko/bloxos/releases/tag/v1.2.1) ·
 [Update signing](docs/offline-update-signing.md) ·
 [Agent recovery](docs/agent-update-recovery.md)
 
