@@ -261,7 +261,8 @@ func recomputeBinaryForPlatform(platform agentPlatform) {
 	if previous.SHA != "" && previous.SHA != sha {
 		log.Printf("version: %s agent binary changed (%s -> %s), update will propagate",
 			platform, versionShortSHA(previous.SHA), versionShortSHA(sha))
-		// Reset circuit breaker — a fresh build deserves a fresh rollout.
+		// Reset only the automatic failure breaker. The operator's durable
+		// pause lives in hub_settings and must survive a served-SHA change.
 		rolloutFailuresMu.Lock()
 		rolloutFailures = nil
 		rolloutFailuresMu.Unlock()
@@ -298,6 +299,10 @@ func agentBinaryPathForArch(osName, arch string) string {
 // Linux agents get the SHA for the architecture the hub has recorded for
 // them (amd64 when none is known, matching the arch-less download).
 func (s *Server) announceVersionToAgent(machineID string, agent *ConnectedAgent) {
+	if paused, reason := s.operatorRolloutPause(); paused {
+		log.Printf("rollout: not announcing version to %s: %s", machineID, reason)
+		return
+	}
 	rolloutPausedMu.RLock()
 	paused := rolloutPaused
 	rolloutPausedMu.RUnlock()
@@ -352,7 +357,20 @@ func (s *Server) announceVersionToAgent(machineID string, agent *ConnectedAgent)
 	data, _ := json.Marshal(msg)
 
 	agent.WriteMu.Lock()
+	// Do not hold the operator gate while waiting behind unrelated socket
+	// writes. Recheck durable intent after acquiring the agent's write lock.
+	s.operatorRolloutMu.RLock()
+	if paused, _ := s.operatorRolloutPause(); paused || announcedSHAForArch(osName, v.Arch) != sha {
+		s.operatorRolloutMu.RUnlock()
+		agent.WriteMu.Unlock()
+		return
+	}
+	// Bound the only network I/O inside the pause barrier, matching the
+	// existing power-history ACK writer's deadline discipline.
+	_ = agent.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	err := agent.Conn.WriteMessage(websocket.TextMessage, data)
+	_ = agent.Conn.SetWriteDeadline(time.Time{})
+	s.operatorRolloutMu.RUnlock()
 	agent.WriteMu.Unlock()
 	if err != nil {
 		log.Printf("rollout: failed to announce version to %s: %v", machineID, err)
@@ -826,6 +844,9 @@ func (s *Server) handleListVersions(c echo.Context) error {
 	paused := rolloutPaused
 	pauseReason := rolloutPauseReason
 	rolloutPausedMu.RUnlock()
+	if operatorPaused, reason := s.operatorRolloutPause(); operatorPaused {
+		paused, pauseReason = true, reason
+	}
 
 	signingEnabled, signingDisabledReason := updateSigningStatus()
 
@@ -861,16 +882,24 @@ func (s *Server) handleListVersions(c echo.Context) error {
 	})
 }
 
-func handlePauseRollout(c echo.Context) error {
-	rolloutPausedMu.Lock()
-	rolloutPaused = true
-	rolloutPauseReason = "manually paused by operator"
-	rolloutPausedMu.Unlock()
+func (s *Server) handlePauseRollout(c echo.Context) error {
+	s.operatorRolloutMu.Lock()
+	defer s.operatorRolloutMu.Unlock()
+	if err := s.setOperatorRolloutPause(true); err != nil {
+		log.Printf("rollout: could not persist operator pause: %v", err)
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "Could not save rollout pause. Do not replace served agent files; check hub database health and retry."})
+	}
 	log.Printf("rollout: PAUSED by operator")
 	return c.JSON(http.StatusOK, map[string]string{"status": "paused"})
 }
 
 func (s *Server) handleResumeRollout(c echo.Context) error {
+	s.operatorRolloutMu.Lock()
+	if err := s.setOperatorRolloutPause(false); err != nil {
+		s.operatorRolloutMu.Unlock()
+		log.Printf("rollout: could not persist operator resume: %v", err)
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "Could not save rollout resume. Rollout state was not changed; check hub database health and retry."})
+	}
 	rolloutPausedMu.Lock()
 	rolloutPaused = false
 	rolloutPauseReason = ""
@@ -879,6 +908,7 @@ func (s *Server) handleResumeRollout(c echo.Context) error {
 	rolloutFailuresMu.Lock()
 	rolloutFailures = nil
 	rolloutFailuresMu.Unlock()
+	s.operatorRolloutMu.Unlock()
 
 	log.Printf("rollout: RESUMED by operator")
 
