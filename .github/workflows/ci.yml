@@ -63,6 +63,8 @@ jobs:
 
       - name: Test wrong-installation upgrade safeguards
         run: python3 -m unittest discover -s ../scripts/tests -p 'test_upgrade*.py'
+      - name: Host updater transaction tests
+        run: python3 -m unittest discover -s ../scripts/tests -p 'test_updater*.py'
 
       - name: Test native agent bundle validation and staging
         run: |

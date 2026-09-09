@@ -1,0 +1,68 @@
+import importlib.util
+from pathlib import Path
+import tarfile
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+
+spec = importlib.util.spec_from_file_location("server_bundle", Path(__file__).resolve().parents[1] / "export-server-bundle.py")
+bundle = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(bundle)
+
+
+class PackageTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("node"), "Node runtime required")
+    def test_pnpm_dependency_resolution_survives_export_and_extraction(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from updater.engine import safe_extract_tar
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tree = root / "tree"
+            (tree / "hub").mkdir(parents=True)
+            modules = tree / "dashboard/node_modules"
+            package_a = modules / ".pnpm/a/node_modules/a"
+            package_b = modules / ".pnpm/b/node_modules/b"
+            package_a.mkdir(parents=True)
+            package_b.mkdir(parents=True)
+            (package_a / "index.js").write_text("module.exports = require('b')")
+            (package_b / "index.js").write_text("module.exports = 42")
+            (package_a.parent / "b").symlink_to("../../b/node_modules/b")
+            (modules / "a").symlink_to(".pnpm/a/node_modules/a")
+            archive = root / "server.tar.gz"
+            bundle.pack_tree(tree, archive)
+            safe_extract_tar(str(archive), str(root / "out"))
+            result = subprocess.check_output(["node", "-e", "console.log(require(process.argv[1]))", str(root / "out/dashboard/node_modules/a")], text=True)
+            self.assertEqual(result.strip(), "42")
+
+    def test_internal_links_keep_node_resolution_semantics(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            tree = root / "tree"
+            (tree / "hub").mkdir(parents=True)
+            (tree / "dashboard").mkdir()
+            (tree / "hub/bloxos-hub").write_bytes(b"fixture")
+            (tree / "dashboard/module.js").write_text("module.exports = {}")
+            (tree / "dashboard/link.js").symlink_to("module.js")
+            (tree / "dashboard/pruned.js").symlink_to("absent-traced-module.js")
+            archive = root / "bundle.tar.gz"
+            bundle.pack_tree(tree, archive)
+            with tarfile.open(archive) as packed:
+                self.assertTrue(all(item.isfile() or item.isdir() or item.issym() for item in packed))
+                self.assertTrue(packed.getmember("dashboard/link.js").issym())
+                self.assertTrue(packed.getmember("dashboard/pruned.js").issym())
+
+    def test_external_link_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "tree/hub").mkdir(parents=True)
+            (root / "tree/dashboard").mkdir()
+            (root / "outside").write_text("private")
+            (root / "tree/dashboard/escape").symlink_to(root / "outside")
+            with self.assertRaisesRegex(ValueError, "escapes"):
+                bundle.pack_tree(root / "tree", root / "bundle.tar.gz")
+
+
+if __name__ == "__main__":
+    unittest.main()

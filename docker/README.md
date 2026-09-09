@@ -8,13 +8,13 @@ they are not containerized.
 
 Use Docker Compose v2 on a Linux amd64 or arm64 host. Ports 80 and 443 must
 be free, and browsers and agents must be able to reach the host. From a
-clone of the released `v1.2.2` tag:
+clone of the released `v1.3.0` tag:
 
 ```bash
 cd docker
 cp .env.example .env
 # Edit .env: set HUB_HOST to this machine's reachable hostname or IP.
-# Add BLOXOS_VERSION=1.2.2 to use this release's images.
+# Add BLOXOS_VERSION=1.3.0 to use this release's images.
 docker compose pull
 docker compose up -d --no-build
 ```
@@ -72,6 +72,19 @@ Operations:
 - Logs: `docker compose logs -f hub`.
 
 ## Upgrades
+
+With the [host updater](../docs/system-updates.md) configured, use:
+
+```sh
+sudo bloxos-update update
+```
+
+The dashboard's **Settings → Updates** button starts the same worker.
+It preserves the selected Compose project and volumes, stages both images,
+backs up the stopped deployment and verifies the public website before
+accepting the update. Older installs need the linked one-time setup first.
+The manual instructions below are for installations **not** managed by that
+worker; do not omit an updater-managed override when operating its stack.
 
 These instructions update an existing **Compose** installation, not native
 systemd services. Healthy new containers can coexist with an older native

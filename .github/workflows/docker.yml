@@ -11,6 +11,9 @@ on:
       - "scripts/backup-compose.sh"
       - "scripts/agent_bundle.py"
       - "scripts/export-agent-bundle.sh"
+      - "scripts/export-server-bundle.py"
+      - "scripts/updater/**"
+      - "scripts/tests/test_updater*.py"
       - "scripts/test_agent_bundle.py"
       - "hub/**"
       - "agent/**"
@@ -56,7 +59,7 @@ jobs:
           context: .
           file: Dockerfile.hub
           build-args: |
-            BLOXOS_BUILD_VERSION=${{ github.ref_name }}
+            BLOXOS_BUILD_VERSION=${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v0.0.0-ci' }}
             BLOXOS_BUILD_REVISION=${{ github.sha }}
           load: true
           tags: ${{ env.HUB_IMAGE }}:latest
@@ -68,7 +71,7 @@ jobs:
           context: .
           file: Dockerfile.dashboard
           build-args: |
-            BLOXOS_BUILD_VERSION=${{ github.ref_name }}
+            BLOXOS_BUILD_VERSION=${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v0.0.0-ci' }}
             BLOXOS_BUILD_REVISION=${{ github.sha }}
           load: true
           tags: ${{ env.DASHBOARD_IMAGE }}:latest
@@ -78,9 +81,19 @@ jobs:
         env:
           SMOKE_CONFIRM_DISPOSABLE: "1"
           HUB_HOST: 127.0.0.1
-          BLOXOS_EXPECT_VERSION: ${{ github.ref_name }}
+          BLOXOS_EXPECT_VERSION: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v0.0.0-ci' }}
           BLOXOS_EXPECT_REVISION: ${{ github.sha }}
         run: scripts/smoke/compose-enroll.sh
+      - name: Verify legacy Compose upgrade and rollback
+        env:
+          BLOXOS_EXPECT_VERSION: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v0.0.0-ci' }}
+          BLOXOS_EXPECT_REVISION: ${{ github.sha }}
+        run: |
+          docker tag "$HUB_IMAGE:latest" bloxos-updater-test-hub
+          docker tag "$DASHBOARD_IMAGE:latest" bloxos-updater-test-dashboard
+          sudo env HUB_HOST=127.0.0.1 BLOXOS_VERSION=1.2.2 docker compose --project-directory "$PWD/docker" up -d --no-build --wait
+          sudo env HUB_HOST=127.0.0.1 BLOXOS_VERSION=1.2.2 python3 scripts/bloxos-update init --directory "$PWD/docker" --yes
+          sudo env SMOKE_CONFIRM_DISPOSABLE=1 BLOXOS_EXPECT_VERSION="$BLOXOS_EXPECT_VERSION" BLOXOS_EXPECT_REVISION="$BLOXOS_EXPECT_REVISION" python3 scripts/smoke/updater-compose.py
 
   # Multi-platform build and push, version tags only. This is the only job
   # with package write permission. Both images are pushed by digest first,
@@ -94,6 +107,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       hub_digest: ${{ steps.hub.outputs.digest }}
+      dashboard_digest: ${{ steps.dashboard.outputs.digest }}
     permissions:
       contents: read
       packages: write
@@ -158,7 +172,7 @@ jobs:
           docker buildx imagetools create "${dashboard_tags[@]}" "$DASHBOARD_IMAGE@$DASHBOARD_DIGEST"
 
   native-bundle:
-    name: Package native agents
+    name: Package native agents and server updater
     needs: [publish]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
@@ -178,7 +192,19 @@ jobs:
           SOURCE_SHA: ${{ github.sha }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: bash scripts/export-agent-bundle.sh "$HUB_IMAGE@$HUB_DIGEST" "$SOURCE_SHA" "$RELEASE_TAG" "$RUNNER_TEMP/native-agents"
-      - name: Attach native payloads to a draft release
+      - name: Extract the exact published server pair
+        # Server archives are the exact published image contents, not separate
+        # source rebuilds. The updater installs hub/dashboard, not fleet agents.
+        env:
+          HUB_DIGEST: ${{ needs.publish.outputs.hub_digest }}
+          DASHBOARD_DIGEST: ${{ needs.publish.outputs.dashboard_digest }}
+          SOURCE_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python3 scripts/export-server-bundle.py \
+            --hub "$HUB_IMAGE@$HUB_DIGEST" --dashboard "$DASHBOARD_IMAGE@$DASHBOARD_DIGEST" \
+            --revision "$SOURCE_SHA" --version "$RELEASE_TAG" --output "$RUNNER_TEMP/server-bundle"
+      - name: Attach server and agent assets to a draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
@@ -199,3 +225,8 @@ jobs:
             "$RUNNER_TEMP/native-agents/bloxos-agent-linux-amd64" \
             "$RUNNER_TEMP/native-agents/bloxos-agent-linux-arm64" \
             "$RUNNER_TEMP/native-agents/bloxos-agent-windows-amd64.exe"
+          gh release upload "$RELEASE_TAG" \
+            "$RUNNER_TEMP/server-bundle/update-manifest.json" \
+            "$RUNNER_TEMP/server-bundle/bloxos-server-linux-amd64.tar.gz" \
+            "$RUNNER_TEMP/server-bundle/bloxos-server-linux-arm64.tar.gz" \
+            "$RUNNER_TEMP/server-bundle/bloxos-update"

@@ -255,6 +255,11 @@ func main() {
 // Shared between main() and tests so the production route set and the audit
 // can never drift.
 func (s *Server) registerRoutes(e *echo.Echo) {
+	// Updater maintenance gate first: while the host worker's maintenance
+	// marker exists, only /health, /api/build-info and GET /api/system/update
+	// pass (everything else gets a generic 503).
+	e.Use(s.maintenanceMiddleware)
+
 	// Public endpoints (no auth).
 	e.GET("/health", handleHealth)
 	// Build identity for upgrade verification (public, uncached; see
@@ -327,6 +332,10 @@ func (s *Server) registerRoutes(e *echo.Echo) {
 	api.POST("/api/bulk/command", s.handleBulkCommand)
 
 	api.GET("/api/inventory", s.handleInventory)
+
+	// Unified updater status/request (fleet.admin; see system_update.go).
+	api.GET("/api/system/update", s.handleGetSystemUpdate)
+	api.POST("/api/system/update", s.handlePostSystemUpdate)
 
 	// AI Sessions (read-only live metadata) + admin feature switch.
 	api.GET("/api/ai-sessions", s.handleListAISessions)
