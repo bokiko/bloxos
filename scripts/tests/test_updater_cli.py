@@ -83,5 +83,74 @@ class CLITests(unittest.TestCase):
         self.assertEqual(list(inbox.glob(".request-*")), [])
 
 
+class InstallUnitsTests(unittest.TestCase):
+    """The per-mode systemd wiring for boot recovery (PR#217)."""
+
+    def _run(self, config):
+        writes, runs = {}, []
+        with patch.object(cli, "write_file", side_effect=lambda p, b, *a, **k: writes.__setitem__(str(p), b)), \
+             patch.object(cli, "run", side_effect=lambda cmd, *a, **k: runs.append(cmd)):
+            cli.install_units(config)
+        return writes, runs
+
+    def test_native_gates_proxy_and_leaves_worker_off_boot(self):
+        writes, runs = self._run({"mailbox_dir": "/m", "mode": "native", "proxy_unit": "caddy.service"})
+        gate = writes["/etc/systemd/system/bloxos-updater-recovery.service"]
+        self.assertIn("RemainAfterExit=yes", gate)
+        self.assertIn("recover-boot", gate)
+        self.assertIn("WantedBy=multi-user.target", gate)
+        self.assertNotIn("systemctl", gate)  # the gate never starts the worker
+        worker = writes["/etc/systemd/system/bloxos-updater.service"]
+        self.assertIn("Requires=bloxos-updater-recovery.service", worker)
+        self.assertIn("After=network-online.target bloxos-updater-recovery.service", worker)
+        # NOT boot-enabled: no [Install] section on the runtime worker in native.
+        self.assertNotIn("[Install]", worker)
+        # The proxy is gated fail-closed.
+        dropin = writes["/etc/systemd/system/caddy.service.d/05-bloxos-updater-recovery-order.conf"]
+        self.assertEqual(dropin, "[Unit]\nRequires=bloxos-updater-recovery.service\nAfter=bloxos-updater-recovery.service\n")
+        self.assertIn(["systemctl", "enable", "bloxos-updater-recovery.service"], runs)
+        self.assertIn(["systemctl", "disable", "bloxos-updater.service"], runs)
+        self.assertNotIn(["systemctl", "enable", "bloxos-updater.service"], runs)
+        self.assertIn(["systemctl", "enable", "--now", "bloxos-updater.path"], runs)
+
+    def test_compose_keeps_worker_on_boot_and_orders_after_docker(self):
+        writes, runs = self._run({"mailbox_dir": "/m", "mode": "compose"})
+        gate = writes["/etc/systemd/system/bloxos-updater-recovery.service"]
+        self.assertIn("After=network-online.target docker.service", gate)
+        worker = writes["/etc/systemd/system/bloxos-updater.service"]
+        # Boot-enabled in compose: restores suppressed restart policies + picks up
+        # a queued request across a reboot.
+        self.assertIn("[Install]\nWantedBy=multi-user.target", worker)
+        self.assertIn("Requires=bloxos-updater-recovery.service", worker)
+        # No systemd app units to gate under compose.
+        self.assertNotIn("/etc/systemd/system/caddy.service.d/05-bloxos-updater-recovery-order.conf",
+                         writes)
+        self.assertFalse(any(".d/05-bloxos-updater-recovery-order.conf" in p for p in writes))
+        self.assertIn(["systemctl", "enable", "bloxos-updater.service"], runs)
+        self.assertIn(["systemctl", "enable", "bloxos-updater-recovery.service"], runs)
+
+    def test_recover_boot_command_dispatches_to_gate(self):
+        with patch.object(cli, "CONFIG", self.root / "config.json"), \
+             patch.object(cli.os, "geteuid", return_value=0):
+            (self.root / "config.json").write_text("{}")
+            with patch.object(cli.Config, "load", return_value=MagicMock()) as load, \
+                 patch("updater.boot.recover_boot", return_value=0) as gate:
+                self.assertEqual(cli.main(["recover-boot"]), 0)
+                gate.assert_called_once_with(load.return_value)
+
+    def test_recover_boot_missing_config_fails_closed(self):
+        # The gate exists only on a configured host, so a missing config is
+        # damage, not proof of no pending transaction: fail closed (nonzero) so
+        # the proxy's Requires= keeps traffic shut.
+        with patch.object(cli, "CONFIG", self.root / "absent.json"), \
+             patch.object(cli.os, "geteuid", return_value=0):
+            self.assertEqual(cli.main(["recover-boot"]), 1)
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="bloxos-cli-iu-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+
+
 if __name__ == "__main__":
     unittest.main()

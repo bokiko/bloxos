@@ -16,7 +16,7 @@ def main():
     spec = importlib.util.spec_from_file_location("bundle", Path(__file__).resolve().parents[1] / "export-server-bundle.py")
     bundle = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(bundle)
-    output = Path("/tmp/bloxos-updater-native-bundles")
+    output = Path("/var/tmp/bloxos-updater-native-bundles")
     output.mkdir(mode=0o755, exist_ok=False)
     arch = "arm64" if platform.machine() in ("arm64", "aarch64") else "amd64"
     for kind in ("original", "candidate"):

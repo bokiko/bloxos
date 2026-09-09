@@ -2,7 +2,7 @@
 """DISPOSABLE-VM-ONLY native updater smoke fixture. DO NOT run on any real or
 shared host — it creates real systemd units and a real Caddy.
 
-It uses a DEDICATED fresh root (default /tmp/bloxos-updater-native-smoke) and
+It uses a DEDICATED fresh root (default /var/tmp/bloxos-updater-native-smoke) and
 its own Caddy storage; it never touches /tmp/bloxos-updater-test or
 /etc/bloxos-updater (the existing Compose fixture/config), and refuses to
 overwrite any pre-existing bloxos-hub/dashboard/caddy unit or Caddyfile.
@@ -50,7 +50,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from updater import engine, native  # noqa: E402
 
-TEST_ROOT = Path("/tmp/bloxos-updater-native-smoke")
+TEST_ROOT = Path("/var/tmp/bloxos-updater-native-smoke")
 CADDYFILE = Path("/etc/caddy/Caddyfile")
 TEST_HOST = "hub.updater-smoke.test"
 UNITS = ("bloxos-hub.service", "bloxos-dashboard.service", "caddy.service")

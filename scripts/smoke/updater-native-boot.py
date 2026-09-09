@@ -52,7 +52,7 @@ def main():
     if os.environ.get("SMOKE_CONFIRM_DISPOSABLE") != "1" or os.geteuid() != 0:
         raise SystemExit("Requires root and SMOKE_CONFIRM_DISPOSABLE=1 in the disposable fixture")
     config = engine.Config.load("/etc/bloxos-updater/config.json")
-    if config.mode != "native" or config.public_url != "https://hub.updater-smoke.test" or not str(config.ca_file).startswith("/tmp/bloxos-updater-native-smoke"):
+    if config.mode != "native" or config.public_url != "https://hub.updater-smoke.test" or not str(config.ca_file).startswith("/var/tmp/bloxos-updater-native-smoke"):
         raise SystemExit("Not the dedicated native smoke fixture")
     checkpoint = Path(config.state_dir) / "native-boot-smoke.json"
     boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()

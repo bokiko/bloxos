@@ -161,7 +161,28 @@ class NonDestructiveInstallTests(unittest.TestCase):
             self.assertNotIn("WorkingDirectory", open(hub_dropin).read())
             self.assertIn("server.js", open(dash_dropin).read())
             self.assertIn("WorkingDirectory=", open(dash_dropin).read())
+            self.assertIn("Environment=HOSTNAME=127.0.0.1 PORT=3000", open(dash_dropin).read())
             self.assertIn(["systemctl", "daemon-reload"], runner.calls)
+
+    def test_install_preserves_dashboard_loopback_address_and_custom_port(self):
+        for url, binding in (("http://127.0.0.2:3456", "127.0.0.2 PORT=3456"),
+                             ("http://[::1]:3457", "::1 PORT=3457")):
+            with self.subTest(url=url), tempfile.TemporaryDirectory() as tmp:
+                cfg = native_config(tmp, dashboard_url=url)
+                ad, manifest = adapter_with_bundle(tmp, cfg, Runner())
+                ad.stage(manifest, os.path.join(cfg["state_dir"], "transaction", "release"))
+                ad.install()
+                with open(ad._dropin_path(cfg["dashboard_unit"])) as stream:
+                    self.assertIn("Environment=HOSTNAME=" + binding, stream.read())
+
+    def test_install_refuses_public_dashboard_bind(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = native_config(tmp, dashboard_url="http://0.0.0.0:3000")
+            ad, manifest = adapter_with_bundle(tmp, cfg, Runner())
+            ad.stage(manifest, os.path.join(cfg["state_dir"], "transaction", "release"))
+            with self.assertRaises(engine.UpdaterError):
+                ad.install()
+            self.assertFalse(os.path.exists(ad._dropin_path(cfg["hub_unit"])))
 
     def test_quiesce_stops_proxy_first(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -244,7 +265,63 @@ class BackupRollbackTests(unittest.TestCase):
             ad.quiesce()
             ad.resume_original()
             starts = [c for c in runner.calls if c[1] == "start"]
+            # resume brings up ONLY the loopback backends; the public proxy stays
+            # closed until the engine reaches a durable terminal and calls finalize.
             self.assertEqual({c[-1] for c in starts},
+                             {"bloxos-hub.service", "bloxos-dashboard.service"})
+            self.assertNotIn("caddy.service", {c[-1] for c in starts})
+
+    def test_rollback_omits_proxy_then_finalize_reopens_it(self):
+        # The public-write invariant: rollback restores state and restarts the
+        # loopback backends but must NOT reopen the proxy; only finalize (called
+        # by the engine AFTER ROLLED_BACK is durable) starts the proxy.
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = native_config(tmp)
+            open(os.path.join(cfg["hub_workdir"], "bloxos.db"), "w").write("db")
+            runner = Runner()
+            ad = self._staged_backed(tmp, cfg, runner)
+            ad.install()
+            before = len(runner.calls)
+            ad.rollback()
+            rollback_starts = {c[-1] for c in runner.calls[before:] if c[1] == "start"}
+            self.assertEqual(rollback_starts,
+                             {"bloxos-hub.service", "bloxos-dashboard.service"})
+            self.assertNotIn("caddy.service", rollback_starts)
+            # finalize is the sole proxy (re)open.
+            mark = len(runner.calls)
+            ad.finalize()
+            self.assertEqual([c for c in runner.calls[mark:] if c[1] == "start"],
+                             [["systemctl", "start", "caddy.service"]])
+
+    def test_finalize_is_idempotent_proxy_start(self):
+        # systemctl start on an already-active proxy is a no-op, so a second
+        # finalize (terminal recovery / crash-retry) re-issues it harmlessly.
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = native_config(tmp)
+            tdir = os.path.join(cfg["state_dir"], "transaction")
+            os.makedirs(tdir, exist_ok=True)
+            runner = Runner()
+            ad = native.NativeAdapter(cfg, tdir, runner=runner,
+                                      ready_check=lambda u: None)
+            ad.finalize()
+            ad.finalize()
+            self.assertEqual([c for c in runner.calls if c[1] == "start"],
+                             [["systemctl", "start", "caddy.service"],
+                              ["systemctl", "start", "caddy.service"]])
+
+    def test_start_candidate_still_starts_proxy(self):
+        # start_candidate MUST keep opening the proxy: engine._verify needs the
+        # candidate's PUBLIC identity (served through the proxy), and the
+        # candidate hub enforces the maintenance marker, so writes stay gated.
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = native_config(tmp)
+            tdir = os.path.join(cfg["state_dir"], "transaction")
+            os.makedirs(tdir, exist_ok=True)
+            runner = Runner()
+            ad = native.NativeAdapter(cfg, tdir, runner=runner,
+                                      ready_check=lambda u: None)
+            ad.start_candidate()
+            self.assertEqual({c[-1] for c in runner.calls if c[1] == "start"},
                              {"bloxos-hub.service", "bloxos-dashboard.service", "caddy.service"})
 
 

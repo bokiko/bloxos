@@ -54,7 +54,10 @@ operator-managed upgrade; see [upgrade verification](verified-upgrades.md).
 Maintenance briefly makes the application unavailable. Databases, authentication
 identity and Caddy CA are preserved; normal updates do not require enrolling
 your fleet again. Native source checkouts and untracked user files are not
-replaced. An interrupted transaction is recovered by the host worker at boot.
+replaced. At boot, native installations hold the public proxy behind a recovery
+gate. Compose updates temporarily disable automatic restarts on the selected
+BloxOS containers and restore their original policies after recovery. Neither
+path reopens a legacy server before the restore is durably committed.
 
 Backups remain under `/var/lib/bloxos-updater/state`; they are private to root
 and are not automatically deleted. Monitor free disk space and retain backups
@@ -66,13 +69,21 @@ independent [backups](backup-restore.md).
 ```sh
 sudo bloxos-update status
 sudo journalctl -u bloxos-updater --no-pager -n 80
+sudo journalctl -u bloxos-updater-recovery --no-pager -n 80
 ```
 
 If preparation fails, the existing installation stays in place. If rollback
 cannot finish, maintenance stays enabled: do not remove the maintenance marker
 or delete updater state to force the website online. Preserve the logs and
-backup, correct the host problem, and restart `bloxos-updater.service` to retry
-journal-driven recovery.
+backup and correct the host problem. Retry journal-driven recovery with:
+
+```sh
+sudo systemctl restart bloxos-updater-recovery.service bloxos-updater.service
+```
+
+The recovery gate fails closed if its configuration is missing or invalid, or
+an existing journal is corrupt; do not delete these files to bypass it. A successfully completed update
+normally has no active transaction journal—only retained backups.
 
 Compose setup saves a root-private, resolved configuration and a separate
 updater override. Do not run a different Compose project or omit that override

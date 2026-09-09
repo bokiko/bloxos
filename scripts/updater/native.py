@@ -17,6 +17,7 @@ All side effects are injected for tests.
 from __future__ import annotations
 
 import os
+import ipaddress
 import platform
 import re
 import shutil
@@ -247,11 +248,20 @@ class NativeAdapter:
         hub_exec = os.path.join(release, "hub", "bloxos-hub")
         dash_server = os.path.join(release, "dashboard", "server.js")
         node = self._f("node_binary")
+        endpoint = engine._split(self._f("dashboard_url"))
+        try:
+            bind = ipaddress.ip_address(endpoint.hostname)
+            port = endpoint.port or 80
+        except ValueError:
+            raise engine.UpdaterError("dashboard endpoint must be a loopback IP and valid port")
+        if endpoint.scheme != "http" or not bind.is_loopback:
+            raise engine.UpdaterError("dashboard endpoint must be loopback HTTP")
         self._write_dropin(self._unit("hub_unit"),
                            f"[Service]\nExecStart=\nExecStart={hub_exec}\n")
         self._write_dropin(self._unit("dashboard_unit"),
                            f"[Service]\nExecStart=\nExecStart={node} {dash_server}\n"
-                           f"WorkingDirectory={release}/dashboard\n")
+                           f"WorkingDirectory={release}/dashboard\n"
+                           f"Environment=HOSTNAME={bind} PORT={port}\n")
         self._systemctl("daemon-reload")
         self.journal.record("installed", True)
 
@@ -265,6 +275,8 @@ class NativeAdapter:
             os.fsync(fh.fileno())
         os.chmod(tmp, 0o644)
         os.replace(tmp, path)
+        engine._fsync_parent(path)
+        engine._fsync_parent(os.path.dirname(path))
 
     def start_candidate(self):
         self._systemctl("start", self._unit("hub_unit"))
@@ -289,7 +301,7 @@ class NativeAdapter:
         if not self.journal.get("backed_up"):
             # Nothing was installed and no snapshot exists: just restart what we
             # stopped. (resume_original covers the pre-backup case.)
-            self._start_original()
+            self._start_backends()
             return
 
         # Drop-ins: restore prior bytes exactly, or remove the one we added.
@@ -332,21 +344,51 @@ class NativeAdapter:
                 os.chown(dst, uid, gid)
                 os.chmod(dst, mode)
 
-        self._start_original()
+        self._start_backends()
 
     def resume_original(self):
         """Restart the original components WITHOUT restoring anything — used
         only when backup failed before any install. Failures propagate."""
-        self._start_original()
+        self._start_backends()
 
-    def _start_original(self):
+    def _start_backends(self):
+        """Start ONLY the loopback backends (hub + dashboard) and wait for them
+        to answer — NOT the public proxy. rollback()/resume_original() use this
+        so a rolled-back/legacy hub never accepts PUBLIC writes before the
+        transaction reaches a durable terminal (ROLLED_BACK/FAILED) and the
+        engine calls finalize(). The backends are loopback-only until the proxy
+        reopens, and the maintenance marker still gates writes, so bringing them
+        up here is safe."""
         self._systemctl("start", self._unit("hub_unit"))
         self._systemctl("start", self._unit("dashboard_unit"))
-        self._systemctl("start", self._unit("proxy_unit"))
         # Do not report a completed rollback/resume until the restarted original
         # actually answers (a legacy hub has no build-info, so this is a
         # liveness probe: hub /health and the dashboard root, bounded).
         self._wait_ready()
+
+    def finalize(self):
+        """Reopen the PUBLIC proxy after a durable terminal state. The engine
+        calls this from _finish() AFTER SUCCEEDED/ROLLED_BACK/FAILED(resume) is
+        journalled and BEFORE clearing the maintenance marker, and again on
+        terminal recovery. Idempotent: `systemctl start` on an already-active
+        proxy is a no-op, so a second recovery pass (or a crash-and-retry)
+        re-issues it harmlessly. This is the ONLY place the proxy is started on
+        the rollback/resume terminals.
+
+        Boot: the recovery gate injects a runner that turns this one start into
+        `systemctl start --no-block <proxy>` (the proxy is ordered After= the
+        gate, so a blocking start inside the gate's own ExecStart would
+        self-wait). The enqueue happens only here — after a durable terminal —
+        so restarting the gate after a fixed failure re-opens Caddy; forward
+        `Requires=` never restarts a cancelled proxy job on its own.
+
+        No HTTP readiness probe: on the success path the engine already verified
+        public identities through the proxy before finalize; on rollback the
+        original Caddy config is restored and its active state is the proof; and
+        at boot the proxy starts only AFTER this gate exits, so a synchronous
+        probe here could not observe it. `systemctl start` blocking until the
+        unit is active is the runtime readiness."""
+        self._systemctl("start", self._unit("proxy_unit"))
 
     def _wait_ready(self):
         targets = [self._f("hub_url").rstrip("/") + "/health",
@@ -398,6 +440,7 @@ def _remove_file(path):
     import contextlib
     with contextlib.suppress(FileNotFoundError):
         os.remove(path)
+        engine._fsync_parent(path)
 
 
 def _rmdir_if_empty(path):
@@ -515,8 +558,13 @@ def discover_native(repo_dir=None, *, show=None, read_proc=None, listeners=None,
     if not public_url:
         return {"ambiguous": "hub process has no PUBLIC_URL; cannot verify the public edge"}
 
-    hub_url = "http://127.0.0.1:%d" % hub_listener["port"]
-    dash_url = "http://127.0.0.1:%d" % dash_listener["port"]
+    def listener_url(listener):
+        address = listener["addr"].strip("[]")
+        host = f"[{address}]" if ":" in address else address
+        return f"http://{host}:{listener['port']}"
+
+    hub_url = listener_url(hub_listener)
+    dash_url = listener_url(dash_listener)
     routing_verified, reason = _verify_routing(public_url, hub_url, dash_url, ca_file,
                                                caddy_config, leaf_cert)
 
@@ -680,7 +728,10 @@ def _norm_hostport(hostport):
 
 
 def _is_loopback(addr):
-    return addr in ("127.0.0.1", "::1", "localhost") or addr.startswith("127.")
+    try:
+        return ipaddress.ip_address(addr.strip("[]")).is_loopback
+    except ValueError:
+        return False
 
 
 def _read_cgroup(pid):

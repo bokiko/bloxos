@@ -16,7 +16,9 @@ import zipapp
 import zipfile
 
 from .compose import ComposeAdapter, atomic_json, run
-from .engine import Config, Mailbox, UpdaterError, exclusive_lock, run_worker
+from .engine import (Config, Mailbox, UpdaterError, as_config_dict,
+                     exclusive_lock, run_worker)
+from .engine import _fsync_parent
 
 CONFIG = Path("/etc/bloxos-updater/config.json")
 ROOT = Path("/var/lib/bloxos-updater")
@@ -47,6 +49,12 @@ def write_file(path, body, mode=0o644):
         os.fsync(stream.fileno())
     os.chmod(temporary, mode)
     os.replace(temporary, path)
+    # Durability: the file body was fsync'd, but the rename and any freshly
+    # created parent (e.g. a unit's `.d` drop-in directory) must also be on
+    # disk before an update — or a reboot right after setup — can rely on the
+    # gate and drop-ins existing. fsync the containing directory and its parent.
+    _fsync_parent(str(path))
+    _fsync_parent(str(path.parent))
 
 
 def systemd_active(unit):
@@ -110,19 +118,54 @@ def install_code():
     write_file("/usr/local/bin/bloxos-update", "#!/bin/sh\nexec /usr/bin/python3 /usr/local/lib/bloxos-updater/bloxos-update \"$@\"\n", 0o755)
 
 
-def install_units(mailbox):
-    write_file("/etc/systemd/system/bloxos-updater.service", """[Unit]
+def install_units(config):
+    """Install the systemd wiring for boot recovery and the runtime worker.
+
+    A boot-recovery GATE (bloxos-updater-recovery.service) resolves an
+    interrupted update BEFORE traffic can reach a half-installed hub. The
+    runtime worker keeps running on demand via the .path, but is ordered after
+    and requires the gate so a request queued across a reboot cannot race it for
+    worker.lock. Per mode:
+      native  — the PUBLIC proxy is gated (fail-closed drop-in Requires=+After=
+                the gate); the worker is NOT boot-enabled (only the .path fires
+                it at runtime).
+      compose — no systemd app units to gate (fail-close is the adapter's
+                restart-policy inhibition); the worker STAYS boot-enabled so a
+                boot run restores suppressed restart policies and picks up any
+                queued request. The gate runs first (After=docker.service).
+    """
+    mailbox = config["mailbox_dir"]
+    mode = config["mode"]
+    gate_after = "network-online.target docker.service" if mode == "compose" else "network-online.target"
+    # RemainAfterExit keeps the gate "active (exited)" after it finishes, so
+    # runtime worker starts (which Require= it) proceed without re-running it.
+    # It runs recover-boot IN-PROCESS only — it must never `systemctl start` the
+    # runtime worker, which would recreate the ordering cycle.
+    write_file("/etc/systemd/system/bloxos-updater-recovery.service", f"""[Unit]
+Description=BloxOS updater boot recovery (resolve an interrupted update before traffic)
+After={gate_after}
+Wants=network-online.target
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 /usr/local/lib/bloxos-updater/bloxos-update recover-boot
+TimeoutStartSec=30min
+UMask=0077
+[Install]
+WantedBy=multi-user.target
+""")
+    worker_install = "\n[Install]\nWantedBy=multi-user.target\n" if mode == "compose" else "\n"
+    write_file("/etc/systemd/system/bloxos-updater.service", f"""[Unit]
 Description=BloxOS verified host updater
-After=network-online.target docker.service
+After={gate_after} bloxos-updater-recovery.service
+Requires=bloxos-updater-recovery.service
 Wants=network-online.target
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/python3 /usr/local/lib/bloxos-updater/bloxos-update worker
 TimeoutStartSec=30min
 UMask=0077
-[Install]
-WantedBy=multi-user.target
-""")
+{worker_install}""")
     write_file("/etc/systemd/system/bloxos-updater.path", f"""[Unit]
 Description=Watch for BloxOS update requests
 [Path]
@@ -131,8 +174,25 @@ Unit=bloxos-updater.service
 [Install]
 WantedBy=multi-user.target
 """)
+    if mode == "native":
+        # Gate the PUBLIC proxy on the recovery service: a rolled-back or
+        # half-installed hub can never accept public writes before recovery
+        # commits. Requires= is fail-closed (proxy will not open if the gate
+        # fails); hub/dashboard are loopback-only until the proxy opens, so they
+        # are deliberately NOT gated (gating them would deadlock the worker's
+        # own restarts during recovery).
+        proxy_unit = config["proxy_unit"]
+        write_file(f"/etc/systemd/system/{proxy_unit}.d/05-bloxos-updater-recovery-order.conf",
+                   "[Unit]\nRequires=bloxos-updater-recovery.service\nAfter=bloxos-updater-recovery.service\n")
     run(["systemctl", "daemon-reload"])
-    run(["systemctl", "enable", "bloxos-updater.service"])
+    run(["systemctl", "enable", "bloxos-updater-recovery.service"])
+    if mode == "compose":
+        run(["systemctl", "enable", "bloxos-updater.service"])
+    else:
+        # Native: the worker runs on demand via the .path only, never at boot.
+        # disable is a no-op when it was never enabled, and cleanly removes the
+        # boot symlink left by an older (boot-enabled) install on refresh.
+        run(["systemctl", "disable", "bloxos-updater.service"])
     run(["systemctl", "enable", "--now", "bloxos-updater.path"])
 
 
@@ -225,7 +285,7 @@ def initialize(args):
 
 def finish_setup(config):
     mailbox = Mailbox(config["mailbox_dir"])
-    install_units(config["mailbox_dir"])
+    install_units(config)
     if config["mode"] == "compose":
         run(make_adapter(config, str(ROOT / "state")).command("up", "-d", "--no-deps", "--no-build", "--pull", "never", "hub"))
     else:
@@ -285,7 +345,7 @@ def request_update():
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Update the existing BloxOS installation with backup and public verification")
-    parser.add_argument("command", choices=("init", "update", "worker", "status"))
+    parser.add_argument("command", choices=("init", "update", "worker", "status", "recover-boot"))
     parser.add_argument("--directory", default=os.getcwd(), help="existing checkout/Compose directory (one-time setup)")
     parser.add_argument("--mode", choices=("native", "compose"), help="explicit installation type (does not bypass ownership checks)")
     parser.add_argument("--public-url", help="must match the existing deployment")
@@ -296,6 +356,17 @@ def main(argv=None):
         parser.error("run with sudo (the web application never receives these privileges)")
     os.umask(0o077)
     try:
+        if args.command == "recover-boot":
+            # Boot recovery gate (root, systemd oneshot): resolve an interrupted
+            # update BEFORE the public proxy opens. The gate is installed ONLY on
+            # a configured host, so a missing config is damage/removal, not proof
+            # that no transaction is pending — fail closed (the proxy's Requires=
+            # keeps it shut) rather than open a partial installation. Any
+            # load/recovery error is likewise fail-closed (nonzero).
+            if not CONFIG.exists():
+                raise UpdaterError("updater configuration is missing; refusing to open traffic")
+            from .boot import recover_boot
+            return recover_boot(Config.load(str(CONFIG)))
         if args.command == "init" or (args.command == "update" and (not CONFIG.exists() or (CONFIG.parent / "setup.pending.json").exists())):
             initialize(args)
             if args.command == "init":
@@ -311,6 +382,11 @@ def main(argv=None):
                 config = Config.load(str(CONFIG))
                 with exclusive_lock(str(Path(config.state_dir) / "worker.lock")):
                     install_code()
+                    # Refresh the systemd wiring too, so an already-configured
+                    # host picks up the boot-recovery gate and proxy drop-in on
+                    # the next official `update`. Under the same lock as
+                    # install_code, never while a transaction is running.
+                    install_units(as_config_dict(config))
             return request_update()
         config = Config.load(str(CONFIG))
         print(Path(config.mailbox_dir, "outbox", "status.json").read_text())

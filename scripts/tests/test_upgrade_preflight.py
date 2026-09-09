@@ -8,7 +8,6 @@ import contextlib
 import http.server
 import json
 import os
-import socket
 import ssl
 import subprocess
 import sys
@@ -22,8 +21,8 @@ SCRIPT = HERE.parent / "upgrade_preflight.py"
 
 PASS, FAIL, UNKNOWN = 0, 1, 2
 
-UNREACHABLE_FIXTURE = "unreachable-fixture"
-LOCAL_ARGS = ("--local-hub-url", UNREACHABLE_FIXTURE, "--local-dashboard-url", UNREACHABLE_FIXTURE)
+UNVERIFIABLE_FIXTURE = "unverifiable-fixture"
+LOCAL_ARGS = ("--local-hub-url", UNVERIFIABLE_FIXTURE, "--local-dashboard-url", UNVERIFIABLE_FIXTURE)
 
 HUB_INFO = {"component": "hub", "version": "1.2.2", "revision": "a" * 40, "instance_id": "inst-hub-1"}
 DASH_INFO = {"component": "dashboard", "version": "1.2.2", "revision": "a" * 40, "instance_id": "inst-dash-1"}
@@ -114,12 +113,11 @@ def server(routes, tls_cert=None):
 
 
 def run_cli(*argv):
-    # Reserve (but do not listen on) a random port. Never probe a developer's
-    # actual BloxOS on 3000/4000, including automatically forwarded VM ports.
-    with socket.socket() as reserved:
-        reserved.bind(("127.0.0.1", 0))
-        unreachable = f"http://127.0.0.1:{reserved.getsockname()[1]}"
-        args = [unreachable if value == UNREACHABLE_FIXTURE else value for value in argv]
+    # Isolated 404 fixture: never probe a developer's actual BloxOS on
+    # 3000/4000, including automatically forwarded VM ports. Unlike a bound
+    # non-listening socket this returns promptly on both macOS and Linux.
+    with server({}) as unavailable:
+        args = [unavailable if value == UNVERIFIABLE_FIXTURE else value for value in argv]
         return subprocess.run([sys.executable, str(SCRIPT), *args],
                               capture_output=True, text=True, timeout=60)
 
