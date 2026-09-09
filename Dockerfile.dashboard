@@ -17,6 +17,10 @@ WORKDIR /app
 COPY dashboard/package.json dashboard/pnpm-lock.yaml ./
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --frozen-lockfile
 COPY dashboard/ ./
+ARG BLOXOS_BUILD_VERSION=development
+ARG BLOXOS_BUILD_REVISION=unknown
+ENV BLOXOS_BUILD_VERSION=$BLOXOS_BUILD_VERSION \
+    BLOXOS_BUILD_REVISION=$BLOXOS_BUILD_REVISION
 RUN pnpm build
 
 FROM node:22-alpine

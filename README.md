@@ -165,7 +165,13 @@ second hub. A public one-line *hub* installer is not shipped.
 which preserves the database, secrets, signing identity and Caddy CA. Never
 use `docker compose down -v` to update.
 
-In your existing Compose directory, set `BLOXOS_VERSION=1.2.2` in your existing
+**Identify the installation first.** The commands below update **Docker Compose
+only**. If your website is served by native `bloxos-hub` / `bloxos-dashboard`
+systemd services, pulling containers does not update those services. If both
+exist, do not start another stack or switch the proxy: establish which existing
+installation serves your public URL. See [upgrade verification](docs/verified-upgrades.md).
+
+For an existing **Compose deployment**, set `BLOXOS_VERSION=1.2.2` in your existing
 `.env`, then run these with the same project name and any existing overrides:
 
 ```sh
@@ -173,7 +179,9 @@ docker compose pull hub dashboard
 docker compose up -d --no-build hub dashboard
 ```
 
-Refresh your browser when the services are healthy. Keep your existing volumes
+Container health alone does not prove the public website was upgraded. Verify
+the hub **and dashboard** through the URL you actually use before declaring
+success. Keep your existing volumes
 and keys; normal upgrades do not require enrolling every machine again.
 
 For new machines, generate a **fresh** Add Machine command after upgrading.

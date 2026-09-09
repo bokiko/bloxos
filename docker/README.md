@@ -73,6 +73,12 @@ Operations:
 
 ## Upgrades
 
+These instructions update an existing **Compose** installation, not native
+systemd services. Healthy new containers can coexist with an older native
+website still serving port 443. On a mixed host, first identify the actual
+upstreams; never choose Docker just because a Compose file exists. See
+[upgrade verification](../docs/verified-upgrades.md).
+
 Back up first using the [backup and restore guide](../docs/backup-restore.md),
 then upgrade from your existing Compose directory with the same project name
 and any existing overrides. Preserve volumes, keys, and your `.env`.
@@ -114,7 +120,10 @@ flags):
 docker compose exec caddy wget -qO- http://hub:4000/health
 ```
 
-Expected: `{"status":"ok"}`. Then, in the dashboard, generate a **fresh** Add
+Expected: `{"status":"ok"}`. This proves internal liveness only—not the build
+or that your public URL reaches this container. Check both public components
+as described in [upgrade verification](../docs/verified-upgrades.md).
+Then, in the dashboard, generate a **fresh** Add
 Machine command: v1.2.0 mints one-line onboarding links under `/api/join/`,
 which works with older proxies that already forward `/api/*` to the hub.
 No Caddyfile edit is required for those new commands. (The legacy `/join/`

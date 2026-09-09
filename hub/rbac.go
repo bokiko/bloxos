@@ -243,6 +243,9 @@ func roleHasScope(role UserRole, requiredScope string) bool {
 // publicAPIRoutes lists the /api/* endpoints that are served without RBAC enforcement.
 var publicAPIRoutes = map[string]struct{}{
 	routeScopeKey(http.MethodPost, "/api/auth/login"):  {},
+	// Build identity (version/revision/instance_id) for upgrade verification.
+	// Public so a client can confirm which build answers the URL before login.
+	routeScopeKey(http.MethodGet, "/api/build-info"):   {},
 	routeScopeKey(http.MethodGet, "/api/setup/status"): {},
 	routeScopeKey(http.MethodPost, "/api/setup"):       {},
 	// Phase 10 — branding metadata + image bytes are public so the

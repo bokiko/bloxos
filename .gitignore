@@ -27,6 +27,7 @@ Thumbs.db
 *.swp
 
 # Build artifacts
+__pycache__/
 /agent/agent
 /hub/hub
 *.db-shm

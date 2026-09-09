@@ -84,6 +84,7 @@ curl -sk --max-time 3 "$HUB/health" | grep -q '"ok"' || fail "hub not healthy th
 # (30 attempts, 2 s apart, 3 s curl timeout), and keep the final assertion a hard 200.
 echo "== wait for dashboard"
 wait_for_http_200 "$HUB/login" 30 || fail "dashboard not served"
+python3 "$COMPOSE_DIR/../scripts/smoke/compose-build-info.py" || fail "public build identity mismatch"
 [[ "$(curl -sk -o /dev/null -w '%{http_code}' "$HUB/install.ps1")" == 200 ]] || fail "Windows installer not served"
 
 echo "== served certificate key type"

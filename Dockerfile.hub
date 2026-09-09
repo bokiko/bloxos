@@ -14,6 +14,8 @@
 
 FROM --platform=$BUILDPLATFORM golang:1.26.8-alpine AS build
 ARG TARGETARCH
+ARG BLOXOS_BUILD_VERSION=development
+ARG BLOXOS_BUILD_REVISION=unknown
 ENV CGO_ENABLED=0 \
     GOTOOLCHAIN=local \
     GOFLAGS="-trimpath -buildvcs=false"
@@ -28,7 +30,7 @@ COPY agent/ agent/
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     mkdir -p /out/linux/amd64 /out/linux/arm64 /out/windows \
- && (cd hub   && GOOS=linux   GOARCH="$TARGETARCH" go build -ldflags='-s -w' -o /out/bloxos-hub .) \
+ && (cd hub   && GOOS=linux   GOARCH="$TARGETARCH" go build -ldflags="-s -w -X main.buildVersion=$BLOXOS_BUILD_VERSION -X main.buildRevision=$BLOXOS_BUILD_REVISION" -o /out/bloxos-hub .) \
  && (cd agent && GOOS=linux   GOARCH=amd64        go build -ldflags='-s -w' -o /out/linux/amd64/bloxos-agent .) \
  && (cd agent && GOOS=linux   GOARCH=arm64        go build -ldflags='-s -w' -o /out/linux/arm64/bloxos-agent .) \
  && (cd agent && GOOS=windows GOARCH=amd64        go build -ldflags='-s -w' -o /out/windows/bloxos-agent.exe .)

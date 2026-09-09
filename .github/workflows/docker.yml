@@ -55,6 +55,9 @@ jobs:
         with:
           context: .
           file: Dockerfile.hub
+          build-args: |
+            BLOXOS_BUILD_VERSION=${{ github.ref_name }}
+            BLOXOS_BUILD_REVISION=${{ github.sha }}
           load: true
           tags: ${{ env.HUB_IMAGE }}:latest
           cache-from: type=gha,scope=hub
@@ -64,6 +67,9 @@ jobs:
         with:
           context: .
           file: Dockerfile.dashboard
+          build-args: |
+            BLOXOS_BUILD_VERSION=${{ github.ref_name }}
+            BLOXOS_BUILD_REVISION=${{ github.sha }}
           load: true
           tags: ${{ env.DASHBOARD_IMAGE }}:latest
           cache-from: type=gha,scope=dashboard
@@ -72,6 +78,8 @@ jobs:
         env:
           SMOKE_CONFIRM_DISPOSABLE: "1"
           HUB_HOST: 127.0.0.1
+          BLOXOS_EXPECT_VERSION: ${{ github.ref_name }}
+          BLOXOS_EXPECT_REVISION: ${{ github.sha }}
         run: scripts/smoke/compose-enroll.sh
 
   # Multi-platform build and push, version tags only. This is the only job
@@ -108,6 +116,9 @@ jobs:
         with:
           context: .
           file: Dockerfile.hub
+          build-args: |
+            BLOXOS_BUILD_VERSION=${{ github.ref_name }}
+            BLOXOS_BUILD_REVISION=${{ github.sha }}
           platforms: linux/amd64,linux/arm64
           outputs: type=image,name=${{ env.HUB_IMAGE }},push-by-digest=true,name-canonical=true,push=true
           labels: |
@@ -120,6 +131,9 @@ jobs:
         with:
           context: .
           file: Dockerfile.dashboard
+          build-args: |
+            BLOXOS_BUILD_VERSION=${{ github.ref_name }}
+            BLOXOS_BUILD_REVISION=${{ github.sha }}
           platforms: linux/amd64,linux/arm64
           outputs: type=image,name=${{ env.DASHBOARD_IMAGE }},push-by-digest=true,name-canonical=true,push=true
           labels: |
