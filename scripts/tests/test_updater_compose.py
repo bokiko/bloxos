@@ -1,4 +1,5 @@
 import copy
+import importlib.util
 import json
 from pathlib import Path
 import sys
@@ -11,6 +12,17 @@ from updater.compose import ComposeAdapter, atomic_json
 
 
 class ComposeTests(unittest.TestCase):
+    def test_smoke_mount_identity_ignores_only_array_order(self):
+        spec = importlib.util.spec_from_file_location("updater_smoke", Path(__file__).resolve().parents[1] / "smoke/updater-compose.py")
+        smoke = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(smoke)
+        mounts = [{"Destination": "/data", "Name": "original"}, {"Destination": "/caddy", "Name": "ca"}]
+        before = {"hub": {"Mounts": mounts}}
+        after = {"hub": {"Mounts": list(reversed(mounts))}}
+        self.assertEqual(smoke.mount_identities(before), smoke.mount_identities(after))
+        changed = {"hub": {"Mounts": [{"Destination": "/data", "Name": "different"}, mounts[1]]}}
+        self.assertNotEqual(smoke.mount_identities(before), smoke.mount_identities(changed))
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="bloxos-compose-test-")
         self.addCleanup(self.temp.cleanup)

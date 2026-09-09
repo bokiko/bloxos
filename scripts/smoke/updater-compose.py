@@ -22,6 +22,14 @@ from updater import engine
 from updater.compose import ComposeAdapter, atomic_json, run
 
 
+def mount_identities(containers):
+    # Docker does not guarantee the order of the Mounts array after recreate.
+    # Compare every field, keyed by destination, without treating ordering as
+    # a change of persistent identity.
+    return {name: sorted(value["Mounts"], key=lambda mount: mount["Destination"])
+            for name, value in containers.items()}
+
+
 def main():
     if os.environ.get("SMOKE_CONFIRM_DISPOSABLE") != "1" or os.geteuid() != 0:
         raise SystemExit("Requires root and SMOKE_CONFIRM_DISPOSABLE=1 in a disposable VM")
@@ -71,7 +79,8 @@ def main():
         assert actual == expected, (actual, engine.read_status(config))
         assert not mailbox.maintenance_present()
         after = adapter.containers()
-        assert {name: value["Mounts"] for name, value in before.items()} == {name: value["Mounts"] for name, value in after.items()}, "persistent mounts changed"
+        assert mount_identities(before) == mount_identities(after), (
+            "persistent mounts changed", mount_identities(before), mount_identities(after))
         for name in images:
             assert after[name]["Image"] == images[name], "incorrect candidate/rollback image"
         assert users() == original_users, "user credentials changed"
