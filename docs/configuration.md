@@ -13,8 +13,8 @@ the public URL and CA paths from its deployment configuration.
 | `HUB_LISTEN` | No | Hub listen address; defaults to `127.0.0.1:4000`. |
 | `BLOXOS_JWT_SECRET` | No | JWT secret, at least 32 bytes; otherwise generated and persisted. |
 | `BLOXOS_SETUP_TOKEN` | No | Fixed first-boot setup token; otherwise generated and persisted. |
-| `BLOXOS_CA_CERT` | No | Additional CA certificate used by installers and agents. |
-| `BLOXOS_PIN_DIAL_ADDR` | No | Internal TLS destination used to verify onboarding pins; Compose sets `caddy:443`. Does not change the verified public identity. |
+| `BLOXOS_CA_CERT` | No | Private-CA certificate the hub pins onboarding commands to. Leave **unset** for a publicly trusted (Let's Encrypt, etc.) hub. If set, it is authoritative: a missing, unreadable, or non-PEM file makes the hub refuse to mint install commands rather than fall back. See [TLS trust for onboarding](#tls-trust-for-onboarding). |
+| `BLOXOS_PIN_DIAL_ADDR` | No | Internal TLS destination used to verify onboarding pins; Compose sets `caddy:443`. Changes only the TCP target — SNI, hostname, and certificate verification still use `PUBLIC_URL`, so it can never downgrade trust. |
 | `BLOXOS_AI_SESSIONS` | Agent | Set to `0` to disable AI-tool metadata collection on that machine. |
 | `BLOXOS_AGENT_BINARY` | No | Absolute Linux **amd64** agent binary; blank uses the built-in defaults (`/usr/local/lib/bloxos/linux/amd64/bloxos-agent`, then the legacy `/usr/local/lib/bloxos/linux/bloxos-agent`, then a hub sibling). Served only for the architecture its ELF actually is. |
 | `BLOXOS_AGENT_BINARY_ARM64` | No | Absolute Linux arm64 agent binary; blank uses `/usr/local/lib/bloxos/linux/arm64/bloxos-agent`. ELF-verified like all Linux paths, so no request is served another CPU's binary. |
@@ -32,6 +32,31 @@ the public URL and CA paths from its deployment configuration.
 | `BLOXOS_TLS_INSECURE` | Development only | TLS bypass available only in an agent built with `-tags insecure`. |
 | `ProgramFiles` | Windows-provided | Used to discover NVIDIA tooling; normally never overridden. |
 | `NEXT_PUBLIC_HUB_URL` | Dashboard | Hub origin when dashboard and hub are not same-origin. |
+
+## TLS trust for onboarding
+
+When you generate an Add Machine (or Windows re-enrollment) command, the hub
+decides how that command should authenticate its download. Normal installations
+need no configuration here:
+
+- **Publicly trusted HTTPS** (Let's Encrypt and the like): leave `BLOXOS_CA_CERT`
+  unset. The command is plain verified TLS — no pinning, no `-k`.
+- **Private CA** (Caddy's internal CA in the Compose stack): the hub still
+  auto-discovers Caddy's local root on the usual paths, verifies the live
+  certificate against it, and pins the verified key in the command. This keeps
+  working with no extra steps.
+
+Only set `BLOXOS_CA_CERT` when you run your own private CA outside that
+auto-discovery. When set it is **authoritative**: if the file is missing,
+unreadable, or not a PEM certificate, or the hub's certificate does not verify
+against it, the hub refuses to mint a command (an actionable error) instead of
+emitting an unverifiable one — fix the path or the certificate and retry.
+
+An unrelated CA left on disk no longer turns a public hub "private": the hub
+checks its live certificate against your OS trust store and, if that verifies,
+treats the hub as public. If the hub cannot reach `PUBLIC_URL` over TLS at all,
+it refuses to mint rather than guess — this is a connectivity problem to fix,
+not a trust decision.
 
 For specialized power-history and update-floor settings, see
 [power history](power-history.md) and [agent recovery](agent-update-recovery.md).

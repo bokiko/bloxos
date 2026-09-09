@@ -165,18 +165,15 @@ func (s *Server) handleCreateToken(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
-	caURL, caSHA256 := s.bootstrapCAFor(httpBase)
-	joinPin := ""
-	if caSHA256 != "" {
-		joinPin, err = s.joinPinForPrivateCA(c.Request().Context(), publicURL)
-		if err != nil {
-			log.Printf("token_create: refusing to mint, cannot pin the hub's TLS key for the join command: %v", err)
-			return c.JSON(http.StatusServiceUnavailable, map[string]string{
-				"error": "cannot generate an install command: " + err.Error() +
-					". The hub must be able to reach PUBLIC_URL over TLS with a certificate issued by BLOXOS_CA_CERT.",
-			})
-		}
+	decision, err := s.classifyBootstrapCA(c.Request().Context(), httpBase, publicURL)
+	if err != nil {
+		log.Printf("token_create: refusing to mint, cannot classify PUBLIC_URL's TLS trust: %v", err)
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "cannot generate an install command: " + err.Error() +
+				". The hub must reach PUBLIC_URL over TLS and present a certificate that verifies against BLOXOS_CA_CERT (private CA) or the system trust store (public).",
+		})
 	}
+	caURL, caSHA256, joinPin := decision.caURL, decision.caSHA256, decision.joinPin
 
 	token := uuid.New().String()
 	h := sha256.Sum256([]byte(token))
@@ -254,6 +251,24 @@ func (s *Server) handleWindowsReenrollment(c echo.Context) error {
 		})
 	}
 
+	// Resolve and validate the hub's TLS trust BEFORE staging any replacement
+	// enrollment state: a classification failure must return 503 without
+	// leaving an orphaned token row behind (same fail-closed ordering as
+	// handleCreateToken).
+	httpBase, wsBase := publicAndWebsocketBase()
+	publicURL, err := parsePublicURL(httpBase)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+	decision, err := s.classifyBootstrapCA(c.Request().Context(), httpBase, publicURL)
+	if err != nil {
+		log.Printf("windows_reenroll: refusing to mint, cannot classify PUBLIC_URL's TLS trust: %v", err)
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error": "cannot generate a re-enrollment command: " + err.Error() +
+				". The hub must reach PUBLIC_URL over TLS and present a certificate that verifies against BLOXOS_CA_CERT (private CA) or the system trust store (public).",
+		})
+	}
+
 	token := uuid.New().String()
 	h := sha256.Sum256([]byte(token))
 	tokenHash := hex.EncodeToString(h[:])
@@ -266,14 +281,12 @@ func (s *Server) handleWindowsReenrollment(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
-	httpBase, wsBase := publicAndWebsocketBase()
-	caURL, caSHA256 := s.bootstrapCAFor(httpBase)
 	return c.JSON(http.StatusOK, windowsReenrollmentResponse{
 		MachineID:      machineID,
 		Token:          token,
-		WindowsCommand: buildWindowsInstallCommand(httpBase, wsBase, token, caURL, caSHA256, true),
-		CAURL:          caURL,
-		CASHA256:       caSHA256,
+		WindowsCommand: buildWindowsInstallCommand(httpBase, wsBase, token, decision.caURL, decision.caSHA256, true),
+		CAURL:          decision.caURL,
+		CASHA256:       decision.caSHA256,
 		ExpiresAt:      expiresAt.Format(time.RFC3339),
 	})
 }
@@ -612,37 +625,6 @@ func (s *Server) caCertCandidatePaths() []string {
 	return bootstrapCACertCandidates()
 }
 
-func (s *Server) loadBootstrapCACert() ([]byte, string, error) {
-	for _, path := range s.caCertCandidatePaths() {
-		if path == "" {
-			continue
-		}
-		data, err := os.ReadFile(path)
-		if err == nil {
-			return data, path, nil
-		}
-		if os.IsNotExist(err) {
-			continue
-		}
-		return nil, "", fmt.Errorf("read CA cert %s: %w", path, err)
-	}
-	return nil, "", os.ErrNotExist
-}
-
-func (s *Server) bootstrapCAFor(httpBase string) (caURL string, caSHA256 string) {
-	if strings.HasPrefix(httpBase, "https://") {
-		if caPEM, caPath, err := s.loadBootstrapCACert(); err == nil {
-			caURL = httpBase + "/download/ca.crt"
-			sum := sha256.Sum256(caPEM)
-			caSHA256 = hex.EncodeToString(sum[:])
-			log.Printf("install bootstrap: using CA cert %s", caPath)
-		} else if !os.IsNotExist(err) {
-			log.Printf("WARNING: install bootstrap CA unavailable: %v", err)
-		}
-	}
-	return caURL, caSHA256
-}
-
 func handleDownloadAgent(c echo.Context) error {
 	// The target OS is detected from either the explicit ?os= query parameter
 	// or the User-Agent string. The architecture comes from ?arch= (GOARCH
@@ -691,12 +673,18 @@ func handleDownloadAgent(c echo.Context) error {
 }
 
 func (s *Server) handleDownloadCACert(c echo.Context) error {
-	caPEM, _, err := s.loadBootstrapCACert()
+	// Serve exactly the CA that classification selected and bound at mint time
+	// (same source-selection and explicit-authoritative rules), so a private
+	// join command's pinned CA_SHA256 always matches these bytes. Using the
+	// looser legacy loader here could serve a different first-readable file
+	// (e.g. a malformed ambient candidate that classification skipped).
+	caPEM, _, source, err := s.loadBootstrapCAClassified()
 	if err != nil {
-		if os.IsNotExist(err) {
-			return c.JSON(http.StatusNotFound, map[string]string{"error": "CA certificate not configured; set BLOXOS_CA_CERT"})
-		}
+		// An explicitly-configured CA that is unreadable/malformed.
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	if source == caSourceNone {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "CA certificate not configured; set BLOXOS_CA_CERT"})
 	}
 	return c.Blob(http.StatusOK, "application/x-pem-file", caPEM)
 }

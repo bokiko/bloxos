@@ -45,6 +45,14 @@ type Server struct {
 	// to have a local Caddy CA on disk. See caCertCandidatePaths.
 	caCertCandidates func() []string
 
+	// systemTrustProbe, when non-nil, replaces the live TLS handshake that
+	// checks PUBLIC_URL's certificate against the hub's OS trust store during
+	// bootstrap-CA classification (the auto-discovered-CA fallback). Production
+	// leaves it nil and uses verifyEndpointSystemTrust; tests inject it so the
+	// fallback is exercised without a real endpoint. Per-server, like
+	// caCertCandidates, so parallel tests never race a package global.
+	systemTrustProbe joinSystemTrustVerifier
+
 	// Tracks background work this server spawned, so a caller can wait for
 	// it to finish before tearing the server down. See goTracked/Shutdown.
 	//
