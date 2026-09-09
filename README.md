@@ -99,7 +99,7 @@ dashboard support **Linux amd64 and arm64**. Ports **80 and 443** must be availa
 ### 1. Download BloxOS
 
 ```sh
-git clone --branch v1.2.2 --depth 1 https://github.com/bokiko/bloxos.git
+git clone --branch v1.3.0 --depth 1 https://github.com/bokiko/bloxos.git
 cd bloxos/docker
 cp .env.example .env
 ```
@@ -161,6 +161,21 @@ second hub. A public one-line *hub* installer is not shipped.
 
 ## Update an existing installation
 
+With the host updater configured, update from your server terminal:
+
+```sh
+sudo bloxos-update update
+```
+
+Or use **Settings → Updates → Update BloxOS** as an administrator. Both use the
+same independent host worker, with a backup, rollback and public verification
+of the hub and dashboard. Older installations need the
+[one-time setup](docs/system-updates.md#enable-updates-on-an-older-installation).
+Supports standard native systemd and local Compose deployments; it does not
+silently switch between them.
+
+### Manual Compose updates (without the host updater)
+
 **Back up first.** Use the [backup and restore guide](docs/backup-restore.md),
 which preserves the database, secrets, signing identity and Caddy CA. Never
 use `docker compose down -v` to update.
@@ -171,7 +186,7 @@ systemd services, pulling containers does not update those services. If both
 exist, do not start another stack or switch the proxy: establish which existing
 installation serves your public URL. See [upgrade verification](docs/verified-upgrades.md).
 
-For an existing **Compose deployment**, set `BLOXOS_VERSION=1.2.2` in your existing
+For an existing **Compose deployment**, set `BLOXOS_VERSION=1.3.0` in your existing
 `.env`, then run these with the same project name and any existing overrides:
 
 ```sh
@@ -206,7 +221,7 @@ On a native installation, replacing the hub executable does **not** replace
 separate agent files. Use the [native agent check-and-stage guide](docs/native-agent-upgrades.md)
 to prepare the published payloads without starting a fleet rollout.
 
-[Release notes](https://github.com/bokiko/bloxos/releases/tag/v1.2.2) ·
+[Release notes](https://github.com/bokiko/bloxos/releases/tag/v1.3.0) ·
 [Update signing](docs/offline-update-signing.md) ·
 [Agent recovery](docs/agent-update-recovery.md)
 

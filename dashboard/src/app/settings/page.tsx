@@ -22,8 +22,9 @@ import { BrandingSettings } from "@/components/settings/BrandingSettings";
 import { ProfileSettings } from "@/components/settings/ProfileSettings";
 import { PreferencesSettings } from "@/components/settings/PreferencesSettings";
 import { AISessionsSettings } from "@/components/settings/AISessionsSettings";
+import { UpdatesSettings } from "@/components/settings/UpdatesSettings";
 
-const SETTINGS_TABS = ["profile", "preferences", "theme", "branding", "ai-sessions"] as const;
+const SETTINGS_TABS = ["profile", "preferences", "theme", "branding", "ai-sessions", "updates"] as const;
 type SettingsTab = (typeof SETTINGS_TABS)[number];
 
 export default function SettingsPage() {
@@ -39,7 +40,8 @@ function SettingsContent() {
   const defaultTab: SettingsTab =
     requested && SETTINGS_TABS.includes(requested) &&
     (requested !== "branding" || canEditBranding) &&
-    (requested !== "ai-sessions" || canManageAISessions)
+    (requested !== "ai-sessions" || canManageAISessions) &&
+    (requested !== "updates" || canManageAISessions)
       ? requested
       : "profile";
 
@@ -72,6 +74,7 @@ function SettingsContent() {
             <TabsTrigger value="theme">Theme</TabsTrigger>
             {canEditBranding && <TabsTrigger value="branding">Branding</TabsTrigger>}
             {canManageAISessions && <TabsTrigger value="ai-sessions">AI Sessions</TabsTrigger>}
+          {canManageAISessions && <TabsTrigger value="updates">Updates</TabsTrigger>}
           </TabsList>
 
           <TabsContent value="profile" className="mt-6">
@@ -95,6 +98,12 @@ function SettingsContent() {
           {canManageAISessions && (
             <TabsContent value="ai-sessions" className="mt-6">
               <AISessionsSettings />
+            </TabsContent>
+          )}
+
+          {canManageAISessions && (
+            <TabsContent value="updates" className="mt-6">
+              <UpdatesSettings />
             </TabsContent>
           )}
         </Tabs>

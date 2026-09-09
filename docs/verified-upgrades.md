@@ -6,11 +6,11 @@ Likewise, the Git checkout tag does not identify an already running executable.
 
 ## Current scope
 
-This branch adds **read-only verification**, not an automatic native/Compose
-updater. The in-place update adapters, migration-aware rollback and legacy
-upgrade bridge are not implemented yet. Do not use Docker commands to update
-a native installation, and do not switch databases or proxy upstreams as an
-upgrade shortcut.
+The [host updater](system-updates.md) uses these checks after staging and
+installing a release. The script below remains a **read-only verification**
+tool; running it does not install anything. Do not use Docker commands to
+update a native installation, and do not switch databases or proxy upstreams
+as an upgrade shortcut.
 
 The new endpoints are:
 
@@ -52,7 +52,7 @@ components. Missing metadata in an older version is **UNKNOWN**, not success
 and not proof that the website is unhealthy. Native source builds without
 build stamps are also unverifiable as releases.
 
-This is not yet an automatic deployment detector: unit/container observations
+This read-only script is not an automatic deployment detector: unit/container observations
 are evidence, not proof of proxy routing. A native Caddy process can proxy
 containers. Missing Docker permissions are not evidence that no containers
 exist. Load-balanced replicas require a replica-aware workflow; a single

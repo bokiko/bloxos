@@ -21,7 +21,8 @@ SCRIPT = HERE.parent / "upgrade_preflight.py"
 
 PASS, FAIL, UNKNOWN = 0, 1, 2
 
-LOCAL_ARGS = ("--local-hub-url", "http://127.0.0.1:4000", "--local-dashboard-url", "http://127.0.0.1:3000")
+UNVERIFIABLE_FIXTURE = "unverifiable-fixture"
+LOCAL_ARGS = ("--local-hub-url", UNVERIFIABLE_FIXTURE, "--local-dashboard-url", UNVERIFIABLE_FIXTURE)
 
 HUB_INFO = {"component": "hub", "version": "1.2.2", "revision": "a" * 40, "instance_id": "inst-hub-1"}
 DASH_INFO = {"component": "dashboard", "version": "1.2.2", "revision": "a" * 40, "instance_id": "inst-dash-1"}
@@ -112,8 +113,13 @@ def server(routes, tls_cert=None):
 
 
 def run_cli(*argv):
-    return subprocess.run([sys.executable, str(SCRIPT), *argv],
-                          capture_output=True, text=True, timeout=60)
+    # Isolated 404 fixture: never probe a developer's actual BloxOS on
+    # 3000/4000, including automatically forwarded VM ports. Unlike a bound
+    # non-listening socket this returns promptly on both macOS and Linux.
+    with server({}) as unavailable:
+        args = [unavailable if value == UNVERIFIABLE_FIXTURE else value for value in argv]
+        return subprocess.run([sys.executable, str(SCRIPT), *args],
+                              capture_output=True, text=True, timeout=60)
 
 
 def write_test_ca(tmpdir):
