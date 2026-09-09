@@ -9,6 +9,9 @@ on:
       - "docker/**"
       - "scripts/smoke/**"
       - "scripts/backup-compose.sh"
+      - "scripts/agent_bundle.py"
+      - "scripts/export-agent-bundle.sh"
+      - "scripts/test_agent_bundle.py"
       - "hub/**"
       - "agent/**"
       - "proto/**"
@@ -81,6 +84,8 @@ jobs:
     needs: [smoke, verify-release]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    outputs:
+      hub_digest: ${{ steps.hub.outputs.digest }}
     permissions:
       contents: read
       packages: write
@@ -127,3 +132,44 @@ jobs:
           version="${VERSION#v}"
           docker buildx imagetools create -t "$HUB_IMAGE:$version" -t "$HUB_IMAGE:latest" "$HUB_IMAGE@$HUB_DIGEST"
           docker buildx imagetools create -t "$DASHBOARD_IMAGE:$version" -t "$DASHBOARD_IMAGE:latest" "$DASHBOARD_IMAGE@$DASHBOARD_DIGEST"
+
+  native-bundle:
+    name: Package native agents
+    needs: [publish]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Extract and check the exact published agent bytes
+        env:
+          HUB_DIGEST: ${{ needs.publish.outputs.hub_digest }}
+          SOURCE_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: bash scripts/export-agent-bundle.sh "$HUB_IMAGE@$HUB_DIGEST" "$SOURCE_SHA" "$RELEASE_TAG" "$RUNNER_TEMP/native-agents"
+      - name: Attach native payloads to a draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --json isDraft >/dev/null 2>&1; then
+            test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "BloxOS $RELEASE_TAG" \
+              --notes "Release verification passed. Native payloads are extracted from the published image; operator review and final release notes are pending. Fleet signatures are installation-specific and are not included."
+          fi
+          gh release upload "$RELEASE_TAG" \
+            "$RUNNER_TEMP/native-agents/agent-manifest.json" \
+            "$RUNNER_TEMP/native-agents/agent-manifest.sha256" \
+            "$RUNNER_TEMP/native-agents/bloxos-agent-linux-amd64" \
+            "$RUNNER_TEMP/native-agents/bloxos-agent-linux-arm64" \
+            "$RUNNER_TEMP/native-agents/bloxos-agent-windows-amd64.exe"

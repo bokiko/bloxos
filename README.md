@@ -166,6 +166,10 @@ after a hub upgrade. Legacy agents may need update-key pinning; offline-signing
 installations have a separate procedure. Very old or customized deployments
 should compare their Compose configuration before updating.
 
+On a native installation, replacing the hub executable does **not** replace
+separate agent files. Use the [native agent check-and-stage guide](docs/native-agent-upgrades.md)
+to prepare the published payloads without starting a fleet rollout.
+
 [Release notes](https://github.com/bokiko/bloxos/releases/tag/v1.2.0) ·
 [Update signing](docs/offline-update-signing.md) ·
 [Agent recovery](docs/agent-update-recovery.md)

@@ -61,6 +61,11 @@ jobs:
       - name: Test backup failure and restart handling
         run: python3 ../scripts/test_backup_compose.py
 
+      - name: Test native agent bundle validation and staging
+        run: |
+          python3 ../scripts/test_agent_bundle.py
+          bash -n ../scripts/export-agent-bundle.sh
+
   # A real gate as of issue #60: the hub's DB handle and agent registry now live
   # on a Server instance, so tests build isolated servers instead of reassigning
   # package globals under leaked agent-WS goroutines. Verified stable across four
