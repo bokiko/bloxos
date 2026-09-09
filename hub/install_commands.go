@@ -23,9 +23,15 @@ type installTokenResponse struct {
 	// behind a private CA; empty for publicly trusted TLS and for http.
 	JoinPin        string `json:"join_pin,omitempty"`
 	WindowsCommand string `json:"windows_command"`
-	CAURL          string `json:"ca_url"`
-	CASHA256       string `json:"ca_sha256"`
-	ExpiresAt      string `json:"expires_at"`
+	// Unusable names the platforms whose served agent cannot complete a fresh
+	// enrollment, so a caller can warn BEFORE the operator runs the matching
+	// command on a real machine. Empty when every platform is usable. The
+	// commands are still returned: the other platforms work, and silently
+	// withholding one would be the same surprise moved somewhere else.
+	Unusable  []string `json:"unusable,omitempty"`
+	CAURL     string   `json:"ca_url"`
+	CASHA256  string   `json:"ca_sha256"`
+	ExpiresAt string   `json:"expires_at"`
 }
 
 // windowsReenrollmentResponse is the contract for a machine-bound Windows
