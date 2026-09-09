@@ -146,6 +146,22 @@ class BundleTests(unittest.TestCase):
                 bundle.stage(self.source, self.sha, self.active)
         self.assertEqual((self.active / "bloxos-agent").read_bytes(), b"existing agent")
 
+    def test_future_active_override_under_staging_root_rejected(self):
+        for env, filename in zip(
+                ("BLOXOS_AGENT_BINARY", "BLOXOS_AGENT_BINARY_ARM64", "BLOXOS_AGENT_BINARY_WINDOWS"),
+                bundle.FILES.values()):
+            with self.subTest(env=env):
+                target = self.staging / "agent-release-7" / filename
+                with mock.patch.dict(os.environ, {env: str(target)}):
+                    with self.assertRaisesRegex(ValueError, "active agent directory"):
+                        bundle.stage(self.source, self.sha, self.staging)
+                self.assertFalse(target.exists())
+                self.assertEqual(list(self.staging.iterdir()), [])
+
+    def test_sibling_of_active_directory_can_be_staged(self):
+        with mock.patch.dict(os.environ, {"BLOXOS_AGENT_BINARY": str(self.active / "bloxos-agent")}):
+            self.assertTrue(bundle.stage(self.source, self.sha, self.staging).is_dir())
+
     def test_source_change_during_copy_leaves_no_stage(self):
         original = bundle.read_regular
         counts = {}

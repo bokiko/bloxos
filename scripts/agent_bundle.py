@@ -125,8 +125,10 @@ def safe_staging_root(root):
         if os.environ.get(name):
             forbidden.append(Path(os.environ[name]).resolve().parent)
     for directory in forbidden:
-        require(resolved != directory and directory not in resolved.parents,
-                "staging root is inside an active agent directory")
+        directory = directory.resolve()
+        require(resolved != directory and directory not in resolved.parents
+                and resolved not in directory.parents,
+                "staging root overlaps an active agent directory")
     require(resolved not in (Path("/"), Path.home()), "choose a dedicated staging directory")
     return resolved
 
