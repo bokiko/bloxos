@@ -19,6 +19,8 @@ legacy SHAs).
   older hub that does not report the field is shown as unknown, not legacy.
 - A platform with no binary (e.g. no Linux ARM64 build) still renders a card
   naming the gap instead of disappearing silently.
+- **File modified** is the served file's modification time, not a build date
+  or the time the hub last checked it.
 
 ## Per-agent status
 

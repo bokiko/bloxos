@@ -103,7 +103,7 @@ function AgentBinaryCard({
               {shortSHA(binary.sha)}
             </code>
             <span className="text-[11px] text-blox-muted">
-              checked {timeSince(binary.mtime)}
+              file modified {timeSince(binary.mtime)}
             </span>
           </div>
           <dl className="mt-3 grid gap-2 text-[11px]">
