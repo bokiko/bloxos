@@ -63,6 +63,18 @@ CA_ARGS=()
 CA_ENV=()
 if [[ -n "$CA_SHA256" ]]; then
   CA_PATH=/etc/bloxos/ca.crt
+  CA_DIR=/etc/bloxos
+  if $SUDO test -f "$CA_PATH"; then
+    ACTUAL_CA_SHA=$($SUDO sha256sum "$CA_PATH" | awk '{print $1}')
+    if [[ "$ACTUAL_CA_SHA" != "$CA_SHA256" ]]; then
+      # A fresh authenticated command can belong to a rebuilt or different
+      # hub. Preserve the existing CA for the running agent and rollback;
+      # provision the newly verified CA separately for this installation.
+      echo "Keeping existing CA; provisioning this hub CA separately."
+      CA_DIR=/etc/bloxos/certs
+      CA_PATH="$CA_DIR/$CA_SHA256.crt"
+    fi
+  fi
   if $SUDO test -f "$CA_PATH"; then
     ACTUAL_CA_SHA=$($SUDO sha256sum "$CA_PATH" | awk '{print $1}')
     if [[ "$ACTUAL_CA_SHA" != "$CA_SHA256" ]]; then
@@ -78,7 +90,7 @@ if [[ -n "$CA_SHA256" ]]; then
       echo "CA fingerprint mismatch; expected $CA_SHA256, got $ACTUAL_CA_SHA" >&2
       exit 1
     fi
-    $SUDO install -d -o root -g root -m 0755 /etc/bloxos
+    $SUDO install -d -o root -g root -m 0755 "$CA_DIR"
     $SUDO install -o root -g root -m 0644 "$TMP_CA" "$CA_PATH"
   fi
   CA_ARGS=(--cacert "$CA_PATH")

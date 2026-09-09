@@ -1,5 +1,7 @@
 {
 	# Use Caddy's internal CA for self-signed TLS on LAN
+	# IP-address clients send no SNI (including the hub's pin probe).
+	default_sni {$HUB_HOST}
 }
 
 https://{$HUB_HOST} {
@@ -7,6 +9,8 @@ https://{$HUB_HOST} {
 	# accept Caddy's default ECDSA keys (see AGENTS.md).
 	tls internal {
 		key_type rsa2048
+		# Keep short-lived onboarding pins valid across certificate renewal.
+		reuse_private_keys
 	}
 
 	# Hub API routes

@@ -591,7 +591,8 @@ function CommandDisplay({
                 TLS key (<code className="font-mono text-[10px] break-all">{resp.join_pin}</code>), so a different
                 server can&apos;t answer in its place. Hub certificates renew periodically; if the machine prints{" "}
                 <code className="font-mono text-[10px]">curl: (90) SSL: public key does not match pinned public key</code>
-                , the key changed since this command was made. Come back here and generate a new one.
+                , the endpoint no longer matches this command. Generate a new one. If a fresh command also fails,
+                ask the hub administrator to check the proxy certificate and pin-dial address. Do not remove the pin.
               </p>
             )}
             <p>

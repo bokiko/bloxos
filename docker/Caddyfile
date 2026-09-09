@@ -13,6 +13,9 @@ https://{$HUB_HOST} {
 	# accept Caddy's default ECDSA keys (see AGENTS.md).
 	tls internal {
 		key_type rsa2048
+		# Join commands pin the leaf key for 15 minutes. Keep that key
+		# across routine renewals so a renewal cannot invalidate a fresh command.
+		reuse_private_keys
 	}
 
 	# Hub API, agent and terminal WebSockets, installers and downloads.
