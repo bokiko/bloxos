@@ -209,8 +209,7 @@ html[data-layout="console"][data-design-color="bright"] {
 [data-layout="wall"] .lw-resource-bars { display: grid; gap: 23px; margin-top: 27px; }
 [data-layout="wall"] .lw-resource-row { display: grid; grid-template-columns: 90px 1fr 45px; gap: 16px; align-items: center; font-size: 11px; color: var(--ld-secondary); }
 [data-layout="wall"] .lw-resource-row strong { text-align: right; font-size: 12px; font-weight: 500; color: var(--ld-ink); font-variant-numeric: tabular-nums; }
-[data-layout="wall"] .lw-ranks { grid-column: span 6; display: grid; grid-template-columns: 1fr 1fr; gap: 25px; }
-[data-layout="wall"] .lw-ranks > div + div { border-left: 1px solid var(--ld-edge); padding-left: 25px; }
+[data-layout="wall"] .lw-ranks { grid-column: span 6; display: grid; grid-template-columns: 1fr; gap: 25px; }
 [data-layout="wall"] .lw-ranks h2 { font-size: 12px; color: var(--ld-secondary); font-weight: 500; }
 [data-layout="wall"] .lw-foot-tile { grid-column: span 2; background: var(--ld-panel-alt); }
 [data-layout="wall"] .lw-foot-tile .lw-big { font-size: 39px; font-weight: 450; letter-spacing: -1.8px; margin-top: 40px; white-space: nowrap; color: var(--ld-ink); }
@@ -258,7 +257,7 @@ html[data-layout="console"][data-design-color="bright"] {
 [data-layout="grove"] .lg-health small { color: var(--ld-secondary); font-size: 10px; }
 [data-layout="grove"] .lg-health strong { display: block; font-size: 25px; font-weight: 400; margin: 12px 0; color: var(--ld-ink); }
 [data-layout="grove"] .lg-health .ld-bar { height: 4px; }
-[data-layout="grove"] .lg-ranks { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin: 28px 0; }
+[data-layout="grove"] .lg-ranks { display: grid; grid-template-columns: 1fr; gap: 24px; margin: 28px 0; }
 [data-layout="grove"] .lg-ranks h2 { font-size: 12px; color: var(--ld-ink); font-weight: 500; }
 [data-layout="grove"] .lg-fleet { border-top: 1px solid var(--ld-edge); padding-top: 24px; }
 [data-layout="grove"] .lg-fleet > h2 { font-size: 13px; color: var(--ld-ink); margin-bottom: 6px; }
@@ -314,7 +313,7 @@ html[data-layout="console"][data-design-color="bright"] {
 [data-layout="console"] .lc-table a:hover { color: var(--ld-accent); }
 [data-layout="console"] .lc-meter { width: 60px; margin-top: 8px; height: 3px; background: var(--ld-track); }
 [data-layout="console"] .lc-meter i { display: block; height: 100%; background: var(--ld-accent); }
-[data-layout="console"] .lc-lower { display: grid; grid-template-columns: 1.1fr 1fr 1fr; gap: 18px; margin-top: 22px; }
+[data-layout="console"] .lc-lower { display: grid; grid-template-columns: 1.1fr 1fr; gap: 18px; margin-top: 22px; }
 [data-layout="console"] .lc-instrument { border: 1px solid var(--ld-edge); border-radius: 6px; padding: 20px; background: var(--ld-panel); }
 [data-layout="console"] .lc-instrument h2 { color: var(--ld-secondary); font-size: 10px; letter-spacing: 1px; text-transform: uppercase; }
 [data-layout="console"] .lc-instrument .ld-rank-item { font-family: var(--font-mono, monospace); }
@@ -344,7 +343,6 @@ html[data-layout="console"][data-design-color="bright"] {
   [data-layout="wall"] .lw-foot-tile { grid-column: span 3; }
   [data-layout="wall"] .lw-machines { grid-column: span 6; }
   [data-layout="console"] .lc-lower { grid-template-columns: 1fr 1fr; }
-  [data-layout="console"] .lc-lower .lc-instrument:first-child { grid-column: span 2; }
   [data-layout="grove"] .lg-health { grid-template-columns: repeat(2, 1fr); }
 }
 @media (max-width: 800px) {
@@ -358,7 +356,6 @@ html[data-layout="console"][data-design-color="bright"] {
 @media (max-width: 700px) {
   [data-layout="wall"] .lw { padding: 20px 14px; }
   [data-layout="wall"] .lw-ranks { grid-template-columns: 1fr; gap: 24px; }
-  [data-layout="wall"] .lw-ranks > div + div { border-left: 0; border-top: 1px solid var(--ld-edge); padding: 20px 0 0; }
   [data-layout="grove"] .lg { grid-template-columns: 1fr; min-height: auto; }
   [data-layout="grove"] .lg-sidebar { display: none; }
   /* The sidebar is hidden on mobile, so the compact top bar carries the full
