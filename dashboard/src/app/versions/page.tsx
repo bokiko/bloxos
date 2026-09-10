@@ -137,54 +137,51 @@ function VersionsContent() {
   return (
     <>
       <div className="mf-intro">
-        <div className="min-w-0">
-          <dl className="flex flex-wrap items-baseline gap-x-8 gap-y-3">
-            <div className="flex items-baseline gap-2">
-              <dt className="mf-kicker">Agents</dt>
-              <dd className="mf-metric text-[19px] leading-none text-text-primary">
-                {data ? data.agents.length : "—"}
-              </dd>
-            </div>
-            <div className="flex items-baseline gap-2">
-              <dt className="mf-kicker">Signing</dt>
-              <dd>
-                {data ? (
-                  <StatusMark
-                    tone={data.signing_enabled ? "ok" : "critical"}
-                    label={data.signing_enabled ? "Enabled" : "Disabled"}
-                    Icon={data.signing_enabled ? ShieldCheck : AlertTriangle}
-                  />
-                ) : (
-                  <span className="text-[13px] text-text-tertiary">—</span>
-                )}
-              </dd>
-            </div>
-            <div className="flex items-baseline gap-2">
-              <dt className="mf-kicker">Rollout</dt>
-              <dd>
-                {data ? (
-                  <StatusMark
-                    tone={data.rollout_paused ? "warning" : "ok"}
-                    label={data.rollout_paused ? "Paused" : "Active"}
-                    Icon={data.rollout_paused ? Pause : Play}
-                  />
-                ) : (
-                  <span className="text-[13px] text-text-tertiary">—</span>
-                )}
-              </dd>
-            </div>
-          </dl>
-          <div className="mt-5">
-            <button type="button" onClick={refresh} disabled={loading} className={MF_BUTTON}>
-              <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} aria-hidden />
-              {loading ? "Refreshing…" : "Refresh versions"}
-            </button>
+        <dl className="flex flex-wrap items-baseline gap-x-8 gap-y-3">
+          <div className="flex items-baseline gap-2">
+            <dt className="mf-kicker">Agents</dt>
+            <dd className="mf-metric text-[19px] leading-none text-text-primary">
+              {data ? data.agents.length : "—"}
+            </dd>
           </div>
+          <div className="flex items-baseline gap-2">
+            <dt className="mf-kicker">Signing</dt>
+            <dd>
+              {data ? (
+                <StatusMark
+                  tone={data.signing_enabled ? "ok" : "critical"}
+                  label={data.signing_enabled ? "Enabled" : "Disabled"}
+                  Icon={data.signing_enabled ? ShieldCheck : AlertTriangle}
+                />
+              ) : (
+                <span className="text-[13px] text-text-tertiary">—</span>
+              )}
+            </dd>
+          </div>
+          <div className="flex items-baseline gap-2">
+            <dt className="mf-kicker">Rollout</dt>
+            <dd>
+              {data ? (
+                <StatusMark
+                  tone={data.rollout_paused ? "warning" : "ok"}
+                  label={data.rollout_paused ? "Paused" : "Active"}
+                  Icon={data.rollout_paused ? Pause : Play}
+                />
+              ) : (
+                <span className="text-[13px] text-text-tertiary">—</span>
+              )}
+            </dd>
+          </div>
+        </dl>
+        <div className="mf-intro-actions">
+          <button type="button" onClick={refresh} disabled={loading} className={MF_BUTTON}>
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} aria-hidden />
+            {loading ? "Refreshing…" : "Refresh versions"}
+          </button>
         </div>
         <p>
-          Protocol-v1 agents verify signed updates against their pinned key. Protocol-v2 agents also
-          enforce a signed release floor against downgrades. Windows revalidates the staged
-          binary&apos;s SHA and signature on service restart, but still needs a manual rollback.
+          Signed updates, verified against each agent&apos;s pinned key. Protocol-v2 agents also
+          enforce a release floor against downgrades.
         </p>
       </div>
 

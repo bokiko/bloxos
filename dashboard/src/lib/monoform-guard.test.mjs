@@ -116,18 +116,31 @@ test("the deleted layout and theme modules are gone, not merely unimported", () 
   assert.ok(present.has("components/fleet/useFleetData.ts"), "useFleetData.ts is live Overview logic");
 });
 
-test("appearance is exactly gray and dark, with no retired theme registry", () => {
+test("appearance is exactly dark and light, with no retired theme registry", () => {
   const context = readFileSync(new URL("../contexts/ThemeContext.tsx", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../app/monoform.css", import.meta.url), "utf8");
 
   const union = context.match(/export type AppearanceMode\s*=\s*([^;]+);/);
   assert.ok(union, "AppearanceMode must be exported");
   const modes = [...union[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]).sort();
-  assert.deepEqual(modes, ["dark", "gray"], "the only contrast modes are gray and dark");
+  assert.deepEqual(modes, ["dark", "light"], "the only themes are dark and light");
 
-  // No theme gallery, no light/system mode, no per-theme registry survives.
+  // No theme gallery, no system mode, no per-theme registry survives. The
+  // gallery is what Monoform removed; adding a second theme does not bring it
+  // back, and "system" stays gone — the theme is an explicit user choice.
   assert.doesNotMatch(context, /\bTHEME_NAMES\b|\bTHEMES\b|\bThemeName\b|\bResolvedMode\b|DARK_ONLY_THEMES/);
-  assert.doesNotMatch(context, /"light"|"system"/, "Monoform has no light or system mode");
-  assert.doesNotMatch(context, /matchMedia/, "no OS-driven mode resolution");
+  assert.doesNotMatch(context, /"system"/, "Monoform has no system mode");
+  assert.doesNotMatch(context, /matchMedia|prefers-color-scheme/, "no OS-driven mode resolution");
+
+  // `gray` is gone from the product, not merely unselectable: the token block
+  // it named must not survive as a third palette nobody can reach.
+  assert.doesNotMatch(context, /"gray"/, "the retired gray mode must not be reachable");
+  assert.doesNotMatch(css, /data-appearance="gray"/, "no gray token block may remain");
+
+  // Exactly two token blocks, and the default one is dark — an unstyled first
+  // paint is what a missing :root block produces.
+  assert.match(css, /:root,\s*\nhtml\[data-appearance="dark"\] \{/, "dark is the :root default");
+  assert.match(css, /html\[data-appearance="light"\] \{/, "light defines its own tokens");
 
   // The context exposes one reader and one writer, and nothing else.
   assert.match(context, /appearance:\s*AppearanceMode;/);

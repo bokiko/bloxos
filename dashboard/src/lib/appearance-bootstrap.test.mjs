@@ -7,8 +7,14 @@ import { runInNewContext } from 'node:vm';
 // document before React mounts, so it is executed here verbatim rather than
 // re-implemented. Monoform replaced the account-scoped design cache this file
 // used to cover: there is no layout or palette to restore any more, only the
-// contrast mode, and the script must additionally scrub whatever the retired
+// theme, and the script must additionally scrub whatever the retired
 // multi-theme / multi-layout system left on <html>.
+//
+// The product has a dark theme and a light one, `dark` being the default. The
+// `dark` class is what Tailwind's `dark:` variants key off, so the tests below
+// pin BOTH directions — present in dark, absent in light, with `color-scheme`
+// following — because a light document that keeps the class renders with dark
+// form controls and dark shadcn focus surfaces.
 
 function bootstrapSource() {
   const layout = readFileSync(new URL('../app/layout.tsx', import.meta.url), 'utf8');
@@ -33,36 +39,44 @@ function run(root, storage) {
   return root;
 }
 
-test('the bootstrap paints the stored contrast mode, and only gray or dark', () => {
-  for (const stored of ['dark', 'gray']) {
+test('the bootstrap paints the stored theme, and only dark or light', () => {
+  for (const stored of ['dark', 'light']) {
     assert.equal(run(makeRoot(), { 'bloxos-appearance': stored }).dataset.appearance, stored);
   }
-  // Anything that is not one of the two modes — a retired theme name, a
-  // retired mode, junk — must resolve to the default, never be applied.
-  for (const junk of ['light', 'system', 'dracula', 'tokyo-night', '', 'null']) {
+  // Anything that is not one of the two themes must resolve to the default and
+  // never be applied. `gray` is in this list on purpose: it was a real stored
+  // value one release ago, so every browser that used the previous build has
+  // it, and it must migrate to dark rather than paint an unstyled document.
+  for (const junk of ['gray', 'system', 'dracula', 'tokyo-night', '', 'null']) {
     const root = run(makeRoot(), { 'bloxos-appearance': junk });
-    assert.equal(root.dataset.appearance, 'gray', `${junk} must not survive as an appearance`);
+    assert.equal(root.dataset.appearance, 'dark', `${junk} must not survive as an appearance`);
   }
 });
 
-test('an existing dark choice survives the reset through the legacy mode key', () => {
-  assert.equal(run(makeRoot(), { 'bloxos-theme-mode': 'dark' }).dataset.appearance, 'dark');
-  // The legacy key is read one way only: a legacy light/system choice does not
-  // resurrect a light page, because Monoform has no light mode.
-  for (const legacy of ['light', 'system']) {
-    assert.equal(run(makeRoot(), { 'bloxos-theme-mode': legacy }).dataset.appearance, 'gray');
+test('the retired contrast-mode key cannot select a theme', () => {
+  // `bloxos-theme-mode` belonged to the pre-Monoform theme gallery. It is no
+  // longer read at all: with dark as the default, the only value it could
+  // still rescue is the one an absent key already produces, and honouring its
+  // "light" would flip a user who has been on a dark surface for a full
+  // release into a different light theme they never chose.
+  for (const legacy of ['dark', 'light', 'system']) {
+    assert.equal(run(makeRoot(), { 'bloxos-theme-mode': legacy }).dataset.appearance, 'dark');
   }
-  // A current choice always wins over the legacy key.
-  const current = run(makeRoot(), { 'bloxos-appearance': 'gray', 'bloxos-theme-mode': 'dark' });
-  assert.equal(current.dataset.appearance, 'gray');
+  // ...and it never overrides a current choice.
+  const current = run(makeRoot(), { 'bloxos-appearance': 'light', 'bloxos-theme-mode': 'dark' });
+  assert.equal(current.dataset.appearance, 'light');
 });
 
-test('both modes paint a dark document, so the first frame is never light', () => {
-  for (const stored of ['gray', 'dark']) {
-    const root = run(makeRoot(), { 'bloxos-appearance': stored });
-    assert.ok(root.classList.includes('dark'), `${stored} must keep the dark class`);
-    assert.equal(root.style.colorScheme, 'dark');
-  }
+test('the dark class and color-scheme follow the theme in both directions', () => {
+  const dark = run(makeRoot(), { 'bloxos-appearance': 'dark' });
+  assert.ok(dark.classList.includes('dark'), 'dark must carry the dark class');
+  assert.equal(dark.style.colorScheme, 'dark');
+
+  // Starting from a document that already carries the class — the common case,
+  // since the previous theme was dark — light must take it off again.
+  const light = run(makeRoot(['dark']), { 'bloxos-appearance': 'light' });
+  assert.ok(!light.classList.includes('dark'), 'light must not carry the dark class');
+  assert.equal(light.style.colorScheme, 'light');
 });
 
 test('the bootstrap scrubs what the retired layout and theme system left behind', () => {
@@ -83,6 +97,6 @@ test('the bootstrap scrubs what the retired layout and theme system left behind'
 test('unavailable storage still yields a painted, readable document', () => {
   const root = makeRoot();
   run(root, () => { throw new Error('storage blocked'); });
-  assert.equal(root.dataset.appearance, 'gray');
+  assert.equal(root.dataset.appearance, 'dark');
   assert.ok(root.classList.includes('dark'));
 });

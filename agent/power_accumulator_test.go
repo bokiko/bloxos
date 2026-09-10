@@ -135,7 +135,7 @@ func TestAccumulatorCapsSamplesAtExpected(t *testing.T) {
 	for i := 0; i < 36; i++ {
 		s := float64(i) * 0.8
 		a.addGPUAt(gpuTick(c.at(s), true, f(10)), c.wall(s))
-		a.addCPUAt(c.at(s), c.wall(s), 20)
+		a.addDomainAt(powerhistory.DomainCPU, c.at(s), c.wall(s), 20, powerhistory.SourceRAPLPackage)
 	}
 	b := a.tickAt(c.at(30), c.wall(30))[0]
 	if b.GPUs[0].Samples != 30 || b.GPUTotal.Samples != 30 || b.CPU.Samples != 30 {
@@ -266,7 +266,7 @@ func TestAccumulatorMembershipAdditionOmitsTotalKeepsSensorsAndCPU(t *testing.T)
 	feedTicks(a, c, 0, 15, ab)
 	feedTicks(a, c, 15, 30, abc)
 	for s := 0; s < 30; s++ {
-		a.addCPUAt(c.at(float64(s)), c.wall(float64(s)), 12)
+		a.addDomainAt(powerhistory.DomainCPU, c.at(float64(s)), c.wall(float64(s)), 12, powerhistory.SourceRAPLPackage)
 	}
 	b := closeWindow(t, a, c, 30)
 	if b.GPUTotal != nil {

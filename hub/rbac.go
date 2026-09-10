@@ -149,6 +149,12 @@ var routeScopeRequirements = map[string]string{
 	routeScopeKey(http.MethodGet, "/api/me/filters"):               scopeAuthSelf,
 	routeScopeKey(http.MethodPost, "/api/me/filters"):              scopeAuthSelf,
 	routeScopeKey(http.MethodDelete, "/api/me/filters/:id"):        scopeAuthSelf,
+
+	// Fleet power. The same telemetry as GET /api/machines/:id/power/history
+	// above, aggregated across the fleet, so it takes the same scope:
+	// fleet.read already means every machine, and rolling up rows a reader
+	// may already fetch one machine at a time discloses nothing new.
+	routeScopeKey(http.MethodGet, "/api/fleet/power/history"): scopeFleetRead,
 }
 
 func (s *Server) permissionMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
@@ -242,7 +248,7 @@ func roleHasScope(role UserRole, requiredScope string) bool {
 
 // publicAPIRoutes lists the /api/* endpoints that are served without RBAC enforcement.
 var publicAPIRoutes = map[string]struct{}{
-	routeScopeKey(http.MethodPost, "/api/auth/login"):  {},
+	routeScopeKey(http.MethodPost, "/api/auth/login"): {},
 	// Build identity (version/revision/instance_id) for upgrade verification.
 	// Public so a client can confirm which build answers the URL before login.
 	routeScopeKey(http.MethodGet, "/api/build-info"):   {},

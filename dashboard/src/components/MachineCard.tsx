@@ -3,7 +3,17 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
-import { Trash2, Pencil, RefreshCw, Star, ArrowUpFromLine } from "lucide-react";
+import {
+  Trash2,
+  Pencil,
+  RefreshCw,
+  Star,
+  ArrowUpFromLine,
+  AlertTriangle,
+  Gauge,
+  Plus,
+  StickyNote,
+} from "lucide-react";
 import type { MachineMetrics } from "@/lib/demo-data";
 import { Sparkline } from "./Sparkline";
 import { useVersions } from "@/contexts/VersionsContext";
@@ -14,6 +24,8 @@ import {
   StatusBadge,
   STATUS_VIS,
 } from "@/components/StatusBadge";
+import { noteSummary } from "@/lib/machine-notes";
+import type { NoteState } from "@/components/overview/useMachineNotes";
 
 /* ============================================================================
  * MachineCard — dense, operator-focused card.
@@ -96,9 +108,30 @@ interface MachineCardProps {
   onDelete?: (machineId: string, hostname: string) => void;
   onEdit?: (machineId: string) => void;
   onRefresh?: (machineId: string) => void;
+  /** The operator has declared this machine's CPU saturation to be its normal
+   * working state. Keeps the grid's badge in step with the fleet table's. */
+  expectedHighLoad?: boolean;
+  /** Set the flag above from the card itself. Omitted where the card is
+   * read-only, in which case the flag is shown but not offered. */
+  onToggleExpectedHighLoad?: (machineId: string) => void;
+  /** This machine's note. Omitted where the caller does not load notes. */
+  note?: NoteState;
+  onOpenNote?: (machineId: string) => void;
+  /** fleet.metadata — whether the card offers to add a missing note. */
+  canEditNotes?: boolean;
 }
 
-export function MachineCard({ machine, onDelete, onEdit, onRefresh }: MachineCardProps) {
+export function MachineCard({
+  machine,
+  onDelete,
+  onEdit,
+  onRefresh,
+  expectedHighLoad = false,
+  onToggleExpectedHighLoad,
+  note,
+  onOpenNote,
+  canEditNotes = false,
+}: MachineCardProps) {
   const router = useRouter();
   const detailPath = `/machine/${machine.machine_id}`;
   const navigateToDetail = () => router.push(detailPath);
@@ -109,7 +142,9 @@ export function MachineCard({ machine, onDelete, onEdit, onRefresh }: MachineCar
   const { isPinned, pinMachine, unpinMachine } = usePreferences();
   const pinned = isPinned(machine.machine_id);
 
-  const { status, reason } = classifyMachine(machine);
+  const { status, reason, suppressed } = classifyMachine(machine, {
+    expectedHighCpu: expectedHighLoad,
+  });
 
   // Loading-vs-loaded distinction:
   //   loading = heartbeat present but no metric values yet (just enrolled)
@@ -188,6 +223,20 @@ export function MachineCard({ machine, onDelete, onEdit, onRefresh }: MachineCar
           </span>
           {status !== "live" && (
             <StatusBadge status={status} reason={reason} size="xs" />
+          )}
+          {/* Never let the card imply a clean bill of health it did not earn:
+              the flag is shown whether or not it changed today's reading. */}
+          {expectedHighLoad && (
+            <span
+              className="mf-suppressed"
+              title={
+                suppressed
+                  ? `Expected high load — ${suppressed} is not escalated on this machine`
+                  : "Expected high load — CPU saturation is not escalated on this machine"
+              }
+            >
+              {suppressed ? `${suppressed} expected` : "load expected"}
+            </span>
           )}
           {pinned && (
             <Star className="h-3 w-3 shrink-0 fill-status-warning text-status-warning" aria-label="Pinned" />
@@ -288,6 +337,48 @@ export function MachineCard({ machine, onDelete, onEdit, onRefresh }: MachineCar
           )}
         </div>
 
+        {/* ── row 3b: what the operator has said about this machine ──
+            The two things a reader writes rather than reads: the "expected
+            high load" policy, and the note. Both were previously reachable
+            only from somewhere else — the flag from a bare icon at the end of
+            a table row, the note from a tab on the machine page — so neither
+            was discoverable from the card at all. */}
+        {(onToggleExpectedHighLoad || note) && (
+          <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+            {onToggleExpectedHighLoad && (
+              <button
+                type="button"
+                className="mf-inline-action"
+                aria-pressed={expectedHighLoad}
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onToggleExpectedHighLoad(machine.machine_id);
+                }}
+                title={
+                  expectedHighLoad
+                    ? "High CPU here is treated as expected. Click to alert on it again."
+                    : "Treat high CPU here as this machine's normal working state and stop alerting on it."
+                }
+              >
+                <Gauge className="h-3 w-3" aria-hidden />
+                {expectedHighLoad ? "Load expected" : "Expect load"}
+              </button>
+            )}
+            {note && onOpenNote && (
+              <CardNote
+                note={note}
+                canEdit={canEditNotes}
+                onOpen={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onOpenNote(machine.machine_id);
+                }}
+              />
+            )}
+          </div>
+        )}
+
         {/* ── row 4: footer (uptime · latency · update-pending) ── */}
         <div className="mt-3 flex items-center gap-1.5 text-[10px] text-text-tertiary metric-figure">
           <ArrowUpFromLine className="h-2.5 w-2.5 text-text-disabled shrink-0" />
@@ -324,6 +415,70 @@ export function MachineCard({ machine, onDelete, onEdit, onRefresh }: MachineCar
         </div>
       </motion.div>
     </div>
+  );
+}
+
+/* ============================================================================
+ * CardNote — one machine's note, compact enough for a card.
+ *
+ * Same four honest states as the table's cell: still loading, failed to load,
+ * genuinely empty, and has text. A failed read never renders as "no note" —
+ * the machine may well have one, and a card that quietly claims otherwise is
+ * how an operator loses the sentence explaining why the box exists.
+ *
+ * The summary is a string child. Note text is operator free text from the hub
+ * and is never treated as HTML.
+ * ============================================================================ */
+
+function CardNote({
+  note,
+  canEdit,
+  onOpen,
+}: {
+  note: NoteState;
+  canEdit: boolean;
+  onOpen: (e: React.MouseEvent) => void;
+}) {
+  if (note.status === "loading") {
+    return (
+      <span className="mf-inline-action opacity-60" aria-busy="true">
+        <StickyNote className="h-3 w-3" aria-hidden />
+        …
+      </span>
+    );
+  }
+
+  if (note.status === "error") {
+    return (
+      <button type="button" className="mf-inline-action" onClick={onOpen} title={note.error}>
+        <AlertTriangle className="h-3 w-3 text-status-warning" aria-hidden />
+        Notes unavailable
+      </button>
+    );
+  }
+
+  const summary = noteSummary(note.text);
+  if (!summary) {
+    if (!canEdit) return null;
+    return (
+      <button type="button" className="mf-inline-action" onClick={onOpen}>
+        <Plus className="h-3 w-3" aria-hidden />
+        Add note
+      </button>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      className="mf-inline-action max-w-full"
+      onClick={onOpen}
+      title={note.text.slice(0, 400)}
+      aria-label={canEdit ? "Edit notes" : "Read notes"}
+    >
+      <StickyNote className="h-3 w-3 shrink-0" aria-hidden />
+      <span className="truncate">{summary}</span>
+    </button>
   );
 }
 

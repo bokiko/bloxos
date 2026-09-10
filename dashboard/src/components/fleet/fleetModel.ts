@@ -17,7 +17,7 @@
 
 import { classifyMachine, isFreshMetrics, hasGpuData } from "../../lib/fleet-metrics.mjs";
 import type { MachineMetrics } from "@/lib/demo-data";
-import type { MachineStatus } from "@/components/StatusBadge";
+import type { MachineClassification, MachineStatus } from "@/components/StatusBadge";
 
 /** A metric that may be unknown/unavailable. null renders as "N/A". */
 export type Metric = number | null;
@@ -52,8 +52,23 @@ function mean(nums: number[]): Metric {
   return nums.length ? nums.reduce((a, b) => a + b, 0) / nums.length : null;
 }
 
-export function statusOf(m: MachineMetrics): MachineStatus {
-  return classifyMachine(m).status as MachineStatus;
+/**
+ * Machine ids the operator has marked "expected high load" — machines whose
+ * CPU saturation is their working state, not an incident. Threaded explicitly
+ * rather than read from a module global so the classification of a machine is
+ * still a pure function of its reading plus the caller's stated policy.
+ */
+export type LoadBaselines = ReadonlySet<string>;
+
+/** Full classification for one machine under the caller's baseline policy. */
+export function classifyWith(m: MachineMetrics, baselines?: LoadBaselines): MachineClassification {
+  return classifyMachine(m, {
+    expectedHighCpu: baselines?.has(m.machine_id) === true,
+  }) as MachineClassification;
+}
+
+export function statusOf(m: MachineMetrics, baselines?: LoadBaselines): MachineStatus {
+  return classifyWith(m, baselines).status;
 }
 
 function finiteOrNull(v: number): Metric {
@@ -101,6 +116,9 @@ export function machineMaxTemp(m: MachineMetrics): Metric {
 
 export function aggregate(machines: MachineMetrics[], now: number = Date.now()): FleetAggregate {
   const valid = machines.filter((m) => m && typeof m.machine_id === "string");
+  // No baselines here on purpose: this aggregate only asks "offline?" and
+  // "stale?", and an expected-high-load flag suppresses neither. Threading one
+  // through would change nothing and imply it could.
   const online = valid.filter((m) => statusOf(m) !== "offline").length;
   const stale = valid.filter((m) => statusOf(m) === "stale").length;
   const fresh = valid.filter((m) => isFreshMetrics(m.last_seen, now));

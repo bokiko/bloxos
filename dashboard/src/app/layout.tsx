@@ -23,31 +23,33 @@ export const metadata: Metadata = {
 };
 
 /**
- * Inline script that applies the saved Monoform appearance to <html> before
- * React hydrates. Without this, the initial paint flashes a light page.
+ * Inline script that applies the saved Monoform theme to <html> before React
+ * hydrates. Without this, the initial paint flashes the default theme and then
+ * snaps to the stored one.
  *
- * Reads `bloxos-appearance` ("gray" | "dark"), falling back to the legacy
- * `bloxos-theme-mode` key so an existing dark choice survives the reset, and
- * clears anything the retired multi-theme / multi-layout system left behind.
+ * Reads `bloxos-appearance` ("dark" | "light"). Anything else — a retired
+ * contrast mode such as "gray", a retired theme name, junk, or nothing at all
+ * — resolves to "dark", which is the same rule normalizeAppearance() applies in
+ * contexts/ThemeContext.tsx and the hub applies on read. The `dark` class is
+ * added only in dark mode: Tailwind's `dark:` variants key off it, so a light
+ * document must not carry it. Anything the retired multi-theme / multi-layout
+ * system left on <html> is cleared here too.
  */
 const appearanceBootstrapScript = `
 (function () {
   try {
-    var mode = localStorage.getItem('bloxos-appearance');
-    if (mode !== 'dark' && mode !== 'gray') {
-      mode = localStorage.getItem('bloxos-theme-mode') === 'dark' ? 'dark' : 'gray';
-    }
+    var mode = localStorage.getItem('bloxos-appearance') === 'light' ? 'light' : 'dark';
     var root = document.documentElement;
     root.dataset.appearance = mode;
-    root.classList.add('dark');
-    root.style.colorScheme = 'dark';
+    root.classList[mode === 'dark' ? 'add' : 'remove']('dark');
+    root.style.colorScheme = mode;
     Array.prototype.slice.call(root.classList).forEach(function (c) {
       if (c.indexOf('theme-') === 0) root.classList.remove(c);
     });
     delete root.dataset.layout;
     delete root.dataset.designColor;
   } catch (_) {
-    document.documentElement.dataset.appearance = 'gray';
+    document.documentElement.dataset.appearance = 'dark';
     document.documentElement.classList.add('dark');
   }
 })();

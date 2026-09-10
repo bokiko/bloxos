@@ -12,14 +12,43 @@
 // meaning on its own. Values are mono with tabular numerals via `.mf-metric`;
 // the thin `.mf-meter` bars are proportion, not decoration (blue = CPU and
 // memory, violet = GPU, amber when a reading is in its warning band).
+//
+// NOTES ARE THEIR OWN COLUMN, not a second tenant of "Workload". Workload
+// carries the machine's tags: short, structured, fleet-reported classification
+// that the toolbar can filter on. A note is unstructured operator prose about
+// one machine. Putting prose in among the tag chips would make neither
+// scannable, and "—" already means "no tags" there, so an empty note would
+// have had to invent a second meaning for the same dash.
 
 import Link from "next/link";
-import { CheckSquare, Pencil, RefreshCw, Square, Trash2 } from "lucide-react";
+import {
+  AlertTriangle,
+  CheckSquare,
+  Gauge,
+  Pencil,
+  Plus,
+  RefreshCw,
+  Square,
+  StickyNote,
+  Trash2,
+} from "lucide-react";
 import type { MachineMetrics } from "@/lib/demo-data";
 import { STATUS_VIS, type MachineStatus } from "@/components/StatusBadge";
-import { formatBytes, machineGpuUtil, ramPct, statusOf, timeSince } from "@/components/fleet/fleetModel";
+import {
+  classifyWith,
+  formatBytes,
+  machineGpuUtil,
+  ramPct,
+  timeSince,
+  type LoadBaselines,
+} from "@/components/fleet/fleetModel";
+import { noteSummary } from "@/lib/machine-notes";
+import type { NoteState } from "./useMachineNotes";
 
 const API_ADAPTER_TAGS = ["synology", "proxmox"];
+
+/** How much of a note the hover tooltip carries before it is cut. */
+const NOTE_TITLE_MAX = 400;
 
 export interface MachineFleetTableProps {
   machines: MachineMetrics[];
@@ -32,6 +61,17 @@ export interface MachineFleetTableProps {
   onRefresh?: (machineId: string) => void;
   onEditAPIMachine?: (machineId: string) => void;
   onDelete?: (machineId: string, hostname: string) => void;
+  /** Machines the operator has marked "expected high load". */
+  baselines: LoadBaselines;
+  /** Marking a machine is a per-reader view preference, not a fleet command,
+   * so it needs no scope — every reader can quiet their own dashboard. */
+  onToggleBaseline: (machineId: string) => void;
+  /** This machine's note, in whatever state it is in. */
+  noteOf: (machineId: string) => NoteState;
+  /** Open the note editor for this machine. */
+  onOpenNote: (machineId: string) => void;
+  /** fleet.metadata — whether "Add" is offered on a machine with no note. */
+  canEditNotes: boolean;
 }
 
 function splitTags(machine: MachineMetrics): string[] {
@@ -54,12 +94,19 @@ export function MachineFleetTable({
   onRefresh,
   onEditAPIMachine,
   onDelete,
+  baselines,
+  onToggleBaseline,
+  noteOf,
+  onOpenNote,
+  canEditNotes,
 }: MachineFleetTableProps) {
   const allSelected = machines.length > 0 && selected.size === machines.length;
-  const showActions = Boolean(onRefresh || onDelete);
 
   return (
-    <div className="mf-table-wrap mf-panel overflow-x-auto">
+    // An inset frame, not a second `.mf-panel`: the Machine fleet section is
+    // itself a panel now, so the table draws a border inside it rather than a
+    // duplicate box around it.
+    <div className="mf-table-wrap mf-table-frame overflow-x-auto">
       <table className="mf-table">
         <thead>
           <tr>
@@ -85,12 +132,13 @@ export function MachineFleetTable({
             <th scope="col">GPU</th>
             <th scope="col">Memory</th>
             <th scope="col">Workload</th>
+            <th scope="col">Notes</th>
             <th scope="col">Heartbeat</th>
-            {showActions && (
-              <th scope="col">
-                <span className="sr-only">Actions</span>
-              </th>
-            )}
+            {/* Always present: the expected-high-load toggle is a per-reader
+                view preference, so this column no longer depends on scope. */}
+            <th scope="col">
+              <span className="sr-only">Actions</span>
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -106,7 +154,11 @@ export function MachineFleetTable({
               onRefresh={onRefresh}
               onEditAPIMachine={onEditAPIMachine}
               onDelete={onDelete}
-              showActions={showActions}
+              baselines={baselines}
+              onToggleBaseline={onToggleBaseline}
+              note={noteOf(machine.machine_id)}
+              onOpenNote={onOpenNote}
+              canEditNotes={canEditNotes}
             />
           ))}
         </tbody>
@@ -130,7 +182,11 @@ function MachineRow({
   onRefresh,
   onEditAPIMachine,
   onDelete,
-  showActions,
+  baselines,
+  onToggleBaseline,
+  note,
+  onOpenNote,
+  canEditNotes,
 }: {
   machine: MachineMetrics;
   selected: boolean;
@@ -141,9 +197,14 @@ function MachineRow({
   onRefresh?: (machineId: string) => void;
   onEditAPIMachine?: (machineId: string) => void;
   onDelete?: (machineId: string, hostname: string) => void;
-  showActions: boolean;
+  baselines: LoadBaselines;
+  onToggleBaseline: (machineId: string) => void;
+  note: NoteState;
+  onOpenNote: (machineId: string) => void;
+  canEditNotes: boolean;
 }) {
-  const status = statusOf(machine);
+  const baselined = baselines.has(machine.machine_id);
+  const { status, suppressed } = classifyWith(machine, baselines);
   const tags = splitTags(machine);
   const isAPIMachine = tags.some((tag) => API_ADAPTER_TAGS.includes(tag.toLowerCase()));
   const cpu = Number.isFinite(machine.cpu_percent) ? machine.cpu_percent : null;
@@ -196,7 +257,7 @@ function MachineRow({
       </td>
 
       <td>
-        <StateCell status={status} />
+        <StateCell status={status} suppressed={suppressed} baselined={baselined} />
       </td>
 
       <td>
@@ -236,46 +297,177 @@ function MachineRow({
       </td>
 
       <td>
+        <NoteCell
+          note={note}
+          hostname={hostname}
+          canEdit={canEditNotes}
+          onOpen={() => onOpenNote(machine.machine_id)}
+        />
+      </td>
+
+      <td>
         <span className="mf-metric text-[12px] text-text-secondary">
           {machine.last_seen ? timeSince(machine.last_seen) : "never"}
         </span>
       </td>
 
-      {showActions && (
-        <td>
-          <div className="flex items-center justify-end gap-1">
-            {onRefresh && (
-              <RowAction
-                label={`Refresh ${hostname}`}
-                onClick={() => onRefresh(machine.machine_id)}
-              >
-                <RefreshCw className="h-3.5 w-3.5" />
-              </RowAction>
-            )}
-            {canDeleteMachines && onDelete && (
-              <RowAction
-                label={`Delete ${hostname}`}
-                destructive
-                onClick={() => onDelete(machine.machine_id, hostname)}
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </RowAction>
-            )}
-          </div>
-        </td>
-      )}
+      <td>
+        <div className="flex items-center justify-end gap-1.5">
+          {/* Needs no scope: it changes what THIS reader's dashboard shouts
+              about, not what the machine does.
+
+              It carries its state as a word. This used to be a bare gauge icon
+              at the far right of the row — the single control that decides
+              what the dashboard escalates, rendered as the least legible thing
+              on the page, and the operator could not find it. */}
+          <button
+            type="button"
+            className="mf-inline-action"
+            aria-pressed={baselined}
+            onClick={() => onToggleBaseline(machine.machine_id)}
+            title={
+              baselined
+                ? `High CPU on ${hostname} is treated as expected. Click to alert on it again.`
+                : `Treat high CPU on ${hostname} as its normal working state and stop alerting on it.`
+            }
+          >
+            <Gauge className="h-3 w-3" aria-hidden="true" />
+            {baselined ? "Load expected" : "Expect load"}
+          </button>
+          {onRefresh && (
+            <RowAction
+              label={`Refresh ${hostname}`}
+              onClick={() => onRefresh(machine.machine_id)}
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+            </RowAction>
+          )}
+          {canDeleteMachines && onDelete && (
+            <RowAction
+              label={`Delete ${hostname}`}
+              destructive
+              onClick={() => onDelete(machine.machine_id, hostname)}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </RowAction>
+          )}
+        </div>
+      </td>
     </tr>
   );
 }
 
-/** Dot plus the state's name — the label is never dropped. */
-function StateCell({ status }: { status: MachineStatus }) {
+/**
+ * Dot plus the state's name — the label is never dropped.
+ *
+ * A machine marked "expected high load" also prints why its state reads the
+ * way it does: `suppressed` names the CPU figure the flag swallowed, and the
+ * flag itself is shown even when the machine was not busy enough for it to
+ * matter. The state is never quietly softened without saying so.
+ */
+function StateCell({
+  status,
+  suppressed,
+  baselined,
+}: {
+  status: MachineStatus;
+  suppressed?: string;
+  baselined: boolean;
+}) {
   const vis = STATUS_VIS[status];
   return (
-    <span className="inline-flex items-center gap-2">
+    <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1">
       <span className={`mf-status-dot mf-status-${status}`} aria-hidden="true" />
       <span className={`text-[13px] ${vis.textClass}`}>{vis.label}</span>
+      {baselined && (
+        <span
+          className="mf-suppressed"
+          title={
+            suppressed
+              ? `Expected high load — ${suppressed} is not escalated on this machine`
+              : "Expected high load — CPU saturation is not escalated on this machine"
+          }
+        >
+          {suppressed ? `${suppressed} expected` : "load expected"}
+        </span>
+      )}
     </span>
+  );
+}
+
+/**
+ * One machine's note, in one table cell.
+ *
+ * Four states, all distinguishable, none pretending to be another:
+ *   loading   the read is still in flight — NOT "no note"
+ *   error     the read failed — NOT "no note" either; the machine may well
+ *             have one, and the cell says so rather than showing a dash
+ *   empty     the machine genuinely has no note
+ *   has note  the first line, truncated, with the rest on hover and all of it
+ *             in the dialog
+ *
+ * The summary is rendered as a string child. Note text is operator free text
+ * from the hub and is never treated as HTML.
+ */
+function NoteCell({
+  note,
+  hostname,
+  canEdit,
+  onOpen,
+}: {
+  note: NoteState;
+  hostname: string;
+  canEdit: boolean;
+  onOpen: () => void;
+}) {
+  if (note.status === "loading") {
+    return (
+      <span className="text-[12px] text-text-disabled" aria-busy="true">
+        loading…
+      </span>
+    );
+  }
+
+  if (note.status === "error") {
+    return (
+      <button type="button" onClick={onOpen} className="mf-inline-action" title={note.error}>
+        <AlertTriangle className="h-3 w-3 text-status-warning" aria-hidden="true" />
+        <span className="text-text-secondary">Notes unavailable</span>
+      </button>
+    );
+  }
+
+  const summary = noteSummary(note.text);
+
+  if (!summary) {
+    // Nothing written here. A reader who cannot write one is told the truth
+    // and offered nothing to click.
+    return canEdit ? (
+      <button
+        type="button"
+        onClick={onOpen}
+        className="mf-inline-action"
+        aria-label={`Add a note to ${hostname}`}
+      >
+        <Plus className="h-3 w-3" aria-hidden="true" />
+        Add
+      </button>
+    ) : (
+      <span className="text-[13px] text-text-disabled">—</span>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="flex max-w-[240px] items-center gap-1.5 text-left text-[12px] text-text-secondary transition-colors duration-[var(--motion-fast)] hover:text-text-primary"
+      title={note.text.slice(0, NOTE_TITLE_MAX)}
+      aria-label={`${canEdit ? "Edit notes" : "Read notes"} for ${hostname}`}
+    >
+      <StickyNote className="h-3 w-3 shrink-0 text-text-tertiary" aria-hidden="true" />
+      <span className="truncate">{summary}</span>
+    </button>
   );
 }
 
@@ -323,11 +515,14 @@ function RowAction({
   label,
   onClick,
   destructive,
+  pressed,
   children,
 }: {
   label: string;
   onClick: () => void;
   destructive?: boolean;
+  /** Toggle actions carry aria-pressed, so the state is never the tint alone. */
+  pressed?: boolean;
   children: React.ReactNode;
 }) {
   return (
@@ -336,9 +531,12 @@ function RowAction({
       onClick={onClick}
       title={label}
       aria-label={label}
-      className={`grid h-8 w-8 place-items-center rounded-[10px] border border-transparent text-text-tertiary transition-colors duration-[var(--motion-fast)] hover:border-border-subtle ${
-        destructive ? "hover:text-status-critical" : "hover:text-text-primary"
-      }`}
+      aria-pressed={pressed}
+      className={`grid h-8 w-8 place-items-center rounded-[10px] border transition-colors duration-[var(--motion-fast)] ${
+        pressed
+          ? "border-border-strong bg-surface-elevated text-text-primary"
+          : "border-transparent text-text-tertiary hover:border-border-subtle"
+      } ${destructive ? "hover:text-status-critical" : "hover:text-text-primary"}`}
     >
       {children}
     </button>

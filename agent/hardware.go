@@ -30,7 +30,13 @@ func collectHardware(machineID string, gpus []GPUInfo) HardwareInfo {
 
 	if cpuInfos, err := cpu.Info(); err == nil && len(cpuInfos) > 0 {
 		ci := cpuInfos[0]
-		hw.CPUModel = strings.TrimSpace(ci.ModelName)
+		// Heterogeneous ("big.LITTLE") packages carry a different model string
+		// per core, and core 0 is routinely the SMALL one — on an RK3588 it is
+		// a Cortex-A55, so reporting core 0's name beside an 8-core count
+		// described the machine as "8x Cortex-A55" when it is really
+		// 4x Cortex-A76 + 4x Cortex-A55. Summarise the real mix instead. A
+		// uniform package is unchanged: describeCPUCores returns core 0's name.
+		hw.CPUModel = describeCPUCores(cpuInfos)
 		hw.CPUVendor = strings.TrimSpace(ci.VendorID)
 		hw.CPUFrequencyMHz = ci.Mhz
 		hw.CPUStepping = strconv.Itoa(int(ci.Stepping))

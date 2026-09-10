@@ -4,15 +4,13 @@ import { useState, useCallback, useMemo } from "react";
 import { Edit3, Save, X } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/components/Toast";
-import { HUB_URL } from "@/lib/session";
+import { NOTES_MAX_LEN, saveMachineNotes } from "@/lib/machine-notes";
 import {
   MF_BUTTON,
   MF_BUTTON_QUIET,
   MF_PANEL_HEAD,
   MF_PANEL_TITLE,
 } from "@/lib/monoform-classes";
-
-const NOTES_MAX_LEN = 10000;
 
 interface MachineNotesProps {
   machineId: string;
@@ -45,33 +43,19 @@ export function MachineNotes({ machineId, initialNotes }: MachineNotesProps) {
     setIsEditing(false);
   }, [notes]);
 
+  // The PUT itself lives in lib/machine-notes.ts — the Overview writes the
+  // same notes through the same call, so there is one request shape, one
+  // length cap and one error message for both.
   const save = useCallback(async () => {
     if (saving) return;
-    if (draft.length > NOTES_MAX_LEN) {
-      addToast("error", `Notes exceed ${NOTES_MAX_LEN} characters`);
-      return;
-    }
     setSaving(true);
     try {
-      const token = localStorage.getItem("bloxos_token");
-      const res = await fetch(`${HUB_URL}/api/machines/${machineId}/notes`, {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ notes: draft }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        addToast("error", err.error || "Failed to save notes");
-        return;
-      }
+      await saveMachineNotes(machineId, draft);
       setNotes(draft);
       setIsEditing(false);
       addToast("success", "Notes saved");
-    } catch {
-      addToast("error", "Failed to save notes");
+    } catch (e) {
+      addToast("error", e instanceof Error ? e.message : "Failed to save notes");
     } finally {
       setSaving(false);
     }

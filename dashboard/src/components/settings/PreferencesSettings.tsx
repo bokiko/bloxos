@@ -2,7 +2,7 @@
 
 // Preferences settings panel.
 //
-// Appearance (the single place in the product where gray/dark is chosen),
+// Appearance (the single place in the product where dark/light is chosen),
 // density / default view / default sort scalar choices, plus the manage
 // surfaces for pinned machines and saved filters.
 
@@ -50,14 +50,14 @@ export function PreferencesSettings() {
           Appearance
         </h2>
         <p className="mt-1 text-xs text-blox-muted">
-          Choose the contrast level that suits your workspace.
+          Same layout, same components, same colour meanings — a dark ground or a bright one.
         </p>
         <div
           className="mt-4 inline-flex rounded-[10px] border border-blox-border bg-surface-sunken p-1"
           role="group"
           aria-label="Appearance"
         >
-          {(["gray", "dark"] as const).map((option) => (
+          {(["dark", "light"] as const).map((option) => (
             <button
               key={option}
               type="button"

@@ -110,47 +110,44 @@ function SessionsContent() {
   return (
     <>
       <div className="mf-intro">
-        <div className="min-w-0">
-          <dl className="flex flex-wrap items-baseline gap-x-7 gap-y-2">
-            <Stat label="Sessions" value={hasLoaded && enabled !== false ? totals.sessions : "—"} />
-            <Stat label="Machines" value={hasLoaded && enabled !== false ? totals.machines : "—"} />
-            <div className="flex items-baseline gap-2">
-              <dt className="mf-kicker">Feed</dt>
-              <dd>
-                {enabled === false ? (
-                  <span className="inline-flex items-center gap-1.5 text-[13px] text-text-tertiary">
-                    <Bot className="w-3.5 h-3.5" aria-hidden />
-                    Monitoring off
-                  </span>
-                ) : connected ? (
-                  <span className="mf-status-live inline-flex items-center gap-1.5 text-[13px]">
-                    <span className="mf-status-dot" aria-hidden />
-                    Live
-                  </span>
-                ) : (
-                  <span className="mf-status-warning inline-flex items-center gap-1.5 text-[13px]" role="status">
-                    <WifiOff className="w-3.5 h-3.5" aria-hidden />
-                    Updates paused
-                  </span>
-                )}
-              </dd>
-            </div>
-          </dl>
-          <div className="mt-5">
-            <button
-              type="button"
-              onClick={() => void refresh()}
-              disabled={loading}
-              className={MF_BUTTON}
-            >
-              <RefreshCw className={cn("w-3.5 h-3.5", loading && "animate-spin")} aria-hidden />
-              {loading ? "Refreshing…" : "Refresh sessions"}
-            </button>
+        <dl className="flex flex-wrap items-baseline gap-x-7 gap-y-2">
+          <Stat label="Sessions" value={hasLoaded && enabled !== false ? totals.sessions : "—"} />
+          <Stat label="Machines" value={hasLoaded && enabled !== false ? totals.machines : "—"} />
+          <div className="flex items-baseline gap-2">
+            <dt className="mf-kicker">Feed</dt>
+            <dd>
+              {enabled === false ? (
+                <span className="inline-flex items-center gap-1.5 text-[13px] text-text-tertiary">
+                  <Bot className="w-3.5 h-3.5" aria-hidden />
+                  Monitoring off
+                </span>
+              ) : connected ? (
+                <span className="mf-status-live inline-flex items-center gap-1.5 text-[13px]">
+                  <span className="mf-status-dot" aria-hidden />
+                  Live
+                </span>
+              ) : (
+                <span className="mf-status-warning inline-flex items-center gap-1.5 text-[13px]" role="status">
+                  <WifiOff className="w-3.5 h-3.5" aria-hidden />
+                  Updates paused
+                </span>
+              )}
+            </dd>
           </div>
+        </dl>
+        <div className="mf-intro-actions">
+          <button
+            type="button"
+            onClick={() => void refresh()}
+            disabled={loading}
+            className={MF_BUTTON}
+          >
+            <RefreshCw className={cn("w-3.5 h-3.5", loading && "animate-spin")} aria-hidden />
+            {loading ? "Refreshing…" : "Refresh sessions"}
+          </button>
         </div>
         <p>
-          Claude Code, Codex and Kimi sessions running across the fleet. Metadata only — the tool, an
-          explicitly chosen model, the project folder and how long the process has run. Nothing is kept
+          Claude Code, Codex and Kimi sessions across the fleet. Metadata only, and nothing is kept
           once a session ends.
         </p>
       </div>

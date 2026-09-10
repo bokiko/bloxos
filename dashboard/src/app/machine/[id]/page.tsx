@@ -803,85 +803,82 @@ function MachineDetailContent({ params }: { params: Promise<{ id: string }> }) {
           identity facts on the right. The shell's top bar already carries the
           hostname, so nothing here repeats it. */}
       <div className="mf-intro">
-        <div className="min-w-0">
-          <dl className="flex flex-wrap items-baseline gap-x-8 gap-y-3">
-            <div className="flex items-baseline gap-2">
-              <dt className="mf-kicker">Status</dt>
-              <dd>
-                <StatusMark tone={STATUS_TONE[status]} label={status} className="capitalize" />
-              </dd>
-            </div>
-            <div className="flex items-baseline gap-2">
-              <dt className="mf-kicker">Last report</dt>
-              <dd className="mf-metric text-[15px] text-text-primary">
-                {effectiveLastUpdated ? timeSince(effectiveLastUpdated) : "—"}
-              </dd>
-            </div>
-            {(data.latency_ms ?? 0) > 0 && (
-              <div className="flex items-baseline gap-2">
-                <dt className="mf-kicker">Latency</dt>
-                <dd className="mf-metric text-[15px] text-text-primary">{data.latency_ms}ms</dd>
-              </div>
-            )}
-          </dl>
-
-          <div className="mt-5 flex flex-wrap items-center gap-2">
-            {!isAPIMachine && canControl && (
-              <button
-                type="button"
-                onClick={() => setShowReboot(true)}
-                disabled={!isOnline}
-                className={MF_BUTTON}
-                title={isOnline ? "Reboot this machine" : "Machine is not reporting — reboot unavailable"}
-              >
-                <RotateCcw className="w-3.5 h-3.5" aria-hidden />
-                Reboot
-              </button>
-            )}
-            {canDelete && !isAPIMachine && (
-              <button
-                type="button"
-                onClick={() => {
-                  setRevokeError(null);
-                  setShowRevokeConfirm(true);
-                }}
-                className={MF_BUTTON}
-              >
-                <KeyRound className="w-3.5 h-3.5" aria-hidden />
-                Revoke credential
-              </button>
-            )}
-            {canDelete && !isAPIMachine && (machine.os?.toLowerCase().includes("windows") ?? false) && (
-              <button
-                type="button"
-                onClick={() => {
-                  setReenrollError(null);
-                  setReenrollResponse(null);
-                  setShowReenrollDialog(true);
-                }}
-                className={MF_BUTTON}
-              >
-                <RefreshCw className="w-3.5 h-3.5" aria-hidden />
-                Prepare Windows re-enrollment
-              </button>
-            )}
-            {canDelete && (
-              <button
-                type="button"
-                onClick={() => {
-                  setDeleteError(null);
-                  setShowDeleteConfirm(true);
-                }}
-                className={MF_BUTTON_QUIET}
-              >
-                <Trash2 className="w-3.5 h-3.5" aria-hidden />
-                Delete
-              </button>
-            )}
+        <dl className="flex flex-wrap items-baseline gap-x-8 gap-y-3">
+          <div className="flex items-baseline gap-2">
+            <dt className="mf-kicker">Status</dt>
+            <dd>
+              <StatusMark tone={STATUS_TONE[status]} label={status} className="capitalize" />
+            </dd>
           </div>
-        </div>
+          <div className="flex items-baseline gap-2">
+            <dt className="mf-kicker">Last report</dt>
+            <dd className="mf-metric text-[15px] text-text-primary">
+              {effectiveLastUpdated ? timeSince(effectiveLastUpdated) : "—"}
+            </dd>
+          </div>
+          {(data.latency_ms ?? 0) > 0 && (
+            <div className="flex items-baseline gap-2">
+              <dt className="mf-kicker">Latency</dt>
+              <dd className="mf-metric text-[15px] text-text-primary">{data.latency_ms}ms</dd>
+            </div>
+          )}
+        </dl>
 
-        <dl className="w-[250px] max-w-full shrink-0 space-y-2">
+        <div className="mf-intro-actions">
+          {!isAPIMachine && canControl && (
+            <button
+              type="button"
+              onClick={() => setShowReboot(true)}
+              disabled={!isOnline}
+              className={MF_BUTTON}
+              title={isOnline ? "Reboot this machine" : "Machine is not reporting — reboot unavailable"}
+            >
+              <RotateCcw className="w-3.5 h-3.5" aria-hidden />
+              Reboot
+            </button>
+          )}
+          {canDelete && !isAPIMachine && (
+            <button
+              type="button"
+              onClick={() => {
+                setRevokeError(null);
+                setShowRevokeConfirm(true);
+              }}
+              className={MF_BUTTON}
+            >
+              <KeyRound className="w-3.5 h-3.5" aria-hidden />
+              Revoke credential
+            </button>
+          )}
+          {canDelete && !isAPIMachine && (machine.os?.toLowerCase().includes("windows") ?? false) && (
+            <button
+              type="button"
+              onClick={() => {
+                setReenrollError(null);
+                setReenrollResponse(null);
+                setShowReenrollDialog(true);
+              }}
+              className={MF_BUTTON}
+            >
+              <RefreshCw className="w-3.5 h-3.5" aria-hidden />
+              Prepare Windows re-enrollment
+            </button>
+          )}
+          {canDelete && (
+            <button
+              type="button"
+              onClick={() => {
+                setDeleteError(null);
+                setShowDeleteConfirm(true);
+              }}
+              className={MF_BUTTON_QUIET}
+            >
+              <Trash2 className="w-3.5 h-3.5" aria-hidden />
+              Delete
+            </button>
+          )}
+        </div>
+        <dl className="mf-intro-trail flex flex-wrap items-baseline gap-x-6 gap-y-2">
           {machine.ip && <Fact label="IP" value={machine.ip} mono />}
           {machine.os && <Fact label="OS" value={machine.os} />}
           {isAPIMachine && <Fact label="Source" value="API-polled" />}

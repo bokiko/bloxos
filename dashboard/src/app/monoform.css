@@ -1,14 +1,17 @@
 /* BloxOS Monoform — the single product visual system.
  *
- * One visual language, two contrast modes: `gray` (default) and `dark`.
- * Same components, same geometry, same spacing in both — only token values
- * differ. There is no light mode and no system mode.
+ * One visual language, two themes: `dark` (default) and `light`. Same
+ * components, same geometry, same spacing, same hierarchy in both — only token
+ * values differ. There is no system mode: the theme is the user's explicit
+ * choice, stored per user.
  *
  * Rules this file embodies:
- *   - Dark-gray canvas, slightly raised graphite panels, 1px hairline borders.
+ *   - A near-black (dark) or off-white (light) canvas, slightly raised panels,
+ *     1px hairline borders.
  *   - No gradients, no glow, no glassmorphism, no decorative shadow.
- *   - One blue (#6380FF) for primary action, selection, focus, links, CPU.
- *   - Green / amber / red only for real nominal / warning / critical data.
+ *   - One blue for primary action, selection, focus, links, CPU.
+ *   - Green / amber / red only for real nominal / warning / critical data, and
+ *     never as the only carrier of that meaning.
  *   - Geist for language; Geist Mono only for values, timestamps, IDs, table
  *     headers, counts and compact metadata, with tabular numerals on metrics.
  *   - No continuous animation. 160–220ms transitions, reduced-motion honored.
@@ -18,43 +21,10 @@
  */
 
 /* ============================================================================
- * Contrast mode: gray (default)
+ * Theme: dark (default)
  * ========================================================================== */
 
 :root,
-html[data-appearance="gray"] {
-  --mf-void: #101010;
-  --mf-canvas: #171717;
-  --mf-panel: #20201f;
-  --mf-panel-hover: #262625;
-  --mf-panel-selected: #2b2b2e;
-  --mf-table-head: #1a1a19;
-  --mf-line: #383836;
-  --mf-line-strong: #51514e;
-  --mf-text: #f2f2ef;
-  --mf-text-secondary: #c5c5bf;
-  --mf-muted: #a3a39c;
-  --mf-quiet: #6e6e69;
-  --mf-blue: #6380ff;
-  --mf-blue-pressed: #4f6cf0;
-  --mf-blue-soft: rgb(99 128 255 / 14%);
-  --mf-green: #58bd88;
-  --mf-green-soft: rgb(88 189 136 / 12%);
-  --mf-amber: #e9a34b;
-  --mf-amber-soft: rgb(233 163 75 / 12%);
-  --mf-red: #e56767;
-  --mf-red-soft: rgb(229 103 103 / 12%);
-  --mf-violet: #9b87e8;
-  --mf-violet-soft: rgb(155 135 232 / 12%);
-  --mf-radius-control: 10px;
-  --mf-radius-panel: 18px;
-  --mf-shadow-overlay: 0 20px 60px rgb(0 0 0 / 38%);
-}
-
-/* ============================================================================
- * Contrast mode: dark
- * ========================================================================== */
-
 html[data-appearance="dark"] {
   --mf-void: #090909;
   --mf-canvas: #111111;
@@ -79,6 +49,57 @@ html[data-appearance="dark"] {
   --mf-red-soft: rgb(234 116 116 / 12%);
   --mf-violet: #aa97ed;
   --mf-violet-soft: rgb(170 151 237 / 12%);
+  --mf-radius-control: 10px;
+  --mf-radius-panel: 18px;
+  --mf-shadow-overlay: 0 20px 60px rgb(0 0 0 / 38%);
+}
+
+/* ============================================================================
+ * Theme: light
+ *
+ * A real bright theme, not an inverted dark one. The role each token plays is
+ * identical — `void` is the recessed ground the rail sits on, `panel` is the
+ * raised surface, `line` is the hairline — but every value was picked for a
+ * light ground rather than negated.
+ *
+ * The status hues are re-tuned, not reused. #63c695 / #edaa57 / #ea7474 are
+ * built to carry against a near-black canvas and read as pale wash on white,
+ * so each is replaced by a darker member of the same hue family. Measured
+ * against the light canvas (#f4f4f2): green 5.36:1, amber 5.75:1, red 5.11:1,
+ * blue 6.18:1, violet 6.07:1 — every one clears 4.5:1 as body-size text, and
+ * each also clears 4.5:1 against the rail's deeper ground (#eaeae7). Text is
+ * 15.98:1, secondary text 10.05:1 and muted 5.18:1 on the same canvas; the
+ * deliberately de-emphasised `quiet` tone sits at 3.42:1, matching the 3.37:1
+ * it has in dark rather than borrowing a stronger voice in one theme only.
+ * ========================================================================== */
+
+html[data-appearance="light"] {
+  --mf-void: #eaeae7;
+  --mf-canvas: #f4f4f2;
+  --mf-panel: #ffffff;
+  --mf-panel-hover: #efefec;
+  --mf-panel-selected: #e4e5f0;
+  --mf-table-head: #f7f7f5;
+  --mf-line: #d7d7d1;
+  --mf-line-strong: #adada4;
+  --mf-text: #191918;
+  --mf-text-secondary: #3c3c39;
+  --mf-muted: #67675f;
+  --mf-quiet: #84847d;
+  --mf-blue: #3149d9;
+  --mf-blue-pressed: #2739b4;
+  --mf-blue-soft: rgb(49 73 217 / 10%);
+  --mf-green: #0d7346;
+  --mf-green-soft: rgb(13 115 70 / 11%);
+  --mf-amber: #8a5300;
+  --mf-amber-soft: rgb(138 83 0 / 11%);
+  --mf-red: #c62828;
+  --mf-red-soft: rgb(198 40 40 / 10%);
+  --mf-violet: #6244c4;
+  --mf-violet-soft: rgb(98 68 196 / 10%);
+  /* The one shadow, restated for a light ground: black at dark-mode strength
+     reads as soot under a dialog on white. */
+  --mf-shadow-overlay: 0 20px 60px rgb(25 25 24 / 16%);
 }
 
 /* ============================================================================
@@ -391,8 +412,19 @@ html[data-appearance="dark"] {
     align-items: center;
     gap: 8px;
   }
+  /* Content cap. 1440px left ~400px of dead gutter on each side of a 2560px
+     display, so the cap is 1760px: rail (238) + gutters (44) + 1760 fills a
+     2560px screen to within ~240px a side, and the machine table — the one
+     thing that genuinely wants the width — gets all of it.
+     There is deliberately NO second, wider cap for the table. A nested
+     full-bleed escape has to measure against the viewport, which means 100vw
+     and a scrollbar-width bug on every desktop browser, and it would buy the
+     table only the 44px of padding it does not already have. Reading length is
+     already handled where it belongs: every paragraph on the Overview carries
+     its own `ch` cap, so widening the container widens tables and grids
+     without ever lengthening a line of prose. */
   .mf-content {
-    width: min(100%, 1440px);
+    width: min(100%, 1760px);
     margin: 0 auto;
     padding: 42px clamp(24px, 4vw, 44px) 48px;
   }
@@ -448,31 +480,93 @@ html[data-appearance="dark"] {
     line-height: 1;
     letter-spacing: -0.04em;
   }
-  .mf-intro {
+  /* The two page headers share one geometry: a single baseline-aligned row
+     that wraps, at lead-paragraph size, with the same 20px of air beneath it.
+     Neither is a hero any more.
+
+     `.mf-intro` is the shared header for Versions, Sessions, Inventory, Users
+     and the machine detail page; `.mf-overview-intro` is the Overview's. They
+     stay separate class names because their CONTENT differs — the Overview
+     carries a date and one sentence, the other five carry live stats, their
+     page actions and one sentence — but every dimension they have in common is
+     declared once, here, so the five pages cannot drift back into a tall
+     block while the Overview stays short. */
+  .mf-intro,
+  .mf-overview-intro {
     display: flex;
-    align-items: flex-end;
-    justify-content: space-between;
-    gap: 32px;
-    margin: 0 0 31px;
+    align-items: baseline;
+    flex-wrap: wrap;
+    margin: 0 0 20px;
   }
-  .mf-intro h1 {
-    max-width: 720px;
+  /* The stats row, the action row and the sentence are siblings on one line.
+     They used to be a 250px column of prose beside a stacked block of stats
+     over buttons — three rows of vertical space to carry a header. */
+  .mf-intro {
+    gap: 10px 22px;
+  }
+  .mf-intro > dl {
     margin: 0;
-    font-size: clamp(34px, 4vw, 46px);
-    font-weight: 550;
-    line-height: 1.03;
-    letter-spacing: -0.055em;
   }
-  .mf-intro strong {
-    color: var(--mf-blue);
-    font-weight: inherit;
+  /* The page's own actions. `baseline` alignment would hang a 36px button off
+     the text baseline, so the action group opts out and centres instead. */
+  .mf-intro-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    align-self: center;
+    gap: 8px;
   }
-  .mf-intro p {
-    width: 250px;
-    margin: 0;
+  /* The sentence. Pushed to the trailing edge so the row reads left-to-right
+     as state, then actions, then explanation, and capped so it stays one or
+     two lines instead of setting the height of the whole header.
+
+     A DIRECT-child selector: the header's left-hand side is page content —
+     the inventory summary, a status line — and a paragraph nested in there
+     must not be shoved to the right gutter in muted 12px. */
+  .mf-intro > p {
+    max-width: 52ch;
+    margin: 0 0 0 auto;
     color: var(--mf-muted);
-    font-size: 13px;
-    line-height: 1.55;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+  /* The same trailing-edge placement for a header whose last item is facts
+     rather than a sentence — the machine detail page's IP / OS / ID list. */
+  .mf-intro > .mf-intro-trail {
+    margin: 0 0 0 auto;
+  }
+
+  /* The Overview's opening statement.
+     It used to be a 46px two-line headline stacked under its own date kicker,
+     beside a fixed sentence that restated the page's existence: roughly 150px
+     of vertical space to carry one fact. It is now one baseline-aligned row —
+     the date, then the sentence — at a size that reads as a lead paragraph
+     rather than a marketing hero, so the fleet-posture grid starts near the
+     top of a 900px-tall viewport instead of below its fold. */
+  .mf-overview-intro {
+    gap: 6px 14px;
+  }
+  .mf-overview-intro h1 {
+    max-width: 92ch;
+    margin: 0;
+    font-size: 24px;
+    font-weight: 550;
+    line-height: 1.25;
+    letter-spacing: -0.025em;
+    color: var(--mf-text-secondary);
+  }
+  /* The posture sentence itself. It is deliberately NOT blue. Blue is the
+     action colour, and painting "Your fleet needs attention." in it puts a
+     severity statement in the one hue that is supposed to mean "click this".
+     Hierarchy comes from tone and weight instead — the claim is full-strength
+     text, the follow-up sentence is secondary — which leaves colour free to
+     keep meaning severity. */
+  .mf-overview-intro strong {
+    color: var(--mf-text);
+    font-weight: 560;
+  }
+  .mf-overview-intro-date {
+    flex: 0 0 auto;
   }
 
   /* ============================================================================
@@ -668,6 +762,268 @@ html[data-appearance="dark"] {
     font-family: var(--font-mono), ui-monospace, monospace;
     font-variant-numeric: tabular-nums slashed-zero;
   }
+  /* A severity row whose count is zero. "Offline 0" is not an incident, so it
+     does not get the incident colour — the dot and the number both go quiet
+     and the colour is kept for the rows that actually mean something. */
+  .mf-status-none {
+    color: var(--mf-quiet);
+  }
+  /* An operator-declared "expected high load" machine. Neutral on purpose:
+     this is a policy the reader applied, not a reading the fleet reported, so
+     it must not borrow green (nominal), amber or red. */
+  .mf-suppressed {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 1px 6px;
+    border: 1px solid var(--mf-line);
+    border-radius: 5px;
+    color: var(--mf-muted);
+    font-family: var(--font-mono), ui-monospace, monospace;
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+  }
+
+  /* ============================================================================
+   * Disclosure — every collapsible Overview section
+   * ========================================================================== */
+
+  /* A collapsible section.
+   *
+   * Expanded, it is a panel: hairline, panel ground, panel padding, panel
+   * radius. COLLAPSED, IT IS NOT A PANEL AT ALL — no border box, no ground, no
+   * padding, no radius, no height floor. What is left is one quiet line on a
+   * hairline rule: the chevron, the section's name, and its one number.
+   *
+   * That is the whole point of folding a section. The reader folds it to get
+   * the vertical space back; a folded section that still drew a card handed
+   * most of that space straight back and reclaimed only the body. Nothing here
+   * reserves the height the expanded panel had, so everything below moves up.
+   *
+   * Only the painting changes. The button keeps `aria-expanded`, still
+   * controls the same region, is still a native button, and the region still
+   * animates on the shared 200ms — see `.mf-region` below. */
+  /* Both states declare the SAME properties and differ only in their values,
+     so the box can animate between them on the region's own 200ms instead of
+     snapping. Dropping the border to `0 none` when collapsed would have been
+     tidier to read, but border-style is not interpolable, so the chrome would
+     vanish on the first frame and leave the contents folding in mid-air for
+     the rest of the transition. Collapsed therefore keeps 1px of transparent
+     border on three sides — 2px of width on an 826px column — and colours
+     only the top edge. */
+  .mf-section {
+    border: 1px solid transparent;
+    border-top-color: var(--mf-line);
+    border-radius: 0;
+    background: transparent;
+    padding: 7px 0 0;
+    transition:
+      background-color var(--motion-base) ease,
+      border-color var(--motion-base) ease,
+      border-radius var(--motion-base) ease,
+      padding var(--motion-base) ease;
+  }
+  .mf-section[data-open="true"] {
+    border-color: var(--mf-line);
+    border-radius: var(--mf-radius-panel);
+    background: var(--mf-panel);
+    padding: 24px 28px;
+  }
+  .mf-section[data-open="true"]:hover {
+    border-color: var(--mf-line-strong);
+  }
+
+  .mf-disclosure-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    min-width: 0;
+  }
+  .mf-disclosure-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    padding: 2px 0;
+    border-radius: 6px;
+    color: var(--mf-muted);
+    text-align: left;
+    transition: color 160ms ease;
+  }
+  .mf-disclosure-toggle:hover {
+    color: var(--mf-text);
+  }
+  .mf-disclosure-toggle:hover .mf-kicker {
+    color: inherit;
+  }
+  .mf-disclosure-chevron {
+    width: 13px;
+    height: 13px;
+    flex: 0 0 auto;
+    transition: transform 160ms ease;
+  }
+  .mf-disclosure-toggle[aria-expanded="false"] .mf-disclosure-chevron {
+    transform: rotate(-90deg);
+  }
+  /* The one number a folded section still carries. */
+  .mf-disclosure-summary {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--mf-text-secondary);
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* The region. `grid-template-rows: 1fr → 0fr` is what animates; the inner
+     wrapper supplies the `min-height: 0` and `overflow: hidden` that makes an
+     `fr` row actually clip. `visibility` is delayed by the full duration when
+     collapsing so the content is still visible while it folds, and reverts
+     instantly when expanding because the delayed transition only exists on
+     the collapsed rule. Hidden visibility is also what removes the contents
+     from the tab order and the accessibility tree. */
+  .mf-region {
+    display: grid;
+    grid-template-rows: 1fr;
+    /* The region is a flex item inside the panels that use a column layout;
+       auto min-height there would refuse to shrink past its content. */
+    min-height: 0;
+    transition: grid-template-rows var(--motion-base) ease;
+  }
+  /* `clip` rather than `hidden` so this never becomes a scroll container, and
+     an 8px clip margin so a focus ring on a control sitting flush against the
+     region's edge is not sheared off. `hidden` stays first as the fallback for
+     anything that does not know `clip`. */
+  .mf-region > .mf-region-inner {
+    min-height: 0;
+    overflow: hidden;
+    overflow: clip;
+    overflow-clip-margin: 8px;
+  }
+  .mf-region[data-collapsed="true"] {
+    grid-template-rows: 0fr;
+  }
+  .mf-region[data-collapsed="true"] > .mf-region-inner {
+    visibility: hidden;
+    transition: visibility 0s linear var(--motion-base);
+  }
+
+  /* ============================================================================
+   * Paired-panel rows
+   *
+   * The Overview's two context rows. Both are 50/50 at desktop: the posture
+   * row used to be 1.25fr / 0.75fr and the context row 1.6fr / 0.9fr, which
+   * made four panels of four different widths out of two rows that are read as
+   * one block.
+   *
+   * Equal width is not enough to make them read as a 2×2 — a grid row already
+   * stretches its own two children to match, but nothing relates row A's
+   * height to row B's. The floor below does: an EXPANDED panel is at least
+   * 288px tall, so the four boxes land on a common rhythm instead of one row
+   * being twice the other.
+   *
+   * The floor and the equal columns are an EXPANDED-state contract. A folded
+   * pane is not a panel at all (see `.mf-section`), so it takes neither.
+   * ========================================================================== */
+
+  .mf-pane-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 20px;
+  }
+  .mf-pane-grid > .mf-section[data-open="true"] {
+    display: flex;
+    flex-direction: column;
+    min-height: 288px;
+  }
+  /* The disclosure's region is a direct child of the pane, so it is what takes
+     up the slack the floor creates. A pane whose content is shorter than the
+     floor can then place that content in the space — see FleetPowerPane's
+     empty state, which centres itself in the slack — rather than leaving a
+     void hanging under it. */
+  .mf-pane-grid > .mf-section[data-open="true"] > .mf-region {
+    flex: 1 1 auto;
+  }
+  /* A grid item stretches to fill its row by default. A folded pane beside an
+     open one would therefore inherit the open one's height and draw a rule
+     with a word on it across 350px of nothing. `start` makes it hug its own
+     single line; the open sibling alone sets the row height.
+     The folded pane KEEPS ITS COLUMN rather than yielding the width to its
+     partner — see the note above POSTURE/CONTEXT in app/page.tsx for why. */
+  .mf-pane-grid > .mf-section[data-open="false"] {
+    align-self: start;
+  }
+
+  /* A labelled, low-emphasis action that lives inside a row, a card or a table
+     cell. It always carries words: the one control here that changes what the
+     dashboard escalates used to be a bare gauge icon in the far-right column
+     of a table, and it was never found. */
+  .mf-inline-action {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 8px;
+    border: 1px solid var(--mf-line);
+    border-radius: 7px;
+    color: var(--mf-text-secondary);
+    font-size: 11px;
+    line-height: 1.45;
+    white-space: nowrap;
+    transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease;
+  }
+  .mf-inline-action:hover {
+    border-color: var(--mf-line-strong);
+    color: var(--mf-text);
+  }
+  .mf-inline-action[aria-pressed="true"] {
+    border-color: var(--mf-line-strong);
+    background: var(--mf-panel-hover);
+    color: var(--mf-text);
+  }
+
+  /* The machine table's frame. The table sits INSIDE the Machine fleet panel
+     now, so it draws a control-radius inset rather than a second panel. */
+  .mf-table-frame {
+    border: 1px solid var(--mf-line);
+    border-radius: var(--mf-radius-control);
+    overflow: hidden;
+  }
+
+  /* A segmented switch — the metric the load ranking is sorted by. Selection
+     is the one blue, and the selected item is also the only one with
+     `aria-pressed`, so the state is never colour alone. */
+  .mf-segment {
+    display: inline-flex;
+    flex: 0 0 auto;
+    padding: 2px;
+    border: 1px solid var(--mf-line);
+    border-radius: 8px;
+    background: var(--mf-canvas);
+  }
+  .mf-segment > button {
+    padding: 3px 9px;
+    border-radius: 6px;
+    color: var(--mf-muted);
+    font-family: var(--font-mono), ui-monospace, monospace;
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    transition: background-color 160ms ease, color 160ms ease;
+  }
+  .mf-segment > button:hover:not(:disabled):not([aria-pressed="true"]) {
+    color: var(--mf-text);
+  }
+  .mf-segment > button[aria-pressed="true"] {
+    background: var(--mf-blue-soft);
+    color: var(--mf-blue);
+  }
+  .mf-segment > button:disabled {
+    color: var(--mf-quiet);
+    cursor: not-allowed;
+  }
 
   /* ============================================================================
    * Tables
@@ -732,6 +1088,16 @@ html[data-appearance="dark"] {
    * Responsive
    * ========================================================================== */
 
+  @media (max-width: 900px) {
+    .mf-pane-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    /* Stacked, the floor buys nothing and costs a screenful of scrolling. */
+    .mf-pane-grid > .mf-section[data-open="true"] {
+      min-height: 0;
+    }
+  }
+
   @media (max-width: 980px) {
     .mf-shell {
       grid-template-columns: 72px minmax(0, 1fr);
@@ -760,13 +1126,14 @@ html[data-appearance="dark"] {
     .mf-topbar {
       align-items: flex-start;
     }
-    .mf-intro {
-      align-items: flex-start;
-      flex-direction: column;
-    }
-    .mf-intro p {
-      width: auto;
-      max-width: 48ch;
+    /* The header still wraps rather than stacking — `flex-wrap` already puts
+       each part on its own line once the row runs out of width. All that has
+       to change is the sentence's trailing-edge alignment: on a line of its
+       own, `margin-left: auto` would hang it off the right gutter. */
+    .mf-intro > p,
+    .mf-intro > .mf-intro-trail {
+      margin-left: 0;
+      max-width: 62ch;
     }
   }
 
@@ -838,8 +1205,11 @@ html[data-appearance="dark"] {
     .mf-table-wrap {
       overflow-x: auto;
     }
+    /* Wide enough for every column to keep its own width rather than
+       collapsing into each other — Notes and the labelled expected-load
+       toggle both arrived after the previous 820px floor was set. */
     .mf-table {
-      min-width: 820px;
+      min-width: 1020px;
     }
   }
 }
@@ -852,5 +1222,12 @@ html[data-appearance="dark"] {
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
+  }
+  /* The blanket rule above zeroes durations but not delays, and the region's
+     collapsed rule delays `visibility` by a full transition. Without this, a
+     reduced-motion collapse would snap shut and then leave its contents
+     reachable for another 200ms. */
+  .mf-region[data-collapsed="true"] > .mf-region-inner {
+    transition-delay: 0s !important;
   }
 }

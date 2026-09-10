@@ -38,6 +38,7 @@ const (
 	powerMaxIDLen           = 128
 	powerMaxWattsPerSensor  = 100000.0  // a single sensor reporting >100kW is bogus
 	powerMaxWattsGPUTotal   = 1000000.0 // 16 bogus sensors summed still cap here
+	powerMaxWattsDomain     = 100000.0  // a scalar domain (system/cpu/dram) is one counter
 	powerMaxSamples         = 1000000
 	powerMaxExpectedSamples = 86400 // a day of 1Hz samples
 	powerMaxWindowDuration  = time.Hour
@@ -47,6 +48,22 @@ const (
 )
 
 var powerIDRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+// powerSourceRe additionally allows ':', which separates a hwmon backend
+// from its chip name ("hwmon:power_meter"). Backend labels are display and
+// provenance strings only: they never reach a path, a query or an identity.
+var powerSourceRe = regexp.MustCompile(`^[A-Za-z0-9._:-]+$`)
+
+// powerScalarDomains are the domains this hub understands. A source label
+// naming one of them must be backed by statistics in the matching field.
+// Labels for domains it does NOT know are bounds-checked and stored as-is
+// rather than rejected, so a newer agent is never hard-blocked by an older
+// hub over a field that hub does not interpret.
+var powerScalarDomains = map[string]bool{
+	powerhistory.DomainSystem: true,
+	powerhistory.DomainCPU:    true,
+	powerhistory.DomainDRAM:   true,
+}
 
 var (
 	errPowerClockSkew = errors.New("machine clock is too far ahead of hub")
@@ -211,13 +228,71 @@ func validatePowerBatch(b *powerhistory.Batch, now time.Time) error {
 				}
 			}
 		}
-		if bk.CPU != nil {
-			if err := validPowerStats(bk.CPU, bk.ExpectedSamples, powerMaxWattsPerSensor); err != nil {
-				return fmt.Errorf("bucket %d cpu: %w", i, err)
+		// Scalar domains. They are validated INDEPENDENTLY and never against
+		// one another: system, cpu and dram come from different backends on
+		// different sampling schedules, so "system must exceed cpu" is not a
+		// property the hub may assume, let alone enforce. Nothing here sums
+		// them either — system already contains cpu where both exist.
+		for _, d := range []struct {
+			name  string
+			stats *powerhistory.Stats
+		}{
+			{powerhistory.DomainSystem, bk.System},
+			{powerhistory.DomainCPU, bk.CPU},
+			{powerhistory.DomainDRAM, bk.DRAM},
+		} {
+			if d.stats == nil {
+				continue
 			}
+			if err := validPowerStats(d.stats, bk.ExpectedSamples, powerMaxWattsDomain); err != nil {
+				return fmt.Errorf("bucket %d %s: %w", i, d.name, err)
+			}
+		}
+		if err := validPowerSources(bk); err != nil {
+			return fmt.Errorf("bucket %d: %w", i, err)
 		}
 	}
 	return nil
+}
+
+// validPowerSources bounds the backend labels and holds them to their one
+// promise: a label claims that a domain's statistics in THIS bucket came
+// from that backend, so a label for a domain carrying no statistics is not a
+// weaker claim, it is a false one.
+//
+// An absent Sources array is not an error. Agents predating source labelling
+// send CPU statistics with no label at all, and those agents keep reporting
+// indefinitely.
+func validPowerSources(bk *powerhistory.Bucket) error {
+	if len(bk.Sources) > powerhistory.MaxDomainSources {
+		return fmt.Errorf("%d sources exceeds max %d", len(bk.Sources), powerhistory.MaxDomainSources)
+	}
+	present := map[string]*powerhistory.Stats{
+		powerhistory.DomainSystem: bk.System,
+		powerhistory.DomainCPU:    bk.CPU,
+		powerhistory.DomainDRAM:   bk.DRAM,
+	}
+	seen := make(map[string]struct{}, len(bk.Sources))
+	for j, src := range bk.Sources {
+		if !validPowerLabel(src.Domain) {
+			return fmt.Errorf("source %d: invalid domain %q", j, src.Domain)
+		}
+		if !validPowerLabel(src.Source) {
+			return fmt.Errorf("source %d: invalid source %q", j, src.Source)
+		}
+		if _, dup := seen[src.Domain]; dup {
+			return fmt.Errorf("duplicate source for domain %q", src.Domain)
+		}
+		seen[src.Domain] = struct{}{}
+		if powerScalarDomains[src.Domain] && present[src.Domain] == nil {
+			return fmt.Errorf("source %q labels domain %q with no statistics", src.Source, src.Domain)
+		}
+	}
+	return nil
+}
+
+func validPowerLabel(s string) bool {
+	return len(s) > 0 && len(s) <= powerhistory.MaxSourceLen && powerSourceRe.MatchString(s)
 }
 
 // --- ingest (agent WebSocket) ---

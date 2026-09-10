@@ -13,8 +13,15 @@ func TestRepresentativeStorageAndBatchSize(t *testing.T) {
 	stats := Stats{MeanWatts: &mean, PeakWatts: &peak, Samples: 30}
 	for _, sensors := range []int{2, MaxSensors} {
 		t.Run(fmt.Sprintf("%d_GPUs", sensors), func(t *testing.T) {
+			// The fullest bucket the agent can produce: every scalar domain
+			// measured and labelled, so the budget covers the worst case.
 			bucket := Bucket{Seq: 2880, StartUnixMS: 1788739200000, EndUnixMS: 1788739230000,
-				ExpectedSamples: 30, GPUTotal: &stats, CPU: &stats}
+				ExpectedSamples: 30, GPUTotal: &stats, CPU: &stats, System: &stats, DRAM: &stats,
+				Sources: []DomainSource{
+					{Domain: DomainSystem, Source: SourceHwmonPrefix + "power_meter"},
+					{Domain: DomainCPU, Source: SourceRAPLPackage},
+					{Domain: DomainDRAM, Source: SourceRAPLDRAM},
+				}}
 			for i := 0; i < sensors; i++ {
 				bucket.GPUs = append(bucket.GPUs, Sensor{ID: fmt.Sprintf("GPU-%036d", i), Stats: stats})
 			}
