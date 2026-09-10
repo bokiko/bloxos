@@ -1,11 +1,15 @@
 "use client";
 
+// Docker containers for one machine. Same panel + table as ServicePanel, on
+// purpose: two lists of running things should not look like two products.
+
 import { useState, useMemo } from "react";
 import { Box, RotateCcw, Play, Loader2 } from "lucide-react";
 import { useToast } from "./Toast";
 import { useAuth } from "@/contexts/AuthContext";
-import { Button } from "@/components/ui/button";
+import { StatusCell, type MonoformTone } from "@/components/MonoformStatus";
 import { getStoredToken } from "@/lib/session";
+import { MF_PANEL_HEAD, MF_PANEL_TITLE } from "@/lib/monoform-classes";
 
 export interface Container {
   id: string;
@@ -20,22 +24,14 @@ interface ContainerPanelProps {
   hubUrl: string;
 }
 
-function statusDot(status: string) {
-  if (status === "running") return "bg-emerald-500";
-  if (status === "dead" || status === "removing") return "bg-red-500";
-  return "bg-blox-muted/50";
-}
+const ROW_ACTION =
+  "ml-auto grid h-8 w-8 place-items-center rounded-lg text-text-tertiary transition-colors " +
+  "hover:bg-surface-elevated hover:text-text-primary";
 
-function statusLabel(status: string) {
-  if (status === "running") return "text-emerald-400";
-  if (status === "dead") return "text-red-400";
-  return "text-blox-muted";
-}
-
-function truncateImage(image: string): string {
-  const parts = image.split("/");
-  const last = parts[parts.length - 1];
-  return last.length > 20 ? last.slice(0, 20) + "..." : last;
+function statusTone(status: string): MonoformTone {
+  if (status === "running") return "ok";
+  if (status === "dead" || status === "removing") return "critical";
+  return "neutral";
 }
 
 function ContainerActions({
@@ -80,7 +76,7 @@ function ContainerActions({
   }
 
   if (loading) {
-    return <Loader2 className="w-3.5 h-3.5 text-blox-blue animate-spin" />;
+    return <Loader2 className="ml-auto w-3.5 h-3.5 text-accent animate-spin" aria-label="Working" />;
   }
 
   if (!canControl) {
@@ -89,28 +85,28 @@ function ContainerActions({
 
   if (container.status === "running") {
     return (
-      <Button
-        variant="ghost"
-        size="icon-xs"
+      <button
+        type="button"
         onClick={() => runCommand("restart_container")}
-        className="text-blox-blue hover:bg-blox-blue/10"
-        title="Restart"
+        className={ROW_ACTION}
+        title={`Restart ${container.name}`}
+        aria-label={`Restart ${container.name}`}
       >
-        <RotateCcw className="w-3 h-3" />
-      </Button>
+        <RotateCcw className="w-3.5 h-3.5" />
+      </button>
     );
   }
 
   return (
-    <Button
-      variant="ghost"
-      size="icon-xs"
+    <button
+      type="button"
       onClick={() => runCommand("start_container")}
-      className="text-emerald-400 hover:bg-emerald-500/10"
-      title="Start"
+      className={ROW_ACTION}
+      title={`Start ${container.name}`}
+      aria-label={`Start ${container.name}`}
     >
-      <Play className="w-3 h-3" />
-    </Button>
+      <Play className="w-3.5 h-3.5" />
+    </button>
   );
 }
 
@@ -124,41 +120,53 @@ export function ContainerPanel({ containers, machineId, hubUrl }: ContainerPanel
   }, [containers]);
 
   return (
-    <div className="bg-blox-card border border-blox-border rounded-xl p-5">
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2.5">
-          <div className="p-1.5 rounded-lg bg-blox-blue/10">
-            <Box className="w-3.5 h-3.5 text-blox-blue" />
-          </div>
-          <h3 className="text-sm font-semibold text-blox-text">Docker Containers</h3>
-          <span className="text-[10px] text-blox-muted font-mono tabular-nums">({containers.length})</span>
-        </div>
+    <section className="mf-panel overflow-hidden">
+      <div className={MF_PANEL_HEAD}>
+        <h2 className={MF_PANEL_TITLE}>Docker containers</h2>
+        <span className="mf-kicker">
+          {containers.length} container{containers.length === 1 ? "" : "s"}
+        </span>
       </div>
       {sorted.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-8 text-blox-muted">
-          <Box className="w-8 h-8 mb-2 opacity-20" />
-          <p className="text-xs">No containers reported</p>
+        <div className="flex flex-col items-center justify-center py-12 text-text-tertiary">
+          <Box className="mb-2 h-7 w-7 opacity-30" aria-hidden />
+          <p className="text-[13px]">No containers reported</p>
         </div>
       ) : (
-        <div className="space-y-0.5 max-h-[400px] overflow-y-auto">
-          {sorted.map((c) => (
-            <div
-              key={c.id || c.name}
-              className="flex items-center justify-between px-2 py-2 rounded-lg hover:bg-blox-border/20 group transition-colors"
-            >
-              <div className="flex items-center gap-2.5 min-w-0">
-                <div className={`w-2 h-2 rounded-full flex-shrink-0 ${statusDot(c.status)} ${c.status === "running" ? "shadow-sm shadow-emerald-500/50" : ""}`} />
-                <span className="text-xs text-blox-text font-mono truncate">{c.name}</span>
-              </div>
-              <div className="flex items-center gap-3">
-                <span className={`text-[10px] font-medium ${statusLabel(c.status)}`}>{c.status}</span>
-                <span className="text-[10px] text-blox-muted font-mono hidden sm:inline">{truncateImage(c.image)}</span>
-                <ContainerActions container={c} machineId={machineId} hubUrl={hubUrl} />
-              </div>
-            </div>
-          ))}
+        <div className="mf-table-wrap max-h-[520px] overflow-x-auto overflow-y-auto">
+          <table className="mf-table">
+            <thead className="sticky top-0 z-10">
+              <tr>
+                <th>Container</th>
+                <th>State</th>
+                <th className="hidden sm:table-cell">Image</th>
+                <th className="text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((c) => (
+                <tr key={c.id || c.name}>
+                  <td className="font-mono text-[13px] text-text-primary">{c.name}</td>
+                  <td>
+                    <StatusCell tone={statusTone(c.status)} label={c.status} />
+                  </td>
+                  <td
+                    className="hidden max-w-[320px] truncate font-mono text-[12px] text-text-tertiary sm:table-cell"
+                    title={c.image}
+                  >
+                    {c.image}
+                  </td>
+                  <td>
+                    <div className="flex justify-end">
+                      <ContainerActions container={c} machineId={machineId} hubUrl={hubUrl} />
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
-    </div>
+    </section>
   );
 }

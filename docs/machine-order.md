@@ -9,8 +9,8 @@ To choose your own positions:
 2. Drag a machine by its handle, or use the up/down arrows.
 3. Choose **Save order**. The sort selector changes to **My order**.
 
-Your order is saved to your BloxOS account and applies to grid/list views and
-the Classic, Live Wall, Grove and Ops Console layouts. Each user has their own
+Your order is saved to your BloxOS account and applies to both the grid and
+list views of the fleet. Each user has their own
 order, including viewers. Saving requires a successful hub acknowledgement;
 if the connection fails, the dialog keeps your draft so you can retry.
 

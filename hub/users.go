@@ -72,9 +72,11 @@ func (s *Server) handleCreateUser(c echo.Context) error {
 
 	id := uuid.New().String()
 	// Admin-provisioned users must rotate the temporary credentials on first login.
+	// default_view: see the note at the bootstrap insert in auth.go. New users
+	// start on the Machine fleet table; existing rows keep what they chose.
 	_, err = s.db.Exec(
-		`INSERT INTO users (id, username, password_hash, terminal_pin_hash, password_changed, pin_changed, role) VALUES (?, ?, ?, ?, FALSE, FALSE, ?)`,
-		id, body.Username, string(passwordHash), string(pinHash), role,
+		`INSERT INTO users (id, username, password_hash, terminal_pin_hash, password_changed, pin_changed, role, default_view) VALUES (?, ?, ?, ?, FALSE, FALSE, ?, ?)`,
+		id, body.Username, string(passwordHash), string(pinHash), role, defaultViewForNewUser,
 	)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to create user"})

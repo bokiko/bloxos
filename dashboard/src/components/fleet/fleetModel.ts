@@ -1,5 +1,6 @@
-// Shared fleet aggregation for the live dashboard layouts (Operations Wall,
-// Grove Workspace, Precision Console). Every value is derived from real SSE
+// Shared fleet aggregation for the Monoform Overview — the availability,
+// capacity, load-ranking and fleet-table panels under components/overview/ all
+// read their numbers from here. Every value is derived from real SSE
 // machine data. An aggregate with no underlying readings is `null` and is
 // rendered as "N/A" — never a fabricated zero or a false all-healthy state
 // (AGENTS.md: missing sensors are unavailable, not zero).

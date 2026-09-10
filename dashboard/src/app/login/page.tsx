@@ -1,15 +1,19 @@
 "use client";
 
+// Sign-in. Renders outside AppShell, so it carries the Monoform canvas itself
+// — the same void ground, graphite panel, hairline border and 36px controls
+// the authenticated product uses. No gradient wash, no grid wallpaper, no
+// glass: the first screen has to look like the rest of the product.
+
 import { useState, FormEvent, useEffect, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/contexts/AuthContext";
 import { HUB_URL } from "@/lib/session";
-import { motion } from "framer-motion";
-import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
 import { BrandedHeader } from "@/components/BrandedHeader";
+import { BrandingPlate } from "@/components/BrandingPlate";
 import { useBranding } from "@/contexts/BrandingContext";
+import { MF_INPUT, MF_LABEL } from "@/lib/monoform-classes";
 
 export default function LoginPage() {
   const [username, setUsername] = useState("");
@@ -63,94 +67,93 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen bg-blox-bg flex items-center justify-center relative overflow-hidden">
-      {/* Background pattern */}
-      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_var(--color-blox-blue)_0%,_transparent_70%)] opacity-[0.03]" />
-      <div className="absolute inset-0 bg-[linear-gradient(rgba(59,130,246,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(59,130,246,0.03)_1px,transparent_1px)] bg-[size:64px_64px]" />
-
-      <motion.div
-        initial={{ opacity: 0, y: 12 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.3, ease: "easeOut" }}
-        className="w-full max-w-sm relative z-10"
-      >
-        <div className="mb-8">
-          <BrandedHeader size="expanded" />
+    <div className="min-h-screen bg-surface-sunken flex items-center justify-center px-4 py-12">
+      <div className="w-full max-w-sm">
+        <div className="mb-9 flex flex-col items-center">
+          <BrandingPlate>
+            <BrandedHeader size="expanded" />
+          </BrandingPlate>
           {branding.welcome_message && (
-            <p className="text-[11px] text-blox-muted text-center mt-3 max-w-md whitespace-pre-line">
+            <p className="mt-4 max-w-md whitespace-pre-line text-center text-[11px] leading-5 text-text-tertiary">
               {branding.welcome_message}
             </p>
           )}
         </div>
 
-        <Card className="bg-blox-card/80 backdrop-blur-sm border-blox-border ring-0 shadow-2xl shadow-black/40">
-          <CardContent className="pt-6 px-6 pb-6">
-            <form onSubmit={handleSubmit} className="space-y-4">
-              <div>
-                <label htmlFor="login-username" className="block text-xs text-blox-muted mb-1.5 font-medium">Username</label>
-                <Input
-                  id="login-username"
-                  type="text"
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
-                  className="bg-blox-bg border-blox-border text-blox-text placeholder:text-blox-muted/50 h-9 text-sm"
-                  placeholder="admin"
-                  autoFocus
-                  autoComplete="username"
-                  disabled={checkingSetup}
-                />
-              </div>
-              <div>
-                <label htmlFor="login-password" className="block text-xs text-blox-muted mb-1.5 font-medium">Password</label>
-                <Input
-                  id="login-password"
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="bg-blox-bg border-blox-border text-blox-text placeholder:text-blox-muted/50 h-9 text-sm"
-                  placeholder="password"
-                  autoComplete="current-password"
-                  disabled={checkingSetup}
-                />
-              </div>
+        <div className="mf-panel px-6 py-6">
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div>
+              <label htmlFor="login-username" className={MF_LABEL}>Username</label>
+              <Input
+                id="login-username"
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                className={`${MF_INPUT} w-full`}
+                placeholder="admin"
+                autoFocus
+                autoComplete="username"
+                disabled={checkingSetup}
+              />
+            </div>
+            <div>
+              <label htmlFor="login-password" className={MF_LABEL}>Password</label>
+              <Input
+                id="login-password"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className={`${MF_INPUT} w-full`}
+                placeholder="password"
+                autoComplete="current-password"
+                disabled={checkingSetup}
+              />
+            </div>
 
-              {error && (
-                <motion.p
-                  initial={{ opacity: 0, y: -4 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="text-xs text-blox-red"
-                >
-                  {error}
-                </motion.p>
-              )}
-
-              <Button
-                type="submit"
-                disabled={loading || checkingSetup || !username || !password}
-                className="w-full bg-blox-blue hover:bg-blox-blue/90 text-white h-9 text-sm font-medium gap-2"
+            {error && (
+              <p
+                role="alert"
+                className="rounded-lg border border-status-critical/40 bg-status-critical-tint px-3 py-2 text-xs text-status-critical"
               >
-                {checkingSetup ? (
-                  <>
-                    <span className="w-3 h-3 border-2 border-white/40 border-t-white rounded-full animate-spin" />
-                    Checking setup…
-                  </>
-                ) : loading ? (
-                  <>
-                    <span className="w-3 h-3 border-2 border-white/40 border-t-white rounded-full animate-spin" />
-                    Signing in…
-                  </>
-                ) : (
-                  "Sign In"
-                )}
-              </Button>
-            </form>
-          </CardContent>
-        </Card>
+                {error}
+              </p>
+            )}
 
-        <p className="text-center text-[10px] text-blox-muted/40 mt-6">
+            <button
+              type="submit"
+              disabled={loading || checkingSetup || !username || !password}
+              className="mf-action inline-flex w-full items-center justify-center gap-2 disabled:opacity-50"
+            >
+              {checkingSetup ? (
+                <>
+                  <Spinner />
+                  Checking setup…
+                </>
+              ) : loading ? (
+                <>
+                  <Spinner />
+                  Signing in…
+                </>
+              ) : (
+                "Sign in"
+              )}
+            </button>
+          </form>
+        </div>
+
+        <p className="mt-6 text-center text-[10px] text-text-disabled">
           Secure fleet monitoring and management
         </p>
-      </motion.div>
+      </div>
     </div>
+  );
+}
+
+function Spinner() {
+  return (
+    <span
+      className="w-3 h-3 rounded-full border-2 border-white/40 border-t-white animate-spin"
+      aria-hidden
+    />
   );
 }

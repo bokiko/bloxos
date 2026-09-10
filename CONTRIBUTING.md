@@ -131,7 +131,7 @@ reserved for shipped product phases.
   real hardware or OS services.
 - Dashboard: lint, `pnpm test`, and build must pass. The test runner is Node's
   built-in `node:test` over `src/lib/*.test.mjs` (pure, framework-free unit
-  tests — e.g. `design-prefs`, `design-fleet-model`, `fleet-status`). Add or
+  tests — e.g. `fleet-model`, `fleet-status`, `monoform-guard`). Add or
   update a focused `*.test.mjs` when a change has testable pure logic; there is
   no component/DOM test harness, so UI wiring is still covered by lint + build
   plus manual browser checks.

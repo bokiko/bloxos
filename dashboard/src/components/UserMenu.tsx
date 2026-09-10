@@ -1,30 +1,28 @@
 "use client";
 
+// Account menu.
+//
+// Identity, Settings, User management (permission-gated) and Sign out.
+// Appearance is not chosen here — Monoform has a single appearance control,
+// in Settings → Preferences.
+
 import { useRouter } from "next/navigation";
 import { Users as UsersIcon, LogOut, Settings as SettingsIcon } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
-import { useTheme, THEMES, THEME_NAMES } from "@/contexts/ThemeContext";
 import { usePreferences } from "@/contexts/PreferencesContext";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuLabel,
   DropdownMenuSeparator,
-  DropdownMenuGroup,
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
 import { Avatar } from "@/components/Avatar";
-import { cn } from "@/lib/utils";
-import { DesignSettings } from "@/components/DesignSettings";
-import { useDesign } from "@/contexts/DesignContext";
 
 export function UserMenu() {
   const router = useRouter();
   const { logout, hasScope, role } = useAuth();
-  const { themeName, setTheme } = useTheme();
-  const { layout } = useDesign();
   const { preferences, myAvatarURL } = usePreferences();
   const canManageUsers = hasScope("users.admin");
   const displayName = preferences.display_name || "Account";
@@ -45,8 +43,8 @@ export function UserMenu() {
         }
       />
       <DropdownMenuContent align="end" className="bg-blox-card border-blox-border min-w-[240px]">
-        {/* Phase 11 — header row: avatar + display name + role. Plain JSX,
-            not a DropdownMenuItem (it isn't interactive). */}
+        {/* Header row: avatar + display name + role. Plain JSX, not a
+            DropdownMenuItem (it isn't interactive). */}
         <div className="flex items-center gap-3 px-2 py-2">
           <Avatar url={myAvatarURL} name={displayName} size={32} />
           <div className="min-w-0">
@@ -58,47 +56,6 @@ export function UserMenu() {
             )}
           </div>
         </div>
-        <DropdownMenuSeparator className="bg-blox-border" />
-
-        <DesignSettings compact />
-
-        {/* Quick theme tiles use the shared registry so new palettes remain
-            available here too. Each tile is part of a wrapping grid
-            preview; clicking applies the theme immediately. The "Theme"
-            label is wrapped in DropdownMenuGroup to satisfy Base UI #31. */}
-        {layout === "classic" && <><DropdownMenuGroup>
-          <DropdownMenuLabel className="text-blox-muted text-[10px] uppercase tracking-wider">
-            Theme
-          </DropdownMenuLabel>
-        </DropdownMenuGroup>
-        <div className="px-1 pb-1">
-          <div className="grid grid-cols-4 gap-1">
-            {THEME_NAMES.map((name) => {
-              const meta = THEMES[name];
-              const active = themeName === name;
-              return (
-                <button
-                  key={name}
-                  type="button"
-                  onClick={() => setTheme(name)}
-                  title={meta.label}
-                  aria-pressed={active}
-                  aria-label={`Use ${meta.label} theme`}
-                  className={cn(
-                    "h-9 rounded-md border transition-all",
-                    active
-                      ? "border-blox-blue ring-1 ring-blox-blue/40"
-                      : "border-blox-border hover:border-blox-blue/40"
-                  )}
-                  style={{
-                    background: `linear-gradient(135deg, ${meta.preview.background} 0%, ${meta.preview.surface} 60%, ${meta.preview.accent} 100%)`,
-                  }}
-                />
-              );
-            })}
-          </div>
-        </div>
-        </>}
         <DropdownMenuSeparator className="bg-blox-border" />
 
         <DropdownMenuItem
@@ -123,7 +80,7 @@ export function UserMenu() {
 
         <DropdownMenuItem
           onClick={logout}
-          className="text-xs gap-2 text-red-400"
+          className="text-xs gap-2 text-blox-red"
         >
           <LogOut className="w-3.5 h-3.5" />
           Sign out

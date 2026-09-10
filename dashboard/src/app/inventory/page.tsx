@@ -1,12 +1,15 @@
 "use client";
 import { AppShell } from "@/components/shell/AppShell";
 
+// Hardware inventory — one aggregate table with six views over the same fleet.
+//
+// Monoform: the shell owns the title, the rail and the global actions, so this
+// file starts at the page lead. The view tabs write to the `view` query param,
+// which is what makes a filtered view linkable.
+
 import { useEffect, useMemo, useState } from "react";
-import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { motion } from "framer-motion";
 import {
-  ArrowLeft,
   RefreshCw,
   AlertTriangle,
   Box,
@@ -18,13 +21,12 @@ import {
 } from "lucide-react";
 import { useInventory } from "@/contexts/InventoryContext";
 import { useAuth } from "@/contexts/AuthContext";
-import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Badge } from "@/components/ui/badge";
-import { InventorySummaryCards } from "@/components/InventorySummaryCards";
+import { InventorySummary } from "@/components/InventorySummaryCards";
 import { InventoryTable } from "@/components/InventoryTable";
 import { InventoryExportMenu } from "@/components/InventoryExportMenu";
 import { resolveView, type InventoryView } from "@/lib/inventory-utils";
+import { MF_BUTTON, MF_TAB } from "@/lib/monoform-classes";
 
 const VIEWS: readonly InventoryView[] = [
   "machines",
@@ -130,94 +132,62 @@ function InventoryContent() {
   );
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.25, ease: "easeOut" }}
-      className="min-h-screen bg-blox-bg" data-design-page
-    >
-      {/* Top sticky bar */}
-      <header className="sticky top-0 z-50 bg-blox-bg/80 backdrop-blur-xl border-b border-blox-border/50">
-        <div className="max-w-[1400px] mx-auto px-4 sm:px-6 h-12 flex items-center justify-between">
-          <Link
-            href="/"
-            className="flex items-center gap-1.5 text-blox-muted hover:text-blox-text transition-colors text-xs"
-          >
-            <ArrowLeft className="w-3.5 h-3.5" />
-            <span>Fleet</span>
-          </Link>
-          <div className="flex items-center gap-1.5">
-            {data?.generated_at && (
-              <span className="hidden sm:inline text-[10px] text-blox-muted font-mono tabular-nums mr-2">
-                Updated {timeSince(data.generated_at)}
-              </span>
-            )}
-            <Button
-              variant="ghost"
-              size="sm"
+    <>
+      <div className="mf-intro">
+        <div className="min-w-0">
+          {data ? (
+            <InventorySummary totals={data.totals} />
+          ) : (
+            <p className="text-[13px] text-text-tertiary">
+              {status === "error" ? "Inventory unavailable." : "Reading hardware from the fleet…"}
+            </p>
+          )}
+          <div className="mt-5 flex flex-wrap items-center gap-3">
+            <button
+              type="button"
               onClick={() => refresh()}
               disabled={status === "loading"}
-              className="text-xs text-blox-muted hover:text-blox-text gap-1.5 h-8"
+              className={MF_BUTTON}
               title="Refresh inventory data"
             >
               <RefreshCw
                 className={`w-3.5 h-3.5 ${status === "loading" ? "animate-spin" : ""}`}
+                aria-hidden
               />
-              <span className="hidden sm:inline">Refresh</span>
-            </Button>
-          </div>
-        </div>
-      </header>
-
-      {/* Hero */}
-      <section className="border-b border-blox-border/50 bg-blox-bg/40">
-        <div className="max-w-[1400px] mx-auto px-4 sm:px-6 py-6">
-          <div className="flex items-center gap-3">
-            <h1 className="text-xl sm:text-2xl font-semibold text-blox-text tracking-tight">
-              Hardware Inventory
-            </h1>
-            {data && (
-              <Badge
-                variant="outline"
-                className="border-blox-border text-blox-muted text-[10px] tabular-nums"
-              >
-                {data.totals.machine_count} machine
-                {data.totals.machine_count === 1 ? "" : "s"}
-              </Badge>
+              {status === "loading" ? "Refreshing…" : "Refresh inventory"}
+            </button>
+            {data?.generated_at && (
+              <span className="mf-kicker">Collected {timeSince(data.generated_at)}</span>
             )}
           </div>
-          <p className="text-[12px] text-blox-muted mt-1.5">
-            Aggregate view of all hardware reported by agents and API-polled machines.
-            Sort, filter, group, and export for capacity planning and rotation.
-          </p>
         </div>
-      </section>
+        <p>
+          Every CPU, DIMM, disk, GPU and NIC reported by agents and API-polled machines. Sort, filter,
+          group and export any view for capacity planning and rotation.
+        </p>
+      </div>
 
-      <main className="max-w-[1400px] mx-auto px-4 sm:px-6 py-6 space-y-6">
+      <div className="space-y-6">
         {status === "loading" && !data && <LoadingSkeleton />}
 
         {status === "error" && (
-          <div className="flex items-start gap-3 rounded-xl border border-red-500/20 bg-red-500/5 px-4 py-3">
-            <AlertTriangle className="w-4 h-4 text-red-400 mt-0.5 shrink-0" />
+          <div
+            role="alert"
+            className="mf-panel flex items-start gap-3 border-status-critical/40 px-5 py-4"
+          >
+            <AlertTriangle className="w-4 h-4 text-status-critical mt-0.5 shrink-0" aria-hidden />
             <div className="flex-1">
-              <p className="text-sm text-blox-text font-medium">Failed to load inventory</p>
-              <p className="text-xs text-blox-muted mt-1">{error}</p>
+              <p className="text-[13px] font-medium text-text-primary">Failed to load inventory</p>
+              <p className="text-xs text-text-tertiary mt-1">{error}</p>
             </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => refresh()}
-              className="text-xs border-blox-border text-blox-text"
-            >
+            <button type="button" onClick={() => refresh()} className={MF_BUTTON}>
               Retry
-            </Button>
+            </button>
           </div>
         )}
 
         {data && (
           <>
-            <InventorySummaryCards totals={data.totals} />
-
             <div className="flex items-center justify-between gap-3 flex-wrap">
               <Tabs
                 value={activeView}
@@ -225,11 +195,7 @@ function InventoryContent() {
               >
                 <TabsList variant="line" className="gap-1">
                   {VIEWS.map((v) => (
-                    <TabsTrigger
-                      key={v}
-                      value={v}
-                      className="px-3.5 py-1.5 gap-1.5 text-sm"
-                    >
+                    <TabsTrigger key={v} value={v} className={MF_TAB}>
                       {viewIcon(v)}
                       {viewLabel(v)}
                     </TabsTrigger>
@@ -254,43 +220,30 @@ function InventoryContent() {
             )}
           </>
         )}
-      </main>
-    </motion.div>
+      </div>
+    </>
   );
 }
 
 function LoadingSkeleton() {
   return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-px bg-blox-border rounded-lg overflow-hidden border border-blox-border">
-        {Array.from({ length: 5 }).map((_, i) => (
-          <div key={i} className="bg-blox-card p-3 h-[68px]">
-            <div className="h-2 bg-blox-border/60 rounded w-12 mb-2 animate-shimmer" />
-            <div className="h-5 bg-blox-border/60 rounded w-20 animate-shimmer" />
-          </div>
-        ))}
+    <div className="mf-panel overflow-hidden" aria-busy="true" aria-label="Loading inventory">
+      <div className="border-b border-border-subtle bg-[var(--mf-table-head)] px-7 py-3.5">
+        <div className="flex gap-6">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className="h-2.5 w-16 rounded bg-border-default/60 animate-shimmer" />
+          ))}
+        </div>
       </div>
-      <div className="bg-blox-card border border-blox-border rounded-xl overflow-hidden">
-        <div className="border-b border-blox-border/50 p-3">
-          <div className="flex gap-4">
-            {Array.from({ length: 6 }).map((_, i) => (
-              <div key={i} className="h-3 bg-blox-border/60 rounded w-16 animate-shimmer" />
+      {Array.from({ length: 8 }).map((_, i) => (
+        <div key={i} className="border-b border-border-subtle px-7 py-5 last:border-b-0">
+          <div className="flex gap-6">
+            {Array.from({ length: 6 }).map((_, j) => (
+              <div key={j} className="h-3 w-16 rounded bg-border-default/40 animate-shimmer" />
             ))}
           </div>
         </div>
-        {Array.from({ length: 6 }).map((_, i) => (
-          <div key={i} className="border-b border-blox-border/30 p-3 last:border-b-0">
-            <div className="flex gap-4">
-              {Array.from({ length: 6 }).map((_, j) => (
-                <div
-                  key={j}
-                  className="h-3 bg-blox-border/40 rounded w-16 animate-shimmer"
-                />
-              ))}
-            </div>
-          </div>
-        ))}
-      </div>
+      ))}
     </div>
   );
 }

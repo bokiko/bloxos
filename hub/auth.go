@@ -201,8 +201,15 @@ func (s *Server) handleSetup(c echo.Context) error {
 		err = setupStorageTestHook()
 	}
 	if err == nil {
-		_, err = s.db.Exec(`INSERT INTO users (id, username, password_hash, terminal_pin_hash, password_changed, pin_changed, role) VALUES (?, ?, ?, ?, TRUE, TRUE, ?)`,
-			id, body.Username, string(passwordHash), string(pinHash), RoleAdmin)
+		// default_view is set explicitly rather than left to the column
+		// default. The column was created with DEFAULT 'grid' (migration at
+		// migrations.go:293) and SQLite cannot ALTER a column default without
+		// rebuilding the table, which is not worth doing to `users`. Monoform's
+		// desktop default is the authoritative Machine fleet table, so every
+		// user created from here on starts on it. Existing rows are deliberately
+		// untouched: their stored value is a real preference, not a default.
+		_, err = s.db.Exec(`INSERT INTO users (id, username, password_hash, terminal_pin_hash, password_changed, pin_changed, role, default_view) VALUES (?, ?, ?, ?, TRUE, TRUE, ?, ?)`,
+			id, body.Username, string(passwordHash), string(pinHash), RoleAdmin, defaultViewForNewUser)
 	}
 	if err != nil {
 		restoreToken()

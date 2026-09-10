@@ -1,8 +1,10 @@
 import { LayoutGrid, Boxes, Bot, GitCompareArrows, Settings, Users, type LucideIcon } from "lucide-react";
 
-// The authenticated routes surfaced by every non-classic layout's navigation
-// (Grove sidebar, Console icon rail + tabs, Wall header). Order matches the
-// study. `scope`, when set, hides the item for users without that permission.
+// The authenticated routes surfaced by the Monoform rail. There is one
+// navigation rendering, so this list is the whole of it: `group` decides
+// whether an item sits in the rail's main stack ("workspace") or in the rail
+// footer ("manage"), and `scope`, when set, hides the item for users without
+// that permission.
 export interface NavItem {
   href: string;
   label: string;
@@ -12,7 +14,7 @@ export interface NavItem {
 }
 
 export const NAV_ITEMS: NavItem[] = [
-  { href: "/", label: "Fleet overview", Icon: LayoutGrid, group: "workspace" },
+  { href: "/", label: "Overview", Icon: LayoutGrid, group: "workspace" },
   { href: "/inventory", label: "Inventory", Icon: Boxes, group: "workspace" },
   { href: "/sessions", label: "AI Sessions", Icon: Bot, group: "workspace" },
   { href: "/versions", label: "Versions", Icon: GitCompareArrows, group: "workspace" },

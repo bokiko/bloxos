@@ -1,32 +1,31 @@
 # Dashboard gallery
 
-Three layouts, one live BloxOS application. Each has **Original**, **Bright**
-and **Dark** color choices. Choose **Account menu → Design** to switch;
-Classic and its eight palettes remain available.
+BloxOS has one visual system, **Monoform**, with two contrast modes — **Gray**
+(the default) and **Dark**. See the [design guide](../themes/README.md) for
+what that means and where it lives.
 
-These are screenshots of the actual **v1.1.0** application using three
-synthetic test machines. They are not concept renders or production fleet
-captures. The demo has no GPU sensors or active AI sessions, so the UI
-truthfully shows N/A and zero sessions. Names, readings and connection timing
-are illustrative, not hardware benchmarks.
+> **These captures predate Monoform.** They show the **v1.1.0** application,
+> which still offered selectable layouts and palettes. They are kept here
+> because they are honest captures of a released version, not concept renders,
+> but they are **not** what the current dashboard looks like. Refreshed
+> Monoform captures are still to be taken; see the asset notes below for how.
 
-## Operations Wall · Original
+The captures use three synthetic test machines. The demo has no GPU sensors
+and no active AI sessions, so the UI truthfully shows N/A and zero sessions.
+Names, readings and connection timing are illustrative, not hardware
+benchmarks.
 
-An open overview with fleet health, resource bars and a machine register.
+## v1.1.0 · open fleet overview
 
-![Operations Wall in its original blue palette, with summary panels and Linux and Windows demo machines](https://cdn.jsdelivr.net/gh/bokiko/bloxos@bca13c456ecc1e5bd89282f96486a43b602bc4f9/docs/screenshots/operations-wall.png)
+![The v1.1.0 dashboard with summary panels and Linux and Windows demo machines](https://cdn.jsdelivr.net/gh/bokiko/bloxos@bca13c456ecc1e5bd89282f96486a43b602bc4f9/docs/screenshots/operations-wall.png)
 
-## Grove Workspace · Original
+## v1.1.0 · sidebar and context column
 
-A sidebar, central fleet analytics and a separate operational context column.
+![The v1.1.0 dashboard showing fleet analytics and a right-hand context column](https://cdn.jsdelivr.net/gh/bokiko/bloxos@bca13c456ecc1e5bd89282f96486a43b602bc4f9/docs/screenshots/grove-workspace.png)
 
-![Grove Workspace in its original green palette, showing fleet analytics and a right-hand context column](https://cdn.jsdelivr.net/gh/bokiko/bloxos@bca13c456ecc1e5bd89282f96486a43b602bc4f9/docs/screenshots/grove-workspace.png)
+## v1.1.0 · table-first view
 
-## Precision Console · Bright
-
-A compact navigation rail and table-first view with telemetry instruments.
-
-![Precision Console in its bright palette, showing a machine table and telemetry panels](https://cdn.jsdelivr.net/gh/bokiko/bloxos@bca13c456ecc1e5bd89282f96486a43b602bc4f9/docs/screenshots/precision-console.png)
+![The v1.1.0 dashboard showing a machine table and telemetry panels](https://cdn.jsdelivr.net/gh/bokiko/bloxos@bca13c456ecc1e5bd89282f96486a43b602bc4f9/docs/screenshots/precision-console.png)
 
 ## Asset notes
 
@@ -45,7 +44,8 @@ A compact navigation rail and table-first view with telemetry instruments.
   the root README; no separate lookalike logo is maintained here.
 - When refreshing screenshots, use a disposable demo fleet, wait for the layout
   and fonts to settle, close menus, check all visible content for private data,
-  and update this version note. Do not invent telemetry to hide unavailable
-  sensors or substitute the static design study for the live application.
+  and update this version note. Capture both contrast modes rather than
+  presenting one as the whole system. Do not invent telemetry to hide
+  unavailable sensors.
 
-[Design and color guide](../themes/README.md) · [Back to BloxOS](../../README.md)
+[Design guide](../themes/README.md) · [Back to BloxOS](../../README.md)

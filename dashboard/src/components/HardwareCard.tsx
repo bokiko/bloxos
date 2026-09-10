@@ -1,7 +1,13 @@
 "use client";
 
-import { motion } from "framer-motion";
+// Static hardware inventory for one machine.
+//
+// Monoform: a single panel with a header strip and four hairline-separated
+// sections. Nothing here is live, so nothing here is coloured — the whole
+// card is text hierarchy, with mono reserved for identifiers and sizes.
+
 import { Cpu, MemoryStick, HardDrive, Network, Server, Zap } from "lucide-react";
+import { MF_PANEL_HEAD, MF_PANEL_TITLE } from "@/lib/monoform-classes";
 
 /* ============================================================================
  * Types
@@ -97,20 +103,15 @@ export function HardwareCard({ hw }: HardwareCardProps) {
   const nics = (hw.network_interfaces ?? []).filter((n) => n.name);
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ delay: 0.15 }}
-      className="bg-blox-card border border-blox-border rounded-xl overflow-hidden mt-6"
-    >
-      <div className="flex items-center gap-2.5 px-5 py-4 border-b border-blox-border/50">
-        <div className="p-1.5 rounded-lg bg-blox-blue/10">
-          <Server className="w-3.5 h-3.5 text-blox-blue" />
-        </div>
-        <h3 className="text-sm font-semibold text-blox-text">Hardware</h3>
+    <section className="mf-panel overflow-hidden">
+      <div className={MF_PANEL_HEAD}>
+        <h2 className={MF_PANEL_TITLE}>Hardware</h2>
+        <span className="mf-kicker">as reported by the agent</span>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-blox-border/40">
+      {/* Two columns at md; the nth-child rule restores the horizontal rule
+          between the two rows, which `divide-y-0` drops. */}
+      <div className="grid grid-cols-1 divide-y divide-border-subtle md:grid-cols-2 md:divide-y-0 md:divide-x md:[&>*:nth-child(n+3)]:border-t md:[&>*:nth-child(n+3)]:border-border-subtle">
         {/* SECTION 1: Compute */}
         <Section icon={<Cpu className="w-3.5 h-3.5" />} title="Compute">
           <PrimaryField label="Processor" value={hw.cpu_model || "—"} />
@@ -118,13 +119,13 @@ export function HardwareCard({ hw }: HardwareCardProps) {
           {hw.cpu_vendor && <SecondaryLine>{hw.cpu_vendor}</SecondaryLine>}
 
           {gpuNames.length > 0 && (
-            <div className="pt-3 mt-3 border-t border-blox-border/30 space-y-1">
-              <div className="flex items-center gap-1.5 text-[9px] uppercase tracking-[0.1em] text-blox-muted/70 font-medium">
-                <Zap className="w-2.5 h-2.5" />
+            <div className="mt-4 space-y-1.5 border-t border-border-subtle pt-4">
+              <div className="mf-kicker flex items-center gap-1.5 uppercase">
+                <Zap className="w-2.5 h-2.5" aria-hidden />
                 Graphics
               </div>
               {gpuNames.map((name) => (
-                <div key={name} className="text-xs text-blox-text font-mono leading-snug">
+                <div key={name} className="font-mono text-xs leading-snug text-text-primary">
                   {name}
                 </div>
               ))}
@@ -140,9 +141,9 @@ export function HardwareCard({ hw }: HardwareCardProps) {
           />
 
           {disks.length > 0 ? (
-            <div className="pt-3 mt-3 border-t border-blox-border/30 space-y-2">
-              <div className="flex items-center gap-1.5 text-[9px] uppercase tracking-[0.1em] text-blox-muted/70 font-medium">
-                <HardDrive className="w-2.5 h-2.5" />
+            <div className="mt-4 space-y-2.5 border-t border-border-subtle pt-4">
+              <div className="mf-kicker flex items-center gap-1.5 uppercase">
+                <HardDrive className="w-2.5 h-2.5" aria-hidden />
                 Disks ({disks.length})
               </div>
               {disks.map((d) => (
@@ -151,28 +152,26 @@ export function HardwareCard({ hw }: HardwareCardProps) {
                   className="flex items-baseline justify-between gap-3 text-xs leading-tight"
                 >
                   <div className="min-w-0 flex-1">
-                    <span className="text-blox-text font-mono">
+                    <span className="font-mono text-text-primary">
                       {d.device.replace(/^\/dev\//, "")}
                     </span>
                     {d.type && (
-                      <span className="ml-2 text-[9px] uppercase tracking-wider text-blox-muted/70">
+                      <span className="ml-2 font-mono text-[10px] uppercase tracking-[0.05em] text-text-tertiary">
                         {d.type}
                       </span>
                     )}
                     {d.model && (
-                      <div className="text-[10px] text-blox-muted/80 mt-0.5 truncate">
-                        {d.model}
-                      </div>
+                      <div className="mt-0.5 truncate text-[10px] text-text-tertiary">{d.model}</div>
                     )}
                   </div>
-                  <span className="text-blox-text font-mono tabular-nums shrink-0">
+                  <span className="mf-metric shrink-0 text-text-primary">
                     {formatBytes(d.size_bytes)}
                   </span>
                 </div>
               ))}
             </div>
           ) : (
-            <SecondaryLine className="pt-3 mt-3 border-t border-blox-border/30 text-blox-muted/50">
+            <SecondaryLine className="mt-4 border-t border-border-subtle pt-4">
               No disks reported
             </SecondaryLine>
           )}
@@ -181,34 +180,28 @@ export function HardwareCard({ hw }: HardwareCardProps) {
         {/* SECTION 3: Network */}
         <Section icon={<Network className="w-3.5 h-3.5" />} title="Network">
           {nics.length > 0 ? (
-            <div className="space-y-2">
+            <div className="space-y-2.5">
               {nics.map((n) => (
                 <div key={n.name} className="text-xs leading-tight">
                   <div className="flex items-baseline justify-between gap-3">
-                    <span className="text-blox-text font-mono">{n.name}</span>
+                    <span className="font-mono text-text-primary">{n.name}</span>
                     {formatNICSpeed(n.speed_mbps) && (
-                      <span className="text-[10px] text-blox-muted/80 font-mono shrink-0">
+                      <span className="mf-metric shrink-0 text-[10px] text-text-tertiary">
                         {formatNICSpeed(n.speed_mbps)}
                       </span>
                     )}
                   </div>
                   {n.ipv4 && (
-                    <div className="text-[10px] text-blox-muted/80 font-mono tabular-nums mt-0.5">
-                      {n.ipv4}
-                    </div>
+                    <div className="mf-metric mt-0.5 text-[10px] text-text-tertiary">{n.ipv4}</div>
                   )}
                   {n.mac && (
-                    <div className="text-[10px] text-blox-muted/50 font-mono mt-0.5">
-                      {n.mac}
-                    </div>
+                    <div className="mt-0.5 font-mono text-[10px] text-text-disabled">{n.mac}</div>
                   )}
                 </div>
               ))}
             </div>
           ) : (
-            <SecondaryLine className="text-blox-muted/50">
-              No network interfaces reported
-            </SecondaryLine>
+            <SecondaryLine>No network interfaces reported</SecondaryLine>
           )}
         </Section>
 
@@ -224,7 +217,7 @@ export function HardwareCard({ hw }: HardwareCardProps) {
           <DetailRow label="Uptime" value={uptime} />
         </Section>
       </div>
-    </motion.div>
+    </section>
   );
 }
 
@@ -240,11 +233,11 @@ interface SectionProps {
 
 function Section({ icon, title, children }: SectionProps) {
   return (
-    <div className="px-5 py-4">
-      <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.1em] text-blox-muted font-medium mb-3">
-        <span className="text-blox-muted/80">{icon}</span>
+    <div className="px-6 py-5">
+      <h3 className="mf-kicker mb-3.5 flex items-center gap-1.5 uppercase">
+        <span aria-hidden>{icon}</span>
         {title}
-      </div>
+      </h3>
       <div>{children}</div>
     </div>
   );
@@ -258,10 +251,8 @@ interface PrimaryFieldProps {
 function PrimaryField({ label, value }: PrimaryFieldProps) {
   return (
     <div>
-      <div className="text-[9px] uppercase tracking-[0.1em] text-blox-muted/70 font-medium">
-        {label}
-      </div>
-      <div className="text-sm text-blox-text font-medium mt-1 leading-snug">{value}</div>
+      <div className="mf-kicker uppercase">{label}</div>
+      <div className="mt-1.5 text-[13px] font-medium leading-snug text-text-primary">{value}</div>
     </div>
   );
 }
@@ -274,7 +265,7 @@ function SecondaryLine({
   className?: string;
 }) {
   return (
-    <div className={`text-[11px] text-blox-muted leading-snug ${className}`}>{children}</div>
+    <div className={`text-[11px] leading-snug text-text-tertiary ${className}`}>{children}</div>
   );
 }
 
@@ -286,11 +277,9 @@ interface DetailRowProps {
 function DetailRow({ label, value }: DetailRowProps) {
   if (value === null || value === undefined || value === "" || value === 0) return null;
   return (
-    <div className="flex items-baseline justify-between gap-3 py-1.5 border-b border-blox-border/30 last:border-b-0 first:pt-0 last:pb-0">
-      <span className="text-[11px] text-blox-muted">{label}</span>
-      <span className="text-xs text-blox-text font-mono tabular-nums text-right truncate">
-        {value}
-      </span>
+    <div className="flex items-baseline justify-between gap-3 border-b border-border-subtle py-2 first:pt-0 last:border-b-0 last:pb-0">
+      <span className="mf-kicker">{label}</span>
+      <span className="mf-metric truncate text-right text-xs text-text-primary">{value}</span>
     </div>
   );
 }

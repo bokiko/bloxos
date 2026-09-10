@@ -3,8 +3,9 @@
 // AI Sessions — per-machine panel rendered in the machine detail "AI
 // Sessions" tab. Read-only.
 
-import { Bot } from "lucide-react";
+import { WifiOff } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
+import { MF_PANEL_HEAD, MF_PANEL_TITLE } from "@/lib/monoform-classes";
 import { useAISessions, useNow } from "@/contexts/AISessionsContext";
 import { useSSE } from "@/contexts/SSEContext";
 import {
@@ -42,32 +43,35 @@ export function AISessionsPanel({ machineId }: { machineId: string }) {
   }
 
   return (
-    <div className="bg-blox-card border border-blox-border rounded-xl p-5" data-testid="ai-sessions-panel">
-      <div className="flex items-center justify-between gap-3 mb-4 flex-wrap">
+    <section className="mf-panel overflow-hidden" data-testid="ai-sessions-panel">
+      <div className={MF_PANEL_HEAD}>
         <div className="flex items-center gap-2.5">
-          <div className="p-1.5 rounded-lg bg-blox-blue/10">
-            <Bot className="w-3.5 h-3.5 text-blox-blue" aria-hidden />
-          </div>
-          <h3 className="text-sm font-semibold text-blox-text">AI Sessions</h3>
+          <h2 className={MF_PANEL_TITLE}>AI Sessions</h2>
           {enabled !== false && machine && (
-            <span className="text-[10px] text-blox-muted font-mono tabular-nums">({count})</span>
+            <span className="mf-metric text-[11px] text-text-tertiary">
+              {count} session{count === 1 ? "" : "s"}
+            </span>
           )}
         </div>
         <div className="flex items-center gap-3">
           {machine && <StaleNotice machine={machine} now={now} staleAfterSeconds={staleAfterSeconds} />}
           {!connected && (
-            <span className="text-[10px] text-status-warning uppercase tracking-[0.06em]" role="status">
+            <span
+              className="mf-status-warning inline-flex items-center gap-1.5 font-mono text-[11px]"
+              role="status"
+            >
+              <WifiOff className="w-3 h-3" aria-hidden />
               live updates paused
             </span>
           )}
         </div>
       </div>
-      {body}
+      <div className="px-4 py-4">{body}</div>
       {enabled !== false && count > 0 && (
-        <div className="mt-4 pt-3 border-t border-blox-border/60">
+        <div className="border-t border-border-subtle px-6 py-3.5">
           <SessionsLegend />
         </div>
       )}
-    </div>
+    </section>
   );
 }

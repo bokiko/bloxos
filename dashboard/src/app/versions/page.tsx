@@ -1,15 +1,18 @@
 "use client";
 import { AppShell } from "@/components/shell/AppShell";
 
+// Agent versions — what the hub serves, what each agent runs, and whether the
+// rollout is allowed to announce updates.
+//
+// Monoform: the shell owns the title, the rail and the global actions. Every
+// state on this page is a StatusMark (dot or icon plus words), because "is
+// this agent blocked" must be readable without relying on the colour.
+
 import { useEffect } from "react";
-import Link from "next/link";
-import { motion } from "framer-motion";
 import {
-  ArrowLeft,
   RefreshCw,
   Pause,
   Play,
-  Server,
   AlertTriangle,
   CheckCircle2,
   Clock,
@@ -25,16 +28,12 @@ import {
   buildBinaryCards,
 } from "@/lib/versions-honesty.mjs";
 import { useAuth } from "@/contexts/AuthContext";
-import { Button } from "@/components/ui/button";
+import { StatusCell, StatusMark } from "@/components/MonoformStatus";
 import {
-  Table,
-  TableHeader,
-  TableBody,
-  TableRow,
-  TableHead,
-  TableCell,
-} from "@/components/ui/table";
-import { Badge } from "@/components/ui/badge";
+  MF_BUTTON,
+  MF_PANEL_HEAD,
+  MF_PANEL_TITLE,
+} from "@/lib/monoform-classes";
 
 function shortSHA(sha: string | undefined): string {
   if (!sha) return "—";
@@ -55,7 +54,7 @@ function timeSince(iso: string | undefined): string {
   return `${d}d ago`;
 }
 
-function AgentBinaryCard({
+function AgentBinaryPanel({
   platform,
   testId,
   binary,
@@ -72,60 +71,45 @@ function AgentBinaryCard({
   const releaseLabel = binaryReleaseLabel(binary, Boolean(binary && "release" in binary));
 
   return (
-    <div
-      className={`rounded-xl border p-4 ${
-        available
-          ? "border-blox-border bg-blox-card"
-          : "border-red-500/20 bg-red-500/5"
-      }`}
-      data-testid={`agent-binary-${testId}`}
-    >
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.1em] text-blox-muted/70 font-medium">
-          <Server className="w-3 h-3" />
-          {platform} agent binary
-        </div>
-        <Badge
-          variant="outline"
-          className={
-            available
-              ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400 text-[10px]"
-              : "border-red-500/30 bg-red-500/10 text-red-400 text-[10px]"
-          }
-        >
-          {state.label}
-        </Badge>
+    <section className="mf-panel" data-testid={`agent-binary-${testId}`}>
+      <div className={MF_PANEL_HEAD}>
+        <h3 className={MF_PANEL_TITLE}>{platform}</h3>
+        <StatusCell
+          tone={available ? "ok" : "critical"}
+          label={state.label}
+          Icon={available ? CheckCircle2 : AlertTriangle}
+        />
       </div>
       {available ? (
-        <>
-          <div className="flex items-baseline gap-3 mt-3">
-            <code className="text-sm font-mono font-semibold text-blox-text">
-              {shortSHA(binary.sha)}
-            </code>
-            <span className="text-[11px] text-blox-muted">
-              file modified {timeSince(binary.mtime)}
-            </span>
-          </div>
-          <dl className="mt-3 grid gap-2 text-[11px]">
-            <div>
-              <dt className="text-blox-muted">Release</dt>
-              <dd className="text-blox-text">{releaseLabel}</dd>
-            </div>
-            <div>
-              <dt className="text-blox-muted">Source</dt>
-              <dd className="text-blox-text font-mono break-all">{binary.source}</dd>
-            </div>
-            <div>
-              <dt className="text-blox-muted">Resolved path</dt>
-              <dd className="text-blox-text font-mono break-all">{binary.path}</dd>
-            </div>
-          </dl>
-        </>
+        <dl className="px-6 py-5 space-y-3.5">
+          <Field label="SHA">
+            <span className="mf-metric text-[13px] text-text-primary">{shortSHA(binary.sha)}</span>
+          </Field>
+          <Field label="Modified">
+            <span className="mf-metric text-[13px] text-text-secondary">{timeSince(binary.mtime)}</span>
+          </Field>
+          <Field label="Release">
+            <span className="text-[13px] text-text-secondary">{releaseLabel}</span>
+          </Field>
+          <Field label="Source">
+            <span className="font-mono text-[11px] text-text-secondary break-all">{binary.source}</span>
+          </Field>
+          <Field label="Path">
+            <span className="font-mono text-[11px] text-text-secondary break-all">{binary.path}</span>
+          </Field>
+        </dl>
       ) : (
-        <p className="text-xs text-red-300 mt-3 break-words">
-          {state.detail}
-        </p>
+        <p className="px-6 py-5 text-[13px] leading-6 text-text-secondary break-words">{state.detail}</p>
       )}
+    </section>
+  );
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="grid grid-cols-[86px_minmax(0,1fr)] items-baseline gap-3">
+      <dt className="mf-kicker">{label}</dt>
+      <dd className="min-w-0">{children}</dd>
     </div>
   );
 }
@@ -151,336 +135,249 @@ function VersionsContent() {
   }, [refresh]);
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.25, ease: "easeOut" }}
-      className="min-h-screen bg-blox-bg" data-design-page
-    >
-      {/* Top nav */}
-      <header className="sticky top-0 z-50 bg-blox-bg/80 backdrop-blur-xl border-b border-blox-border/50">
-        <div className="max-w-[1200px] mx-auto px-4 sm:px-6 h-12 flex items-center justify-between">
-          <Link
-            href="/"
-            className="flex items-center gap-1.5 text-blox-muted hover:text-blox-text transition-colors text-xs"
-          >
-            <ArrowLeft className="w-3.5 h-3.5" />
-            <span>Fleet</span>
-          </Link>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={refresh}
-            disabled={loading}
-            className="text-xs text-blox-muted hover:text-blox-text gap-1.5 h-8"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
-            Refresh
-          </Button>
-        </div>
-      </header>
-
-      {/* Hero */}
-      <section className="border-b border-blox-border/50 bg-blox-bg/40">
-        <div className="max-w-[1200px] mx-auto px-4 sm:px-6 py-6">
-          <div className="flex items-center gap-3">
-            <h1 className="text-xl sm:text-2xl font-semibold text-blox-text tracking-tight">
-              Agent Versions
-            </h1>
-            {data && (
-              <Badge
-                variant="outline"
-                className="border-blox-border text-blox-muted text-[10px] tabular-nums"
-              >
-                {data.agents.length} agent
-                {data.agents.length === 1 ? "" : "s"}
-              </Badge>
-            )}
+    <>
+      <div className="mf-intro">
+        <div className="min-w-0">
+          <dl className="flex flex-wrap items-baseline gap-x-8 gap-y-3">
+            <div className="flex items-baseline gap-2">
+              <dt className="mf-kicker">Agents</dt>
+              <dd className="mf-metric text-[19px] leading-none text-text-primary">
+                {data ? data.agents.length : "—"}
+              </dd>
+            </div>
+            <div className="flex items-baseline gap-2">
+              <dt className="mf-kicker">Signing</dt>
+              <dd>
+                {data ? (
+                  <StatusMark
+                    tone={data.signing_enabled ? "ok" : "critical"}
+                    label={data.signing_enabled ? "Enabled" : "Disabled"}
+                    Icon={data.signing_enabled ? ShieldCheck : AlertTriangle}
+                  />
+                ) : (
+                  <span className="text-[13px] text-text-tertiary">—</span>
+                )}
+              </dd>
+            </div>
+            <div className="flex items-baseline gap-2">
+              <dt className="mf-kicker">Rollout</dt>
+              <dd>
+                {data ? (
+                  <StatusMark
+                    tone={data.rollout_paused ? "warning" : "ok"}
+                    label={data.rollout_paused ? "Paused" : "Active"}
+                    Icon={data.rollout_paused ? Pause : Play}
+                  />
+                ) : (
+                  <span className="text-[13px] text-text-tertiary">—</span>
+                )}
+              </dd>
+            </div>
+          </dl>
+          <div className="mt-5">
+            <button type="button" onClick={refresh} disabled={loading} className={MF_BUTTON}>
+              <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} aria-hidden />
+              {loading ? "Refreshing…" : "Refresh versions"}
+            </button>
           </div>
-          <p className="text-[12px] text-blox-muted mt-1.5">
-            Auto-update status and version visibility across the fleet.
-            Protocol-v1 agents verify signed updates against their pinned key.
-            Protocol-v2 agents also enforce a signed release floor against downgrades;
-            protocol-v1 agents do not. Windows revalidates the staged binary&apos;s SHA and signature on service restart, but still requires manual rollback.
-          </p>
         </div>
-      </section>
+        <p>
+          Protocol-v1 agents verify signed updates against their pinned key. Protocol-v2 agents also
+          enforce a signed release floor against downgrades. Windows revalidates the staged
+          binary&apos;s SHA and signature on service restart, but still needs a manual rollback.
+        </p>
+      </div>
 
-      <main className="max-w-[1200px] mx-auto px-4 sm:px-6 py-6 space-y-6">
+      <div className="space-y-8">
         {error && (
-          <div className="flex items-start gap-3 rounded-xl border border-red-500/20 bg-red-500/5 px-4 py-3">
-            <AlertTriangle className="w-4 h-4 text-red-400 mt-0.5 shrink-0" />
-            <div className="flex-1">
-              <p className="text-sm text-blox-text font-medium">Versions request failed</p>
-              <p className="text-xs text-blox-muted mt-1">{error}</p>
+          <div
+            role="alert"
+            className="mf-panel flex items-start gap-3 border-status-critical/40 px-5 py-4"
+          >
+            <AlertTriangle className="w-4 h-4 text-status-critical mt-0.5 shrink-0" aria-hidden />
+            <div>
+              <p className="text-[13px] font-medium text-text-primary">Versions request failed</p>
+              <p className="text-xs text-text-tertiary mt-1">{error}</p>
             </div>
           </div>
         )}
 
         {data && (
           <>
-            <div
-              className={`flex items-start gap-3 rounded-xl border px-4 py-3 ${
-                data.signing_enabled
-                  ? "border-emerald-500/20 bg-emerald-500/5"
-                  : "border-red-500/20 bg-red-500/5"
-              }`}
-              data-testid="signing-status-banner"
-            >
-              {data.signing_enabled ? (
-                <ShieldCheck className="w-4 h-4 text-emerald-400 mt-0.5 shrink-0" />
-              ) : (
-                <AlertTriangle className="w-4 h-4 text-red-400 mt-0.5 shrink-0" />
-              )}
-              <div>
-                <p className="text-sm text-blox-text font-medium">
-                  Update signing {data.signing_enabled ? "enabled" : "disabled"}
-                </p>
-                <p className="text-xs text-blox-muted mt-1">
-                  {data.signing_enabled
-                    ? "The hub can authenticate agent update announcements."
-                    : data.signing_disabled_reason || "The hub cannot produce update signatures."}
-                </p>
+            <section className="mf-panel" data-testid="signing-status-banner">
+              <div className={MF_PANEL_HEAD}>
+                <h2 className={MF_PANEL_TITLE}>Update signing</h2>
+                <StatusCell
+                  tone={data.signing_enabled ? "ok" : "critical"}
+                  label={data.signing_enabled ? "Enabled" : "Disabled"}
+                  Icon={data.signing_enabled ? ShieldCheck : AlertTriangle}
+                />
               </div>
-            </div>
+              <p className="px-6 py-4 text-[13px] leading-6 text-text-secondary">
+                {data.signing_enabled
+                  ? "The hub can authenticate agent update announcements."
+                  : data.signing_disabled_reason || "The hub cannot produce update signatures."}
+              </p>
+            </section>
+
+            <section className="mf-panel">
+              <div className={MF_PANEL_HEAD}>
+                <h2 className={MF_PANEL_TITLE}>Fleet rollout</h2>
+                <StatusCell
+                  tone={data.rollout_paused ? "warning" : "ok"}
+                  label={data.rollout_paused ? "Paused" : "Active"}
+                  Icon={data.rollout_paused ? Pause : CheckCircle2}
+                />
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-4 px-6 py-4">
+                <div className="min-w-0">
+                  <p className="text-[13px] text-text-secondary">
+                    Controls update announcements for every platform.
+                  </p>
+                  {data.rollout_paused && data.pause_reason && (
+                    <p className="mt-1.5 text-xs text-text-tertiary">Reason: {data.pause_reason}</p>
+                  )}
+                </div>
+                {canManageRollout &&
+                  (data.rollout_paused ? (
+                    <button type="button" onClick={resumeRollout} className="mf-action inline-flex items-center gap-2">
+                      <Play className="w-3.5 h-3.5" aria-hidden />
+                      Resume rollout
+                    </button>
+                  ) : (
+                    <button type="button" onClick={pauseRollout} className={MF_BUTTON}>
+                      <Pause className="w-3.5 h-3.5" aria-hidden />
+                      Pause rollout
+                    </button>
+                  ))}
+              </div>
+            </section>
 
             <section aria-labelledby="served-agent-binaries">
-              <h2
-                id="served-agent-binaries"
-                className="text-sm font-medium text-blox-text mb-3"
-              >
+              <h2 id="served-agent-binaries" className="mb-4 text-[13px] font-semibold text-text-primary">
                 Served agent binaries
               </h2>
-              <div className={`grid gap-3 ${data.agent_binaries_by_arch ? "md:grid-cols-3" : "md:grid-cols-2"}`}>
+              <div
+                className={`grid gap-4 ${data.agent_binaries_by_arch ? "lg:grid-cols-3" : "lg:grid-cols-2"}`}
+              >
                 {binaryCards.map((card) => (
-                  <AgentBinaryCard key={card.key} platform={card.label} testId={card.key} binary={card.binary} />
+                  <AgentBinaryPanel
+                    key={card.key}
+                    platform={card.label}
+                    testId={card.key}
+                    binary={card.binary}
+                  />
                 ))}
               </div>
               {!data.agent_binaries_by_arch && (
-                <p className="text-[11px] text-blox-muted mt-2">
+                <p className="mt-3 text-[11px] text-text-tertiary">
                   Per-CPU details are unavailable from this hub version.
                 </p>
               )}
             </section>
 
-            {/* Hub binary status card */}
-            <div className="bg-blox-card border border-blox-border rounded-xl p-5">
-              <div className="flex items-center justify-between gap-4 flex-wrap">
-                <div>
-                  <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.1em] text-blox-muted/70 font-medium mb-2">
-                    <Server className="w-3 h-3" />
-                    Fleet rollout
-                  </div>
-                  <p className="text-xs text-blox-muted">
-                    Control update announcements for every platform.
-                  </p>
-                </div>
-
-                {/* Rollout pause/resume control */}
-                <div className="flex items-center gap-2">
-                  {data.rollout_paused ? (
-                    <>
-                      <Badge
-                        variant="outline"
-                        className="border-amber-500/30 bg-amber-500/10 text-amber-400 text-[10px]"
-                      >
-                        <Pause className="w-2.5 h-2.5 mr-1" />
-                        Rollout paused
-                      </Badge>
-                      {canManageRollout && (
-                        <Button
-                          size="sm"
-                          onClick={resumeRollout}
-                          className="bg-blox-blue text-white hover:bg-blox-blue/90 text-xs gap-1.5"
-                        >
-                          <Play className="w-3 h-3" />
-                          Resume rollout
-                        </Button>
-                      )}
-                    </>
-                  ) : (
-                    <>
-                      <Badge
-                        variant="outline"
-                        className="border-emerald-500/30 bg-emerald-500/10 text-emerald-400 text-[10px]"
-                      >
-                        <CheckCircle2 className="w-2.5 h-2.5 mr-1" />
-                        Rollout active
-                      </Badge>
-                      {canManageRollout && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={pauseRollout}
-                          className="text-xs border-blox-border text-blox-muted hover:text-amber-400 gap-1.5"
-                        >
-                          <Pause className="w-3 h-3" />
-                          Pause rollout
-                        </Button>
-                      )}
-                    </>
-                  )}
-                </div>
+            <section className="mf-panel overflow-hidden">
+              <div className={MF_PANEL_HEAD}>
+                <h2 className={MF_PANEL_TITLE}>Reporting agents</h2>
+                <span className="mf-kicker">
+                  {data.agents.length} agent{data.agents.length === 1 ? "" : "s"}
+                </span>
               </div>
-
-              {data.rollout_paused && data.pause_reason && (
-                <div className="mt-3 pt-3 border-t border-blox-border/30 text-[11px] text-blox-muted">
-                  Reason: {data.pause_reason}
-                </div>
-              )}
-            </div>
-
-            {/* Agents table */}
-            <div className="bg-blox-card border border-blox-border rounded-xl overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow className="border-b-blox-border hover:bg-transparent">
-                    <TableHead className="text-blox-muted text-[11px] uppercase tracking-[0.06em] font-medium">
-                      Hostname
-                    </TableHead>
-                    <TableHead className="text-blox-muted text-[11px] uppercase tracking-[0.06em] font-medium">
-                      Platform
-                    </TableHead>
-                    <TableHead className="text-blox-muted text-[11px] uppercase tracking-[0.06em] font-medium">
-                      Running SHA
-                    </TableHead>
-                    <TableHead className="text-blox-muted text-[11px] uppercase tracking-[0.06em] font-medium">
-                      Status
-                    </TableHead>
-                    <TableHead className="text-blox-muted text-[11px] uppercase tracking-[0.06em] font-medium">
-                      Key pinned
-                    </TableHead>
-                    <TableHead className="text-blox-muted text-[11px] uppercase tracking-[0.06em] font-medium">
-                      Blocked reason
-                    </TableHead>
-                    <TableHead className="text-blox-muted text-[11px] uppercase tracking-[0.06em] font-medium">
-                      Last connect
-                    </TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {data.agents.length === 0 ? (
-                    <TableRow>
-                      <TableCell
-                        colSpan={7}
-                        className="text-center py-8 text-blox-muted text-xs"
-                      >
-                        No agents have reported their version yet
-                      </TableCell>
-                    </TableRow>
-                  ) : (
-                    [...data.agents]
-                      .sort((a, b) => a.hostname.localeCompare(b.hostname))
-                      .map((agent, i) => (
-                        <TableRow
-                          key={agent.machine_id}
-                          className={`border-b-blox-border/30 hover:bg-blox-border/10 transition-colors ${
-                            i % 2 === 1 ? "bg-blox-bg/30" : ""
-                          }`}
-                        >
-                          <TableCell className="text-xs font-medium text-blox-text">
-                            {agent.hostname}
-                          </TableCell>
-                          <TableCell
-                            className="text-xs text-blox-muted font-mono"
-                            title={
-                              !agent.arch
-                                ? "Architecture not reported for this agent"
-                                : !agent.arch_reported
-                                  ? "Architecture inferred from host metrics, not reported by the agent"
-                                  : undefined
-                            }
-                          >
-                            {agent.os
-                              ? `${agent.os}/${agent.arch || "unknown"}`
-                              : "—"}
-                          </TableCell>
-                          <TableCell className="text-xs text-blox-muted font-mono tabular-nums">
-                            {shortSHA(agent.running_sha)}
-                          </TableCell>
-                          <TableCell>
-                            {agent.update_blocked_reason ? (
-                              <Badge
-                                variant="outline"
-                                className="border-red-500/30 bg-red-500/10 text-red-400 text-[10px]"
-                              >
-                                <AlertTriangle className="w-2.5 h-2.5 mr-1" />
-                                {agentStatusLabel(agent, data).label}
-                              </Badge>
-                            ) : agent.update_pending ? (
-                              <Badge
-                                variant="outline"
-                                className="border-amber-500/30 bg-amber-500/10 text-amber-400 text-[10px]"
-                              >
-                                <Clock className="w-2.5 h-2.5 mr-1" />
-                                {agentStatusLabel(agent, data).label}
-                              </Badge>
-                            ) : (
-                              <Badge
-                                variant="outline"
-                                className={
-                                  agentStatusLabel(agent, data).kind === "current"
-                                    ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400 text-[10px]"
-                                    : "border-blox-border text-blox-muted text-[10px]"
+              <div className="mf-table-wrap overflow-x-auto">
+                <table className="mf-table">
+                  <thead>
+                    <tr>
+                      <th>Hostname</th>
+                      <th>Platform</th>
+                      <th>Running SHA</th>
+                      <th>Status</th>
+                      <th>Key pinned</th>
+                      <th>Blocked reason</th>
+                      <th>Last connect</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.agents.length === 0 ? (
+                      <tr>
+                        <td colSpan={7} className="text-center text-[13px] text-text-tertiary">
+                          No agents have reported their version yet
+                        </td>
+                      </tr>
+                    ) : (
+                      [...data.agents]
+                        .sort((a, b) => a.hostname.localeCompare(b.hostname))
+                        .map((agent) => {
+                          const status = agentStatusLabel(agent, data);
+                          return (
+                            <tr key={agent.machine_id}>
+                              <td className="text-[13px] font-medium text-text-primary">
+                                {agent.hostname}
+                              </td>
+                              <td
+                                className="mf-metric text-[12px] text-text-secondary"
+                                title={
+                                  !agent.arch
+                                    ? "Architecture not reported for this agent"
+                                    : !agent.arch_reported
+                                      ? "Architecture inferred from host metrics, not reported by the agent"
+                                      : undefined
                                 }
                               >
-                                {/* current-hub contract: not pending and not
-                                    blocked already means running == offered;
-                                    older hubs lack this guarantee, so show
-                                    unknown rather than infer a match. */}
-                                {agentStatusLabel(agent, data).label}
-                              </Badge>
-                            )}
-                          </TableCell>
-                          <TableCell>
-                            {agent.update_protocol < 1 ? (
-                              <Badge
-                                variant="outline"
-                                className="border-blox-border text-blox-muted text-[10px]"
+                                {agent.os ? `${agent.os}/${agent.arch || "unknown"}` : "—"}
+                              </td>
+                              <td className="mf-metric text-[12px] text-text-secondary">
+                                {shortSHA(agent.running_sha)}
+                              </td>
+                              <td>
+                                {agent.update_blocked_reason ? (
+                                  <StatusCell tone="critical" label={status.label} Icon={AlertTriangle} />
+                                ) : agent.update_pending ? (
+                                  <StatusCell tone="warning" label={status.label} Icon={Clock} />
+                                ) : (
+                                  // current-hub contract: not pending and not
+                                  // blocked already means running == offered;
+                                  // older hubs lack this guarantee, so show
+                                  // unknown rather than infer a match.
+                                  <StatusCell
+                                    tone={status.kind === "current" ? "ok" : "neutral"}
+                                    label={status.label}
+                                  />
+                                )}
+                              </td>
+                              <td>
+                                {agent.update_protocol < 1 ? (
+                                  <StatusCell tone="neutral" label="Not reported" />
+                                ) : agent.update_key_pinned ? (
+                                  <StatusCell tone="ok" label="Pinned" Icon={KeyRound} />
+                                ) : (
+                                  <StatusCell tone="critical" label="Missing" Icon={AlertTriangle} />
+                                )}
+                                {agentProtocolNote(agent) && (
+                                  <div className="mt-1 text-[10px] text-text-tertiary">
+                                    {agentProtocolNote(agent)}
+                                  </div>
+                                )}
+                              </td>
+                              <td
+                                className="max-w-[340px] whitespace-normal text-[12px] text-text-secondary"
+                                title={agent.update_blocked_reason || undefined}
                               >
-                                Not reported
-                              </Badge>
-                            ) : agent.update_key_pinned ? (
-                              <Badge
-                                variant="outline"
-                                className="border-emerald-500/30 bg-emerald-500/10 text-emerald-400 text-[10px]"
-                              >
-                                <KeyRound className="w-2.5 h-2.5 mr-1" />
-                                Pinned
-                              </Badge>
-                            ) : (
-                              <Badge
-                                variant="outline"
-                                className="border-red-500/30 bg-red-500/10 text-red-400 text-[10px]"
-                              >
-                                <AlertTriangle className="w-2.5 h-2.5 mr-1" />
-                                Missing
-                              </Badge>
-                            )}
-                            {agentProtocolNote(agent) && (
-                              <div className="text-[10px] text-blox-muted mt-1">
-                                {agentProtocolNote(agent)}
-                              </div>
-                            )}
-                          </TableCell>
-                          <TableCell
-                            className="max-w-[360px] whitespace-normal text-xs text-blox-muted"
-                            title={agent.update_blocked_reason || undefined}
-                          >
-                            {agent.update_blocked_reason || "—"}
-                          </TableCell>
-                          <TableCell className="text-xs text-blox-muted font-mono tabular-nums">
-                            {timeSince(agent.reported_at)}
-                          </TableCell>
-                        </TableRow>
-                      ))
-                  )}
-                </TableBody>
-              </Table>
-            </div>
+                                {agent.update_blocked_reason || "—"}
+                              </td>
+                              <td className="mf-metric text-[12px] text-text-secondary">
+                                {timeSince(agent.reported_at)}
+                              </td>
+                            </tr>
+                          );
+                        })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </section>
           </>
         )}
-      </main>
-    </motion.div>
+      </div>
+    </>
   );
 }

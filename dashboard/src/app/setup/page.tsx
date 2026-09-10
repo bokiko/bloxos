@@ -1,16 +1,40 @@
 "use client";
 
+// First-boot setup. Like /login it renders outside AppShell and carries the
+// Monoform canvas itself: void ground, one graphite panel for the form, a
+// hairline rule between the explanation and the work. The gradient washes,
+// grid wallpaper and blurred glass cards this page used to have are gone —
+// the first screen an operator ever sees should look like the product.
+
 import { FormEvent, useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { motion } from "framer-motion";
-import { ShieldCheck, KeyRound, LockKeyhole, Sparkles } from "lucide-react";
-import { Card, CardContent } from "@/components/ui/card";
+import { ShieldCheck, KeyRound, LockKeyhole } from "lucide-react";
 import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
+import { BrandedHeader } from "@/components/BrandedHeader";
+import { BrandingPlate } from "@/components/BrandingPlate";
 import { useAuth } from "@/contexts/AuthContext";
 import { HUB_URL } from "@/lib/session";
+import { MF_BUTTON, MF_INPUT, MF_LABEL } from "@/lib/monoform-classes";
 
 type SetupState = "checking" | "ready" | "error" | "complete";
+
+const PRINCIPLES = [
+  {
+    icon: ShieldCheck,
+    title: "Bootstrap proof",
+    body: "The setup token from the server proves you control the host before the first admin exists.",
+  },
+  {
+    icon: KeyRound,
+    title: "Rotated from minute one",
+    body: "The admin account and terminal PIN are stored as already-changed credentials, not shipped defaults.",
+  },
+  {
+    icon: LockKeyhole,
+    title: "One path, one time",
+    body: "Once setup completes the backend closes this path and the dashboard falls back to the normal login flow.",
+  },
+];
 
 export default function SetupPage() {
   const [setupState, setSetupState] = useState<SetupState>("checking");
@@ -136,259 +160,243 @@ export default function SetupPage() {
   const disabled = loading || setupState === "checking" || navigating;
 
   return (
-    <div className="min-h-screen bg-blox-bg relative overflow-hidden">
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(59,130,246,0.12),_transparent_36%),radial-gradient(circle_at_bottom_right,_rgba(34,197,94,0.08),_transparent_28%)]" />
-      <div className="absolute inset-0 bg-[linear-gradient(rgba(59,130,246,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(59,130,246,0.03)_1px,transparent_1px)] bg-[size:72px_72px]" />
-      <div className="absolute inset-y-0 right-0 w-1/3 bg-[radial-gradient(circle_at_center,_rgba(255,255,255,0.04),_transparent_60%)]" />
-
-      <div className="relative z-10 min-h-screen grid lg:grid-cols-[1.1fr_0.9fr]">
-        <section className="hidden lg:flex flex-col justify-between px-10 py-12 border-r border-blox-border/60">
+    <div className="min-h-screen bg-surface-sunken">
+      <div className="mx-auto grid min-h-screen w-full max-w-[1180px] lg:grid-cols-[1fr_minmax(0,520px)]">
+        <section className="hidden flex-col justify-between border-r border-border-subtle px-12 py-14 lg:flex">
           <div>
-            <div className="inline-flex items-center gap-2 rounded-full border border-blox-blue/20 bg-blox-blue/8 px-3 py-1 text-[11px] uppercase tracking-[0.28em] text-blox-blue">
-              <Sparkles className="w-3.5 h-3.5" />
-              First Boot
-            </div>
-            <h1 className="mt-8 max-w-xl text-5xl font-semibold tracking-tight text-blox-text">
+            <div className="mf-kicker">First boot</div>
+            {/* The page's <h1> is the wordmark in the form column, matching
+                /login — this is the display headline under it. */}
+            <h2 className="mt-3 max-w-xl text-[38px] font-[550] leading-[1.05] tracking-[-0.045em] text-text-primary">
               Turn a blank install into a locked-down control plane.
-            </h1>
-            <p className="mt-5 max-w-lg text-sm leading-7 text-blox-muted">
-              This one-time setup flow creates your first admin, seals the default credential path, and sets the terminal PIN before the dashboard ever opens.
+            </h2>
+            <p className="mt-5 max-w-md text-[13px] leading-[1.7] text-text-tertiary">
+              This one-time flow creates your first admin, seals the default credential path, and sets
+              the terminal PIN before the dashboard ever opens.
             </p>
           </div>
 
-          <div className="space-y-4">
-            {[
-              {
-                icon: ShieldCheck,
-                title: "Bootstrap proof",
-                body: "Use the setup token from the server to prove you control the host before the first admin exists.",
-              },
-              {
-                icon: KeyRound,
-                title: "Rotated from minute one",
-                body: "The admin account and terminal PIN are stored as already-changed credentials, not shipped defaults.",
-              },
-              {
-                icon: LockKeyhole,
-                title: "One path, one time",
-                body: "Once setup completes, the backend closes this path and the dashboard falls back to the normal login flow.",
-              },
-            ].map(({ icon: Icon, title, body }) => (
-              <motion.div
-                key={title}
-                initial={{ opacity: 0, y: 18 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.4 }}
-                className="rounded-2xl border border-blox-border/70 bg-blox-card/55 px-5 py-4 shadow-lg shadow-black/15 backdrop-blur-sm"
-              >
-                <div className="flex items-start gap-3">
-                  <div className="mt-0.5 rounded-xl border border-blox-blue/20 bg-blox-blue/10 p-2 text-blox-blue">
-                    <Icon className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <p className="text-sm font-medium text-blox-text">{title}</p>
-                    <p className="mt-1 text-xs leading-6 text-blox-muted">{body}</p>
-                  </div>
+          <dl className="space-y-6 border-t border-border-subtle pt-8">
+            {PRINCIPLES.map(({ icon: Icon, title, body }) => (
+              <div key={title} className="grid grid-cols-[20px_minmax(0,1fr)] gap-x-3.5">
+                <Icon className="mt-0.5 h-4 w-4 text-accent" aria-hidden />
+                <div>
+                  <dt className="text-[13px] font-medium text-text-primary">{title}</dt>
+                  <dd className="mt-1 max-w-md text-xs leading-[1.7] text-text-tertiary">{body}</dd>
                 </div>
-              </motion.div>
+              </div>
             ))}
-          </div>
+          </dl>
         </section>
 
-        <section className="flex items-center justify-center px-4 py-10 sm:px-6">
-          <motion.div
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.3, ease: "easeOut" }}
-            className="w-full max-w-xl"
-          >
-            <div className="mb-8 text-center lg:text-left">
-              <h2 className="text-3xl font-semibold tracking-tight text-blox-text">
-                <span className="text-blox-blue">Blox</span>OS Setup
-              </h2>
-              <p className="mt-2 text-sm text-blox-muted">
-                Create the first administrator and secure terminal access.
+        <section className="flex items-center justify-center px-4 py-12 sm:px-8">
+          <div className="w-full max-w-md">
+            <div className="mb-8">
+              <BrandingPlate>
+                <BrandedHeader size="compact" />
+              </BrandingPlate>
+            </div>
+            <div className="mb-7">
+              <div className="mf-kicker">Setup</div>
+              <p className="mt-2 text-[26px] font-[560] leading-none tracking-[-0.04em] text-text-primary">
+                Create the first administrator
+              </p>
+              <p className="mt-2.5 text-[13px] leading-[1.6] text-text-tertiary">
+                Secures terminal access at the same time.
               </p>
             </div>
 
-            <Card className="border-blox-border/80 bg-blox-card/82 shadow-2xl shadow-black/25 backdrop-blur-md">
-              <CardContent className="px-6 py-6 sm:px-7">
-                {setupState === "complete" ? (
-                  <div className="space-y-5 text-center">
-                    <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-emerald-500/20 bg-emerald-500/10 text-emerald-400">
-                      <ShieldCheck className="w-7 h-7" />
-                    </div>
-                    <div>
-                      <h3 className="text-xl font-semibold text-blox-text">Setup complete</h3>
-                      <p className="mt-2 text-sm leading-6 text-blox-muted">
-                        Admin <span className="text-blox-text font-medium">{createdUsername}</span> is ready. {navigating ? "Opening the dashboard…" : "You can sign in now."}
-                      </p>
-                    </div>
-                    {error && (
-                      <motion.p
-                        initial={{ opacity: 0, y: -4 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        className="rounded-xl border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs leading-5 text-blox-red"
-                      >
-                        {error}
-                      </motion.p>
-                    )}
-                    {!navigating && (
-                      <Button
-                        onClick={() => router.replace("/login")}
-                        className="w-full bg-blox-blue hover:bg-blox-blue/90 text-white"
-                      >
-                        Go to Login
-                      </Button>
-                    )}
+            <div className="mf-panel px-6 py-6">
+              {setupState === "complete" ? (
+                <div className="space-y-5">
+                  <div className="flex items-center gap-2.5">
+                    <ShieldCheck className="h-4 w-4 text-status-ok" aria-hidden />
+                    <h3 className="text-[15px] font-semibold text-text-primary">Setup complete</h3>
                   </div>
-                ) : setupState === "error" ? (
-                  <div className="space-y-5 text-center">
-                    <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-red-500/20 bg-red-500/10 text-blox-red">
-                      <LockKeyhole className="w-7 h-7" />
-                    </div>
-                    <div>
-                      <h3 className="text-xl font-semibold text-blox-text">Setup service unavailable</h3>
-                      <p className="mt-2 text-sm leading-6 text-blox-muted">
-                        {error || "The dashboard could not verify whether first-boot setup is still required."}
-                      </p>
-                    </div>
-                    <Button
-                      onClick={() => {
-                        setSetupState("checking");
-                        setError("");
-                        setSetupCheckNonce((value) => value + 1);
-                      }}
-                      className="w-full bg-blox-blue hover:bg-blox-blue/90 text-white"
+                  <p className="text-[13px] leading-6 text-text-tertiary">
+                    Admin <span className="font-medium text-text-primary">{createdUsername}</span> is
+                    ready. {navigating ? "Opening the dashboard…" : "You can sign in now."}
+                  </p>
+                  {error && <FormError message={error} />}
+                  {!navigating && (
+                    <button
+                      type="button"
+                      onClick={() => router.replace("/login")}
+                      className="mf-action w-full"
                     >
-                      Retry Setup Check
-                    </Button>
+                      Go to login
+                    </button>
+                  )}
+                </div>
+              ) : setupState === "error" ? (
+                <div className="space-y-5">
+                  <div className="flex items-center gap-2.5">
+                    <LockKeyhole className="h-4 w-4 text-status-critical" aria-hidden />
+                    <h3 className="text-[15px] font-semibold text-text-primary">
+                      Setup service unavailable
+                    </h3>
                   </div>
-                ) : (
-                  <form onSubmit={handleSubmit} className="space-y-5">
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      <div className="sm:col-span-2">
-                        <label className="block text-[11px] uppercase tracking-[0.24em] text-blox-muted mb-1.5">Setup Token</label>
-                        <Input
-                          type="text"
-                          value={setupToken}
-                          onChange={(e) => setSetupToken(e.target.value)}
-                          placeholder="Paste the one-time setup token"
-                          className="h-10 bg-blox-bg border-blox-border text-blox-text placeholder:text-blox-muted/50 font-mono"
-                          autoComplete="off"
-                          autoFocus
-                          disabled={disabled}
-                        />
-                      </div>
-
-                      <div className="sm:col-span-2">
-                        <label className="block text-[11px] uppercase tracking-[0.24em] text-blox-muted mb-1.5">Admin Username</label>
-                        <Input
-                          type="text"
-                          value={username}
-                          onChange={(e) => setUsername(e.target.value)}
-                          placeholder="admin"
-                          className="h-10 bg-blox-bg border-blox-border text-blox-text placeholder:text-blox-muted/50"
-                          autoComplete="username"
-                          disabled={disabled}
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block text-[11px] uppercase tracking-[0.24em] text-blox-muted mb-1.5">Password</label>
-                        <Input
-                          type="password"
-                          value={password}
-                          onChange={(e) => setPassword(e.target.value)}
-                          placeholder="Minimum 8 characters"
-                          className="h-10 bg-blox-bg border-blox-border text-blox-text placeholder:text-blox-muted/50"
-                          autoComplete="new-password"
-                          disabled={disabled}
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block text-[11px] uppercase tracking-[0.24em] text-blox-muted mb-1.5">Confirm Password</label>
-                        <Input
-                          type="password"
-                          value={confirmPassword}
-                          onChange={(e) => setConfirmPassword(e.target.value)}
-                          placeholder="Repeat password"
-                          className="h-10 bg-blox-bg border-blox-border text-blox-text placeholder:text-blox-muted/50"
-                          autoComplete="new-password"
-                          disabled={disabled}
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block text-[11px] uppercase tracking-[0.24em] text-blox-muted mb-1.5">Terminal PIN</label>
-                        <Input
-                          type="password"
-                          inputMode="numeric"
-                          value={pin}
-                          onChange={(e) => setPin(e.target.value)}
-                          placeholder="At least 4 digits"
-                          className="h-10 bg-blox-bg border-blox-border text-blox-text placeholder:text-blox-muted/50 font-mono"
-                          autoComplete="off"
-                          disabled={disabled}
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block text-[11px] uppercase tracking-[0.24em] text-blox-muted mb-1.5">Confirm PIN</label>
-                        <Input
-                          type="password"
-                          inputMode="numeric"
-                          value={confirmPin}
-                          onChange={(e) => setConfirmPin(e.target.value)}
-                          placeholder="Repeat PIN"
-                          className="h-10 bg-blox-bg border-blox-border text-blox-text placeholder:text-blox-muted/50 font-mono"
-                          autoComplete="off"
-                          disabled={disabled}
-                        />
-                      </div>
+                  <p className="text-[13px] leading-6 text-text-tertiary">
+                    {error || "The dashboard could not verify whether first-boot setup is still required."}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSetupState("checking");
+                      setError("");
+                      setSetupCheckNonce((value) => value + 1);
+                    }}
+                    className={`${MF_BUTTON} w-full`}
+                  >
+                    Retry setup check
+                  </button>
+                </div>
+              ) : (
+                <form onSubmit={handleSubmit} className="space-y-5">
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div className="sm:col-span-2">
+                      <label htmlFor="setup-token" className={MF_LABEL}>Setup token</label>
+                      <Input
+                        id="setup-token"
+                        type="text"
+                        value={setupToken}
+                        onChange={(e) => setSetupToken(e.target.value)}
+                        placeholder="Paste the one-time setup token"
+                        className={`${MF_INPUT} w-full font-mono`}
+                        autoComplete="off"
+                        autoFocus
+                        disabled={disabled}
+                      />
                     </div>
 
-                    {error && (
-                      <motion.p
-                        initial={{ opacity: 0, y: -4 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        className="rounded-xl border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs leading-5 text-blox-red"
-                      >
-                        {error}
-                      </motion.p>
+                    <div className="sm:col-span-2">
+                      <label htmlFor="setup-username" className={MF_LABEL}>Admin username</label>
+                      <Input
+                        id="setup-username"
+                        type="text"
+                        value={username}
+                        onChange={(e) => setUsername(e.target.value)}
+                        placeholder="admin"
+                        className={`${MF_INPUT} w-full`}
+                        autoComplete="username"
+                        disabled={disabled}
+                      />
+                    </div>
+
+                    <div>
+                      <label htmlFor="setup-password" className={MF_LABEL}>Password</label>
+                      <Input
+                        id="setup-password"
+                        type="password"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        placeholder="Minimum 8 characters"
+                        className={`${MF_INPUT} w-full`}
+                        autoComplete="new-password"
+                        disabled={disabled}
+                      />
+                    </div>
+
+                    <div>
+                      <label htmlFor="setup-confirm-password" className={MF_LABEL}>Confirm password</label>
+                      <Input
+                        id="setup-confirm-password"
+                        type="password"
+                        value={confirmPassword}
+                        onChange={(e) => setConfirmPassword(e.target.value)}
+                        placeholder="Repeat password"
+                        className={`${MF_INPUT} w-full`}
+                        autoComplete="new-password"
+                        disabled={disabled}
+                      />
+                    </div>
+
+                    <div>
+                      <label htmlFor="setup-pin" className={MF_LABEL}>Terminal PIN</label>
+                      <Input
+                        id="setup-pin"
+                        type="password"
+                        inputMode="numeric"
+                        value={pin}
+                        onChange={(e) => setPin(e.target.value)}
+                        placeholder="At least 4 digits"
+                        className={`${MF_INPUT} w-full font-mono`}
+                        autoComplete="off"
+                        disabled={disabled}
+                      />
+                    </div>
+
+                    <div>
+                      <label htmlFor="setup-confirm-pin" className={MF_LABEL}>Confirm PIN</label>
+                      <Input
+                        id="setup-confirm-pin"
+                        type="password"
+                        inputMode="numeric"
+                        value={confirmPin}
+                        onChange={(e) => setConfirmPin(e.target.value)}
+                        placeholder="Repeat PIN"
+                        className={`${MF_INPUT} w-full font-mono`}
+                        autoComplete="off"
+                        disabled={disabled}
+                      />
+                    </div>
+                  </div>
+
+                  {error && <FormError message={error} />}
+
+                  <button
+                    type="submit"
+                    disabled={disabled}
+                    className="mf-action inline-flex w-full items-center justify-center gap-2 disabled:opacity-50"
+                  >
+                    {setupState === "checking" ? (
+                      <>
+                        <Spinner />
+                        Checking setup status…
+                      </>
+                    ) : loading ? (
+                      <>
+                        <Spinner />
+                        Creating admin…
+                      </>
+                    ) : (
+                      "Complete first-boot setup"
                     )}
+                  </button>
 
-                    <Button
-                      type="submit"
-                      disabled={disabled}
-                      className="h-10 w-full bg-blox-blue hover:bg-blox-blue/90 text-white text-sm font-medium gap-2"
-                    >
-                      {setupState === "checking" ? (
-                        <>
-                          <span className="w-3 h-3 border-2 border-white/40 border-t-white rounded-full animate-spin" />
-                          Checking setup status…
-                        </>
-                      ) : loading ? (
-                        <>
-                          <span className="w-3 h-3 border-2 border-white/40 border-t-white rounded-full animate-spin" />
-                          Creating admin…
-                        </>
-                      ) : (
-                        "Complete First-Boot Setup"
-                      )}
-                    </Button>
-
-                    <p className="text-[11px] leading-6 text-blox-muted">
-                      The setup token is read from `~/.bloxos/setup-token` or provided through `BLOXOS_SETUP_TOKEN` on the server.
-                    </p>
-                  </form>
-                )}
-              </CardContent>
-            </Card>
-          </motion.div>
+                  <p className="text-[11px] leading-[1.7] text-text-tertiary">
+                    The setup token is read from{" "}
+                    <code className="font-mono text-text-secondary">~/.bloxos/setup-token</code> or
+                    provided through{" "}
+                    <code className="font-mono text-text-secondary">BLOXOS_SETUP_TOKEN</code> on the
+                    server.
+                  </p>
+                </form>
+              )}
+            </div>
+          </div>
         </section>
       </div>
     </div>
+  );
+}
+
+function FormError({ message }: { message: string }) {
+  return (
+    <p
+      role="alert"
+      className="rounded-lg border border-status-critical/40 bg-status-critical-tint px-3 py-2 text-xs leading-5 text-status-critical"
+    >
+      {message}
+    </p>
+  );
+}
+
+function Spinner() {
+  return (
+    <span
+      className="h-3 w-3 rounded-full border-2 border-white/40 border-t-white animate-spin"
+      aria-hidden
+    />
   );
 }

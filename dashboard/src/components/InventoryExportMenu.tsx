@@ -1,7 +1,6 @@
 "use client";
 
 import { Download, FileText, FileJson, FileType } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -20,6 +19,7 @@ import {
   type InventoryView,
 } from "@/lib/inventory-utils";
 import { useToast } from "@/components/Toast";
+import { MF_BUTTON, MF_MENU, MF_MENU_ITEM } from "@/lib/monoform-classes";
 
 interface InventoryExportMenuProps<R> {
   view: InventoryView;
@@ -72,38 +72,33 @@ export function InventoryExportMenu<R>({ view, rows, cols }: InventoryExportMenu
     <DropdownMenu>
       <DropdownMenuTrigger
         render={
-          <Button
-            variant="outline"
-            size="sm"
-            className="text-xs border-blox-border text-blox-text gap-1.5 h-8"
-            title="Export current view"
-          >
-            <Download className="w-3 h-3" />
+          <button type="button" className={MF_BUTTON} title="Export current view">
+            <Download className="w-3.5 h-3.5" aria-hidden />
             Export
-          </Button>
+          </button>
         }
       />
-      <DropdownMenuContent align="end" className="bg-blox-card border-blox-border min-w-[200px]">
+      <DropdownMenuContent align="end" className={`${MF_MENU} min-w-[210px]`}>
         <DropdownMenuGroup>
-          <DropdownMenuLabel className="text-blox-muted text-[10px] uppercase tracking-wider">
+          <DropdownMenuLabel className="mf-kicker uppercase">
             Export {rows.length} row{rows.length === 1 ? "" : "s"}
           </DropdownMenuLabel>
         </DropdownMenuGroup>
-        <DropdownMenuSeparator className="bg-blox-border" />
-        <DropdownMenuItem onClick={exportCSV} className="text-xs gap-2 text-blox-text">
-          <FileText className="w-3.5 h-3.5" />
+        <DropdownMenuSeparator className="bg-border-subtle" />
+        <DropdownMenuItem onClick={exportCSV} className={MF_MENU_ITEM}>
+          <FileText className="w-3.5 h-3.5" aria-hidden />
           Download CSV
         </DropdownMenuItem>
-        <DropdownMenuItem onClick={exportJSON} className="text-xs gap-2 text-blox-text">
-          <FileJson className="w-3.5 h-3.5" />
+        <DropdownMenuItem onClick={exportJSON} className={MF_MENU_ITEM}>
+          <FileJson className="w-3.5 h-3.5" aria-hidden />
           Download JSON
         </DropdownMenuItem>
-        <DropdownMenuItem onClick={exportMarkdown} className="text-xs gap-2 text-blox-text">
-          <FileType className="w-3.5 h-3.5" />
+        <DropdownMenuItem onClick={exportMarkdown} className={MF_MENU_ITEM}>
+          <FileType className="w-3.5 h-3.5" aria-hidden />
           Download Markdown
         </DropdownMenuItem>
-        <DropdownMenuSeparator className="bg-blox-border" />
-        <DropdownMenuItem onClick={copyMarkdown} className="text-xs gap-2 text-blox-blue">
+        <DropdownMenuSeparator className="bg-border-subtle" />
+        <DropdownMenuItem onClick={copyMarkdown} className={`${MF_MENU_ITEM} text-accent!`}>
           Copy Markdown to clipboard
         </DropdownMenuItem>
       </DropdownMenuContent>

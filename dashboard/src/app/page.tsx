@@ -1,110 +1,92 @@
 "use client";
 
+/* ============================================================================
+ * Overview — the fleet's home page.
+ *
+ * One page, one shape. There is no layout switch any more: AppShell owns the
+ * rail, the page title, refresh, ⌘K, alerts, Add API, Add Machine, the theme
+ * toggle and the user menu, so nothing in here draws chrome.
+ *
+ * The page reads top to bottom as one argument:
+ *   1. an intro that states the fleet's real posture in a sentence,
+ *   2. fleet availability beside what needs attention,
+ *   3. capacity context beside the current load ranking,
+ *   4. the single Machine fleet work surface and all of its tooling.
+ *
+ * This controller holds the state and the handlers; the four sections above
+ * are presentational components under components/overview/.
+ * ========================================================================== */
+
 import { useState, useMemo, useCallback, useEffect } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { WifiOff, RotateCcw, Trash2, Monitor } from "lucide-react";
+
 import { useSSE } from "@/contexts/SSEContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { usePreferences } from "@/contexts/PreferencesContext";
-import { ArrangeMachinesDialog } from "@/components/ArrangeMachinesDialog";
-import { orderMachines } from "@/lib/machine-order.mjs";
-import { SaveFilterButton } from "@/components/SaveFilterButton";
-import { SavedFiltersDropdown } from "@/components/SavedFiltersDropdown";
-import { demoMachines, MachineMetrics, AlertData } from "@/lib/demo-data";
+import { demoMachines, type MachineMetrics, type AlertData } from "@/lib/demo-data";
 import { DEMO_MODE, HUB_URL } from "@/lib/session";
+import { orderMachines } from "@/lib/machine-order.mjs";
+import { bulkCommandFeedback, selectionAfterBulkAttempt } from "@/lib/command-feedback.mjs";
+
+import { AppShell } from "@/components/shell/AppShell";
+import { OPEN_ALERTS, OPEN_COMMAND, API_MACHINES_CHANGED } from "@/components/shell/ShellActions";
+import { classifyMachine, STATUS_ORDER, type MachineStatus } from "@/components/StatusBadge";
 import { MachineCard, MachineCardSkeleton } from "@/components/MachineCard";
-import { MachineStatus, classifyMachine, STATUS_ORDER } from "@/components/StatusBadge";
-import { Sparkline } from "@/components/Sparkline";
 import { AlertPanel } from "@/components/AlertPanel";
-import { AddMachineModal } from "@/components/AddMachineModal";
 import { AddAPIMachineModal, type EditableAPIMachine } from "@/components/AddAPIMachineModal";
-import { Badge } from "@/components/ui/badge";
+import { ArrangeMachinesDialog } from "@/components/ArrangeMachinesDialog";
+import { useToast } from "@/components/Toast";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import {
-  Table, TableHeader, TableBody, TableRow,
-  TableHead, TableCell,
-} from "@/components/ui/table";
-import {
-  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent,
-  DropdownMenuItem, DropdownMenuSeparator, DropdownMenuLabel,
-} from "@/components/ui/dropdown-menu";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
   DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
-import { motion, AnimatePresence } from "framer-motion";
-import {
-  Plus, WifiOff, Search, LayoutGrid, List,
-  ChevronDown, Square, CheckSquare, RotateCcw, Trash2, Pencil,
-  ArrowUpDown, Filter, Monitor, Server, RefreshCw, Boxes,
-  GitCompareArrows, Bot,
-} from "lucide-react";
-import Link from "next/link";
-import { ThemeToggle } from "@/components/ThemeToggle";
-import { CommandPalette, useCommandPaletteHotkey } from "@/components/CommandPalette";
-import { FleetPulse } from "@/components/FleetPulse";
-import { NeedsAttention } from "@/components/NeedsAttention";
-import { UserMenu } from "@/components/UserMenu";
-import { BrandedHeader } from "@/components/BrandedHeader";
-import { FleetOverview } from "@/components/FleetOverview";
-import { useToast } from "@/components/Toast";
-import { bulkCommandFeedback, selectionAfterBulkAttempt } from "@/lib/command-feedback.mjs";
-import { useDesign } from "@/contexts/DesignContext";
-import { AppShell } from "@/components/shell/AppShell";
-import { OPEN_ALERTS, OPEN_COMMAND, API_MACHINES_CHANGED } from "@/components/shell/ShellActions";
-import { FleetWall } from "@/components/fleet/FleetWall";
-import { FleetGrove, FleetGroveRail } from "@/components/fleet/FleetGrove";
-import { FleetConsole } from "@/components/fleet/FleetConsole";
-import { FleetLedger } from "@/components/fleet/FleetLedger";
 
-type SortOption = "manual" | "name" | "status" | "cpu" | "gpu_temp";
-type StatusFilter = "all" | "live" | "warning" | "critical" | "offline" | "stale";
-type ViewMode = "grid" | "list";
+import { OverviewIntro, type FleetPosture } from "@/components/overview/OverviewIntro";
+import {
+  FleetAvailabilityPanel,
+  type AvailabilityCounts,
+} from "@/components/overview/FleetAvailabilityPanel";
+import { MonoformAttentionPanel } from "@/components/overview/AttentionPanel";
+import { CapacityPane } from "@/components/overview/CapacityPane";
+import { HighestLoadPane } from "@/components/overview/HighestLoadPane";
+import {
+  MachineFleetToolbar,
+  type SortOption,
+  type StatusFilter,
+  type ViewMode,
+} from "@/components/overview/MachineFleetToolbar";
+import { MachineFleetTable } from "@/components/overview/MachineFleetTable";
+
+/** The two-column geometry both context rows share; it stacks below 900px. */
+const POSTURE_GRID =
+  "grid gap-5 [grid-template-columns:minmax(0,1.25fr)_minmax(320px,0.75fr)] max-[900px]:[grid-template-columns:minmax(0,1fr)]";
+const CONTEXT_GRID =
+  "grid gap-5 [grid-template-columns:minmax(0,1.6fr)_minmax(300px,0.9fr)] max-[900px]:[grid-template-columns:minmax(0,1fr)]";
 
 function getStatus(m: MachineMetrics): MachineStatus {
   return classifyMachine(m).status;
 }
 
-function formatBytes(bytes: number | undefined | null): string {
-  if (!bytes || bytes === 0) return "0";
-  const gb = bytes / (1024 ** 3);
-  if (gb >= 1) return `${gb.toFixed(0)} GB`;
-  const mb = bytes / (1024 ** 2);
-  return `${mb.toFixed(0)} MB`;
-}
-
-function timeSince(ms: number): string {
-  const sec = Math.floor((Date.now() - ms) / 1000);
-  if (sec < 5) return "just now";
-  if (sec < 60) return `${sec}s ago`;
-  const min = Math.floor(sec / 60);
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.floor(min / 60);
-  return `${hr}h ago`;
-}
-
-const sortLabels: Record<SortOption, string> = {
-  manual: "My order",
-  name: "Name (A-Z)",
-  status: "Status",
-  cpu: "CPU %",
-  gpu_temp: "GPU Temp",
-};
-
-function DashboardContent() {
+function OverviewContent() {
   const { addToast } = useToast();
-  const { machines: liveMachines, connected, hasReceivedData, alerts, setAlerts, setAlertCount, refreshMachine, refreshFleet } = useSSE();
+  const {
+    machines: liveMachines,
+    connected,
+    hasReceivedData,
+    alerts,
+    alertCount,
+    setAlerts,
+    setAlertCount,
+    refreshMachine,
+  } = useSSE();
   const { authFetch, hasScope, token } = useAuth();
-  // One shared controller serves every layout. Classic renders its own header
-  // and the FleetPulse/overview summary; the live layouts render their summary
-  // composition instead. The machine-management section below (search, filter,
-  // sort, tags, saved filters, grid/list, bulk, delete, API edit) is present in
-  // ALL layouts — the layout only changes the summary, never the tooling.
-  const { layout } = useDesign();
-  const isClassic = layout === "classic";
-  const canCreateInstallTokens = hasScope("install_tokens.admin");
+
   const canManageAPIMachines = hasScope("api_machines.admin");
   const canControlFleet = hasScope("fleet.control");
   const canDeleteMachines = hasScope("fleet.admin");
+
   // Phase 11 — hydrate viewMode/sortBy from per-user preferences. The
   // PreferencesContext lazy-init reads from localStorage so the defaults
   // are correct on first paint after a reload (no flash).
@@ -115,6 +97,16 @@ function DashboardContent() {
   const [sortBy, setSortBy] = useState<SortOption>(() => preferences.default_sort);
   const [viewMode, setViewMode] = useState<ViewMode>(() => preferences.default_view);
   const [tagFilter, setTagFilter] = useState<string | null>(null);
+
+  // One clock for the whole page. classifyMachine() and statusOf() read
+  // Date.now() internally, so machines only age to stale/offline when
+  // something re-renders — this tick is that something, and it is threaded
+  // into every memo that depends on freshness.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 5_000);
+    return () => clearInterval(id);
+  }, []);
 
   // Keep local state in sync if preferences change post-mount (e.g. user
   // changes default in another tab/device, then we refresh from the
@@ -167,29 +159,30 @@ function DashboardContent() {
     },
     [changeSort],
   );
+
   // Lazy-init from a cross-route ?panel=alerts request. Safe to read window
-  // here: this controller only mounts client-side after AppShell is ready
-  // (the shell renders a loading frame during SSR/first paint), so there is no
-  // hydration mismatch and no setState-in-effect.
+  // here: this controller only mounts client-side, so there is no hydration
+  // mismatch and no setState-in-effect.
   const [alertPanelOpen, setAlertPanelOpen] = useState<boolean>(() => {
     if (typeof window === "undefined") return false;
     return new URLSearchParams(window.location.search).get("panel") === "alerts";
   });
-  const [addMachineOpen, setAddMachineOpen] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkLoading, setBulkLoading] = useState(false);
-  const [deleteTarget, setDeleteTarget] = useState<{id: string; hostname: string} | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; hostname: string } | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
-  const [addAPIMachineOpen, setAddAPIMachineOpen] = useState(false);
-  const [commandOpen, setCommandOpen] = useState(false);
-  // In non-classic layouts the shell owns the command palette and its hotkey;
-  // disable the local hotkey so exactly one ⌘K listener is active.
-  useCommandPaletteHotkey(setCommandOpen, isClassic);
   const [editAPIMachine, setEditAPIMachine] = useState<EditableAPIMachine | null>(null);
   const [apiMachines, setApiMachines] = useState<EditableAPIMachine[]>([]);
 
   const isDemo = DEMO_MODE && !hasReceivedData && liveMachines.length === 0;
-  const machines = isDemo ? demoMachines : liveMachines;
+  const source = isDemo ? demoMachines : liveMachines;
+
+  // Drop records that don't have enough shape to render — avoids the whole
+  // page crashing on a single malformed SSE update.
+  const machines = useMemo(
+    () => source.filter((m) => m && typeof m.machine_id === "string"),
+    [source],
+  );
 
   const loadAPIMachines = useCallback(async () => {
     try {
@@ -260,10 +253,39 @@ function DashboardContent() {
     return Array.from(tagSet).sort();
   }, [machines]);
 
+  /* -- Fleet posture ------------------------------------------------------ */
+
+  const counts = useMemo<AvailabilityCounts>(() => {
+    let live = 0, warning = 0, critical = 0, stale = 0, offline = 0;
+    for (const m of machines) {
+      switch (getStatus(m)) {
+        case "live": live += 1; break;
+        case "warning": warning += 1; break;
+        case "critical": critical += 1; break;
+        case "stale": stale += 1; break;
+        case "offline": offline += 1; break;
+      }
+    }
+    return {
+      total: machines.length,
+      connected: machines.length - offline,
+      live, warning, critical, stale, offline,
+      needsReview: warning + critical + stale,
+    };
+    // classifyMachine reads the wall clock; the tick is the deliberate dep.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [machines, now]);
+
+  // "Healthy" has to mean nothing is wrong — a fleet with a warning or a
+  // stale machine cannot claim it, or the headline would contradict the
+  // "Needs review" count sitting directly beneath it.
+  const posture: FleetPosture =
+    counts.total === 0 ? "waiting" : counts.live === counts.total ? "healthy" : "attention";
+
+  /* -- Machine fleet ------------------------------------------------------ */
+
   const filteredMachines = useMemo(() => {
-    // Drop records that don't have enough shape to render — avoids the whole
-    // list crashing on a single malformed SSE update.
-    let result = machines.filter((m) => m && typeof m.machine_id === "string");
+    let result = machines;
 
     if (search) {
       const q = search.toLowerCase();
@@ -289,8 +311,8 @@ function DashboardContent() {
       pinned: preferences.pinned_machines,
       status: m => STATUS_ORDER[getStatus(m)],
     });
-  }, [machines, search, statusFilter, sortBy, tagFilter, preferences.pinned_machines, preferences.machine_order]);
-
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [machines, now, search, statusFilter, sortBy, tagFilter, preferences.pinned_machines, preferences.machine_order]);
 
   const handleAcknowledge = useCallback(async (id: string) => {
     try {
@@ -412,590 +434,250 @@ function DashboardContent() {
     }
   }, [apiMachineByMachineID]);
 
+  const requestDelete = useCallback((id: string, hostname: string) => {
+    setDeleteTarget({ id, hostname });
+  }, []);
+
+  const openAlertPanel = useCallback(() => setAlertPanelOpen(true), []);
+  const openCommandPalette = useCallback(
+    () => window.dispatchEvent(new CustomEvent(OPEN_COMMAND)),
+    [],
+  );
+
+  const showBulkBar = selected.size > 0 && viewMode === "list" && canControlFleet;
+
   return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      transition={{ duration: 0.25 }}
-      className={isClassic ? "min-h-screen bg-blox-bg" : ""}
-    >
-      {/* Header — classic only; the live layouts get the shared shell chrome. */}
-      {isClassic && (
-      <header className="fleet-header sticky top-0 z-50 bg-blox-bg/80 backdrop-blur-xl border-b border-blox-border/50">
-        <div className="max-w-[1600px] mx-auto px-4 sm:px-6 min-h-14 py-2 sm:py-0 sm:h-14 flex flex-wrap sm:flex-nowrap items-center justify-between gap-2 sm:gap-4">
-          {/* Brand */}
-          <div className="flex items-center gap-3 shrink-0">
-            <BrandedHeader size="compact" />
-            {isDemo && (
-              <Badge variant="outline" className="text-[10px] border-amber-500/30 bg-amber-500/10 text-amber-400 h-auto py-0 px-2">
-                Demo
-              </Badge>
-            )}
-          </div>
+    <>
+      <OverviewIntro posture={posture} />
 
-          {/* Spacer — claims the middle so left and right groups stay anchored */}
-          <div className="hidden sm:block flex-1" />
-
-          {/* Action group */}
-          <div className="flex w-full sm:w-auto items-center justify-end gap-1">
-            {/* Phase 7: global refresh — sends refresh_metrics to every connected agent */}
-            <GlobalRefreshButton onRefresh={refreshFleet} disabled={!canControlFleet} />
-
-            {/* Theme toggle (Phase 1) */}
-            <ThemeToggle />
-
-            {/* Inventory link (Phase 6 Unit B) */}
-            <Link
-              href="/inventory"
-              className="inline-flex items-center justify-center rounded-md w-8 h-8 text-blox-muted hover:text-blox-text hover:bg-blox-border/50 transition-colors"
-              title="Hardware inventory"
-              aria-label="Hardware inventory"
-            >
-              <Boxes className="w-4 h-4" />
-            </Link>
-
-            <Link
-              href="/versions"
-              className="inline-flex items-center justify-center rounded-md w-8 h-8 text-blox-muted hover:text-blox-text hover:bg-blox-border/50 transition-colors"
-              title="Agent versions"
-              aria-label="Agent versions"
-            >
-              <GitCompareArrows className="w-4 h-4" />
-            </Link>
-
-            <Link
-              href="/sessions"
-              className="inline-flex items-center justify-center rounded-md w-8 h-8 text-blox-muted hover:text-blox-text hover:bg-blox-border/50 transition-colors"
-              title="AI Sessions"
-              aria-label="AI Sessions"
-            >
-              <Bot className="w-4 h-4" />
-            </Link>
-
-            {/* Vertical divider — separates utility icons from create actions */}
-            <div className="w-px h-5 bg-blox-border/50 mx-1.5" aria-hidden />
-
-            {/* Add API — secondary, ghost variant, only for admins */}
-            {canManageAPIMachines && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setAddAPIMachineOpen(true)}
-                className="text-blox-muted hover:text-blox-text gap-1.5 text-xs hidden sm:inline-flex"
-                title="Add API-polled machine (Proxmox / Synology)"
-              >
-                <Server className="w-3.5 h-3.5" />
-                API
-              </Button>
-            )}
-
-            {/* Add Machine — PRIMARY action, filled accent button */}
-            {canCreateInstallTokens && (
-              <Button
-                size="sm"
-                onClick={() => setAddMachineOpen(true)}
-                className="bg-blox-blue text-white hover:bg-blox-blue/90 gap-1.5 text-xs"
-                title="Add a machine via install token"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">Add Machine</span>
-                <span className="sm:hidden">Add</span>
-              </Button>
-            )}
-
-            {/* Vertical divider — separates create actions from account */}
-            <div className="w-px h-5 bg-blox-border/50 mx-1.5" aria-hidden />
-
-            {/* User menu (replaces Users link + Logout) */}
-            <UserMenu />
-          </div>
-        </div>
-      </header>
+      {isDemo && (
+        <p className="mb-6 inline-flex items-center gap-2 rounded-[10px] border border-status-warning/30 bg-status-warning-tint px-3 py-1.5 text-[12px] text-status-warning">
+          <span className="mf-status-dot mf-status-warning" aria-hidden="true" />
+          Demo data — not connected to a hub.
+        </p>
       )}
 
-      {/* Fleet summary — classic shows the pulse strip + gauges; the live
-          layouts render their own composition as the summary. */}
-      {isClassic ? (
-        <>
-          <FleetPulse onAlertsClick={() => setAlertPanelOpen(true)} />
-          <NeedsAttention machines={machines} />
-          {machines.length > 0 && hasReceivedData && (
-            <div className="max-w-[1600px] mx-auto px-4 sm:px-6 pt-6">
-              <FleetOverview machines={machines} />
-            </div>
-          )}
-        </>
-      ) : (
-        <>
-          {layout === "wall" && <FleetWall />}
-          {layout === "grove" && <FleetGrove />}
-          {layout === "console" && <FleetConsole />}
-          {layout === "ledger" && <FleetLedger />}
-        </>
-      )}
-
-      {/* Degraded connection banner — surfaces SSE disconnect inline so it isn't
-          easy to miss behind the small wifi icon in the header. */}
+      {/* Degraded connection banner — surfaces SSE disconnect inline so it
+          isn't easy to miss behind a small icon in the chrome. */}
       <AnimatePresence>
         {!connected && !isDemo && (
           <motion.div
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
-            className="bg-amber-500/5 border-b border-amber-500/20 px-4 sm:px-6 py-2 overflow-hidden"
+            className="mb-6 overflow-hidden rounded-[10px] border border-status-warning/30 bg-status-warning-tint"
           >
-            <div className="max-w-[1600px] mx-auto flex items-center gap-2 text-xs text-amber-400">
-              <WifiOff className="w-3.5 h-3.5" />
+            <div className="flex items-center gap-2 px-3 py-2 text-xs text-status-warning">
+              <WifiOff className="h-3.5 w-3.5" aria-hidden="true" />
               <span>Live updates paused — reconnecting to hub…</span>
             </div>
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* Machine management — the full working list and its controls. Present
-          in every layout; the layout only changes the summary above. Labelled
-          so it is distinct from any compact register in the summary. */}
-      <section aria-label="Machine management">
-      {!isClassic && (
-        <div className="max-w-[1600px] mx-auto px-4 sm:px-6 pt-6 -mb-2">
-          <h2 className="text-sm font-semibold text-text-primary uppercase tracking-wider">Manage machines</h2>
-        </div>
-      )}
-
-      {/* Bulk action bar */}
-      <AnimatePresence>
-        {selected.size > 0 && viewMode === "list" && canControlFleet && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            className="bg-blox-blue/5 border-b border-blox-blue/20 px-4 sm:px-6 py-2 overflow-hidden"
-          >
-            <div className="max-w-[1600px] mx-auto flex items-center gap-3">
-              <span className="text-xs text-blox-blue font-medium font-mono tabular-nums">{selected.size} selected</span>
-              <Button
-                variant="outline"
-                size="xs"
-                onClick={() => handleBulkRestart("ollama")}
-                disabled={bulkLoading}
-                className="text-xs border-blox-border text-blox-text"
-              >
-                Restart Ollama
-              </Button>
-              <Button
-                variant="outline"
-                size="xs"
-                onClick={() => handleBulkRestart("docker")}
-                disabled={bulkLoading}
-                className="text-xs border-blox-border text-blox-text"
-              >
-                Restart Docker
-              </Button>
-              <Button
-                variant="destructive"
-                size="xs"
-                onClick={handleBulkReboot}
-                disabled={bulkLoading}
-                className="text-xs gap-1"
-              >
-                <RotateCcw className="w-3 h-3" />
-                Reboot All
-              </Button>
-              <button
-                onClick={() => setSelected(new Set())}
-                className="text-xs text-blox-muted hover:text-blox-text ml-auto transition-colors"
-              >
-                Clear
-              </button>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Search + Filter Bar */}
-      <div className="max-w-[1600px] mx-auto px-4 sm:px-6 py-4">
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="relative flex-1 min-w-[200px] max-w-sm">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-blox-muted" />
-            <Input
-              type="text"
-              placeholder="Search machines..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="pl-9 pr-14 h-8 text-xs bg-blox-card border-blox-border text-blox-text placeholder:text-blox-muted/50"
-            />
-            <button
-              type="button"
-              onClick={() =>
-                isClassic ? setCommandOpen(true) : window.dispatchEvent(new CustomEvent(OPEN_COMMAND))
-              }
-              className="absolute right-2 top-1/2 -translate-y-1/2 hidden sm:flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] font-mono text-blox-muted bg-blox-bg border border-blox-border rounded hover:text-blox-text transition-colors"
-              aria-label="Open command palette"
-              title="Open command palette (⌘K)"
-            >
-              <span>⌘</span>
-              <span>K</span>
-            </button>
-          </div>
-
-          {/* Phase 11 — saved filter quick-apply (only when at least one exists). */}
-          {preferences.saved_filters.length > 0 && (
-            <SavedFiltersDropdown onApply={applySavedFilter} />
-          )}
-
-          {/* Status filter dropdown */}
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              render={
-                <Button variant="outline" size="sm" className="text-xs border-blox-border text-blox-text gap-1.5">
-                  <Filter className="w-3 h-3" />
-                  {statusFilter === "all" ? "All Status" : statusFilter.charAt(0).toUpperCase() + statusFilter.slice(1)}
-                  <ChevronDown className="w-3 h-3 text-blox-muted" />
-                </Button>
-              }
-            />
-            <DropdownMenuContent align="start" className="bg-blox-card border-blox-border">
-              <DropdownMenuItem onClick={() => setStatusFilter("all")} className="text-xs text-blox-text">All Status</DropdownMenuItem>
-              <DropdownMenuItem onClick={() => setStatusFilter("live")} className="text-xs text-status-ok">Live</DropdownMenuItem>
-              <DropdownMenuItem onClick={() => setStatusFilter("warning")} className="text-xs text-status-warning">Warning</DropdownMenuItem>
-              <DropdownMenuItem onClick={() => setStatusFilter("critical")} className="text-xs text-status-critical">Critical</DropdownMenuItem>
-              <DropdownMenuItem onClick={() => setStatusFilter("offline")} className="text-xs text-status-offline">Offline</DropdownMenuItem>
-              <DropdownMenuItem onClick={() => setStatusFilter("stale")} className="text-xs text-status-stale">Stale</DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-
-          {/* Sort dropdown */}
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              render={
-                <Button variant="outline" size="sm" className="text-xs border-blox-border text-blox-text gap-1.5">
-                  <ArrowUpDown className="w-3 h-3" />
-                  {sortLabels[sortBy]}
-                  <ChevronDown className="w-3 h-3 text-blox-muted" />
-                </Button>
-              }
-            />
-            <DropdownMenuContent align="start" className="bg-blox-card border-blox-border">
-              <DropdownMenuLabel className="text-blox-muted">Sort by</DropdownMenuLabel>
-              <DropdownMenuSeparator className="bg-blox-border" />
-              {(Object.keys(sortLabels) as SortOption[]).map((key) => (
-                <DropdownMenuItem key={key} onClick={() => changeSort(key)} className="text-xs text-blox-text">
-                  {sortLabels[key]}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-
-          {allTags.length > 0 && (
-            <div className="flex items-center gap-1.5 flex-wrap">
-              {tagFilter && (
-                <button
-                  onClick={() => setTagFilter(null)}
-                  className="text-[10px] px-2 py-1 rounded-full bg-blox-blue/10 text-blox-blue border border-blox-blue/20 hover:bg-blox-blue/20 transition-colors font-medium"
-                >
-                  Clear tag
-                </button>
-              )}
-              {allTags.map((tag) => (
-                <button
-                  key={tag}
-                  onClick={() => setTagFilter(tagFilter === tag ? null : tag)}
-                  className={`text-[10px] px-2 py-1 rounded-full border transition-colors font-medium ${
-                    tagFilter === tag
-                      ? "bg-blox-blue/20 text-blox-blue border-blox-blue/30"
-                      : "bg-blox-card text-blox-muted border-blox-border hover:border-blox-muted/30"
-                  }`}
-                >
-                  {tag}
-                </button>
-              ))}
-            </div>
-          )}
-
-          <div className="flex-1" />
-
-          {/* Phase 11 — save current filter as a named saved filter. Only
-              shown when filters are actually active so the bar stays clean. */}
-          {(search || statusFilter !== "all" || tagFilter) && (
-            <SaveFilterButton
-              currentFilter={{ search, statusFilter, tagFilter, sortBy }}
-              disabled={!canControlFleet && preferences.saved_filters.length >= 20}
-            />
-          )}
-
-          <div className="flex items-center rounded-lg border border-blox-border overflow-hidden">
-            <button
-              onClick={() => changeView("grid")}
-              className={`p-2 transition-colors ${
-                viewMode === "grid"
-                  ? "bg-blox-blue/10 text-blox-blue"
-                  : "text-blox-muted hover:text-blox-text"
-              }`}
-              title="Grid view"
-            >
-              <LayoutGrid className="w-3.5 h-3.5" />
-            </button>
-            <button
-              onClick={() => changeView("list")}
-              className={`p-2 transition-colors ${
-                viewMode === "list"
-                  ? "bg-blox-blue/10 text-blox-blue"
-                  : "text-blox-muted hover:text-blox-text"
-              }`}
-              title="List view"
-            >
-              <List className="w-3.5 h-3.5" />
-            </button>
-          </div>
-
-          <Button variant="outline" size="sm" onClick={() => setArrangeOpen(true)} disabled={preferencesLoading || !hasReceivedData || machines.length < 2}
-            className="text-xs border-blox-border text-blox-text">Arrange machines</Button>
-
-          <span className="text-[10px] text-blox-muted font-mono tabular-nums">
-            {filteredMachines.length} machine{filteredMachines.length !== 1 ? "s" : ""}
-          </span>
-        </div>
+      {/* B — fleet posture */}
+      <div className={POSTURE_GRID}>
+        <FleetAvailabilityPanel counts={counts} />
+        <MonoformAttentionPanel
+          machines={machines}
+          alertsCount={alertCount}
+          onOpenAlerts={openAlertPanel}
+          now={now}
+        />
       </div>
 
-      {/* Content */}
-      <main className="max-w-[1600px] mx-auto px-4 sm:px-6 pb-6">
-        {viewMode === "grid" ? (
-          <motion.div
-            className="grid auto-rows-fr justify-start"
-            style={{
-              gap: "var(--grid-gap)",
-              // min(100%, …) clamps the column to the container at very narrow
-              // widths (≤320px) so a fixed 260–300px min never overflows; the
-              // desktop track is unchanged.
-              gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, var(--grid-min-col)), 360px))",
-            }}
-          >
-            {!hasReceivedData && machines.length === 0 && !isDemo && (
-              <>
-                {Array.from({ length: 4 }).map((_, i) => (
-                  <MachineCardSkeleton key={`skeleton-${i}`} />
-                ))}
-              </>
-            )}
+      {/* C — context */}
+      <div className={`${CONTEXT_GRID} mt-5`}>
+        <CapacityPane />
+        <HighestLoadPane machines={machines} now={now} />
+      </div>
 
-            <AnimatePresence mode="popLayout">
-              {filteredMachines.map((m, i) => (
-                <motion.div
-                  key={m.machine_id}
-                  layout
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, scale: 0.95 }}
-                  transition={{ duration: 0.25, delay: i * 0.03 }}
-                  className="h-full"
+      {/* D — the one machine work surface */}
+      <section className="mt-11" aria-labelledby="machine-fleet-heading">
+        <div className="flex flex-wrap items-baseline justify-between gap-3">
+          <div>
+            <div className="mf-kicker">Machine fleet</div>
+            <h2
+              id="machine-fleet-heading"
+              className="mt-1.5 text-[19px] font-medium tracking-[-0.02em] text-text-primary"
+            >
+              Every machine, and everything you can do to it
+            </h2>
+          </div>
+        </div>
+
+        <AnimatePresence>
+          {showBulkBar && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: "auto", opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              className="overflow-hidden"
+            >
+              <div className="mt-5 flex flex-wrap items-center gap-3 rounded-[10px] border border-accent/30 bg-accent-subtle px-3 py-2">
+                <span className="mf-metric text-xs font-medium text-accent">
+                  {selected.size} selected
+                </span>
+                <Button
+                  variant="outline"
+                  size="xs"
+                  onClick={() => handleBulkRestart("ollama")}
+                  disabled={bulkLoading}
+                  className="border-border-subtle text-xs text-text-primary"
                 >
-                  <MachineCard
-                    machine={m}
-                    onDelete={canDeleteMachines ? (id, hostname) => setDeleteTarget({ id, hostname }) : undefined}
-                    onEdit={canManageAPIMachines ? openEditAPIMachine : undefined}
-                    onRefresh={canControlFleet ? refreshMachine : undefined}
-                  />
-                </motion.div>
-              ))}
-            </AnimatePresence>
-          </motion.div>
-        ) : (
-          <div className="bg-blox-card border border-blox-border rounded-xl overflow-hidden">
-            <Table>
-              <TableHeader>
-                <TableRow className="border-b-blox-border hover:bg-transparent">
-                  {canControlFleet && (
-                    <TableHead className="w-8 text-blox-muted">
-                      <button onClick={toggleSelectAll} className="text-blox-muted hover:text-blox-text">
-                        {selected.size === filteredMachines.length && filteredMachines.length > 0 ? (
-                          <CheckSquare className="w-3.5 h-3.5 text-blox-blue" />
-                        ) : (
-                          <Square className="w-3.5 h-3.5" />
-                        )}
-                      </button>
-                    </TableHead>
-                  )}
-                  <TableHead className="text-blox-muted text-xs">Status</TableHead>
-                  <TableHead className="text-blox-muted text-xs">Hostname</TableHead>
-                  <TableHead className="text-blox-muted text-xs hidden md:table-cell">IP</TableHead>
-                  <TableHead className="text-blox-muted text-xs">CPU</TableHead>
-                  <TableHead className="text-blox-muted text-xs hidden lg:table-cell">30m</TableHead>
-                  <TableHead className="text-blox-muted text-xs">RAM</TableHead>
-                  <TableHead className="text-blox-muted text-xs hidden md:table-cell">Disk</TableHead>
-                  <TableHead className="text-blox-muted text-xs hidden lg:table-cell">GPU</TableHead>
-                  <TableHead className="text-blox-muted text-xs hidden lg:table-cell">VRAM</TableHead>
-                  <TableHead className="text-blox-muted text-xs hidden xl:table-cell">Latency</TableHead>
-                  <TableHead className="text-blox-muted text-xs hidden xl:table-cell">Last Seen</TableHead>
-                  <TableHead className="text-blox-muted text-xs hidden xl:table-cell">OS</TableHead>
-                  <TableHead className="text-blox-muted text-xs hidden xl:table-cell">Tags</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filteredMachines.map((m, i) => {
-                  const status = getStatus(m);
-                  const ramPct = (m.ram_total_bytes ?? 0) > 0 ? ((m.ram_used_bytes ?? 0) / m.ram_total_bytes) * 100 : 0;
-                  const diskPct = (m.disk_total_bytes ?? 0) > 0 ? ((m.disk_used_bytes ?? 0) / m.disk_total_bytes) * 100 : 0;
-                  const tags = m.tags ? m.tags.split(",").filter((t) => t.trim()) : [];
-                  const dotColor =
-                    status === "live" ? "bg-status-ok" :
-                    status === "stale" ? "bg-status-stale" :
-                    status === "warning" ? "bg-status-warning" :
-                    status === "critical" ? "bg-status-critical" :
-                    "bg-status-offline";
-                  const isSelected = selected.has(m.machine_id);
-                  const adapterTag = tags.find((tag) => ["synology", "proxmox"].includes(tag.trim().toLowerCase()));
-                  const isAPIMachine = !!adapterTag;
+                  Restart Ollama
+                </Button>
+                <Button
+                  variant="outline"
+                  size="xs"
+                  onClick={() => handleBulkRestart("docker")}
+                  disabled={bulkLoading}
+                  className="border-border-subtle text-xs text-text-primary"
+                >
+                  Restart Docker
+                </Button>
+                <Button
+                  variant="destructive"
+                  size="xs"
+                  onClick={handleBulkReboot}
+                  disabled={bulkLoading}
+                  className="gap-1 text-xs"
+                >
+                  <RotateCcw className="h-3 w-3" aria-hidden="true" />
+                  Reboot All
+                </Button>
+                <button
+                  type="button"
+                  onClick={() => setSelected(new Set())}
+                  className="ml-auto text-xs text-text-tertiary transition-colors duration-[var(--motion-fast)] hover:text-text-primary"
+                >
+                  Clear
+                </button>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
-                  return (
-                    <TableRow
+        <div className="mt-5">
+          <MachineFleetToolbar
+            search={search}
+            onSearchChange={setSearch}
+            onOpenCommandPalette={openCommandPalette}
+            statusFilter={statusFilter}
+            onStatusFilterChange={setStatusFilter}
+            sortBy={sortBy}
+            onSortChange={changeSort}
+            tags={allTags}
+            tagFilter={tagFilter}
+            onTagFilterChange={setTagFilter}
+            savedFilterCount={preferences.saved_filters.length}
+            onApplySavedFilter={applySavedFilter}
+            canSaveFilter={canControlFleet || preferences.saved_filters.length < 20}
+            viewMode={viewMode}
+            onViewModeChange={changeView}
+            onArrange={() => setArrangeOpen(true)}
+            arrangeDisabled={preferencesLoading || !hasReceivedData || machines.length < 2}
+            resultCount={filteredMachines.length}
+          />
+        </div>
+
+        <div className="mt-5">
+          {viewMode === "list" ? (
+            <MachineFleetTable
+              machines={filteredMachines}
+              selected={selected}
+              onToggleSelect={toggleSelect}
+              onToggleSelectAll={toggleSelectAll}
+              canControlFleet={canControlFleet}
+              canDeleteMachines={canDeleteMachines}
+              canManageAPIMachines={canManageAPIMachines}
+              onRefresh={canControlFleet ? refreshMachine : undefined}
+              onEditAPIMachine={canManageAPIMachines ? openEditAPIMachine : undefined}
+              onDelete={canDeleteMachines ? requestDelete : undefined}
+            />
+          ) : (
+            <>
+              <div
+                className="grid auto-rows-fr justify-start"
+                style={{
+                  gap: "var(--grid-gap)",
+                  // min(100%, …) clamps the column to the container at very
+                  // narrow widths so a fixed 260–300px min never overflows.
+                  gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, var(--grid-min-col)), 360px))",
+                }}
+              >
+                {!hasReceivedData && machines.length === 0 && !isDemo &&
+                  Array.from({ length: 4 }).map((_, i) => (
+                    <MachineCardSkeleton key={`skeleton-${i}`} />
+                  ))}
+
+                {/* `layout` is real filter/sort state moving, not an entrance
+                    flourish — there is no initial fade here. */}
+                <AnimatePresence mode="popLayout">
+                  {filteredMachines.map((m) => (
+                    <motion.div
                       key={m.machine_id}
-                      className={`border-b-blox-border/30 hover:bg-blox-border/10 transition-colors ${isSelected ? "bg-blox-blue/5" : i % 2 === 1 ? "bg-blox-bg/30" : ""}`}
+                      layout
+                      exit={{ opacity: 0 }}
+                      transition={{ duration: 0.2 }}
+                      className="h-full"
                     >
-                      {canControlFleet && (
-                        <TableCell className="text-xs">
-                          <button onClick={(e) => { e.stopPropagation(); toggleSelect(m.machine_id); }} className="text-blox-muted hover:text-blox-text">
-                            {isSelected ? (
-                              <CheckSquare className="w-3.5 h-3.5 text-blox-blue" />
-                            ) : (
-                              <Square className="w-3.5 h-3.5" />
-                            )}
-                          </button>
-                        </TableCell>
-                      )}
-                      <TableCell className="text-xs">
-                        <Link href={`/machine/${m.machine_id}`}>
-                          <span className={`inline-block w-2 h-2 rounded-full ${dotColor} ${status === "live" ? "shadow-sm shadow-status-ok/50" : ""}`} />
-                        </Link>
-                      </TableCell>
-                      <TableCell className="text-xs font-medium text-blox-text">
-                        <div className="flex items-center gap-2">
-                          <Link href={`/machine/${m.machine_id}`} className="hover:text-blox-blue transition-colors">{m.hostname}</Link>
-                          {isAPIMachine && canManageAPIMachines && (
-                            <button
-                              onClick={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                openEditAPIMachine(m.machine_id);
-                              }}
-                              className="text-blox-muted hover:text-blox-blue transition-colors"
-                              title="Edit API machine"
-                            >
-                              <Pencil className="w-3.5 h-3.5" />
-                            </button>
-                          )}
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-xs text-blox-muted font-mono tabular-nums hidden md:table-cell">{m.ip || "-"}</TableCell>
-                      <TableCell className="text-xs">
-                        <span className={`tabular-nums font-mono ${
-                          (m.cpu_percent ?? 0) > 85 ? "text-red-400" : (m.cpu_percent ?? 0) > 60 ? "text-amber-400" : "text-blox-text"
-                        }`}>{(m.cpu_percent ?? 0).toFixed(0)}%</span>
-                      </TableCell>
-                      <TableCell className="hidden lg:table-cell">
-                        {status !== "offline" && (
-                          <Sparkline machineId={m.machine_id} width={90} height={20} />
-                        )}
-                      </TableCell>
-                      <TableCell className="text-xs">
-                        <span className="tabular-nums font-mono text-blox-text">{ramPct.toFixed(0)}%</span>
-                        <span className="text-blox-muted ml-1 font-mono tabular-nums">{formatBytes(m.ram_used_bytes)}</span>
-                      </TableCell>
-                      <TableCell className="text-xs hidden md:table-cell">
-                        {(m.disk_total_bytes ?? 0) > 0 && (
-                          <>
-                            <span className={`tabular-nums font-mono ${
-                              diskPct > 90 ? "text-red-400" : diskPct > 75 ? "text-amber-400" : "text-blox-text"
-                            }`}>{diskPct.toFixed(0)}%</span>
-                            <span className="text-blox-muted ml-1 font-mono tabular-nums">{formatBytes(m.disk_used_bytes)}</span>
-                          </>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-xs hidden lg:table-cell">
-                        {m.gpu_temp ? (
-                          <span className={`tabular-nums font-mono ${
-                            m.gpu_temp > 80 ? "text-red-400" : m.gpu_temp > 70 ? "text-amber-400" : "text-blox-text"
-                          }`}>{m.gpu_temp}&deg;C</span>
-                        ) : null}
-                      </TableCell>
-                      <TableCell className="text-xs hidden lg:table-cell">
-                        {m.gpu_vram_total_bytes && m.gpu_vram_total_bytes > 0 ? (
-                          <span className="tabular-nums font-mono text-blox-text">
-                            {formatBytes(m.gpu_vram_used_bytes || 0)}/{formatBytes(m.gpu_vram_total_bytes)}
-                          </span>
-                        ) : null}
-                      </TableCell>
-                      <TableCell className="text-xs hidden xl:table-cell">
-                        {m.latency_ms && m.latency_ms > 0 ? (
-                          <span className="tabular-nums font-mono text-blox-muted">{m.latency_ms}ms</span>
-                        ) : null}
-                      </TableCell>
-                      <TableCell className="text-xs text-blox-muted hidden xl:table-cell font-mono tabular-nums">
-                        {m.last_seen ? timeSince(m.last_seen) : "never"}
-                      </TableCell>
-                      <TableCell className="text-xs hidden xl:table-cell">
-                        {m.os && (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-blox-border/50 text-blox-muted font-mono">
-                            {m.os}
-                          </span>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-xs hidden xl:table-cell">
-                        <div className="flex gap-1 flex-wrap">
-                          {tags.map((tag) => (
-                            <Badge key={tag} variant="outline" className="text-[10px] px-1.5 h-auto py-0 border-blox-border text-blox-muted">
-                              {tag}
-                            </Badge>
-                          ))}
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-            {filteredMachines.length === 0 && (
-              <div className="py-12 text-center text-blox-muted text-sm">No machines match filters</div>
-            )}
-          </div>
-        )}
+                      <MachineCard
+                        machine={m}
+                        onDelete={canDeleteMachines ? requestDelete : undefined}
+                        onEdit={canManageAPIMachines ? openEditAPIMachine : undefined}
+                        onRefresh={canControlFleet ? refreshMachine : undefined}
+                      />
+                    </motion.div>
+                  ))}
+                </AnimatePresence>
+              </div>
 
-        {viewMode === "grid" && filteredMachines.length === 0 && hasReceivedData && (
-          <div className="flex flex-col items-center justify-center py-20 text-blox-muted">
-            <Monitor className="w-12 h-12 mb-4 opacity-20" />
-            <p className="text-sm">No machines match filters</p>
-          </div>
-        )}
-      </main>
+              {filteredMachines.length === 0 && hasReceivedData && (
+                <div className="flex flex-col items-center justify-center py-20 text-text-tertiary">
+                  <Monitor className="mb-4 h-12 w-12 opacity-20" aria-hidden="true" />
+                  <p className="text-sm">No machines match the current filters.</p>
+                </div>
+              )}
+            </>
+          )}
+        </div>
       </section>
 
-      {/* Delete confirmation dialog */}
-      {arrangeOpen && <ArrangeMachinesDialog key={token}
-        machines={orderMachines(machines.filter(m => m && typeof m.machine_id === "string"), {
-          sort: sortBy, order: preferences.machine_order, pinned: preferences.pinned_machines,
-          status: m => STATUS_ORDER[getStatus(m)],
-        })}
-        onClose={() => setArrangeOpen(false)} onSave={saveMachineOrder} />}
+      {arrangeOpen && (
+        <ArrangeMachinesDialog
+          key={token}
+          machines={orderMachines(machines, {
+            sort: sortBy,
+            order: preferences.machine_order,
+            pinned: preferences.pinned_machines,
+            status: m => STATUS_ORDER[getStatus(m)],
+          })}
+          onClose={() => setArrangeOpen(false)}
+          onSave={saveMachineOrder}
+        />
+      )}
 
       <Dialog open={!!deleteTarget} onOpenChange={(o) => { if (!o) setDeleteTarget(null); }}>
-        <DialogContent className="bg-blox-card border-blox-border text-blox-text ring-0 sm:max-w-md" showCloseButton={false}>
+        <DialogContent className="border-border-subtle bg-surface-raised text-text-primary ring-0 sm:max-w-md" showCloseButton={false}>
           <DialogHeader>
             <div className="flex items-center gap-3">
-              <div className="p-2 rounded-xl bg-red-500/10">
-                <Trash2 className="w-5 h-5 text-red-400" />
+              <div className="rounded-xl bg-status-critical-tint p-2">
+                <Trash2 className="h-5 w-5 text-status-critical" aria-hidden="true" />
               </div>
-              <DialogTitle className="text-blox-text">Delete Machine</DialogTitle>
+              <DialogTitle className="text-text-primary">Delete Machine</DialogTitle>
             </div>
-            <DialogDescription className="text-blox-muted text-xs mt-2">
-              Are you sure you want to remove <span className="text-blox-text font-medium">{deleteTarget?.hostname}</span> from BloxOS? This will delete all historical data for this machine.
+            <DialogDescription className="mt-2 text-xs text-text-tertiary">
+              Are you sure you want to remove <span className="font-medium text-text-primary">{deleteTarget?.hostname}</span> from BloxOS? This will delete all historical data for this machine.
             </DialogDescription>
           </DialogHeader>
-          <DialogFooter className="bg-transparent border-t-blox-border">
+          <DialogFooter className="border-t-border-subtle bg-transparent">
             <Button
               variant="outline"
               size="sm"
               onClick={() => setDeleteTarget(null)}
               disabled={deleteLoading}
-              className="text-xs text-blox-muted border-blox-border"
+              className="border-border-subtle text-xs text-text-tertiary"
             >
               Cancel
             </Button>
@@ -1020,21 +702,8 @@ function DashboardContent() {
         onAcknowledgeAll={handleAcknowledgeAll}
       />
 
-      {/* Add-machine flows: classic owns them here; the live layouts get them
-          from the shell chrome (single owner, no duplicate modals). */}
-      {isClassic && (
-        <>
-          <AddMachineModal open={addMachineOpen} onClose={() => setAddMachineOpen(false)} />
-          {addAPIMachineOpen && (
-            <AddAPIMachineModal
-              open={addAPIMachineOpen}
-              onClose={() => setAddAPIMachineOpen(false)}
-              onSaved={handleAPIMachineSaved}
-            />
-          )}
-        </>
-      )}
-
+      {/* Add Machine / Add API machine / ⌘K are owned by AppShell now; only the
+          edit flow, which needs a row's identity, stays with the page. */}
       {editAPIMachine && (
         <AddAPIMachineModal
           open={!!editAPIMachine}
@@ -1043,78 +712,16 @@ function DashboardContent() {
           onSaved={handleAPIMachineSaved}
         />
       )}
-
-      {isClassic && (
-        <CommandPalette
-          open={commandOpen}
-          onOpenChange={setCommandOpen}
-          onAddMachine={canCreateInstallTokens ? () => setAddMachineOpen(true) : undefined}
-          onAddAPIMachine={canManageAPIMachines ? () => setAddAPIMachineOpen(true) : undefined}
-          onOpenAlerts={() => setAlertPanelOpen(true)}
-        />
-      )}
-    </motion.div>
+    </>
   );
 }
 
-/* ============================================================================
- * GlobalRefreshButton — Phase 7
- *
- * Header-mounted refresh affordance that broadcasts a refresh_metrics
- * command to every connected agent. Disabled for viewer-role users (the
- * backend gates POST /api/refresh on fleet.control); the visual state
- * mirrors that.
- * ============================================================================ */
-
-function GlobalRefreshButton({
-  onRefresh,
-  disabled,
-}: {
-  onRefresh: () => Promise<void>;
-  disabled: boolean;
-}) {
-  const [refreshing, setRefreshing] = useState(false);
-
-  const handleClick = async () => {
-    if (refreshing || disabled) return;
-    setRefreshing(true);
-    await onRefresh();
-    // 2s is enough for fleets up to ~30 machines to receive their refreshed
-    // metrics via SSE. Longer than the per-card timeout because we're
-    // waiting on every connected agent, not just one.
-    setTimeout(() => setRefreshing(false), 2000);
-  };
-
-  return (
-    <Button
-      variant="ghost"
-      size="icon-sm"
-      onClick={handleClick}
-      disabled={disabled || refreshing}
-      className="text-blox-muted hover:text-blox-text"
-      title={disabled ? "Refresh requires operator role" : "Refresh fleet metrics"}
-      aria-label="Refresh fleet metrics"
-    >
-      <RefreshCw className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`} />
-    </Button>
-  );
-}
-
-/* ============================================================================
- * Home — one shared controller (DashboardContent) inside the shell.
- *
- * The controller holds every machine-management control and handler once and
- * renders in every layout; the layout only changes the summary above the
- * management section. AppShell provides the navigation chrome and, for the
- * live layouts, owns the global action modals and the command palette (so the
- * controller disables its local ⌘K there). Grove's context rail is supplied to
- * the shell as a slot. Classic renders AppShell as a passthrough.
- * ========================================================================== */
 export default function Home() {
-  const { layout } = useDesign();
+  // The route-derived page title already resolves to "Overview" (NAV_ITEMS),
+  // so this page deliberately does not call usePageTitle().
   return (
-    <AppShell rail={layout === "grove" ? <FleetGroveRail /> : undefined}>
-      <DashboardContent />
+    <AppShell>
+      <OverviewContent />
     </AppShell>
   );
 }
