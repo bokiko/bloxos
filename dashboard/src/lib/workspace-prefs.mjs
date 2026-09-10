@@ -1,6 +1,6 @@
 // Per-user Overview workspace state: which sections the operator has
-// collapsed, which metric the load ranking is showing, and which machines are
-// marked "expected high load".
+// collapsed, which window and tariff the fleet power pane is using, and which
+// machines are marked "expected high load".
 //
 // WHY THIS IS NOT A SERVER PREFERENCE
 // GET/PATCH /api/me/preferences returns a fixed Go struct (hub/preferences.go)
@@ -16,12 +16,16 @@
 
 const KEY_PREFIX = "bloxos-workspace-u-";
 
-/** The Overview sections an operator can collapse. Order is display order. */
-export const OVERVIEW_SECTIONS = ["availability", "attention", "capacity", "load", "fleet"];
-
-/** Metrics the "Highest load" ranking can sort by. `cpu` is the default and
- * the behaviour that shipped. */
-export const LOAD_METRICS = ["cpu", "gpu", "memory"];
+/**
+ * The Overview sections an operator can collapse. Order is display order.
+ *
+ * "attention" and "load" were removed with the panes they named. They are NOT
+ * listed here as retired ids, because normalizeWorkspacePrefs already filters
+ * `collapsed` through this list: an operator who had folded either pane has a
+ * stored id that no longer matches anything, and it is dropped on the next
+ * read and never written back. Nothing throws, nothing else unfolds.
+ */
+export const OVERVIEW_SECTIONS = ["availability", "capacity", "fleet"];
 
 /** Windows the fleet power pane can chart. They mirror the hub's `?period`
  * vocabulary; 7d is absent because power history is retained for 24 hours. */
@@ -41,8 +45,6 @@ export const POWER_MAX_RATE = 100;
 export const DEFAULT_WORKSPACE_PREFS = Object.freeze({
   /** Section ids from OVERVIEW_SECTIONS that are currently collapsed. */
   collapsed: [],
-  /** One of LOAD_METRICS. */
-  load_metric: "cpu",
   /** Machine ids whose CPU saturation is their normal working state. */
   expected_high_cpu: [],
   /** One of POWER_PERIODS. */
@@ -80,10 +82,8 @@ function stringList(raw, allowed) {
  */
 export function normalizeWorkspacePrefs(raw) {
   const r = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
-  const metric = LOAD_METRICS.includes(r.load_metric) ? r.load_metric : DEFAULT_WORKSPACE_PREFS.load_metric;
   return {
     collapsed: stringList(r.collapsed, OVERVIEW_SECTIONS),
-    load_metric: metric,
     // Machine ids are opaque and are NOT validated against the live fleet: a
     // machine that is briefly absent from the SSE stream must not silently
     // lose its flag. Stale ids are inert.

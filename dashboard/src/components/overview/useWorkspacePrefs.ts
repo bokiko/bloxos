@@ -1,7 +1,7 @@
 "use client";
 
-// The Overview's own per-user view state — collapsed sections, the metric the
-// load ranking is sorted by, and the machines marked "expected high load".
+// The Overview's own per-user view state — collapsed sections, the fleet
+// power window and tariff, and the machines marked "expected high load".
 //
 // This is deliberately NOT part of PreferencesContext. That context mirrors
 // the hub's user-preferences bundle, whose scalar fields are named columns on
@@ -19,11 +19,9 @@ import {
   writeWorkspacePrefs,
   normalizePowerRate,
   toggleMember,
-  LOAD_METRICS,
   POWER_PERIODS,
 } from "@/lib/workspace-prefs.mjs";
 
-export type LoadMetric = "cpu" | "gpu" | "memory";
 export type PowerPeriod = "30m" | "1h" | "6h" | "24h";
 
 /** The electricity tariff the fleet power pane costs energy at. A null rate
@@ -35,7 +33,6 @@ export interface PowerRate {
 
 export interface WorkspacePrefs {
   collapsed: string[];
-  load_metric: LoadMetric;
   expected_high_cpu: string[];
   power_period: PowerPeriod;
   power_rate: PowerRate;
@@ -44,8 +41,6 @@ export interface WorkspacePrefs {
 export interface WorkspaceState {
   isCollapsed: (sectionID: string) => boolean;
   toggleSection: (sectionID: string) => void;
-  loadMetric: LoadMetric;
-  setLoadMetric: (metric: LoadMetric) => void;
   /** Machine ids whose CPU saturation is their working state. */
   baselines: ReadonlySet<string>;
   toggleBaseline: (machineID: string) => void;
@@ -53,10 +48,6 @@ export interface WorkspaceState {
   setPowerPeriod: (period: PowerPeriod) => void;
   powerRate: PowerRate;
   setPowerRate: (rate: PowerRate) => void;
-}
-
-function isLoadMetric(value: string): value is LoadMetric {
-  return LOAD_METRICS.includes(value);
 }
 
 function isPowerPeriod(value: string): value is PowerPeriod {
@@ -105,11 +96,6 @@ export function useWorkspacePrefs(): WorkspaceState {
     [update],
   );
 
-  const setLoadMetric = useCallback(
-    (metric: LoadMetric) => update(() => ({ load_metric: metric })),
-    [update],
-  );
-
   const toggleBaseline = useCallback(
     (machineID: string) =>
       update((prev) => ({ expected_high_cpu: toggleMember(prev.expected_high_cpu, machineID) })),
@@ -134,8 +120,6 @@ export function useWorkspacePrefs(): WorkspaceState {
   return {
     isCollapsed,
     toggleSection,
-    loadMetric: isLoadMetric(prefs.load_metric) ? prefs.load_metric : "cpu",
-    setLoadMetric,
     baselines,
     toggleBaseline,
     powerPeriod: isPowerPeriod(prefs.power_period) ? prefs.power_period : "6h",

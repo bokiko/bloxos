@@ -225,9 +225,3 @@ export function timeSince(ms: number): string {
   const hr = Math.floor(min / 60);
   return `${hr}h ago`;
 }
-
-/** The app's semantic status token for a machine, as a CSS var reference for
- * inline `--dot`. Keeps status meaning consistent across every layout. */
-export function statusVar(status: MachineStatus): string {
-  return `var(--status-${status === "live" ? "ok" : status})`;
-}

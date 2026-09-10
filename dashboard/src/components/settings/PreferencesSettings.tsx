@@ -3,10 +3,11 @@
 // Preferences settings panel.
 //
 // Appearance (the single place in the product where dark/light is chosen),
-// density / default view / default sort scalar choices, plus the manage
-// surfaces for pinned machines and saved filters.
+// the fleet power tariff, density / default view / default sort scalar
+// choices, plus the manage surfaces for pinned machines and saved filters.
 
 import { Trash2, LayoutGrid, List as ListIcon } from "lucide-react";
+import { PowerRateSettings } from "./PowerRateSettings";
 import { usePreferences, type Density, type DefaultView, type DefaultSort } from "@/contexts/PreferencesContext";
 import { useTheme } from "@/contexts/ThemeContext";
 import { useSSE } from "@/contexts/SSEContext";
@@ -75,6 +76,10 @@ export function PreferencesSettings() {
           ))}
         </div>
       </section>
+
+      {/* Power rate — moved off the Overview's fleet power pane, which shows
+          the cost but no longer hosts the control that sets it. */}
+      <PowerRateSettings />
 
       {/* Density */}
       <section className="mf-panel p-5" aria-labelledby="density-heading">

@@ -2,7 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   DEFAULT_WORKSPACE_PREFS,
-  LOAD_METRICS,
   OVERVIEW_SECTIONS,
   POWER_CURRENCIES,
   POWER_MAX_RATE,
@@ -25,40 +24,56 @@ test("keys are scoped per user, like the preferences cache", () => {
 test("the defaults are the behaviour that shipped", () => {
   const d = normalizeWorkspacePrefs(null);
   assert.deepEqual(d.collapsed, [], "nothing starts collapsed");
-  assert.equal(d.load_metric, "cpu", "the load ranking still defaults to CPU");
   assert.deepEqual(d.expected_high_cpu, []);
-  assert.equal(DEFAULT_WORKSPACE_PREFS.load_metric, "cpu");
+  assert.equal(DEFAULT_WORKSPACE_PREFS.power_period, "6h");
 });
 
 test("garbage in storage degrades to defaults instead of throwing", () => {
   for (const junk of [undefined, 0, "", "nope", [], { collapsed: "all" }]) {
     const out = normalizeWorkspacePrefs(junk);
     assert.deepEqual(out.collapsed, []);
-    assert.equal(out.load_metric, "cpu");
     assert.deepEqual(out.expected_high_cpu, []);
   }
 });
 
-test("unknown section ids and metrics are dropped, not stored", () => {
+test("unknown section ids are dropped, not stored", () => {
   const out = normalizeWorkspacePrefs({
     collapsed: ["fleet", "not-a-section", "", 7, "fleet"],
-    load_metric: "vibes",
   });
   assert.deepEqual(out.collapsed, ["fleet"], "unknown, empty and duplicate ids all go");
-  assert.equal(out.load_metric, "cpu");
   for (const id of out.collapsed) assert.ok(OVERVIEW_SECTIONS.includes(id));
 });
 
-test("every declared section and metric survives a round trip", () => {
-  const out = normalizeWorkspacePrefs({
-    collapsed: [...OVERVIEW_SECTIONS],
-    load_metric: "memory",
-  });
+test("every declared section survives a round trip", () => {
+  const out = normalizeWorkspacePrefs({ collapsed: [...OVERVIEW_SECTIONS] });
   assert.deepEqual(out.collapsed, [...OVERVIEW_SECTIONS]);
-  assert.equal(out.load_metric, "memory");
-  for (const m of LOAD_METRICS) {
-    assert.equal(normalizeWorkspacePrefs({ load_metric: m }).load_metric, m);
+});
+
+test("a collapse state stored for a removed pane is dropped, not fatal", () => {
+  // The Overview dropped the "needs attention" and "highest load" panes. An
+  // operator who had folded either one still has those ids in localStorage.
+  // They must fall out on the next read — silently, and without disturbing
+  // the sections that are still here.
+  const out = normalizeWorkspacePrefs({
+    collapsed: ["attention", "availability", "load", "fleet"],
+  });
+  assert.deepEqual(out.collapsed, ["availability", "fleet"]);
+  for (const gone of ["attention", "load"]) {
+    assert.ok(!OVERVIEW_SECTIONS.includes(gone), `${gone} is not a section any more`);
   }
+  // And the pruned value is what gets written back, so the dead ids do not
+  // linger in storage for the life of the browser profile.
+  assert.deepEqual(
+    normalizeWorkspacePrefs(out).collapsed,
+    ["availability", "fleet"],
+  );
+});
+
+test("the retired load-ranking metric is gone from the schema entirely", () => {
+  // The pane it drove was removed; a field nothing reads is a field that
+  // rots. A stored value is inert rather than an error.
+  assert.ok(!("load_metric" in DEFAULT_WORKSPACE_PREFS));
+  assert.ok(!("load_metric" in normalizeWorkspacePrefs({ load_metric: "gpu" })));
 });
 
 test("machine ids are kept opaque and are not validated against a fleet", () => {

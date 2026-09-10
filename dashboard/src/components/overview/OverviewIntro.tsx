@@ -1,32 +1,18 @@
 "use client";
 
-// Monoform — the Overview page's opening statement.
+// Monoform — the Overview's date line.
 //
-// The shell's top bar already renders "Overview" as the page title, so this
-// block deliberately does NOT repeat the word. It opens with the real local
-// date and goes straight to a sentence that states the fleet's actual
-// posture. The three sentences are the only ones this component can say, and
-// which one appears is decided from live machine state by the caller.
+// One kicker, and nothing else. The shell's top bar already renders "Overview"
+// as the page's <h1>, so this block does not repeat it.
 //
-// It is ONE line. This used to be a 46px display headline stacked under its
-// own date kicker, beside a fixed sentence ("Live infrastructure state across
-// your production workspace") that restated the page's existence and told the
-// operator nothing — about 150px of screen to carry one fact. That sentence is
-// gone and the date has moved onto the same baseline as the claim, so the
-// fleet-posture grid starts near the top of the viewport instead of below it.
+// It used to also carry a sentence about the fleet's posture ("Your fleet
+// needs attention. Review the affected machines."). That sentence was read
+// once and never again: the panes directly under it already show the same
+// state as numbers, and a claim restating a number costs a line of prose on
+// every visit. A dashboard is glanceable — figures and short labels — so the
+// sentence is gone and the panes are what speak.
 
 import { useSyncExternalStore } from "react";
-
-export type FleetPosture = "healthy" | "attention" | "waiting";
-
-const HEADLINES: Record<FleetPosture, readonly [string, string]> = {
-  healthy: ["Your fleet is healthy.", "Here is what changed."],
-  attention: ["Your fleet needs attention.", "Review the affected machines."],
-  waiting: [
-    "Waiting for fleet telemetry.",
-    "The workspace will update when machines report.",
-  ],
-};
 
 /** "Wednesday, 10 September" — weekday and month names follow the browser locale. */
 function formatToday(date: Date): string {
@@ -45,23 +31,18 @@ const subscribeToNothing = () => () => {};
 const readToday = () => formatToday(new Date());
 const readNothing = () => null;
 
-export function OverviewIntro({ posture }: { posture: FleetPosture }) {
+export function OverviewIntro() {
   const today = useSyncExternalStore<string | null>(
     subscribeToNothing,
     readToday,
     readNothing,
   );
 
-  const [lead, rest] = HEADLINES[posture];
-
   return (
     <header className="mf-overview-intro">
       {/* Non-breaking space reserves the line before the date resolves, so the
-          sentence beside it does not jump on the first client paint. */}
+          panes below it do not jump on the first client paint. */}
       <span className="mf-kicker mf-overview-intro-date">{today ?? "\u00a0"}</span>
-      <h1>
-        <strong>{lead}</strong> {rest}
-      </h1>
     </header>
   );
 }
