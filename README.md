@@ -99,7 +99,7 @@ dashboard support **Linux amd64 and arm64**. Ports **80 and 443** must be availa
 ### 1. Download BloxOS
 
 ```sh
-git clone --branch v1.3.1 --depth 1 https://github.com/bokiko/bloxos.git
+git clone --branch v1.3.2 --depth 1 https://github.com/bokiko/bloxos.git
 cd bloxos/docker
 cp .env.example .env
 ```
@@ -186,7 +186,7 @@ systemd services, pulling containers does not update those services. If both
 exist, do not start another stack or switch the proxy: establish which existing
 installation serves your public URL. See [upgrade verification](docs/verified-upgrades.md).
 
-For an existing **Compose deployment**, set `BLOXOS_VERSION=1.3.1` in your existing
+For an existing **Compose deployment**, set `BLOXOS_VERSION=1.3.2` in your existing
 `.env`, then run these with the same project name and any existing overrides:
 
 ```sh
@@ -221,7 +221,7 @@ On a native installation, replacing the hub executable does **not** replace
 separate agent files. Use the [native agent check-and-stage guide](docs/native-agent-upgrades.md)
 to prepare the published payloads without starting a fleet rollout.
 
-[Release notes](https://github.com/bokiko/bloxos/releases/tag/v1.3.1) ·
+[Release notes](https://github.com/bokiko/bloxos/releases/tag/v1.3.2) ·
 [Update signing](docs/offline-update-signing.md) ·
 [Agent recovery](docs/agent-update-recovery.md)
 
