@@ -56,6 +56,20 @@ const (
 	// manual refresh_metrics. Slightly under the tick so ticker jitter never
 	// skips a regular send.
 	powerSendMinInterval = 25 * time.Second
+
+	// Plausibility bounds shared by every backend, measured or modelled.
+	// They live here rather than beside one platform's backends because a
+	// watt is a watt: a value outside them is unavailable, never a reading.
+	//
+	// powerSystemMinWatts is the floor for a whole-system value. A running
+	// board cannot draw less; a counter reporting below it (a psys zone a
+	// vendor exposes but never advances, a battery whose driver reports 0
+	// while discharging) is unavailable, not zero watts.
+	powerSystemMinWatts = 0.5
+	// powerRateMaxWatts rejects an implausible rate from any source — an
+	// energy-counter reset that happens to look like a forward delta, or a
+	// model handed a nonsensical envelope.
+	powerRateMaxWatts = 10000.0
 )
 
 // powerRetentionTick is how often the journal worker enforces retention

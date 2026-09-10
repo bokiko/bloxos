@@ -29,9 +29,16 @@ import (
 //	cpu    — CPU package power (RAPL package sum), with dram reported
 //	         separately when the RAPL dram sub-zones exist.
 //
-// NOTHING here estimates. A machine with no counter reports nothing: ARM
-// SoCs such as the RK3588 expose regulator voltages with no current, so
-// watts cannot be derived and are not invented.
+// NOTHING here estimates. Every backend in this file reads a counter, and a
+// machine whose counters are all unavailable reports nothing from here.
+//
+// A machine that measures NOTHING AT ALL — no RAPL, no battery, no BMC, no
+// shunt, no GPU counter, which is the ordinary state of an RK3588-class ARM
+// SoC (regulator voltages, no current sense) or a guest with no host MSRs —
+// may additionally have its `system` domain MODELLED from CPU utilisation.
+// That backend lives in power_estimate.go, is appended strictly after every
+// backend here has declined, carries its own source label, and is withheld
+// the moment any real counter works. See attachPowerEstimate.
 //
 // Nothing here is ever summed across domains either. Where psys exists it
 // already contains the packages, so it is PREFERRED OVER the package sum for
@@ -43,11 +50,6 @@ const (
 	powerHwmonRoot  = "/sys/class/hwmon"
 	powerDRMRoot    = "/sys/class/drm"
 
-	// powerSystemMinWatts is the plausibility floor for a whole-system
-	// reading. A running board cannot draw less; a counter reporting below
-	// it (a psys zone a vendor exposes but never advances, a battery whose
-	// driver reports 0 while discharging) is unavailable, not zero watts.
-	powerSystemMinWatts = 0.5
 	// powerBatteryMaxWatts bounds a battery discharge reading. No laptop
 	// pack sustains a kilowatt; above it the units or sign are wrong.
 	powerBatteryMaxWatts = 1000.0
@@ -127,7 +129,7 @@ func defaultPowerEnv() powerEnv {
 // newPowerSources detects this host's power backends. It is the single
 // platform entry point; the non-Linux build returns an empty set.
 func newPowerSources() powerSourceSet {
-	return detectPowerSources(defaultPowerEnv())
+	return attachPowerEstimate(detectPowerSources(defaultPowerEnv()), defaultPowerEstimateEnv())
 }
 
 func detectPowerSources(env powerEnv) powerSourceSet {
@@ -175,6 +177,12 @@ func pickSystemSource(env powerEnv, psys *raplSampler) powerSource {
 	if h := discoverWholeSystemHwmon(env); h != nil {
 		return h
 	}
+	// Nothing on this host MEASURES whole-platform power. This function ends
+	// here by design: the modelled backend is not a candidate in this chain
+	// and cannot be reached from it. attachPowerEstimate considers it only
+	// after this has returned nil AND every other domain has come up empty
+	// too, so no ordering mistake inside this function can promote a model
+	// over a counter.
 	return nil
 }
 

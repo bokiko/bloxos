@@ -1,5 +1,10 @@
-// Package powerhistory defines additive, replayable power telemetry. Values are
-// component sensor readings, never whole-machine or wall power estimates.
+// Package powerhistory defines additive, replayable power telemetry.
+//
+// Values are counter readings taken by the machine itself. The one exception
+// is a modelled whole-platform figure on hardware with no counter at all,
+// which is admitted only as a last resort and is always labelled as a model
+// in Sources — see SourceEstimateUtil and Bucket.Estimated. A measured value
+// and a modelled one are never blended into a single number.
 package powerhistory
 
 const (
@@ -49,7 +54,27 @@ const (
 	// SourceHwmonPrefix prefixes a generic hwmon backend with its chip name,
 	// e.g. "hwmon:power_meter".
 	SourceHwmonPrefix = "hwmon:"
+	// SourceEstimateUtil is NOT A MEASUREMENT. It marks a value MODELLED from
+	// CPU utilisation against a platform power envelope, for machines that
+	// expose no power counter at all (ARM SoCs with no current sense, guests
+	// with no host MSRs, Windows without a ring-0 driver). It is emitted only
+	// when every measured backend for the domain is unavailable, so it can
+	// never displace a real counter, and a modelled value is never blended
+	// with a measured one.
+	//
+	// Treat it as trend-grade: useful for "is this machine busy and roughly
+	// how costly", never for billing, capacity sign-off or hardware
+	// comparison.
+	SourceEstimateUtil = "estimate-util"
 )
+
+// IsEstimatedSource reports whether a backend identifier names a model rather
+// than a counter. This is the ONE place that knowledge lives: consumers must
+// ask here instead of string-matching, so a future modelled backend cannot be
+// mistaken for a measurement by code that predates it.
+func IsEstimatedSource(source string) bool {
+	return source == SourceEstimateUtil
+}
 
 // DomainSource names the backend that produced one domain's statistics in
 // this bucket. It is emitted only for a domain that actually carries samples
@@ -83,10 +108,16 @@ type Bucket struct {
 	// summing independent per-device peaks. Nil means no complete observation.
 	GPUTotal *Stats `json:"gpu_total,omitempty"`
 	CPU      *Stats `json:"cpu,omitempty"`
-	// System is whole-platform power for this window, measured by a
-	// whole-system counter (RAPL psys, battery discharge, BMC DCMI, a
-	// whole-board hwmon shunt). Nil means no such counter — never an
-	// estimate, and never a sum of the component domains.
+	// System is whole-platform power for this window. Nil means the machine
+	// produced no whole-platform value at all. It is never a sum of the
+	// component domains.
+	//
+	// It is normally a measurement from a whole-system counter (RAPL psys,
+	// battery discharge, BMC DCMI, a whole-board hwmon shunt). On a machine
+	// with NO such counter it may instead be MODELLED — and then, and only
+	// then, Sources labels this domain SourceEstimateUtil. A consumer that
+	// renders System must consult Estimated(DomainSystem) before presenting
+	// it as measured power; the label is the sole carrier of that fact.
 	System *Stats `json:"system,omitempty"`
 	// DRAM is memory-controller power. Nil means unavailable. It is reported
 	// beside CPU, never inside it.
@@ -108,6 +139,22 @@ func (b *Bucket) SourceFor(domain string) string {
 		}
 	}
 	return ""
+}
+
+// Estimated reports whether this bucket's value for a domain was modelled
+// rather than measured.
+//
+// There is deliberately NO boolean on Stats carrying this. A bucket is stored
+// by decoding and re-encoding it under the receiver's schema, so a flag a
+// consumer does not yet know about is silently dropped — and a dropped
+// "estimated" reads as "measured", which fails open on the one property that
+// must never be wrong. Sources already exists on every labelled bucket, so
+// the label cannot vanish that way; this accessor is the cheap read of it.
+//
+// An unlabelled domain is a measurement: agents predating source labelling
+// only ever measured.
+func (b *Bucket) Estimated(domain string) bool {
+	return IsEstimatedSource(b.SourceFor(domain))
 }
 
 // RetainedFrom is the oldest sequence still available for unacknowledged replay.

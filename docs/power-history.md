@@ -8,7 +8,13 @@ Where a machine exposes a genuine whole-system counter, that reading is carried
 separately as the `system` domain and labelled with the backend behind it. It is
 still not a wall measurement: a RAPL platform zone covers the board the SoC can
 see, and a discharging battery excludes the charger losses that are not
-occurring while it discharges. Machines with no counter report nothing at all.
+occurring while it discharges.
+
+A machine that measures **nothing at all** may instead report a **modelled
+estimate** for `system`, labelled `estimate-util`. An estimate is not a
+measurement and is never blended with one — see
+[Estimated power](#estimated-power). Where no counter exists and the machine
+cannot be identified confidently enough to model, it still reports nothing.
 
 ## Domains and backends
 
@@ -24,6 +30,7 @@ their sample counts need not agree.
 | | `battery` | `/sys/class/power_supply/*` with `type=Battery` and `scope` unset or `System` | µW, else µA × µV |
 | | `ipmi-dcmi` | `ipmitool dcmi power reading` | watts |
 | | `hwmon:<chip>` | `/sys/class/hwmon/hwmon<n>/power1_average` or `power1_input` | µW |
+| | `estimate-util` **— NOT A MEASUREMENT** | modelled from `/proc/stat`; engages only when nothing is measured | watts (modelled) |
 | `cpu` | `rapl-package` | top-level `intel-rapl:<n>` zones named `package-*`, summed | µJ counter |
 | `dram` | `rapl-dram` | `intel-rapl:<n>:<m>` sub-zones named `dram`, summed | µJ counter |
 | GPUs | NVIDIA streaming query | `nvidia-smi --query-gpu=...` | watts |
@@ -58,10 +65,18 @@ numbers honest:
   already apply to a changing device set.
 - RAPL counters wrap at `max_energy_range_uj`; wrap is corrected, and an
   implausible interval or result re-primes instead of reporting a wrong number.
-- **Nothing is estimated.** ARM SoCs such as the RK3588 expose regulator
-  voltages with no current, so watts are not derivable and none are invented.
-  Windows RAPL needs a signed ring-0 driver and is unavailable inside a VM
-  regardless, so the scalar domains stay absent there.
+- **Every backend above except `estimate-util` reads a counter, and a measured
+  value is never mixed with a modelled one.** ARM SoCs such as the RK3588 expose
+  regulator voltages with no current, so watts are not derivable from them and
+  none are invented; what those machines may get instead is the clearly labelled
+  utilisation model described in [Estimated power](#estimated-power), and only
+  when they measure nothing at all. Windows RAPL needs a signed ring-0 driver
+  and is unavailable inside a VM regardless, so the scalar domains stay absent
+  there and nothing is estimated on Windows.
+- The mixed-backend rule below covers estimation without amendment: a window
+  whose `system` samples came from both a counter and the model is dropped, not
+  averaged. In practice it cannot arise, because the model is only ever attached
+  to a machine that has no counter to switch back to.
 
 NVIDIA cards are excluded from the DRM hwmon scan: `nvidia-smi` already streams
 them, and a second identifier for the same device would inflate the sensor list.
@@ -139,8 +154,136 @@ memory; completed windows are flushed to disk before upload.
 GPU history uses NVIDIA's streaming query and, for non-NVIDIA cards, DRM hwmon
 power channels. The scalar domains use the backends tabulated above and exclude
 overlapping subdomains. On Windows every scalar domain is unavailable and no
-estimate is invented. Set `BLOXOS_POWER_HISTORY=0` on an agent before startup to
+estimate is offered: the model is Linux-only, because it needs `/proc/stat` and
+the device tree. Set `BLOXOS_POWER_HISTORY=0` on an agent before startup to
 disable the feature.
+
+Two variables control estimation, read once at startup and echoed in the
+agent's log line along with the resolved envelope and where it came from:
+
+| Variable | Effect |
+| --- | --- |
+| `BLOXOS_POWER_ESTIMATE_WATTS="<idle>:<max>"` | Whole-platform envelope in watts. Beats the built-in table and the heuristic, and enables estimation on machines nothing else covers. **A malformed value disables estimation rather than falling back** — an operator who typed an envelope wants that envelope, not a guess. |
+| `BLOXOS_POWER_ESTIMATE=off` (also `0`, `false`, `no`) | Refuses the model outright. Every real counter keeps working. |
+
+**Calibrate with a wall meter.** Measure the machine idle and under sustained
+load, then set `BLOXOS_POWER_ESTIMATE_WATTS` to those two numbers. That single
+step takes the machine from roughly ±40% to the accuracy of the meter, and it
+is the only path to an estimate worth trusting.
+
+## Estimated power
+
+A machine that exposes no power counter at all — most ARM SoCs, virtual
+machines, Windows hosts — can report a **modelled** `system` value instead of
+nothing. It is labelled `estimate-util` in `sources`, and
+`powerhistory.IsEstimatedSource` / `(*Bucket).Estimated(domain)` read that back
+in one call. **Consumers must present it as an estimate and must never sum it
+with measured values into a single unqualified figure.**
+
+There is deliberately no `estimated` boolean on the wire. The hub stores a
+bucket by decoding and re-encoding it under its own schema, so a field an older
+hub does not know is silently dropped — and a dropped `estimated` reads as
+`false`, meaning "measured". That fails open on the one property that must never
+be wrong. The `sources` label cannot vanish that way.
+
+### The model
+
+    P = P_idle + (P_max - P_idle) * u
+
+`u` is the CPU busy fraction from `/proc/stat`, clamped to `[0,1]` rather than
+extrapolated. Busy excludes `idle`, `iowait` **and** `steal`: an `iowait` CPU is
+halted and drawing idle power, and `steal` is time the hypervisor gave to
+someone else, during which this guest consumed nothing.
+
+The relationship is linear on purpose. The true curve is concave — DVFS raises
+voltage with frequency — but that refinement buys a few percent while the
+endpoints themselves carry ±40%. A fitted exponent would be false precision.
+Frequency is not folded in: scaling by `f/f_max` needs a voltage curve to mean
+anything, and on the hardware this targets `cpufreq` is either absent or reports
+the governor's request rather than silicon state.
+
+The built-in table holds **whole-platform envelopes**, not CPU TDPs. A TDP is a
+thermal limit for one component; converting it to platform watts requires a PSU
+efficiency, board, drives and fans that the CPU model does not determine. The
+same chip in two different boxes can idle five watts apart. An envelope is also
+what an operator can verify with a plug meter, and it is the same shape as the
+override, so calibration is one variable.
+
+Rows are keyed on **device-tree `compatible` first**, CPU model second, and a
+row carrying a core count is refused when the machine reports a different one —
+a 4-vCPU guest does not inherit an 8-core board's envelope.
+
+The table is deliberately small. It is a convenience; the override is the
+mechanism, because no table will ever cover every SoC. What ships today:
+
+| Match | Cores | Envelope | Where the numbers come from |
+| --- | --- | --- | --- |
+| `rockchip,rk3588`, `rockchip,rk3588s` | 8 | 3.5-12.0 W | RK3588 board measurements, all-core draw spanning 7-19 W across boards |
+| `raspberrypi,5-model-b`, `brcm,bcm2712` | 4 | 3.0-8.8 W | Raspberry Pi 5 board measurements |
+| `raspberrypi,4-model-b`, `brcm,bcm2711` | 4 | 2.6-6.4 W | Raspberry Pi 4B board measurements |
+| CPU model `intel n100` | 4 | 6.0-22.0 W | N100 mini-PC wall measurements, idle 4-12 W and load 20-29 W |
+
+The spread in that last column is the honest headline: these are envelopes for a
+*class* of machine, and any specific machine sits somewhere inside one. Each row
+carries its citation in `agent/power_estimate.go`. Adding a row is a small
+change backed by published measurements; calibrating one machine needs no code
+change at all.
+
+> **CPU model strings are unreliable on big.LITTLE hardware.** Reading core 0's
+> model and multiplying by the total core count reports, for example, "8x
+> Cortex-A55" for an RK3588 that is really 4x Cortex-A76 + 4x Cortex-A55. On ARM,
+> `/sys/firmware/devicetree/base/compatible` is the real board identity.
+
+An unknown x86 machine reports **nothing**: its PSU, drives and any discrete GPU
+are unknown and can draw more than everything else combined. An unknown ARM
+board with a device tree, 2-16 cores and no virtualisation falls back to a
+bounded per-core heuristic, because that class cannot be wrong by more than
+roughly 2x.
+
+### It engages only when nothing is measured
+
+The gate is structural, not a matter of ordering: the estimator is not a
+candidate in the `system` backend chain and cannot be reached from it. It is
+attached separately, and only when `system`, `cpu`, `dram` and GPU are all
+unavailable, `nvidia-smi` included.
+
+The reason is not merely tidiness. A wrong envelope can place an estimated
+`system` **below** a measured `cpu` — visibly impossible, and it discredits
+every other number the agent reports. With a measured 300 W GPU the same
+contradiction is far larger, because a CPU-utilisation model knows nothing about
+the card.
+
+Two limitations follow, and neither is papered over:
+
+- A discrete GPU with **no** power counter is invisible to the gate and absent
+  from the model, so such a machine would be badly under-reported.
+- Detection runs once at startup. A counter that appears later — a battery
+  plugged in mid-run — does not displace an already-attached estimate until the
+  agent restarts. This is inherited behaviour for every backend, not new here.
+
+### Accuracy, stated plainly
+
+**Trend-grade, not billing-grade.** Good enough for "is this machine busy and
+roughly how costly"; useless for billing, capacity sign-off or comparing
+hardware.
+
+| Basis | Expected error |
+| --- | --- |
+| Table hit, CPU-dominated workload | ±30-40% |
+| Per-core ARM heuristic | within roughly 2x |
+| Operator override from a wall meter | ±5-10%, i.e. the meter's accuracy |
+
+Worst cases, in order:
+
+1. **Any accelerator the CPU counter cannot see** — an integrated Mali GPU, an
+   NPU, an uncounted discrete card.
+2. **I/O- or memory-bound work**, where utilisation is high and power is not.
+   Excluding `iowait` helps; it does not fix a memory-bound spin.
+3. **Thermal throttling**, which lowers real power while utilisation stays
+   pinned at 100%. The model keeps reporting `P_max`, so the error grows the
+   longer the load runs.
+4. **A board configured differently from its table row** — NVMe, extra RAM and
+   2.5 GbE all add watts the envelope did not assume.
 
 ## Protocol compatibility
 
@@ -160,6 +303,19 @@ property of the encoding, in both directions:
 - **Newer agent → this hub.** A `sources` entry naming a domain this hub does
   not interpret is bounds-checked and stored rather than rejected, so a hub
   upgrade is never a precondition for an agent upgrade.
+
+`estimate-util` needed no protocol change at all: it is a new **value** for the
+existing `sources` field, not a new field. A hub predating estimation
+bounds-checks the label, stores it and returns it unchanged, so an estimate
+stays identifiable as an estimate across a version skew in either direction.
+That placement was deliberate — the label is the only thing separating a
+modelled number from a measured one, so it was put somewhere no schema mismatch
+can drop it.
+
+The corollary is a real risk, not a theoretical one: a consumer that renders
+`system` **without** consulting `sources` will present an estimate as though a
+counter produced it. Reading the label is therefore mandatory, not advisory, for
+every consumer in this repository.
 
 The hub validates the new fields with the same rigour as the old ones: finite
 watts within range, mean not above peak, statistics present exactly when samples
@@ -277,3 +433,26 @@ directions. It has **not** been run against real hardware for any of the new
 backends: no psys zone, battery pack, BMC, INA shunt or AMD card has been read
 on a physical machine yet, and no reading has been compared against a wall
 meter. Treat every new backend as unverified until a canary says otherwise.
+
+### Estimated system power
+
+The utilisation model has unit coverage for the formula at 0%, 50% and 100% and
+its monotonicity; the envelope table's hits, misses and core-count refusal; the
+operator override and its refusal of a malformed value; `/proc/stat` parsing
+including the `iowait`, `steal` and guest-column rules; the "engages only when
+nothing is measured" gate exercised against each measured backend in turn and
+against `nvidia-smi`; and the source label on every emitted bucket. Protocol
+tests cover the label surviving a round trip through a hub that predates
+estimation. The agent suite was cross-compiled for `linux/arm64` and run on
+Linux, because the agent does not build on macOS.
+
+It has **not** been compared against a wall meter on any machine, and no
+estimating machine has been run in the fleet. Every number it produces today
+rests on published board measurements rather than on a reading taken from this
+hardware — the RK3588 row in particular is drawn from boards whose measured
+all-core draw spans 7 W to 19 W, which is where its stated ±30-40% comes from.
+
+The first machine to run it should be metered under real load and pinned with
+`BLOXOS_POWER_ESTIMATE_WATTS`, not trusted as shipped. Until then, treat an
+`estimate-util` reading as an indication that a machine is busy, and not as a
+figure about how much electricity it used.

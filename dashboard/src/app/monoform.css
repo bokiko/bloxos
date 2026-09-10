@@ -940,8 +940,9 @@ html[data-appearance="light"] {
   }
   /* The disclosure's region is a direct child of the pane, so it is what takes
      up the slack the floor creates. A pane whose content is shorter than the
-     floor can then place that content in the space — see CapacityPane — rather
-     than leaving a void hanging under it. */
+     floor can then place that content in the space — see FleetPowerPane's
+     empty state, which centres itself in the slack — rather than leaving a
+     void hanging under it. */
   .mf-pane-grid > .mf-section[data-open="true"] > .mf-region {
     flex: 1 1 auto;
   }

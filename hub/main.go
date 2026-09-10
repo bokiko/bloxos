@@ -309,6 +309,8 @@ func (s *Server) registerRoutes(e *echo.Echo) {
 	api.PUT("/api/machines/:id/notes", s.handleSetMachineNotes)
 	api.GET("/api/machines/:id/metrics/history", s.handleMetricsHistory)
 	api.GET("/api/machines/:id/power/history", s.handlePowerHistory)
+	// Fleet-scoped power aggregation over the same rows (hub/fleet_power.go).
+	api.GET("/api/fleet/power/history", s.handleFleetPowerHistory)
 	api.DELETE("/api/machines/:id/credential", s.handleRevokeAgentCredential)
 	api.POST("/api/machines/:id/windows-re-enrollment", s.handleWindowsReenrollment)
 	api.DELETE("/api/machines/:id", s.handleDeleteMachine)

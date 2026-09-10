@@ -4,6 +4,10 @@ import {
   DEFAULT_WORKSPACE_PREFS,
   LOAD_METRICS,
   OVERVIEW_SECTIONS,
+  POWER_CURRENCIES,
+  POWER_MAX_RATE,
+  POWER_PERIODS,
+  normalizePowerRate,
   normalizeWorkspacePrefs,
   readWorkspacePrefs,
   toggleMember,
@@ -83,4 +87,44 @@ test("storage access never throws at the caller", () => {
 
 test("a logged-out reader reads nothing", () => {
   assert.deepEqual(readWorkspacePrefs(null), normalizeWorkspacePrefs(null));
+});
+
+test("there is no default electricity tariff", () => {
+  // A "typical" rate would print a confident, specific, invented cost beside
+  // real watts. The pane asks for one instead.
+  assert.equal(DEFAULT_WORKSPACE_PREFS.power_rate.per_kwh, null);
+  assert.equal(normalizeWorkspacePrefs(null).power_rate.per_kwh, null);
+  assert.equal(normalizeWorkspacePrefs(null).power_rate.currency, "USD");
+  assert.equal(normalizeWorkspacePrefs(null).power_period, "6h");
+  assert.ok(POWER_PERIODS.includes(DEFAULT_WORKSPACE_PREFS.power_period));
+});
+
+test("a stated tariff round-trips, including a free one", () => {
+  for (const per_kwh of [0, 0.0001, 0.12, 0.285, POWER_MAX_RATE]) {
+    assert.equal(normalizePowerRate({ currency: "EUR", per_kwh }).per_kwh, per_kwh);
+  }
+  assert.equal(normalizePowerRate({ currency: "EUR", per_kwh: 0.28 }).currency, "EUR");
+  for (const currency of POWER_CURRENCIES) {
+    assert.equal(normalizePowerRate({ currency, per_kwh: 0.1 }).currency, currency);
+  }
+});
+
+test("an unusable tariff becomes absent, never zero", () => {
+  // Zero means "my power is free", so an unparseable rate must not become it.
+  for (const per_kwh of [undefined, null, "0.28", Number.NaN, Infinity, -1, POWER_MAX_RATE + 1, {}]) {
+    assert.equal(normalizePowerRate({ currency: "EUR", per_kwh }).per_kwh, null);
+  }
+  for (const junk of [null, undefined, 0, "", [], "nope"]) {
+    assert.deepEqual(normalizePowerRate(junk), { currency: "USD", per_kwh: null });
+  }
+  // An unknown currency code falls back rather than reaching Intl and throwing.
+  assert.equal(normalizePowerRate({ currency: "XYZ", per_kwh: 0.1 }).currency, "USD");
+});
+
+test("an unknown power period falls back to the default", () => {
+  assert.equal(normalizeWorkspacePrefs({ power_period: "7d" }).power_period, "6h");
+  assert.equal(normalizeWorkspacePrefs({ power_period: 24 }).power_period, "6h");
+  for (const period of POWER_PERIODS) {
+    assert.equal(normalizeWorkspacePrefs({ power_period: period }).power_period, period);
+  }
 });

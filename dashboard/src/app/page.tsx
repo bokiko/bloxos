@@ -50,7 +50,7 @@ import {
   type AvailabilityCounts,
 } from "@/components/overview/FleetAvailabilityPanel";
 import { MonoformAttentionPanel } from "@/components/overview/AttentionPanel";
-import { CapacityPane } from "@/components/overview/CapacityPane";
+import { FleetPowerPane } from "@/components/overview/FleetPowerPane";
 import { HighestLoadPane } from "@/components/overview/HighestLoadPane";
 import {
   MachineFleetToolbar,
@@ -123,6 +123,10 @@ function OverviewContent() {
     setLoadMetric,
     baselines,
     toggleBaseline,
+    powerPeriod,
+    setPowerPeriod,
+    powerRate,
+    setPowerRate,
   } = useWorkspacePrefs();
   const [arrangeOpen, setArrangeOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -554,9 +558,16 @@ function OverviewContent() {
 
       {/* C — context */}
       <div className="mf-pane-grid mt-5">
-        <CapacityPane
+        {/* The section id stays "capacity": it is the persistence key for the
+            collapse state, and renaming it would silently unfold this pane for
+            every operator who had folded it. */}
+        <FleetPowerPane
           open={!isCollapsed("capacity")}
           onToggle={() => toggleSection("capacity")}
+          period={powerPeriod}
+          onPeriodChange={setPowerPeriod}
+          rate={powerRate}
+          onRateChange={setPowerRate}
         />
         <HighestLoadPane
           machines={machines}

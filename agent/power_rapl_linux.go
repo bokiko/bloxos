@@ -46,10 +46,6 @@ var (
 	raplSubZone  = regexp.MustCompile(`^intel-rapl:\d+:\d+$`)
 )
 
-// powerRateMaxWatts rejects an implausible computed rate from any energy
-// counter (a counter reset that happens to look like a forward delta).
-const powerRateMaxWatts = 10000.0
-
 type raplZone struct {
 	energyPath string
 	maxRange   uint64

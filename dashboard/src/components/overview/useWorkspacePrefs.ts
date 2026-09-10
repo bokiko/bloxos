@@ -17,16 +17,28 @@ import { userIDFromToken } from "@/lib/auth-session.mjs";
 import {
   readWorkspacePrefs,
   writeWorkspacePrefs,
+  normalizePowerRate,
   toggleMember,
   LOAD_METRICS,
+  POWER_PERIODS,
 } from "@/lib/workspace-prefs.mjs";
 
 export type LoadMetric = "cpu" | "gpu" | "memory";
+export type PowerPeriod = "30m" | "1h" | "6h" | "24h";
+
+/** The electricity tariff the fleet power pane costs energy at. A null rate
+ * is "not stated" — there is deliberately no default. */
+export interface PowerRate {
+  currency: string;
+  per_kwh: number | null;
+}
 
 export interface WorkspacePrefs {
   collapsed: string[];
   load_metric: LoadMetric;
   expected_high_cpu: string[];
+  power_period: PowerPeriod;
+  power_rate: PowerRate;
 }
 
 export interface WorkspaceState {
@@ -37,10 +49,18 @@ export interface WorkspaceState {
   /** Machine ids whose CPU saturation is their working state. */
   baselines: ReadonlySet<string>;
   toggleBaseline: (machineID: string) => void;
+  powerPeriod: PowerPeriod;
+  setPowerPeriod: (period: PowerPeriod) => void;
+  powerRate: PowerRate;
+  setPowerRate: (rate: PowerRate) => void;
 }
 
 function isLoadMetric(value: string): value is LoadMetric {
   return LOAD_METRICS.includes(value);
+}
+
+function isPowerPeriod(value: string): value is PowerPeriod {
+  return POWER_PERIODS.includes(value);
 }
 
 export function useWorkspacePrefs(): WorkspaceState {
@@ -96,6 +116,21 @@ export function useWorkspacePrefs(): WorkspaceState {
     [update],
   );
 
+  const setPowerPeriod = useCallback(
+    (period: PowerPeriod) => update(() => ({ power_period: period })),
+    [update],
+  );
+
+  // Normalised on the way in as well as on the way out: the rate comes from a
+  // free-text field, and an unusable one must land as "not stated" rather than
+  // as a zero tariff that would print a confident cost of nothing.
+  const setPowerRate = useCallback(
+    (rate: PowerRate) => update(() => ({ power_rate: normalizePowerRate(rate) as PowerRate })),
+    [update],
+  );
+
+  const powerRate = useMemo(() => normalizePowerRate(prefs.power_rate) as PowerRate, [prefs.power_rate]);
+
   return {
     isCollapsed,
     toggleSection,
@@ -103,5 +138,9 @@ export function useWorkspacePrefs(): WorkspaceState {
     setLoadMetric,
     baselines,
     toggleBaseline,
+    powerPeriod: isPowerPeriod(prefs.power_period) ? prefs.power_period : "6h",
+    setPowerPeriod,
+    powerRate,
+    setPowerRate,
   };
 }
