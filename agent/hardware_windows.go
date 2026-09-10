@@ -207,7 +207,11 @@ func collectHardware(machineID string, gpus []GPUInfo) HardwareInfo {
 	// CPU info via gopsutil for vendor/model/freq.
 	if cpuInfos, err := cpu.Info(); err == nil && len(cpuInfos) > 0 {
 		ci := cpuInfos[0]
-		hw.CPUModel = strings.TrimSpace(ci.ModelName)
+		// Same heterogeneous-package correction as the Linux path: Intel
+		// P/E-core parts report a different model per core, so core 0's name
+		// beside a whole-package count misdescribes the chip. Uniform packages
+		// are returned unchanged. See describeCPUCores.
+		hw.CPUModel = describeCPUCores(cpuInfos)
 		hw.CPUVendor = strings.TrimSpace(ci.VendorID)
 		hw.CPUFrequencyMHz = ci.Mhz
 		hw.CPUStepping = strconv.Itoa(int(ci.Stepping))
