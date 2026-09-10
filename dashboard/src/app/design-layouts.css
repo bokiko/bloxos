@@ -501,6 +501,19 @@ html[data-layout="ledger"] body { background: var(--ll-canvas); color: var(--ll-
 [data-layout="ledger"] .ll-unit {
   margin-left: 0.2rem; font-size: 0.85rem; font-weight: 400; color: var(--ll-secondary);
 }
+/* An unavailable reading keeps its place in the row but not its weight, so
+ * the eye passes over absence and stops on measurements. */
+[data-layout="ledger"] .ll-figure strong.ll-absent {
+  font-size: 1.05rem; color: var(--ll-muted); letter-spacing: 0;
+  line-height: 1.75; /* hold the baseline of a full-size figure */
+}
+/* Averages exclude stale machines, so when nothing is fresh every figure is
+ * N/A while the table below still shows per-machine numbers. Correct, but it
+ * reads as broken without a reason given in place. */
+[data-layout="ledger"] .ll-stale-note {
+  margin: 0 0 1.5rem; max-width: 68ch; font-size: 0.82rem; line-height: 1.55;
+  color: var(--ll-secondary); border-left: 2px solid var(--ll-rule-strong); padding-left: 0.85rem;
+}
 [data-layout="ledger"] .ll-figure p {
   margin: 0; font-size: 0.78rem; line-height: 1.45; color: var(--ll-muted);
 }

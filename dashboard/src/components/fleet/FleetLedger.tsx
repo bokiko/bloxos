@@ -43,10 +43,14 @@ function since(lastSeen: number | undefined, now: number): string {
 }
 
 function Figure({ label, value, unit, note }: { label: string; value: string; unit?: string; note: string }) {
+  // An unavailable reading is real information, but it is not a measurement:
+  // rendered at full size it gives dead fields the same weight as live data
+  // and the eye stops on nothing. Set smaller and muted so it reads as absent.
+  const unavailable = value === "N/A";
   return (
     <div className="ll-figure">
       <small>{label}</small>
-      <strong>
+      <strong className={unavailable ? "ll-absent" : undefined}>
         {value}
         {unit && <span className="ll-unit">{unit}</span>}
       </strong>
@@ -167,6 +171,14 @@ export function FleetLedger() {
       {/* ---- Band 2 — what is running right now? ----------------------- */}
       <section className="ll-band">
         <h2 className="ll-band-title">Running now</h2>
+
+        {agg.total > 0 && agg.online - agg.stale <= 0 && (
+          <p className="ll-stale-note">
+            No machine has reported inside the fresh window, so no fleet average
+            can be computed. The per-machine readings below are the last values
+            received, not current ones.
+          </p>
+        )}
 
         <div className="ll-figures">
           <Figure
