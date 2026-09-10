@@ -8,13 +8,13 @@ they are not containerized.
 
 Use Docker Compose v2 on a Linux amd64 or arm64 host. Ports 80 and 443 must
 be free, and browsers and agents must be able to reach the host. From a
-clone of the released `v1.3.1` tag:
+clone of the released `v1.3.2` tag:
 
 ```bash
 cd docker
 cp .env.example .env
 # Edit .env: set HUB_HOST to this machine's reachable hostname or IP.
-# Add BLOXOS_VERSION=1.3.1 to use this release's images.
+# Add BLOXOS_VERSION=1.3.2 to use this release's images.
 docker compose pull
 docker compose up -d --no-build
 ```
