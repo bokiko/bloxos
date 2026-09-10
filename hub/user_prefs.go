@@ -1,9 +1,12 @@
 package main
 
-// Phase 10 — per-user theme preferences.
+// Monoform — per-user appearance preference.
 //
-// Stored on the users row as theme_name + theme_mode. Both endpoints
-// require authentication; users only ever read or write their own row.
+// Stored on the users row as theme_name + theme_mode, kept for wire and schema
+// compatibility. There is now exactly one theme ("monoform") and two contrast
+// modes ("gray", "dark"); everything else is a historical value that gets
+// normalized away on read. Both endpoints require authentication; users only
+// ever read or write their own row.
 
 import (
 	"database/sql"
@@ -13,20 +16,12 @@ import (
 )
 
 var validThemeNames = map[string]struct{}{
-	"mission-control": {},
-	"graphite":        {},
-	"verdant":         {},
-	"bloxos":          {},
-	"solarized":       {},
-	"dracula":         {},
-	"nord":            {},
-	"tokyo-night":     {},
+	"monoform": {},
 }
 
 var validThemeModes = map[string]struct{}{
-	"light":  {},
-	"dark":   {},
-	"system": {},
+	"gray": {},
+	"dark": {},
 }
 
 type themePrefs struct {
@@ -42,7 +37,7 @@ func (s *Server) handleGetMyThemePrefs(c echo.Context) error {
 
 	var prefs themePrefs
 	err := s.db.QueryRow(
-		`SELECT COALESCE(theme_name, 'bloxos'), COALESCE(theme_mode, 'system') FROM users WHERE id = ?`,
+		`SELECT COALESCE(theme_name, 'monoform'), COALESCE(theme_mode, 'gray') FROM users WHERE id = ?`,
 		claims.UserID,
 	).Scan(&prefs.ThemeName, &prefs.ThemeMode)
 	if err == sql.ErrNoRows {
@@ -52,13 +47,15 @@ func (s *Server) handleGetMyThemePrefs(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database error"})
 	}
 
-	// Defensive: snap unknown values back to defaults so the dashboard
-	// never has to handle a stale value from a deprecated theme.
+	// Defensive: snap unknown values back to defaults so the dashboard never
+	// has to handle a stale value from a retired theme or contrast mode. Rows
+	// written before Monoform still hold e.g. "dracula" / "system"; they are
+	// normalized here rather than migrated.
 	if _, ok := validThemeNames[prefs.ThemeName]; !ok {
-		prefs.ThemeName = "bloxos"
+		prefs.ThemeName = "monoform"
 	}
 	if _, ok := validThemeModes[prefs.ThemeMode]; !ok {
-		prefs.ThemeMode = "system"
+		prefs.ThemeMode = "gray"
 	}
 	return c.JSON(http.StatusOK, prefs)
 }

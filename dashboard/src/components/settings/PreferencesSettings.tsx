@@ -1,12 +1,14 @@
 "use client";
 
-// Phase 11 — preferences settings panel.
+// Preferences settings panel.
 //
-// Density / default view / default sort scalar choices, plus the manage
+// Appearance (the single place in the product where gray/dark is chosen),
+// density / default view / default sort scalar choices, plus the manage
 // surfaces for pinned machines and saved filters.
 
 import { Trash2, LayoutGrid, List as ListIcon } from "lucide-react";
 import { usePreferences, type Density, type DefaultView, type DefaultSort } from "@/contexts/PreferencesContext";
+import { useTheme } from "@/contexts/ThemeContext";
 import { useSSE } from "@/contexts/SSEContext";
 import { useToast } from "@/components/Toast";
 import { Button } from "@/components/ui/button";
@@ -22,6 +24,7 @@ const SORT_LABELS: Record<DefaultSort, string> = {
 
 export function PreferencesSettings() {
   const { preferences, updateScalar, unpinMachine, deleteFilter } = usePreferences();
+  const { appearance, setAppearance } = useTheme();
   const { machines } = useSSE();
   const { addToast } = useToast();
 
@@ -41,9 +44,41 @@ export function PreferencesSettings() {
 
   return (
     <div className="space-y-8">
+      {/* Appearance — the only appearance control in the product. */}
+      <section className="mf-panel p-5" aria-labelledby="appearance-heading">
+        <h2 id="appearance-heading" className="text-sm font-semibold text-blox-text">
+          Appearance
+        </h2>
+        <p className="mt-1 text-xs text-blox-muted">
+          Choose the contrast level that suits your workspace.
+        </p>
+        <div
+          className="mt-4 inline-flex rounded-[10px] border border-blox-border bg-surface-sunken p-1"
+          role="group"
+          aria-label="Appearance"
+        >
+          {(["gray", "dark"] as const).map((option) => (
+            <button
+              key={option}
+              type="button"
+              onClick={() => setAppearance(option)}
+              aria-pressed={appearance === option}
+              className={cn(
+                "min-h-8 rounded-lg px-3 text-xs font-medium capitalize transition-colors",
+                appearance === option
+                  ? "bg-blox-card text-blox-text shadow-sm"
+                  : "text-blox-muted hover:text-blox-text",
+              )}
+            >
+              {option}
+            </button>
+          ))}
+        </div>
+      </section>
+
       {/* Density */}
-      <section className="rounded-xl border border-blox-border bg-blox-card p-5">
-        <h2 className="text-sm font-semibold text-blox-text mb-1">Density</h2>
+      <section className="mf-panel p-5" aria-labelledby="density-heading">
+        <h2 id="density-heading" className="text-sm font-semibold text-blox-text mb-1">Density</h2>
         <p className="text-xs text-blox-muted mb-4">
           How tightly the grid packs cards.
         </p>
@@ -57,9 +92,9 @@ export function PreferencesSettings() {
                 onClick={() => void handleScalar("Density", { density: d })}
                 aria-pressed={active}
                 className={cn(
-                  "text-left rounded-lg border bg-blox-bg p-4 transition-colors",
+                  "text-left rounded-[10px] border bg-surface-sunken p-4 transition-colors",
                   active
-                    ? "border-blox-blue ring-1 ring-blox-blue/40"
+                    ? "border-blox-blue"
                     : "border-blox-border hover:border-blox-muted/40",
                 )}
               >
@@ -76,8 +111,8 @@ export function PreferencesSettings() {
       </section>
 
       {/* Default view */}
-      <section className="rounded-xl border border-blox-border bg-blox-card p-5">
-        <h2 className="text-sm font-semibold text-blox-text mb-1">Default view</h2>
+      <section className="mf-panel p-5" aria-labelledby="default-view-heading">
+        <h2 id="default-view-heading" className="text-sm font-semibold text-blox-text mb-1">Default view</h2>
         <p className="text-xs text-blox-muted mb-4">
           Which layout the fleet page opens in.
         </p>
@@ -103,8 +138,8 @@ export function PreferencesSettings() {
       </section>
 
       {/* Default sort */}
-      <section className="rounded-xl border border-blox-border bg-blox-card p-5">
-        <h2 className="text-sm font-semibold text-blox-text mb-1">Default sort</h2>
+      <section className="mf-panel p-5" aria-labelledby="default-sort-heading">
+        <h2 id="default-sort-heading" className="text-sm font-semibold text-blox-text mb-1">Default sort</h2>
         <p className="text-xs text-blox-muted mb-4">
           How machines order before you reach for the sort menu.
         </p>
@@ -127,8 +162,8 @@ export function PreferencesSettings() {
       </section>
 
       {/* Pinned machines */}
-      <section className="rounded-xl border border-blox-border bg-blox-card p-5">
-        <h2 className="text-sm font-semibold text-blox-text mb-1">Pinned machines</h2>
+      <section className="mf-panel p-5" aria-labelledby="pinned-machines-heading">
+        <h2 id="pinned-machines-heading" className="text-sm font-semibold text-blox-text mb-1">Pinned machines</h2>
         <p className="text-xs text-blox-muted mb-4">
           These float to the top of the fleet grid.
         </p>
@@ -147,7 +182,7 @@ export function PreferencesSettings() {
                       {m?.hostname || id}
                     </div>
                     {m?.ip && (
-                      <div className="text-[11px] text-blox-muted font-mono truncate">
+                      <div className="mf-metric text-[11px] text-blox-muted truncate">
                         {m.ip}
                       </div>
                     )}
@@ -158,7 +193,7 @@ export function PreferencesSettings() {
                     onClick={() => void unpinMachine(id)}
                     title="Unpin"
                     aria-label={`Unpin ${m?.hostname || id}`}
-                    className="text-blox-muted hover:text-red-400"
+                    className="text-blox-muted hover:text-blox-red"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                   </Button>
@@ -170,8 +205,8 @@ export function PreferencesSettings() {
       </section>
 
       {/* Saved filters */}
-      <section className="rounded-xl border border-blox-border bg-blox-card p-5">
-        <h2 className="text-sm font-semibold text-blox-text mb-1">Saved filters</h2>
+      <section className="mf-panel p-5" aria-labelledby="saved-filters-heading">
+        <h2 id="saved-filters-heading" className="text-sm font-semibold text-blox-text mb-1">Saved filters</h2>
         <p className="text-xs text-blox-muted mb-4">
           Combinations of search, status, tag, and sort that you reuse.
         </p>
@@ -191,7 +226,7 @@ export function PreferencesSettings() {
                   onClick={() => void deleteFilter(f.id)}
                   title="Delete saved filter"
                   aria-label={`Delete saved filter ${f.name}`}
-                  className="text-blox-muted hover:text-red-400"
+                  className="text-blox-muted hover:text-blox-red"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                 </Button>

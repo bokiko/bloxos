@@ -4,8 +4,7 @@ import { useEffect, useRef, useCallback, useState } from "react";
 import { Terminal as XTerm, ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
-import { useTheme } from "@/contexts/ThemeContext";
-import { useDesign } from "@/contexts/DesignContext";
+import { useTheme, type AppearanceMode } from "@/contexts/ThemeContext";
 import { getHubWsBaseUrl } from "@/lib/session";
 import "@xterm/xterm/css/xterm.css";
 
@@ -16,59 +15,70 @@ interface TerminalProps {
 }
 
 /* ============================================================================
- * Theme palettes
+ * Terminal palette
  *
- * Dark theme matches the rest of the BloxOS dashboard (blox-bg base, accent
- * blue cursor). Light theme is a Solarized Light derivative — readable in
- * bright environments without losing the ANSI color semantics that make
- * terminal output legible (red errors stay red, green diffs stay green).
+ * Monoform is dark-only, so there is no light palette left to choose between.
+ * The terminal follows the gray/dark appearance instead, drawn from the same
+ * tokens the rest of the product uses, so terminal output sits in the same
+ * colour world as the surrounding UI. ANSI semantics are preserved throughout
+ * — red errors stay red, green diffs stay green.
  * ============================================================================ */
 
-const darkTheme: ITheme = {
-  background: "#0a0a0f",
-  foreground: "#e4e4ef",
-  cursor: "#3b82f6",
-  selectionBackground: "#3b82f640",
-  black: "#0a0a0f",
-  red: "#ef4444",
-  green: "#22c55e",
-  yellow: "#f59e0b",
-  blue: "#3b82f6",
-  magenta: "#a855f7",
-  cyan: "#06b6d4",
-  white: "#e4e4ef",
-  brightBlack: "#6b6b80",
-  brightRed: "#f87171",
-  brightGreen: "#4ade80",
-  brightYellow: "#fbbf24",
-  brightBlue: "#60a5fa",
-  brightMagenta: "#c084fc",
-  brightCyan: "#22d3ee",
-  brightWhite: "#f8fafc",
+// Mirrors the `--mf-*` tokens in app/monoform.css. xterm.js needs concrete
+// values, so the two token blocks are duplicated here; the ANSI "bright"
+// variants are a shared lift of the same hues. Cyan has no Monoform token —
+// it is derived, because collapsing it onto blue would cost the ANSI
+// distinction that makes terminal output readable.
+const PALETTES: Record<AppearanceMode, ITheme> = {
+  gray: {
+    background: "#101010",
+    foreground: "#f2f2ef",
+    cursor: "#6380ff",
+    selectionBackground: "rgba(99, 128, 255, 0.28)",
+    black: "#101010",
+    red: "#e56767",
+    green: "#58bd88",
+    yellow: "#e9a34b",
+    blue: "#6380ff",
+    magenta: "#9b87e8",
+    cyan: "#5fb8c4",
+    white: "#f2f2ef",
+    brightBlack: "#a3a39c",
+    brightRed: "#f08a8a",
+    brightGreen: "#7bd0a4",
+    brightYellow: "#f2bb74",
+    brightBlue: "#8b9fff",
+    brightMagenta: "#b6a6f0",
+    brightCyan: "#82cdd7",
+    brightWhite: "#ffffff",
+  },
+  dark: {
+    background: "#090909",
+    foreground: "#f4f4f2",
+    cursor: "#708bff",
+    selectionBackground: "rgba(112, 139, 255, 0.28)",
+    black: "#090909",
+    red: "#ea7474",
+    green: "#63c695",
+    yellow: "#edaa57",
+    blue: "#708bff",
+    magenta: "#aa97ed",
+    cyan: "#6cc2ce",
+    white: "#f4f4f2",
+    brightBlack: "#969691",
+    brightRed: "#f08a8a",
+    brightGreen: "#7bd0a4",
+    brightYellow: "#f2bb74",
+    brightBlue: "#8b9fff",
+    brightMagenta: "#b6a6f0",
+    brightCyan: "#82cdd7",
+    brightWhite: "#ffffff",
+  },
 };
 
-const lightTheme: ITheme = {
-  background: "#fdfdfb",
-  foreground: "#3a3a3a",
-  cursor: "#3b82f6",
-  selectionBackground: "#3b82f630",
-  black: "#3a3a3a",
-  red: "#dc322f",
-  green: "#15803d",
-  yellow: "#a16207",
-  blue: "#2563eb",
-  magenta: "#9333ea",
-  cyan: "#0e7490",
-  white: "#fdfdfb",
-  brightBlack: "#52525b",
-  brightRed: "#ef4444",
-  brightGreen: "#16a34a",
-  brightYellow: "#d97706",
-  brightBlue: "#3b82f6",
-  brightMagenta: "#a855f7",
-  brightCyan: "#0891b2",
-  brightWhite: "#ffffff",
-};
+function terminalTheme(appearance: AppearanceMode): ITheme {
+  return PALETTES[appearance] ?? PALETTES.gray;
+}
 
 export function Terminal({ sessionId, browserToken, onDisconnect }: TerminalProps) {
   const termRef = useRef<HTMLDivElement>(null);
@@ -76,10 +86,8 @@ export function Terminal({ sessionId, browserToken, onDisconnect }: TerminalProp
   const wsRef = useRef<WebSocket | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const [status, setStatus] = useState<"connecting" | "connected" | "disconnected">("connecting");
-  // Follow the active design's fixed color scheme; Classic keeps its own mode.
-  const { resolvedMode } = useTheme();
-  const { layout, color } = useDesign();
-  const resolvedTheme = layout === "classic" ? resolvedMode : color === "bright" ? "light" : "dark";
+  // Monoform is always dark; the appearance only shifts how deep the well is.
+  const { appearance } = useTheme();
 
   const cleanup = useCallback(() => {
     if (wsRef.current) {
@@ -103,7 +111,7 @@ export function Terminal({ sessionId, browserToken, onDisconnect }: TerminalProp
       fontSize: 14,
       fontFamily:
         "'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Menlo', monospace",
-      theme: resolvedTheme === "light" ? lightTheme : darkTheme,
+      theme: terminalTheme(appearance),
       allowProposedApi: true,
       scrollback: 5000,
     });
@@ -201,18 +209,17 @@ export function Terminal({ sessionId, browserToken, onDisconnect }: TerminalProp
       onResize.dispose();
       cleanup();
     };
-    // The dependency on resolvedTheme is intentionally omitted here: changing
-    // the theme should NOT re-create the WebSocket. Live theme updates are
-    // handled by the separate effect below.
+    // The dependency on `appearance` is intentionally omitted here: changing
+    // the appearance should NOT re-create the WebSocket. Live palette updates
+    // are handled by the separate effect below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, browserToken, onDisconnect, cleanup]);
 
-  // Live theme updates — swap the palette without re-creating the terminal.
+  // Live appearance updates — swap the palette without re-creating the terminal.
   useEffect(() => {
     if (!xtermRef.current) return;
-    xtermRef.current.options.theme =
-      resolvedTheme === "light" ? lightTheme : darkTheme;
-  }, [resolvedTheme]);
+    xtermRef.current.options.theme = terminalTheme(appearance);
+  }, [appearance]);
 
   return (
     <div className="relative w-full h-full">

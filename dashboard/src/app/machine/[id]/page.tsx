@@ -1,13 +1,22 @@
 "use client";
 import { AppShell } from "@/components/shell/AppShell";
 
+// Machine detail.
+//
+// Monoform: this is the same product as the fleet view, with more of the data
+// visible — the panels, tables, meters, status marks and controls are the ones
+// /inventory and /versions use, at a finer grain. Deliberately NOT a separate
+// "terminal" or "telemetry" aesthetic: live resource readings are table rows
+// with a hairline meter, not gauges, and the terminal is a panel like any
+// other. The shell owns the title (overridden here to the hostname), the rail
+// and the global actions; the machine-scoped actions live in this page's lead.
+
 import { useEffect, useState, useCallback, useRef, use, useMemo } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import dynamic from "next/dynamic";
 import { useSSE } from "@/contexts/SSEContext";
-import { ProgressBar } from "@/components/ProgressBar";
-import { StatusBadge, MachineStatus } from "@/components/StatusBadge";
+import { MachineStatus } from "@/components/StatusBadge";
 import { ServicePanel, Service } from "@/components/ServicePanel";
 import { ContainerPanel, Container } from "@/components/ContainerPanel";
 import { RebootModal } from "@/components/RebootModal";
@@ -17,25 +26,32 @@ import { HardwareCard, type HardwareInfo } from "@/components/HardwareCard";
 import { MachineNotes } from "@/components/MachineNotes";
 import { AISessionsPanel } from "@/components/AISessionsPanel";
 import { useAISessions } from "@/contexts/AISessionsContext";
-import { MachineGauges } from "@/components/MachineGauges";
+import { StatusCell, StatusMark, type MonoformTone } from "@/components/MonoformStatus";
 import { latestGPUs } from "@/lib/gauge-data.mjs";
 import { detailStatus, terminalStartError } from "@/lib/machine-status.mjs";
 import { parseServerTimestamp } from "@/lib/timestamps";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { usePageTitle } from "@/components/shell/PageTitle";
+import {
+  MF_BUTTON,
+  MF_BUTTON_DANGER,
+  MF_BUTTON_QUIET,
+  MF_DIALOG,
+  MF_INPUT,
+  MF_PANEL_HEAD,
+  MF_PANEL_TITLE,
+  MF_TAB,
+} from "@/lib/monoform-classes";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
   DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { motion } from "framer-motion";
 import {
-  ArrowLeft, Cpu, HardDrive, MemoryStick, Thermometer,
-  Activity, Zap, Terminal as TerminalIcon, RotateCcw,
-  Lock, Unlock, X, Maximize2, Minimize2, Wifi, BarChart3, Trash2,
+  Terminal as TerminalIcon, RotateCcw,
+  Lock, Unlock, X, Maximize2, Minimize2, Trash2,
   LayoutDashboard, Box, Container as ContainerIcon, StickyNote, KeyRound,
-  RefreshCw, Copy, Check, Bot,
+  RefreshCw, Copy, Check, Bot, BarChart3, AlertTriangle,
 } from "lucide-react";
 import { HUB_URL, getAuthHeaders } from "@/lib/session";
 import { useAuth } from "@/contexts/AuthContext";
@@ -130,6 +146,91 @@ function getStatus(data: MachineData, now: number): MachineStatus {
     maxGpuTempC,
     diskPct,
   });
+}
+
+/* ---- Shared readings ------------------------------------------------------
+ * One rule for what counts as a warning, used by the resource table and the
+ * graphics table so a 91% disk and a 91% GPU never disagree. */
+
+function loadTone(pct: number): MonoformTone {
+  if (pct >= 90) return "critical";
+  if (pct >= 75) return "warning";
+  return "ok";
+}
+
+function tempTone(celsius: number): MonoformTone {
+  if (celsius >= 80) return "critical";
+  if (celsius >= 60) return "warning";
+  return "ok";
+}
+
+const TONE_LABEL: Record<MonoformTone, string> = {
+  ok: "Nominal",
+  warning: "Elevated",
+  critical: "Critical",
+  stale: "Stale",
+  neutral: "Not reported",
+};
+
+const STATUS_TONE: Record<MachineStatus, MonoformTone> = {
+  live: "ok",
+  warning: "warning",
+  critical: "critical",
+  offline: "critical",
+  stale: "stale",
+};
+
+/** The hairline load meter used in every reading row. */
+function Meter({ pct, variant }: { pct: number; variant?: "gpu" | "warning" }) {
+  const clamped = Math.max(0, Math.min(100, pct));
+  return (
+    <span
+      className={`mf-meter w-32 ${variant === "gpu" ? "mf-meter--gpu" : ""} ${variant === "warning" ? "mf-meter--warning" : ""}`}
+      aria-hidden
+    >
+      <i style={{ width: `${clamped}%` }} />
+    </span>
+  );
+}
+
+/** One row of the resource table: name, value, meter, state. */
+function ReadingRow({
+  label,
+  value,
+  detail,
+  pct,
+  tone,
+  gpu,
+}: {
+  label: string;
+  value: string;
+  detail?: string;
+  pct?: number;
+  tone?: MonoformTone;
+  gpu?: boolean;
+}) {
+  return (
+    <tr>
+      <td className="text-[13px] text-text-primary">
+        {label}
+        {detail && <span className="ml-2 font-mono text-[11px] text-text-tertiary">{detail}</span>}
+      </td>
+      <td className="mf-metric text-[13px] text-text-primary">{value}</td>
+      <td>
+        {pct === undefined ? (
+          <span className="text-text-disabled">—</span>
+        ) : (
+          <Meter
+            pct={pct}
+            variant={tone === "warning" || tone === "critical" ? "warning" : gpu ? "gpu" : undefined}
+          />
+        )}
+      </td>
+      <td>
+        {tone ? <StatusCell tone={tone} label={TONE_LABEL[tone]} /> : <span className="text-text-disabled">—</span>}
+      </td>
+    </tr>
+  );
 }
 
 export default function MachineDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -235,7 +336,7 @@ function MachineDetailContent({ params }: { params: Promise<{ id: string }> }) {
   const sseData = getMachine(id);
 
   // Liveness — derived at render time, no useMemo needed. The `now` state
-  // is updated by a 1Hz interval (above), so this re-evaluates each tick
+  // is updated by a 1Hz interval (below), so this re-evaluates each tick
   // without tripping React 19's idempotence rule on Date.now().
   const lastSeenMs = sseData?.last_seen ?? 0;
   const isLive = lastSeenMs > 0 && now - lastSeenMs < 120_000;
@@ -286,6 +387,11 @@ function MachineDetailContent({ params }: { params: Promise<{ id: string }> }) {
     const raw = sseData as Record<string, unknown> | undefined;
     return Array.isArray(raw?._containers) ? (raw._containers as Container[]) : containers;
   }, [sseData, containers]);
+
+  // The top bar's route-derived title for /machine/* is the generic
+  // {title: "Machine", kicker: "Fleet"}; the hostname is the only name an
+  // operator actually navigates by, so it replaces it as soon as it loads.
+  usePageTitle(data?.machine.hostname, "Machine");
 
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
@@ -442,28 +548,27 @@ function MachineDetailContent({ params }: { params: Promise<{ id: string }> }) {
 
   if (error && !data) {
     return (
-      <div className="min-h-screen bg-blox-bg flex items-center justify-center">
-        <div className="text-center">
-          <p className="text-red-400 text-sm mb-4">{error}</p>
-          <Link href="/" className="text-blox-blue text-sm hover:underline">Back to Fleet</Link>
-        </div>
+      <div className="mf-panel px-6 py-10 text-center">
+        <p className="text-[13px] text-status-critical">{error}</p>
+        <Link href="/" className="mt-4 inline-block text-[13px] text-accent hover:underline">
+          Back to the fleet
+        </Link>
       </div>
     );
   }
 
   if (!data) {
     return (
-      <div className="min-h-screen bg-blox-bg flex items-center justify-center">
-        <div className="flex items-center gap-2 text-blox-muted text-sm">
-          <div className="w-4 h-4 border-2 border-blox-blue border-t-transparent rounded-full animate-spin" />
-          Loading...
-        </div>
+      <div className="flex items-center gap-2.5 py-20 text-[13px] text-text-tertiary">
+        <span className="w-3.5 h-3.5 border-2 border-accent/40 border-t-accent rounded-full animate-spin" />
+        Loading…
       </div>
     );
   }
 
   const { machine, metrics } = data;
   const status = getStatus(data, now);
+  const cpuPct = metrics?.cpu_percent ?? 0;
   const ramPct = (metrics?.ram_total_bytes ?? 0) > 0 ? ((metrics?.ram_used_bytes ?? 0) / metrics.ram_total_bytes) * 100 : 0;
   const diskPct = (metrics?.disk_total_bytes ?? 0) > 0 ? ((metrics?.disk_used_bytes ?? 0) / metrics.disk_total_bytes) * 100 : 0;
   const gpus = data.gpus || [];
@@ -476,38 +581,43 @@ function MachineDetailContent({ params }: { params: Promise<{ id: string }> }) {
   const isAPIMachine = machineTags.includes("synology") || machineTags.includes("proxmox");
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.25, ease: "easeOut" }}
-      className="min-h-screen bg-blox-bg" data-design-page
-    >
+    <>
       {/* Delete dialog */}
       <Dialog open={showDeleteConfirm} onOpenChange={(o) => { if (!o) setShowDeleteConfirm(false); }}>
-        <DialogContent className="bg-blox-card border-blox-border text-blox-text ring-0 sm:max-w-md" showCloseButton={false}>
+        <DialogContent className={`${MF_DIALOG} sm:max-w-md`} showCloseButton={false}>
           <DialogHeader>
-            <div className="flex items-center gap-3">
-              <div className="p-2 rounded-xl bg-red-500/10">
-                <Trash2 className="w-5 h-5 text-red-400" />
-              </div>
-              <DialogTitle className="text-blox-text">Delete Machine</DialogTitle>
-            </div>
-            <DialogDescription className="text-blox-muted text-xs mt-2">
-              Are you sure you want to remove <span className="text-blox-text font-medium">{machine.hostname}</span> from BloxOS? This will delete all historical data.
+            <DialogTitle className="flex items-center gap-2.5">
+              <Trash2 className="w-4 h-4 text-status-critical" aria-hidden />
+              Delete machine
+            </DialogTitle>
+            <DialogDescription className="mt-2 text-[13px] leading-6 text-text-tertiary">
+              Remove <span className="font-medium text-text-primary">{machine.hostname}</span> from
+              BloxOS? All of its historical data is deleted with it.
             </DialogDescription>
-            {deleteError && <p role="alert" className="text-xs text-red-400 mt-2">{deleteError}</p>}
+            {deleteError && (
+              <p role="alert" className="mt-2 text-xs text-status-critical">{deleteError}</p>
+            )}
           </DialogHeader>
-          <DialogFooter className="bg-transparent border-t-blox-border">
-            <Button variant="outline" size="sm" onClick={() => setShowDeleteConfirm(false)} disabled={deleting} className="text-xs text-blox-muted border-blox-border">
+          <DialogFooter>
+            <button
+              type="button"
+              onClick={() => setShowDeleteConfirm(false)}
+              disabled={deleting}
+              className={MF_BUTTON_QUIET}
+            >
               Cancel
-            </Button>
-            <Button variant="destructive" size="sm" onClick={handleDeleteMachine} disabled={deleting} className="text-xs">
-              {deleting ? "Deleting..." : "Delete Machine"}
-            </Button>
+            </button>
+            <button
+              type="button"
+              onClick={handleDeleteMachine}
+              disabled={deleting}
+              className={MF_BUTTON_DANGER}
+            >
+              {deleting ? "Deleting…" : "Delete machine"}
+            </button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
 
       {/* Credential revoke dialog */}
       <Dialog
@@ -519,40 +629,47 @@ function MachineDetailContent({ params }: { params: Promise<{ id: string }> }) {
           }
         }}
       >
-        <DialogContent className="bg-blox-card border-blox-border text-blox-text ring-0 sm:max-w-md" showCloseButton={false}>
+        <DialogContent className={`${MF_DIALOG} sm:max-w-md`} showCloseButton={false}>
           <DialogHeader>
-            <div className="flex items-center gap-3">
-              <div className="p-2 rounded-xl bg-amber-500/10">
-                <KeyRound className="w-5 h-5 text-amber-400" />
-              </div>
-              <DialogTitle className="text-blox-text">Revoke enrollment credential</DialogTitle>
-            </div>
-            <DialogDescription className="text-blox-muted text-xs mt-2">
-              This immediately disconnects <span className="text-blox-text font-medium">{machine.hostname}</span>.
-              Its machine record and history are preserved, but it stays offline until you run a fresh Add Machine command on that host.
+            <DialogTitle className="flex items-center gap-2.5">
+              <KeyRound className="w-4 h-4 text-status-warning" aria-hidden />
+              Revoke enrollment credential
+            </DialogTitle>
+            <DialogDescription className="mt-2 text-[13px] leading-6 text-text-tertiary">
+              This immediately disconnects{" "}
+              <span className="font-medium text-text-primary">{machine.hostname}</span>. Its machine
+              record and history are preserved, but it stays offline until you run a fresh Add Machine
+              command on that host.
             </DialogDescription>
           </DialogHeader>
           {revokeError && (
-            <div className="text-[11px] text-blox-red bg-blox-red/10 border border-blox-red/30 rounded-lg px-3 py-2">
+            <p
+              role="alert"
+              className="rounded-lg border border-status-critical/40 bg-status-critical-tint px-3 py-2 text-[11px] text-status-critical"
+            >
               {revokeError}
-            </div>
+            </p>
           )}
-          <DialogFooter className="bg-transparent border-t-blox-border">
-            <Button
-              variant="outline"
-              size="sm"
+          <DialogFooter>
+            <button
+              type="button"
               onClick={() => {
                 setShowRevokeConfirm(false);
                 setRevokeError(null);
               }}
               disabled={revoking}
-              className="text-xs text-blox-muted border-blox-border"
+              className={MF_BUTTON_QUIET}
             >
               Cancel
-            </Button>
-            <Button variant="destructive" size="sm" onClick={handleRevokeCredential} disabled={revoking} className="text-xs">
-              {revoking ? "Revoking..." : "Revoke credential"}
-            </Button>
+            </button>
+            <button
+              type="button"
+              onClick={handleRevokeCredential}
+              disabled={revoking}
+              className={MF_BUTTON_DANGER}
+            >
+              {revoking ? "Revoking…" : "Revoke credential"}
+            </button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -568,96 +685,111 @@ function MachineDetailContent({ params }: { params: Promise<{ id: string }> }) {
           }
         }}
       >
-        <DialogContent className="bg-blox-card border-blox-border text-blox-text ring-0 sm:max-w-lg" showCloseButton={false}>
+        <DialogContent className={`${MF_DIALOG} sm:max-w-lg`} showCloseButton={false}>
           <DialogHeader>
-            <div className="flex items-center gap-3">
-              <div className="p-2 rounded-xl bg-blox-blue/10">
-                <RefreshCw className="w-5 h-5 text-blox-blue" />
-              </div>
-              <DialogTitle className="text-blox-text">Prepare Windows re-enrollment</DialogTitle>
-            </div>
-            <DialogDescription className="text-blox-muted text-xs mt-2">
+            <DialogTitle className="flex items-center gap-2.5">
+              <RefreshCw className="w-4 h-4 text-accent" aria-hidden />
+              Prepare Windows re-enrollment
+            </DialogTitle>
+            <DialogDescription className="mt-2 text-[13px] leading-6 text-text-tertiary">
               {reenrollResponse ? (
                 <>
-                  Run this command on <span className="text-blox-text font-medium">{machine.hostname}</span> in an
+                  Run this command on{" "}
+                  <span className="font-medium text-text-primary">{machine.hostname}</span> in an
                   elevated PowerShell session. It expires at{" "}
-                  <span className="text-blox-text font-medium">{new Date(reenrollResponse.expires_at).toLocaleString()}</span>.
-                  Running it rotates the credential; nothing changes on the hub until then.
+                  <span className="font-medium text-text-primary">
+                    {new Date(reenrollResponse.expires_at).toLocaleString()}
+                  </span>
+                  . Running it rotates the credential; nothing changes on the hub until then.
                 </>
               ) : (
                 <>
                   Preparing the command does not disconnect{" "}
-                  <span className="text-blox-text font-medium">{machine.hostname}</span> — it stays connected and
-                  authenticated until you run the returned command on that host, which is what actually performs the
-                  credential rotation.
+                  <span className="font-medium text-text-primary">{machine.hostname}</span> — it stays
+                  connected and authenticated until you run the returned command on that host, which is
+                  what actually performs the credential rotation.
                 </>
               )}
             </DialogDescription>
           </DialogHeader>
           {reenrollError && (
-            <div className="text-[11px] text-blox-red bg-blox-red/10 border border-blox-red/30 rounded-lg px-3 py-2">
+            <p
+              role="alert"
+              className="rounded-lg border border-status-critical/40 bg-status-critical-tint px-3 py-2 text-[11px] text-status-critical"
+            >
               {reenrollError}
-            </div>
+            </p>
           )}
           {reenrollResponse && (
             <div className="space-y-3">
               <div className="relative">
-                <pre className="bg-black/40 border border-blox-border rounded-lg p-3 text-[11px] font-mono text-blox-text whitespace-pre-wrap break-all max-h-48 overflow-y-auto">
+                <pre className="max-h-48 overflow-y-auto rounded-lg border border-border-default bg-surface-sunken p-3 pr-24 font-mono text-[11px] leading-5 text-text-primary whitespace-pre-wrap break-all">
                   {reenrollResponse.windows_command}
                 </pre>
-                <Button
-                  variant="outline"
-                  size="sm"
+                <button
+                  type="button"
                   onClick={() => handleCopyReenroll(reenrollResponse.windows_command, "command")}
-                  className="absolute top-2 right-2 text-xs border-blox-border gap-1.5"
+                  className={`${MF_BUTTON} absolute top-2 right-2 h-8`}
                   aria-label="Copy re-enrollment command"
                 >
-                  {reenrollCopied === "command" ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                  {reenrollCopied === "command" ? (
+                    <Check className="w-3 h-3" aria-hidden />
+                  ) : (
+                    <Copy className="w-3 h-3" aria-hidden />
+                  )}
                   Copy
-                </Button>
+                </button>
               </div>
               {reenrollResponse.ca_sha256 && (
                 <div className="relative">
-                  <div className="text-[10px] text-blox-muted mb-1">CA fingerprint (SHA-256)</div>
-                  <code className="block text-[10px] font-mono text-blox-text break-all bg-black/40 border border-blox-border rounded-lg p-2 pr-16">
+                  <div className="mf-kicker mb-1">CA fingerprint (SHA-256)</div>
+                  <code className="block rounded-lg border border-border-default bg-surface-sunken p-2.5 pr-28 font-mono text-[10px] text-text-primary break-all">
                     {reenrollResponse.ca_sha256}
                   </code>
-                  <Button
-                    variant="outline"
-                    size="sm"
+                  <button
+                    type="button"
                     onClick={() => handleCopyReenroll(reenrollResponse.ca_sha256, "sha")}
-                    className="absolute top-5 right-2 text-xs border-blox-border gap-1.5"
+                    className={`${MF_BUTTON} absolute top-5 right-2 h-8`}
                     aria-label="Copy CA SHA-256 fingerprint"
                   >
-                    {reenrollCopied === "sha" ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                    {reenrollCopied === "sha" ? (
+                      <Check className="w-3 h-3" aria-hidden />
+                    ) : (
+                      <Copy className="w-3 h-3" aria-hidden />
+                    )}
                     Copy SHA
-                  </Button>
+                  </button>
                 </div>
               )}
             </div>
           )}
-          <DialogFooter className="bg-transparent border-t-blox-border">
-            <Button
-              variant="outline"
-              size="sm"
+          <DialogFooter>
+            <button
+              type="button"
               onClick={() => {
                 setShowReenrollDialog(false);
                 setReenrollError(null);
                 setReenrollResponse(null);
               }}
               disabled={preparingReenroll}
-              className="text-xs text-blox-muted border-blox-border"
+              className={MF_BUTTON_QUIET}
             >
               {reenrollResponse ? "Close" : "Cancel"}
-            </Button>
+            </button>
             {!reenrollResponse && (
-              <Button variant="default" size="sm" onClick={handlePrepareReenrollment} disabled={preparingReenroll} className="text-xs">
-                {preparingReenroll ? "Preparing..." : "Prepare command"}
-              </Button>
+              <button
+                type="button"
+                onClick={handlePrepareReenrollment}
+                disabled={preparingReenroll}
+                className="mf-action"
+              >
+                {preparingReenroll ? "Preparing…" : "Prepare command"}
+              </button>
             )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
       {showReboot && (
         <RebootModal
           hostname={machine.hostname}
@@ -667,621 +799,530 @@ function MachineDetailContent({ params }: { params: Promise<{ id: string }> }) {
         />
       )}
 
-      {/* Header */}
-      {/* Top sticky bar — minimal, navigational only */}
-      <header className="sticky top-0 z-50 bg-blox-bg/80 backdrop-blur-xl border-b border-blox-border/50">
-        <div className="max-w-[1200px] mx-auto px-4 sm:px-6 h-12 flex items-center justify-between">
-          <Link
-            href="/"
-            className="flex items-center gap-1.5 text-blox-muted hover:text-blox-text transition-colors text-xs"
-          >
-            <ArrowLeft className="w-3.5 h-3.5" />
-            <span>Fleet</span>
-          </Link>
-
-          <div className="flex items-center gap-1.5">
-            {isLive && (
-              <span className="hidden sm:flex items-center gap-1 text-[10px] text-emerald-400 mr-1">
-                <span className="relative flex h-1.5 w-1.5">
-                  <span className="animate-status-pulse absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-                  <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500" />
-                </span>
-                live
-              </span>
+      {/* Page lead — live state and machine-scoped actions on the left, the
+          identity facts on the right. The shell's top bar already carries the
+          hostname, so nothing here repeats it. */}
+      <div className="mf-intro">
+        <div className="min-w-0">
+          <dl className="flex flex-wrap items-baseline gap-x-8 gap-y-3">
+            <div className="flex items-baseline gap-2">
+              <dt className="mf-kicker">Status</dt>
+              <dd>
+                <StatusMark tone={STATUS_TONE[status]} label={status} className="capitalize" />
+              </dd>
+            </div>
+            <div className="flex items-baseline gap-2">
+              <dt className="mf-kicker">Last report</dt>
+              <dd className="mf-metric text-[15px] text-text-primary">
+                {effectiveLastUpdated ? timeSince(effectiveLastUpdated) : "—"}
+              </dd>
+            </div>
+            {(data.latency_ms ?? 0) > 0 && (
+              <div className="flex items-baseline gap-2">
+                <dt className="mf-kicker">Latency</dt>
+                <dd className="mf-metric text-[15px] text-text-primary">{data.latency_ms}ms</dd>
+              </div>
             )}
-            {effectiveLastUpdated && (
-              <span className="hidden sm:inline text-[10px] text-blox-muted font-mono tabular-nums mr-2">
-                {timeSince(effectiveLastUpdated)}
-              </span>
+          </dl>
+
+          <div className="mt-5 flex flex-wrap items-center gap-2">
+            {!isAPIMachine && canControl && (
+              <button
+                type="button"
+                onClick={() => setShowReboot(true)}
+                disabled={!isOnline}
+                className={MF_BUTTON}
+                title={isOnline ? "Reboot this machine" : "Machine is not reporting — reboot unavailable"}
+              >
+                <RotateCcw className="w-3.5 h-3.5" aria-hidden />
+                Reboot
+              </button>
             )}
             {canDelete && !isAPIMachine && (
-              <Button
-                variant="outline"
-                size="sm"
+              <button
+                type="button"
                 onClick={() => {
                   setRevokeError(null);
                   setShowRevokeConfirm(true);
                 }}
-                className="text-xs border-blox-border text-blox-muted hover:text-amber-400 hover:border-amber-500/30 gap-1.5"
+                className={MF_BUTTON}
               >
-                <KeyRound className="w-3.5 h-3.5" />
+                <KeyRound className="w-3.5 h-3.5" aria-hidden />
                 Revoke credential
-              </Button>
+              </button>
             )}
             {canDelete && !isAPIMachine && (machine.os?.toLowerCase().includes("windows") ?? false) && (
-              <Button
-                variant="outline"
-                size="sm"
+              <button
+                type="button"
                 onClick={() => {
                   setReenrollError(null);
                   setReenrollResponse(null);
                   setShowReenrollDialog(true);
                 }}
-                className="text-xs border-blox-border text-blox-muted hover:text-blox-blue hover:border-blox-blue/30 gap-1.5"
+                className={MF_BUTTON}
               >
-                <RefreshCw className="w-3.5 h-3.5" />
+                <RefreshCw className="w-3.5 h-3.5" aria-hidden />
                 Prepare Windows re-enrollment
-              </Button>
+              </button>
             )}
             {canDelete && (
-              <Button
-                variant="outline"
-                size="sm"
+              <button
+                type="button"
                 onClick={() => {
                   setDeleteError(null);
                   setShowDeleteConfirm(true);
                 }}
-                className="text-xs border-blox-border text-blox-muted hover:text-red-400 hover:border-red-500/30 gap-1.5"
+                className={MF_BUTTON_QUIET}
               >
-                <Trash2 className="w-3.5 h-3.5" />
+                <Trash2 className="w-3.5 h-3.5" aria-hidden />
                 Delete
-              </Button>
-            )}
-            {!isAPIMachine && canControl && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setShowReboot(true)}
-                disabled={!isOnline}
-                className="text-xs border-blox-border text-blox-text gap-1.5"
-              >
-                <RotateCcw className="w-3.5 h-3.5" />
-                Reboot
-              </Button>
+              </button>
             )}
           </div>
         </div>
-      </header>
 
-      {/* Hero — hostname + status + key facts */}
-      <section className="border-b border-blox-border/50 bg-blox-bg/40">
-        <div className="max-w-[1200px] mx-auto px-4 sm:px-6 py-6">
-          <div className="flex items-center gap-3">
-            <span
-              className={[
-                "shrink-0 w-2.5 h-2.5 rounded-full",
-                status === "live"
-                  ? "bg-emerald-500 animate-status-pulse"
-                  : status === "warning"
-                  ? "bg-amber-500 animate-status-pulse"
-                  : "bg-red-500/60",
-              ].join(" ")}
-              aria-label={`Status: ${status}`}
-            />
-            <h1 className="text-xl sm:text-2xl font-semibold text-blox-text tracking-tight">
-              {machine.hostname}
-            </h1>
-            <StatusBadge status={status} />
-          </div>
+        <dl className="w-[250px] max-w-full shrink-0 space-y-2">
+          {machine.ip && <Fact label="IP" value={machine.ip} mono />}
+          {machine.os && <Fact label="OS" value={machine.os} />}
+          {isAPIMachine && <Fact label="Source" value="API-polled" />}
+          <Fact label="ID" value={machine.id} mono small />
+        </dl>
+      </div>
 
-          <dl className="flex flex-wrap items-baseline gap-x-5 gap-y-1.5 mt-3 text-[11px]">
-            {machine.ip && (
-              <div className="flex items-baseline gap-1.5">
-                <dt className="text-blox-muted uppercase tracking-[0.08em] text-[9px] font-medium">
-                  IP
-                </dt>
-                <dd className="text-blox-text font-mono tabular-nums">{machine.ip}</dd>
-              </div>
-            )}
-            {machine.os && (
-              <div className="flex items-baseline gap-1.5">
-                <dt className="text-blox-muted uppercase tracking-[0.08em] text-[9px] font-medium">
-                  OS
-                </dt>
-                <dd className="text-blox-text">{machine.os}</dd>
-              </div>
-            )}
-            {(data.latency_ms ?? 0) > 0 && (
-              <div className="flex items-baseline gap-1.5">
-                <dt className="text-blox-muted uppercase tracking-[0.08em] text-[9px] font-medium">
-                  Latency
-                </dt>
-                <dd className="text-blox-text font-mono tabular-nums flex items-center gap-1">
-                  <Wifi className="w-2.5 h-2.5 text-blox-muted" />
-                  {data.latency_ms}ms
-                </dd>
-              </div>
-            )}
-            <div className="flex items-baseline gap-1.5">
-              <dt className="text-blox-muted uppercase tracking-[0.08em] text-[9px] font-medium">
-                ID
-              </dt>
-              <dd className="text-blox-muted font-mono text-[10px]">{machine.id}</dd>
+      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as DetailTab)}>
+        <TabsList variant="line" className="gap-1">
+          <TabsTrigger value="overview" className={MF_TAB}>
+            <LayoutDashboard className="w-4 h-4" aria-hidden />
+            Overview
+          </TabsTrigger>
+          <TabsTrigger value="services" className={MF_TAB}>
+            <Box className="w-4 h-4" aria-hidden />
+            Services
+          </TabsTrigger>
+          <TabsTrigger value="containers" className={MF_TAB}>
+            <ContainerIcon className="w-4 h-4" aria-hidden />
+            Containers
+          </TabsTrigger>
+          <TabsTrigger value="metrics" className={MF_TAB}>
+            <BarChart3 className="w-4 h-4" aria-hidden />
+            Metrics
+          </TabsTrigger>
+          {!isAPIMachine && (
+            <TabsTrigger value="ai-sessions" className={MF_TAB}>
+              <Bot className="w-4 h-4" aria-hidden />
+              AI Sessions
+              {aiSessionCount > 0 && (
+                <span className="ml-1 font-mono text-[10px] text-text-tertiary">{aiSessionCount}</span>
+              )}
+            </TabsTrigger>
+          )}
+          <TabsTrigger value="notes" className={MF_TAB}>
+            <StickyNote className="w-4 h-4" aria-hidden />
+            Notes
+          </TabsTrigger>
+          {!isAPIMachine && canControl && (
+            <TabsTrigger value="terminal" className={MF_TAB}>
+              <TerminalIcon className="w-4 h-4" aria-hidden />
+              Terminal
+              {termState === "active" && (
+                <span className="ml-1 font-mono text-[10px] text-status-ok">on</span>
+              )}
+            </TabsTrigger>
+          )}
+        </TabsList>
+
+        {/* Overview — the live readings as a table, then the static hardware
+            inventory. GPU rows only appear when a GPU is reported. */}
+        <TabsContent value="overview" className="mt-7 space-y-6">
+          <section className="mf-panel overflow-hidden">
+            <div className={MF_PANEL_HEAD}>
+              <h2 className={MF_PANEL_TITLE}>Live readings</h2>
+              <span className="mf-kicker">
+                {effectiveLastUpdated ? `reported ${timeSince(effectiveLastUpdated)}` : "no report yet"}
+              </span>
             </div>
-          </dl>
-        </div>
-      </section>
-
-      <main className="max-w-[1200px] mx-auto px-4 sm:px-6 py-6 space-y-6">
-        <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as DetailTab)}>
-          <TabsList variant="line" className="gap-1">
-            <TabsTrigger value="overview" className="px-4 py-1.5 gap-1.5 text-sm">
-              <LayoutDashboard className="w-4 h-4" />
-              Overview
-            </TabsTrigger>
-            <TabsTrigger value="services" className="px-4 py-1.5 gap-1.5 text-sm">
-              <Box className="w-4 h-4" />
-              Services
-            </TabsTrigger>
-            <TabsTrigger value="containers" className="px-4 py-1.5 gap-1.5 text-sm">
-              <ContainerIcon className="w-4 h-4" />
-              Containers
-            </TabsTrigger>
-            <TabsTrigger value="metrics" className="px-4 py-1.5 gap-1.5 text-sm">
-              <BarChart3 className="w-4 h-4" />
-              Metrics
-            </TabsTrigger>
-            {!isAPIMachine && (
-              <TabsTrigger value="ai-sessions" className="px-4 py-1.5 gap-1.5 text-sm">
-                <Bot className="w-4 h-4" />
-                AI Sessions
-                {aiSessionCount > 0 && (
-                  <span className="ml-1 text-[10px] font-mono tabular-nums text-blox-muted">{aiSessionCount}</span>
-                )}
-              </TabsTrigger>
-            )}
-            <TabsTrigger value="notes" className="px-4 py-1.5 gap-1.5 text-sm">
-              <StickyNote className="w-4 h-4" />
-              Notes
-            </TabsTrigger>
-            {!isAPIMachine && canControl && (
-              <TabsTrigger value="terminal" className="px-4 py-1.5 gap-1.5 text-sm">
-                <TerminalIcon className="w-4 h-4" />
-                Terminal
-                {termState === "active" && (
-                  <span className="ml-1 inline-block w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                )}
-              </TabsTrigger>
-            )}
-          </TabsList>
-
-          {/* Overview — system panel, plus GPU only when a GPU is present */}
-          <TabsContent value="overview" className="mt-6">
-            {/* Live gauges */}
-            {metrics && (
-              <div className="mb-6">
-                <MachineGauges metrics={metrics} gpus={data?.gpus} />
-              </div>
-            )}
-
-            <div className={`grid grid-cols-1 gap-6 ${hasGpu ? "lg:grid-cols-2" : ""}`}>
-              <motion.div
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.05 }}
-                className="bg-blox-card border border-blox-border rounded-xl p-5"
-              >
-                <div className="flex items-center gap-2.5 mb-5">
-                  <div className="p-1.5 rounded-lg bg-blox-blue/10">
-                    <Activity className="w-3.5 h-3.5 text-blox-blue" />
-                  </div>
-                  <h3 className="text-sm font-semibold text-blox-text">System</h3>
-                </div>
-                <div className="space-y-4">
-                  <div>
-                    <div className="flex items-center justify-between mb-1.5">
-                      <div className="flex items-center gap-2">
-                        <Cpu className="w-3.5 h-3.5 text-blox-muted" />
-                        <span className="text-xs text-blox-muted">CPU</span>
-                      </div>
-                      <span className="text-sm font-semibold text-blox-text tabular-nums font-mono">{(metrics?.cpu_percent ?? 0).toFixed(1)}%</span>
-                    </div>
-                    <ProgressBar value={metrics?.cpu_percent ?? 0} size="md" />
-                  </div>
-                  <div>
-                    <div className="flex items-center justify-between mb-1.5">
-                      <div className="flex items-center gap-2">
-                        <MemoryStick className="w-3.5 h-3.5 text-blox-muted" />
-                        <span className="text-xs text-blox-muted">RAM</span>
-                      </div>
-                      <span className="text-xs text-blox-muted tabular-nums font-mono">{formatBytes(metrics?.ram_used_bytes)} / {formatBytes(metrics?.ram_total_bytes)}</span>
-                    </div>
-                    <ProgressBar value={ramPct} size="md" label={`${ramPct.toFixed(0)}%`} />
-                  </div>
-                  <div>
-                    <div className="flex items-center justify-between mb-1.5">
-                      <div className="flex items-center gap-2">
-                        <HardDrive className="w-3.5 h-3.5 text-blox-muted" />
-                        <span className="text-xs text-blox-muted">Disk</span>
-                      </div>
-                      <span className="text-xs text-blox-muted tabular-nums font-mono">{formatBytes(metrics?.disk_used_bytes)} / {formatBytes(metrics?.disk_total_bytes)}</span>
-                    </div>
-                    <ProgressBar value={diskPct} size="md" label={`${diskPct.toFixed(0)}%`} />
-                  </div>
-                  {(data.latency_ms ?? 0) > 0 && (
-                    <div className="flex items-center justify-between py-2.5 border-t border-blox-border/50">
-                      <div className="flex items-center gap-2">
-                        <Wifi className="w-3.5 h-3.5 text-blox-muted" />
-                        <span className="text-xs text-blox-muted">Network Latency</span>
-                      </div>
-                      <span className="text-xs text-blox-text tabular-nums font-mono">
-                        {data.latency_ms}ms
-                      </span>
-                    </div>
+            <div className="mf-table-wrap overflow-x-auto">
+              <table className="mf-table">
+                <thead>
+                  <tr>
+                    <th>Resource</th>
+                    <th>Value</th>
+                    <th>Load</th>
+                    <th>State</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <ReadingRow
+                    label="CPU"
+                    value={`${cpuPct.toFixed(1)}%`}
+                    pct={cpuPct}
+                    tone={loadTone(cpuPct)}
+                  />
+                  {(metrics?.cpu_temp_c ?? 0) > 0 && (
+                    <ReadingRow
+                      label="CPU temperature"
+                      value={`${(metrics.cpu_temp_c ?? 0).toFixed(0)}°C`}
+                      tone={tempTone(metrics.cpu_temp_c ?? 0)}
+                    />
                   )}
-                </div>
-              </motion.div>
+                  <ReadingRow
+                    label="Memory"
+                    detail={`${formatBytes(metrics?.ram_used_bytes)} / ${formatBytes(metrics?.ram_total_bytes)}`}
+                    value={`${ramPct.toFixed(0)}%`}
+                    pct={ramPct}
+                    tone={loadTone(ramPct)}
+                  />
+                  <ReadingRow
+                    label="Disk"
+                    detail={`${formatBytes(metrics?.disk_used_bytes)} / ${formatBytes(metrics?.disk_total_bytes)}`}
+                    value={`${diskPct.toFixed(0)}%`}
+                    pct={diskPct}
+                    tone={loadTone(diskPct)}
+                  />
+                  {(data.latency_ms ?? 0) > 0 && (
+                    <ReadingRow label="Network latency" value={`${data.latency_ms}ms`} />
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
 
-              {hasGpu && (
-                <motion.div
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.1 }}
-                  className="bg-blox-card border border-blox-border rounded-xl p-5"
-                >
-                  <div className="flex items-center gap-2.5 mb-5">
-                    <div className="p-1.5 rounded-lg bg-blox-blue/10">
-                      <Zap className="w-3.5 h-3.5 text-blox-blue" />
-                    </div>
-                    <h3 className="text-sm font-semibold text-blox-text">GPU</h3>
-                  </div>
-                  <div className="space-y-5">
+          {hasGpu && (
+            <section className="mf-panel overflow-hidden">
+              <div className={MF_PANEL_HEAD}>
+                <h2 className={MF_PANEL_TITLE}>Graphics</h2>
+                <span className="mf-kicker">
+                  {gpus.length} device{gpus.length === 1 ? "" : "s"}
+                </span>
+              </div>
+              <div className="mf-table-wrap overflow-x-auto">
+                <table className="mf-table">
+                  <thead>
+                    <tr>
+                      <th>GPU</th>
+                      <th>Utilisation</th>
+                      <th>Temperature</th>
+                      <th>VRAM</th>
+                      <th>Power</th>
+                      <th>Fan</th>
+                    </tr>
+                  </thead>
+                  <tbody>
                     {gpus.map((gpu) => {
-                      const vramPct = (gpu.mem_total_bytes ?? 0) > 0 ? ((gpu.mem_used_bytes ?? 0) / gpu.mem_total_bytes) * 100 : 0;
+                      const util = gpu.util_percent ?? 0;
+                      const temp = gpu.temp_c ?? 0;
+                      const vramPct = (gpu.mem_total_bytes ?? 0) > 0
+                        ? ((gpu.mem_used_bytes ?? 0) / gpu.mem_total_bytes) * 100
+                        : 0;
+                      const tTone = tempTone(temp);
                       return (
-                        <div key={gpu.index} className="space-y-3">
-                          {gpus.length > 1 && (
-                            <div className="text-[10px] text-blox-muted font-mono border-b border-blox-border/50 pb-1">
-                              GPU {gpu.index}: {gpu.name}
-                            </div>
-                          )}
-                          {gpus.length === 1 && gpu.name && (
-                            <Badge variant="outline" className="text-[10px] border-blox-border text-blox-muted font-mono h-auto py-0 px-2 mb-1">
-                              {gpu.name}
-                            </Badge>
-                          )}
-                          <div>
-                            <div className="flex items-center justify-between mb-1.5">
-                              <div className="flex items-center gap-2">
-                                <Thermometer className="w-3.5 h-3.5 text-blox-muted" />
-                                <span className="text-xs text-blox-muted">Temperature</span>
-                              </div>
-                              <span className={`text-sm font-semibold tabular-nums font-mono ${
-                                (gpu.temp_c ?? 0) > 80 ? "text-red-400" :
-                                (gpu.temp_c ?? 0) > 60 ? "text-amber-400" : "text-emerald-400"
-                              }`}>{gpu.temp_c ?? 0}&deg;C</span>
-                            </div>
-                            <ProgressBar value={gpu.temp_c ?? 0} size="md" />
-                          </div>
-                          <div>
-                            <div className="flex items-center justify-between mb-1.5">
-                              <div className="flex items-center gap-2">
-                                <Cpu className="w-3.5 h-3.5 text-blox-muted" />
-                                <span className="text-xs text-blox-muted">Utilization</span>
-                              </div>
-                              <span className="text-sm font-semibold text-blox-text tabular-nums font-mono">{(gpu.util_percent ?? 0).toFixed(0)}%</span>
-                            </div>
-                            <ProgressBar value={gpu.util_percent ?? 0} size="md" />
-                          </div>
-                          {(gpu.mem_total_bytes ?? 0) > 0 && (
-                            <div>
-                              <div className="flex items-center justify-between mb-1.5">
-                                <div className="flex items-center gap-2">
-                                  <MemoryStick className="w-3.5 h-3.5 text-blox-muted" />
-                                  <span className="text-xs text-blox-muted">VRAM</span>
-                                </div>
-                                <span className="text-xs text-blox-muted tabular-nums font-mono">{formatBytes(gpu.mem_used_bytes)} / {formatBytes(gpu.mem_total_bytes)}</span>
-                              </div>
-                              <ProgressBar value={vramPct} size="md" label={`${vramPct.toFixed(0)}%`} />
-                            </div>
-                          )}
-                          {(gpu.power_watts ?? 0) > 0 && (
-                            <div className="flex items-center justify-between py-2 border-t border-blox-border/50">
-                              <div className="flex items-center gap-2">
-                                <Zap className="w-3.5 h-3.5 text-blox-muted" />
-                                <span className="text-xs text-blox-muted">GPU power</span>
-                              </div>
-                              <span className="text-xs text-blox-text tabular-nums font-mono">
-                                {(gpu.power_watts ?? 0).toFixed(0)} W
-                              </span>
-                            </div>
-                          )}
-                          {(gpu.fan_percent ?? 0) > 0 && (
-                            <div className="flex items-center justify-between py-1">
-                              <div className="flex items-center gap-2">
-                                <Activity className="w-3.5 h-3.5 text-blox-muted" />
-                                <span className="text-xs text-blox-muted">Fan</span>
-                              </div>
-                              <span className="text-xs text-blox-text tabular-nums font-mono">
-                                {(gpu.fan_percent ?? 0).toFixed(0)}%
-                              </span>
-                            </div>
-                          )}
-                        </div>
+                        <tr key={gpu.index}>
+                          <td className="text-[13px] text-text-primary">
+                            <span className="mf-metric text-[11px] text-text-tertiary">
+                              {gpu.index}
+                            </span>
+                            <span className="ml-2.5">{gpu.name || "GPU"}</span>
+                          </td>
+                          <td>
+                            <span className="mf-metric text-[13px] text-text-primary">
+                              {util.toFixed(0)}%
+                            </span>
+                            <Meter pct={util} variant="gpu" />
+                          </td>
+                          <td>
+                            {tTone === "ok" ? (
+                              <span className="mf-metric text-[13px] text-text-primary">{temp}°C</span>
+                            ) : (
+                              <StatusCell tone={tTone} label={`${temp}°C`} Icon={AlertTriangle} />
+                            )}
+                          </td>
+                          <td>
+                            {(gpu.mem_total_bytes ?? 0) > 0 ? (
+                              <>
+                                <span className="mf-metric text-[13px] text-text-primary">
+                                  {formatBytes(gpu.mem_used_bytes)}
+                                </span>
+                                <span className="ml-1.5 font-mono text-[11px] text-text-tertiary">
+                                  / {formatBytes(gpu.mem_total_bytes)}
+                                </span>
+                                <Meter pct={vramPct} variant="gpu" />
+                              </>
+                            ) : (
+                              <span className="text-text-disabled">—</span>
+                            )}
+                          </td>
+                          <td className="mf-metric text-[13px] text-text-secondary">
+                            {(gpu.power_watts ?? 0) > 0 ? `${(gpu.power_watts ?? 0).toFixed(0)} W` : "—"}
+                          </td>
+                          <td className="mf-metric text-[13px] text-text-secondary">
+                            {(gpu.fan_percent ?? 0) > 0 ? `${(gpu.fan_percent ?? 0).toFixed(0)}%` : "—"}
+                          </td>
+                        </tr>
                       );
                     })}
-                  </div>
-                </motion.div>
-              )}
-            </div>
-
-            {data.hardware_info && <HardwareCard hw={data.hardware_info} />}
-          </TabsContent>
-
-          <TabsContent value="services" className="mt-6">
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}>
-              <ServicePanel services={liveServices} machineId={id} hubUrl={HUB_URL} />
-            </motion.div>
-          </TabsContent>
-
-          <TabsContent value="containers" className="mt-6">
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}>
-              <ContainerPanel containers={liveContainers} machineId={id} hubUrl={HUB_URL} />
-            </motion.div>
-          </TabsContent>
-
-          <TabsContent value="metrics" className="mt-6">
-            <motion.div
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.05 }}
-              className="bg-blox-card border border-blox-border rounded-xl p-5"
-            >
-              <MetricCharts machineId={id} hasGpu={hasGpu} />
-              {!isAPIMachine && <PowerHistory key={id} machineId={id} />}
-            </motion.div>
-          </TabsContent>
-
-          {!isAPIMachine && (
-            <TabsContent value="ai-sessions" className="mt-6">
-              <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}>
-                <AISessionsPanel machineId={id} />
-              </motion.div>
-            </TabsContent>
+                  </tbody>
+                </table>
+              </div>
+            </section>
           )}
 
-          <TabsContent value="notes" className="mt-6">
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}>
-              {/* PHASE12-NOTE: keying on `notes ?? ""` remounts the
-                  component when the server-fetched notes change (e.g.
-                  after a refresh) so MachineNotes can avoid the React 19
-                  set-state-in-effect anti-pattern. */}
-              <MachineNotes
-                key={machine.notes ?? ""}
-                machineId={id}
-                initialNotes={machine.notes ?? ""}
-              />
-            </motion.div>
-          </TabsContent>
+          {data.hardware_info && <HardwareCard hw={data.hardware_info} />}
+        </TabsContent>
 
-          {/* Terminal tab — keepMounted so the PTY WebSocket survives tab switches. */}
-          {!isAPIMachine && canControl && (
-            <TabsContent value="terminal" keepMounted className="mt-6 data-[hidden]:hidden">
-              <motion.div
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.05 }}
-                className="bg-blox-card border border-blox-border rounded-xl overflow-hidden"
+        <TabsContent value="services" className="mt-7">
+          <ServicePanel services={liveServices} machineId={id} hubUrl={HUB_URL} />
+        </TabsContent>
+
+        <TabsContent value="containers" className="mt-7">
+          <ContainerPanel containers={liveContainers} machineId={id} hubUrl={HUB_URL} />
+        </TabsContent>
+
+        <TabsContent value="metrics" className="mt-7">
+          <div className="mf-panel px-6 py-6">
+            <MetricCharts machineId={id} hasGpu={hasGpu} />
+            {!isAPIMachine && <PowerHistory key={id} machineId={id} />}
+          </div>
+        </TabsContent>
+
+        {!isAPIMachine && (
+          <TabsContent value="ai-sessions" className="mt-7">
+            <AISessionsPanel machineId={id} />
+          </TabsContent>
+        )}
+
+        <TabsContent value="notes" className="mt-7">
+          {/* PHASE12-NOTE: keying on `notes ?? ""` remounts the
+              component when the server-fetched notes change (e.g.
+              after a refresh) so MachineNotes can avoid the React 19
+              set-state-in-effect anti-pattern. */}
+          <MachineNotes
+            key={machine.notes ?? ""}
+            machineId={id}
+            initialNotes={machine.notes ?? ""}
+          />
+        </TabsContent>
+
+        {/* Terminal tab — keepMounted so the PTY WebSocket survives tab switches. */}
+        {!isAPIMachine && canControl && (
+          <TabsContent value="terminal" keepMounted className="mt-7 data-[hidden]:hidden">
+            <section className="mf-panel overflow-hidden">
+              <div className={MF_PANEL_HEAD}>
+                <div className="flex items-center gap-3">
+                  <h2 className={MF_PANEL_TITLE}>Terminal</h2>
+                  {termState === "active" && <StatusCell tone="ok" label="connected" />}
+                  {termState === "connecting" && (
+                    <span className="font-mono text-[11px] text-accent">connecting…</span>
+                  )}
+                  {termState === "disconnected" && (
+                    <StatusCell tone="critical" label="disconnected" />
+                  )}
+                </div>
+                <div className="flex items-center gap-1">
+                  {termState === "active" && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => setTermExpanded(!termExpanded)}
+                        className="grid h-8 w-8 place-items-center rounded-lg text-text-tertiary transition-colors hover:bg-surface-elevated hover:text-text-primary"
+                        title={termExpanded ? "Collapse terminal" : "Expand terminal"}
+                        aria-label={termExpanded ? "Collapse terminal" : "Expand terminal"}
+                      >
+                        {termExpanded ? (
+                          <Minimize2 className="w-3.5 h-3.5" />
+                        ) : (
+                          <Maximize2 className="w-3.5 h-3.5" />
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleTerminalClose}
+                        className="grid h-8 w-8 place-items-center rounded-lg text-text-tertiary transition-colors hover:bg-surface-elevated hover:text-status-critical"
+                        title="Close terminal"
+                        aria-label="Close terminal"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </>
+                  )}
+                  {termState === "disconnected" && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setTermError(null);
+                        setTermState("pin_entry");
+                      }}
+                      className={MF_BUTTON_QUIET}
+                    >
+                      Reconnect
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Stable-height body container — prevents pane height jumping between states */}
+              <div
+                className="bg-surface-sunken transition-all duration-[var(--motion-base)]"
+                style={{
+                  minHeight: termState === "active" && termExpanded ? 600 : 360,
+                  height: termState === "active" ? (termExpanded ? 600 : 360) : "auto",
+                }}
               >
-                {/* Terminal header — matches HardwareCard / panel rhythm */}
-                <div className="flex items-center justify-between px-5 py-3 border-b border-blox-border/50">
-                  <div className="flex items-center gap-2.5">
-                    <div className="p-1.5 rounded-lg bg-blox-blue/10">
-                      <TerminalIcon className="w-3.5 h-3.5 text-blox-blue" />
+                {termState === "locked" && (
+                  <div className="flex h-[360px] flex-col items-center justify-center gap-3">
+                    <Lock className="h-8 w-8 text-text-disabled" aria-hidden />
+                    <div className="text-center">
+                      <p className="text-[13px] text-text-primary">Remote terminal</p>
+                      <p className="mt-1 text-[11px] text-text-tertiary">
+                        Enter the PIN to unlock terminal access
+                      </p>
                     </div>
-                    <h3 className="text-sm font-semibold text-blox-text">Terminal</h3>
-                    {termState === "active" && (
-                      <span className="flex items-center gap-1 text-[10px] text-emerald-400 font-medium ml-1">
-                        <span className="relative flex h-1.5 w-1.5">
-                          <span className="animate-status-pulse absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-                          <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500" />
-                        </span>
-                        connected
-                      </span>
-                    )}
-                    {termState === "connecting" && (
-                      <span className="text-[10px] text-blox-blue font-medium ml-1">connecting…</span>
-                    )}
-                    {termState === "disconnected" && (
-                      <span className="text-[10px] text-red-400 font-medium ml-1">disconnected</span>
+                    <button
+                      type="button"
+                      onClick={() => isOnline && setTermState("pin_entry")}
+                      disabled={!isOnline}
+                      className={`${MF_BUTTON} mt-2`}
+                      title={isOnline ? undefined : "Machine is not reporting — terminal unavailable"}
+                    >
+                      <Unlock className="w-3.5 h-3.5" aria-hidden />
+                      Unlock terminal
+                    </button>
+                  </div>
+                )}
+
+                {termState === "pin_entry" && (
+                  <div className="flex h-[360px] flex-col items-center justify-center gap-3">
+                    <Lock className="h-7 w-7 text-accent" aria-hidden />
+                    <p className="text-[13px] text-text-primary">Enter PIN to open terminal</p>
+                    <form
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        handlePinSubmit();
+                      }}
+                      className="mt-1 flex items-center gap-2"
+                    >
+                      <Input
+                        ref={pinInputRef}
+                        type="password"
+                        value={pinInput}
+                        onChange={(e) => {
+                          setPinInput(e.target.value);
+                          setPinError(false);
+                        }}
+                        placeholder="PIN"
+                        aria-label="Terminal PIN"
+                        aria-invalid={pinError || undefined}
+                        className={`${MF_INPUT} w-32 text-center font-mono ${pinError ? "border-status-critical" : ""}`}
+                        autoComplete="off"
+                      />
+                      <button type="submit" className="mf-action">
+                        Open
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setTermState("locked");
+                          setPinInput("");
+                          setPinError(false);
+                        }}
+                        className={MF_BUTTON_QUIET}
+                      >
+                        Cancel
+                      </button>
+                    </form>
+                    {pinError && (
+                      <p role="alert" className="mt-1 text-xs text-status-critical">
+                        Invalid PIN
+                      </p>
                     )}
                   </div>
-                  <div className="flex items-center gap-1">
-                    {termState === "active" && (
-                      <>
-                        <Button
-                          variant="ghost"
-                          size="icon-xs"
-                          onClick={() => setTermExpanded(!termExpanded)}
-                          className="text-blox-muted hover:text-blox-text"
-                          title={termExpanded ? "Collapse terminal" : "Expand terminal"}
-                          aria-label={termExpanded ? "Collapse terminal" : "Expand terminal"}
-                        >
-                          {termExpanded ? (
-                            <Minimize2 className="w-3.5 h-3.5" />
-                          ) : (
-                            <Maximize2 className="w-3.5 h-3.5" />
-                          )}
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon-xs"
-                          onClick={handleTerminalClose}
-                          className="text-blox-muted hover:text-red-400"
-                          title="Close terminal"
-                          aria-label="Close terminal"
-                        >
-                          <X className="w-3.5 h-3.5" />
-                        </Button>
-                      </>
+                )}
+
+                {termState === "connecting" && (
+                  <div className="flex h-[360px] flex-col items-center justify-center gap-3">
+                    <span className="h-6 w-6 rounded-full border-2 border-accent border-t-transparent animate-spin" />
+                    <p className="text-[13px] text-text-tertiary">Starting terminal session…</p>
+                  </div>
+                )}
+
+                {termState === "active" && termSessionId && (
+                  <div
+                    className="h-full"
+                    style={{
+                      height: termExpanded ? 600 : 360,
+                      // Match the xterm background exactly so there's no
+                      // seam between xterm's canvas and the wrapper.
+                      background: "var(--surface-base)",
+                    }}
+                  >
+                    <TerminalComponent
+                      sessionId={termSessionId}
+                      browserToken={termBrowserToken ?? ""}
+                      onDisconnect={handleTerminalDisconnect}
+                    />
+                  </div>
+                )}
+
+                {termState === "disconnected" && (
+                  <div className="flex h-[360px] flex-col items-center justify-center gap-3">
+                    <TerminalIcon className="h-7 w-7 text-status-critical" aria-hidden />
+                    <p className="text-[13px] text-text-tertiary">Terminal disconnected</p>
+                    {termError && (
+                      <p role="alert" className="max-w-sm text-center text-xs text-status-critical">
+                        {termError}
+                      </p>
                     )}
-                    {termState === "disconnected" && (
-                      <Button
-                        variant="ghost"
-                        size="xs"
-                        onClick={() => {
-                          setTermError(null);
-                          setTermState("pin_entry");
-                        }}
-                        className="text-xs text-blox-blue"
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setTermState("pin_entry")}
+                        className={MF_BUTTON}
                       >
                         Reconnect
-                      </Button>
-                    )}
-                  </div>
-                </div>
-
-                {/* Stable-height body container — prevents pane height jumping between states */}
-                <div
-                  className="bg-blox-bg/40 transition-all duration-[var(--motion-base)]"
-                  style={{
-                    minHeight: termState === "active" && termExpanded ? 600 : 360,
-                    height: termState === "active" ? (termExpanded ? 600 : 360) : "auto",
-                  }}
-                >
-                  {termState === "locked" && (
-                    <div className="flex flex-col items-center justify-center h-[360px] gap-3">
-                      <Lock className="w-10 h-10 text-blox-muted/30" />
-                      <div className="text-center">
-                        <p className="text-sm text-blox-text">Remote Terminal</p>
-                        <p className="text-[11px] text-blox-muted mt-1">
-                          Enter PIN to unlock terminal access
-                        </p>
-                      </div>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => isOnline && setTermState("pin_entry")}
-                        disabled={!isOnline}
-                        className="text-xs text-blox-blue border-blox-blue/20 hover:bg-blox-blue/10 gap-2 mt-2"
-                      >
-                        <Unlock className="w-3.5 h-3.5" />
-                        Unlock Terminal
-                      </Button>
-                    </div>
-                  )}
-
-                  {termState === "pin_entry" && (
-                    <div className="flex flex-col items-center justify-center h-[360px] gap-3">
-                      <Lock className="w-8 h-8 text-blox-blue/50" />
-                      <p className="text-sm text-blox-text">Enter PIN to open terminal</p>
-                      <form
-                        onSubmit={(e) => {
-                          e.preventDefault();
-                          handlePinSubmit();
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setTermState("locked");
+                          setTermSessionId(null);
                         }}
-                        className="flex items-center gap-2 mt-1"
+                        className={MF_BUTTON_QUIET}
                       >
-                        <Input
-                          ref={pinInputRef}
-                          type="password"
-                          value={pinInput}
-                          onChange={(e) => {
-                            setPinInput(e.target.value);
-                            setPinError(false);
-                          }}
-                          placeholder="PIN"
-                          className={`w-32 text-center font-mono bg-blox-bg border-blox-border text-blox-text h-9 text-sm ${
-                            pinError ? "border-red-500" : ""
-                          }`}
-                          autoComplete="off"
-                        />
-                        <Button
-                          type="submit"
-                          variant="outline"
-                          size="sm"
-                          className="text-xs text-blox-blue border-blox-blue/20 hover:bg-blox-blue/10"
-                        >
-                          Open
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => {
-                            setTermState("locked");
-                            setPinInput("");
-                            setPinError(false);
-                          }}
-                          className="text-xs text-blox-muted"
-                        >
-                          Cancel
-                        </Button>
-                      </form>
-                      {pinError && <p className="text-xs text-red-400 mt-1">Invalid PIN</p>}
+                        Close
+                      </button>
                     </div>
-                  )}
+                  </div>
+                )}
+              </div>
+            </section>
+          </TabsContent>
+        )}
+      </Tabs>
+    </>
+  );
+}
 
-                  {termState === "connecting" && (
-                    <div className="flex flex-col items-center justify-center h-[360px] gap-3">
-                      <div className="w-6 h-6 border-2 border-blox-blue border-t-transparent rounded-full animate-spin" />
-                      <p className="text-sm text-blox-muted">Starting terminal session…</p>
-                    </div>
-                  )}
-
-                  {termState === "active" && termSessionId && (
-                    <div
-                      className="h-full"
-                      style={{
-                        height: termExpanded ? 600 : 360,
-                        // Match the xterm background exactly so there's no
-                        // seam between xterm's canvas and the wrapper. Reads
-                        // the same CSS var that resolvedTheme maps to.
-                        background: "var(--surface-base)",
-                      }}
-                    >
-                      <TerminalComponent
-                        sessionId={termSessionId}
-                        browserToken={termBrowserToken ?? ""}
-                        onDisconnect={handleTerminalDisconnect}
-                      />
-                    </div>
-                  )}
-
-                  {termState === "disconnected" && (
-                    <div className="flex flex-col items-center justify-center h-[360px] gap-3">
-                      <TerminalIcon className="w-8 h-8 text-red-400/40" />
-                      <p className="text-sm text-blox-muted">Terminal disconnected</p>
-                      {termError && <p className="text-xs text-red-400 max-w-sm text-center">{termError}</p>}
-                      <div className="flex items-center gap-2">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setTermState("pin_entry")}
-                          className="text-xs text-blox-blue border-blox-blue/20 hover:bg-blox-blue/10"
-                        >
-                          Reconnect
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => {
-                            setTermState("locked");
-                            setTermSessionId(null);
-                          }}
-                          className="text-xs text-blox-muted"
-                        >
-                          Close
-                        </Button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </motion.div>
-            </TabsContent>
-          )}
-        </Tabs>
-      </main>
-    </motion.div>
+function Fact({
+  label,
+  value,
+  mono,
+  small,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+  small?: boolean;
+}) {
+  return (
+    <div className="flex items-baseline justify-between gap-3">
+      <dt className="mf-kicker">{label}</dt>
+      <dd
+        className={`min-w-0 truncate text-right ${
+          mono ? "mf-metric" : ""
+        } ${small ? "text-[11px] text-text-tertiary" : "text-[13px] text-text-secondary"}`}
+        title={value}
+      >
+        {value}
+      </dd>
+    </div>
   );
 }

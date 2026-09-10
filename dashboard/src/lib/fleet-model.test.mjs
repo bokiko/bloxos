@@ -7,7 +7,7 @@ const gpuMachine = () => ({...cpuOnly(),machine_id:'gpu',hostname:'gpu',gpus:[
  {name:'GPU0',util_percent:20,mem_used_bytes:2,mem_total_bytes:8,temp_c:60,power_watts:100},
  {name:'GPU1',util_percent:80,mem_used_bytes:6,mem_total_bytes:8,temp_c:75,power_watts:200},
 ]});
-test('new layouts report unavailable GPU telemetry for CPU-only and empty fleets',()=>{
+test('the Overview reports unavailable GPU telemetry for CPU-only and empty fleets',()=>{
  for(const machines of [[],[cpuOnly()]]){
   const result=aggregate(machines);
   for(const key of ['avgGpuUtil','avgVram','maxGpuTemp','gpuPowerTotal'])assert.equal(result[key],null,key);
@@ -15,7 +15,7 @@ test('new layouts report unavailable GPU telemetry for CPU-only and empty fleets
  }
  assert.equal(aggregate([]).onlinePct,null);
 });
-test('new layouts use every GPU and do not dilute GPU averages with CPU-only machines',()=>{
+test('the Overview uses every GPU and does not dilute GPU averages with CPU-only machines',()=>{
  const result=aggregate([cpuOnly(),gpuMachine()]);
  assert.equal(result.avgGpuUtil,50);assert.equal(result.avgVram,50);
  assert.equal(result.maxGpuTemp,75);assert.equal(result.gpuPowerTotal,300);

@@ -1,5 +1,13 @@
 "use client";
 
+// systemd units for one machine.
+//
+// Monoform: the same panel + table the rest of the product uses, so a service
+// list and an agent list read identically. State is a dot plus the word, never
+// the dot alone. Controls are hidden without `fleet.control` — the hub
+// enforces the same scope, so this only removes guaranteed-failing
+// affordances.
+
 import { useState, useMemo } from "react";
 import { Layers, RotateCcw, Play, Square, Loader2 } from "lucide-react";
 import { useToast } from "./Toast";
@@ -8,9 +16,10 @@ import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent,
   DropdownMenuItem, DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
-import { Button } from "@/components/ui/button";
+import { StatusCell, type MonoformTone } from "@/components/MonoformStatus";
 import { getStoredToken } from "@/lib/session";
 import { commandFeedback } from "@/lib/command-feedback.mjs";
+import { MF_MENU, MF_MENU_ITEM, MF_PANEL_HEAD, MF_PANEL_TITLE } from "@/lib/monoform-classes";
 
 export interface Service {
   name: string;
@@ -26,16 +35,14 @@ interface ServicePanelProps {
 
 const statusOrder: Record<string, number> = { failed: 0, active: 1, inactive: 2 };
 
-function statusDot(status: string) {
-  if (status === "active") return "bg-emerald-500";
-  if (status === "failed") return "bg-red-500";
-  return "bg-blox-muted/50";
-}
+const ROW_ACTION =
+  "ml-auto grid h-8 w-8 place-items-center rounded-lg text-text-tertiary transition-colors " +
+  "hover:bg-surface-elevated hover:text-text-primary";
 
-function statusLabel(status: string) {
-  if (status === "active") return "text-emerald-400";
-  if (status === "failed") return "text-red-400";
-  return "text-blox-muted";
+function statusTone(status: string): MonoformTone {
+  if (status === "active") return "ok";
+  if (status === "failed") return "critical";
+  return "neutral";
 }
 
 function ServiceActions({
@@ -78,7 +85,7 @@ function ServiceActions({
   }
 
   if (loading) {
-    return <Loader2 className="w-3.5 h-3.5 text-blox-blue animate-spin" />;
+    return <Loader2 className="ml-auto w-3.5 h-3.5 text-accent animate-spin" aria-label="Working" />;
   }
 
   if (!canControl) {
@@ -87,15 +94,15 @@ function ServiceActions({
 
   if (service.status === "inactive") {
     return (
-      <Button
-        variant="ghost"
-        size="icon-xs"
+      <button
+        type="button"
         onClick={() => runCommand("start_service")}
-        className="text-emerald-400 hover:bg-emerald-500/10"
-        title="Start"
+        className={ROW_ACTION}
+        title={`Start ${service.name}`}
+        aria-label={`Start ${service.name}`}
       >
-        <Play className="w-3 h-3" />
-      </Button>
+        <Play className="w-3.5 h-3.5" />
+      </button>
     );
   }
 
@@ -103,21 +110,24 @@ function ServiceActions({
     <DropdownMenu>
       <DropdownMenuTrigger
         render={
-          <Button aria-label={`Actions for ${service.name}`} variant="ghost" size="icon-xs" className="text-blox-blue hover:bg-blox-blue/10">
-            <RotateCcw className="w-3 h-3" />
-          </Button>
+          <button type="button" aria-label={`Actions for ${service.name}`} className={ROW_ACTION}>
+            <RotateCcw className="w-3.5 h-3.5" />
+          </button>
         }
       />
-      <DropdownMenuContent align="end" className="bg-blox-card border-blox-border min-w-[120px]">
-        <DropdownMenuItem onClick={() => runCommand("restart_service")} className="text-xs gap-2 text-blox-text">
-          <RotateCcw className="w-3 h-3" /> Restart
+      <DropdownMenuContent align="end" className={`${MF_MENU} min-w-[140px]`}>
+        <DropdownMenuItem onClick={() => runCommand("restart_service")} className={MF_MENU_ITEM}>
+          <RotateCcw className="w-3.5 h-3.5" aria-hidden /> Restart
         </DropdownMenuItem>
-        <DropdownMenuSeparator className="bg-blox-border" />
-        <DropdownMenuItem onClick={() => runCommand("stop_service")} className="text-xs gap-2 text-red-400">
-          <Square className="w-3 h-3" /> Stop
+        <DropdownMenuItem onClick={() => runCommand("start_service")} className={MF_MENU_ITEM}>
+          <Play className="w-3.5 h-3.5" aria-hidden /> Start
         </DropdownMenuItem>
-        <DropdownMenuItem onClick={() => runCommand("start_service")} className="text-xs gap-2 text-emerald-400">
-          <Play className="w-3 h-3" /> Start
+        <DropdownMenuSeparator className="bg-border-subtle" />
+        <DropdownMenuItem
+          onClick={() => runCommand("stop_service")}
+          className={`${MF_MENU_ITEM} text-status-critical!`}
+        >
+          <Square className="w-3.5 h-3.5" aria-hidden /> Stop
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -135,40 +145,53 @@ export function ServicePanel({ services, machineId, hubUrl }: ServicePanelProps)
   }, [services]);
 
   return (
-    <div className="bg-blox-card border border-blox-border rounded-xl p-5">
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2.5">
-          <div className="p-1.5 rounded-lg bg-blox-blue/10">
-            <Layers className="w-3.5 h-3.5 text-blox-blue" />
-          </div>
-          <h3 className="text-sm font-semibold text-blox-text">Services</h3>
-          <span className="text-[10px] text-blox-muted font-mono tabular-nums">({services.length})</span>
-        </div>
+    <section className="mf-panel overflow-hidden">
+      <div className={MF_PANEL_HEAD}>
+        <h2 className={MF_PANEL_TITLE}>Services</h2>
+        <span className="mf-kicker">
+          {services.length} unit{services.length === 1 ? "" : "s"}
+        </span>
       </div>
       {sorted.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-8 text-blox-muted">
-          <Layers className="w-8 h-8 mb-2 opacity-20" />
-          <p className="text-xs">No services reported</p>
+        <div className="flex flex-col items-center justify-center py-12 text-text-tertiary">
+          <Layers className="mb-2 h-7 w-7 opacity-30" aria-hidden />
+          <p className="text-[13px]">No services reported</p>
         </div>
       ) : (
-        <div className="space-y-0.5 max-h-[400px] overflow-y-auto">
-          {sorted.map((s) => (
-            <div
-              key={s.name}
-              className="flex items-center justify-between px-2 py-2 rounded-lg hover:bg-blox-border/20 group transition-colors"
-            >
-              <div className="flex items-center gap-2.5 min-w-0">
-                <div className={`w-2 h-2 rounded-full flex-shrink-0 ${statusDot(s.status)} ${s.status === "active" ? "shadow-sm shadow-emerald-500/50" : ""}`} />
-                <span className="text-xs text-blox-text font-mono truncate">{s.name}</span>
-              </div>
-              <div className="flex items-center gap-3">
-                <span className={`text-[10px] font-medium ${statusLabel(s.status)}`}>{s.status}</span>
-                <ServiceActions service={s} machineId={machineId} hubUrl={hubUrl} />
-              </div>
-            </div>
-          ))}
+        <div className="mf-table-wrap max-h-[520px] overflow-x-auto overflow-y-auto">
+          <table className="mf-table">
+            <thead className="sticky top-0 z-10">
+              <tr>
+                <th>Unit</th>
+                <th>State</th>
+                <th className="hidden lg:table-cell">Description</th>
+                <th className="text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((s) => (
+                <tr key={s.name}>
+                  <td className="font-mono text-[13px] text-text-primary">{s.name}</td>
+                  <td>
+                    <StatusCell tone={statusTone(s.status)} label={s.status} />
+                  </td>
+                  <td
+                    className="hidden max-w-[420px] truncate text-[12px] text-text-tertiary lg:table-cell"
+                    title={s.description || undefined}
+                  >
+                    {s.description || "—"}
+                  </td>
+                  <td>
+                    <div className="flex justify-end">
+                      <ServiceActions service={s} machineId={machineId} hubUrl={hubUrl} />
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
-    </div>
+    </section>
   );
 }

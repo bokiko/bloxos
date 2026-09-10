@@ -1,11 +1,9 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import "./design-pages.css";
 import { ToastProvider } from "@/components/Toast";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { SSEProvider } from "@/contexts/SSEContext";
 import { ThemeProvider } from "@/contexts/ThemeContext";
-import { DesignProvider } from "@/contexts/DesignContext";
 import { BrandingProvider } from "@/contexts/BrandingContext";
 import { PreferencesProvider } from "@/contexts/PreferencesContext";
 import { VersionsProvider } from "@/contexts/VersionsContext";
@@ -25,74 +23,31 @@ export const metadata: Metadata = {
 };
 
 /**
- * Inline script that applies the saved theme name + resolved mode to <html>
- * before React hydrates. Without this, the initial paint flashes with the
- * wrong palette or wrong mode.
+ * Inline script that applies the saved Monoform appearance to <html> before
+ * React hydrates. Without this, the initial paint flashes a light page.
  *
- * Phase 10:
- *   - Reads `bloxos-theme-name` (named theme) and `bloxos-theme-mode`
- *     (light/dark/system), with legacy `bloxos-theme` as a fallback.
- *   - Validates against the curated names + 3 valid modes.
- *   - Forces dark mode for dark-only themes (Dracula, Tokyo Night).
- *   - Resolves "system" against prefers-color-scheme.
- *   - Falls back to dark BloxOS on any error.
+ * Reads `bloxos-appearance` ("gray" | "dark"), falling back to the legacy
+ * `bloxos-theme-mode` key so an existing dark choice survives the reset, and
+ * clears anything the retired multi-theme / multi-layout system left behind.
  */
-const themeBootstrapScript = `
-(function() {
+const appearanceBootstrapScript = `
+(function () {
   try {
-    var validNames = ['bloxos','solarized','dracula','nord','tokyo-night','mission-control','graphite','verdant'];
-    var validModes = ['light','dark','system'];
-    var darkOnly = ['dracula','tokyo-night','mission-control','graphite','verdant'];
-
-    var name = localStorage.getItem('bloxos-theme-name');
-    if (validNames.indexOf(name) === -1) name = 'bloxos';
-
-    var mode = localStorage.getItem('bloxos-theme-mode');
-    if (validModes.indexOf(mode) === -1) {
-      var legacy = localStorage.getItem('bloxos-theme');
-      mode = validModes.indexOf(legacy) !== -1 ? legacy : 'system';
+    var mode = localStorage.getItem('bloxos-appearance');
+    if (mode !== 'dark' && mode !== 'gray') {
+      mode = localStorage.getItem('bloxos-theme-mode') === 'dark' ? 'dark' : 'gray';
     }
-
-    var resolved = mode;
-    if (darkOnly.indexOf(name) !== -1) {
-      resolved = 'dark';
-    } else if (mode === 'system') {
-      resolved = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-    }
-
-    // Layout colors are independent of Classic's palette/mode. Read only this
-    // account's cache; never paint a previous account's design after logout.
-    var design = 'classic', designColor = 'original';
-    try {
-      var token = localStorage.getItem('bloxos_token');
-      var user = null;
-      if (token) {
-        var encoded = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
-        var binary = atob(encoded.padEnd(Math.ceil(encoded.length / 4) * 4, '='));
-        user = JSON.parse(new TextDecoder().decode(Uint8Array.from(binary, function(c) { return c.charCodeAt(0); }))).user_id;
-      }
-      var saved = JSON.parse(localStorage.getItem('bloxos-design:' + (typeof user === 'string' ? user : 'guest')) || '{}');
-      if (['wall','grove','console','ledger'].indexOf(saved.layout) !== -1) {
-        design = saved.layout;
-        var color = saved.colors && saved.colors[design];
-        if (['original','bright','dark'].indexOf(color) !== -1) designColor = color;
-        name = 'bloxos';
-        resolved = designColor === 'bright' ? 'light' : 'dark';
-      }
-    } catch (e) {}
     var root = document.documentElement;
-    root.dataset.layout = design;
-    root.dataset.designColor = designColor;
-    var classes = root.classList;
-    // Strip any prior theme-* class so toggles are clean.
-    Array.prototype.slice.call(classes).forEach(function(c) {
-      if (c.indexOf('theme-') === 0) classes.remove(c);
+    root.dataset.appearance = mode;
+    root.classList.add('dark');
+    root.style.colorScheme = 'dark';
+    Array.prototype.slice.call(root.classList).forEach(function (c) {
+      if (c.indexOf('theme-') === 0) root.classList.remove(c);
     });
-    if (name !== 'bloxos') classes.add('theme-' + name);
-    classes.remove('light', 'dark');
-    classes.add(resolved);
-    root.style.colorScheme = resolved;
-  } catch (e) {
+    delete root.dataset.layout;
+    delete root.dataset.designColor;
+  } catch (_) {
+    document.documentElement.dataset.appearance = 'gray';
     document.documentElement.classList.add('dark');
   }
 })();
@@ -110,18 +65,16 @@ export default function RootLayout({
       className={cn(geistSans.variable, geistMono.variable)}
     >
       <head>
-        <script dangerouslySetInnerHTML={{ __html: themeBootstrapScript }} />
+        <script dangerouslySetInnerHTML={{ __html: appearanceBootstrapScript }} />
       </head>
       <body className="min-h-screen bg-blox-bg text-blox-text antialiased font-sans">
-        {/* PHASE10-NOTE: spec said `ThemeProvider > BrandingProvider > AuthProvider`,
-            but the new ThemeProvider needs to call useAuth() to sync per-user
-            prefs from /api/me/theme. AuthProvider must therefore be the outer
-            context. BrandingProvider is auth-independent (public endpoint), so
-            its position is flexible — placed inside ThemeProvider so the body
-            can still observe theme classes set on <html>. */}
+        {/* ThemeProvider calls useAuth() to sync the per-user appearance from
+            /api/me/theme, so AuthProvider must be the outer context.
+            BrandingProvider is auth-independent (public endpoint), so its
+            position is flexible — placed inside ThemeProvider so the body can
+            still observe the appearance state set on <html>. */}
         <AuthProvider>
           <ThemeProvider>
-            <DesignProvider>
             <BrandingProvider>
               {/* Phase 11 — PreferencesProvider sits inside AuthProvider
                   (it reads the JWT for user_id) but outside the SSE/data
@@ -145,7 +98,6 @@ export default function RootLayout({
                 </ErrorBoundary>
               </PreferencesProvider>
             </BrandingProvider>
-            </DesignProvider>
           </ThemeProvider>
         </AuthProvider>
       </body>

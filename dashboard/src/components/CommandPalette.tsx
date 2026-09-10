@@ -12,13 +12,11 @@ import {
 import { useAuth } from "@/contexts/AuthContext";
 import { useSSE } from "@/contexts/SSEContext";
 import { useTheme } from "@/contexts/ThemeContext";
-import { useDesign } from "@/contexts/DesignContext";
 import {
   Monitor,
   Server,
-  Sun,
+  Contrast,
   Moon,
-  MonitorSmartphone,
   Plus,
   Bell,
   Users,
@@ -47,8 +45,7 @@ export function CommandPalette({
   const router = useRouter();
   const { isAuthenticated, hasScope, logout } = useAuth();
   const { machines } = useSSE();
-  const { setMode } = useTheme();
-  const { layout, setColor } = useDesign();
+  const { setAppearance } = useTheme();
   const [search, setSearch] = useState("");
 
   // Clear search in the close event handler instead of a useEffect — avoids
@@ -206,59 +203,24 @@ export function CommandPalette({
               </Command.Group>
             )}
 
-            {/* Theme (classic) / Color (live layouts). In a live layout the
-                light/dark/system mode is fixed by the chosen color, so the
-                palette offers the three design colors instead — otherwise the
-                mode actions would have no visible effect. */}
-            {layout === "classic" ? (
-              <Command.Group heading="Theme">
-                <Command.Item
-                  value="theme light mode"
-                  onSelect={() => runCommand(() => setMode("light"))}
-                >
-                  <Sun />
-                  <span>Switch to light mode</span>
-                </Command.Item>
-                <Command.Item
-                  value="theme dark mode"
-                  onSelect={() => runCommand(() => setMode("dark"))}
-                >
-                  <Moon />
-                  <span>Switch to dark mode</span>
-                </Command.Item>
-                <Command.Item
-                  value="theme system auto mode"
-                  onSelect={() => runCommand(() => setMode("system"))}
-                >
-                  <MonitorSmartphone />
-                  <span>Use system mode</span>
-                </Command.Item>
-              </Command.Group>
-            ) : (
-              <Command.Group heading="Color">
-                <Command.Item
-                  value="color original default"
-                  onSelect={() => runCommand(() => setColor("original"))}
-                >
-                  <Monitor />
-                  <span>Original colors</span>
-                </Command.Item>
-                <Command.Item
-                  value="color bright light"
-                  onSelect={() => runCommand(() => setColor("bright"))}
-                >
-                  <Sun />
-                  <span>Bright colors</span>
-                </Command.Item>
-                <Command.Item
-                  value="color dark"
-                  onSelect={() => runCommand(() => setColor("dark"))}
-                >
-                  <Moon />
-                  <span>Dark colors</span>
-                </Command.Item>
-              </Command.Group>
-            )}
+            {/* Appearance — the two Monoform contrast modes. There is no
+                light or system mode to offer any more. */}
+            <Command.Group heading="Appearance">
+              <Command.Item
+                value="appearance gray contrast light"
+                onSelect={() => runCommand(() => setAppearance("gray"))}
+              >
+                <Contrast />
+                <span>Use gray appearance</span>
+              </Command.Item>
+              <Command.Item
+                value="appearance dark contrast"
+                onSelect={() => runCommand(() => setAppearance("dark"))}
+              >
+                <Moon />
+                <span>Use dark appearance</span>
+              </Command.Item>
+            </Command.Group>
 
             {/* Account */}
             <Command.Group heading="Account">
@@ -283,9 +245,9 @@ export function CommandPalette({
  */
 export function useCommandPaletteHotkey(setOpen: (open: boolean) => void, enabled: boolean = true) {
   useEffect(() => {
-    // `enabled` lets exactly one owner hold the ⌘K listener. In the non-classic
-    // layouts the shell owns the command palette, so the dashboard passes
-    // false to avoid a duplicate listener.
+    // `enabled` lets exactly one owner hold the ⌘K listener. When the shell
+    // owns the command palette the dashboard passes false, so the listener is
+    // not registered twice.
     if (!enabled) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "k" && (e.metaKey || e.ctrlKey)) {

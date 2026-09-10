@@ -11,7 +11,6 @@ import {
   X,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -23,20 +22,13 @@ import {
   DropdownMenuGroup,
 } from "@/components/ui/dropdown-menu";
 import {
-  Table,
-  TableHeader,
-  TableBody,
-  TableRow,
-  TableHead,
-  TableCell,
-} from "@/components/ui/table";
-import {
   type ColumnDef,
   type SortDir,
   sortRows,
   filterRows,
   groupRows,
 } from "@/lib/inventory-utils";
+import { MF_BUTTON, MF_INPUT, MF_MENU, MF_MENU_ITEM } from "@/lib/monoform-classes";
 
 interface InventoryTableProps<R> {
   rows: R[];
@@ -91,26 +83,30 @@ export function InventoryTable<R>({ rows, cols }: InventoryTableProps<R>) {
   };
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative flex-1 min-w-[220px] max-w-md">
-          <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-blox-muted" />
+          <SearchIcon
+            className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-tertiary"
+            aria-hidden
+          />
           <Input
             type="text"
             placeholder="Filter rows…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="pl-9 h-8 text-xs bg-blox-card border-blox-border text-blox-text placeholder:text-blox-muted/50"
+            className={`${MF_INPUT} pl-9 pr-8 w-full`}
+            aria-label="Filter rows"
           />
           {search && (
             <button
               type="button"
               onClick={() => setSearch("")}
-              className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 text-blox-muted hover:text-blox-text"
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 p-0.5 text-text-tertiary hover:text-text-primary"
               aria-label="Clear filter"
             >
-              <X className="w-3 h-3" />
+              <X className="w-3.5 h-3.5" />
             </button>
           )}
         </div>
@@ -119,31 +115,25 @@ export function InventoryTable<R>({ rows, cols }: InventoryTableProps<R>) {
         <DropdownMenu>
           <DropdownMenuTrigger
             render={
-              <Button
-                variant="outline"
-                size="sm"
-                className="text-xs border-blox-border text-blox-text gap-1.5 h-8"
-              >
-                <Layers className="w-3 h-3" />
+              <button type="button" className={MF_BUTTON}>
+                <Layers className="w-3.5 h-3.5" aria-hidden />
                 {groupKey ? `Group: ${cols.find((c) => c.key === groupKey)?.label}` : "Group by"}
-              </Button>
+              </button>
             }
           />
-          <DropdownMenuContent align="start" className="bg-blox-card border-blox-border min-w-[160px]">
+          <DropdownMenuContent align="start" className={`${MF_MENU} min-w-[170px]`}>
             <DropdownMenuGroup>
-              <DropdownMenuLabel className="text-blox-muted text-[10px] uppercase tracking-wider">
-                Group rows by
-              </DropdownMenuLabel>
+              <DropdownMenuLabel className="mf-kicker uppercase">Group rows by</DropdownMenuLabel>
             </DropdownMenuGroup>
-            <DropdownMenuSeparator className="bg-blox-border" />
-            <DropdownMenuItem onClick={() => setGroupKey(null)} className="text-xs text-blox-text">
+            <DropdownMenuSeparator className="bg-border-subtle" />
+            <DropdownMenuItem onClick={() => setGroupKey(null)} className={MF_MENU_ITEM}>
               No grouping
             </DropdownMenuItem>
             {cols.map((c) => (
               <DropdownMenuItem
                 key={c.key}
                 onClick={() => setGroupKey(c.key)}
-                className="text-xs text-blox-text"
+                className={MF_MENU_ITEM}
               >
                 {c.label}
               </DropdownMenuItem>
@@ -155,29 +145,23 @@ export function InventoryTable<R>({ rows, cols }: InventoryTableProps<R>) {
         <DropdownMenu>
           <DropdownMenuTrigger
             render={
-              <Button
-                variant="outline"
-                size="sm"
-                className="text-xs border-blox-border text-blox-text gap-1.5 h-8"
-              >
-                <Eye className="w-3 h-3" />
+              <button type="button" className={MF_BUTTON}>
+                <Eye className="w-3.5 h-3.5" aria-hidden />
                 Columns
-              </Button>
+              </button>
             }
           />
-          <DropdownMenuContent align="end" className="bg-blox-card border-blox-border min-w-[180px]">
+          <DropdownMenuContent align="end" className={`${MF_MENU} min-w-[190px]`}>
             <DropdownMenuGroup>
-              <DropdownMenuLabel className="text-blox-muted text-[10px] uppercase tracking-wider">
-                Visible columns
-              </DropdownMenuLabel>
+              <DropdownMenuLabel className="mf-kicker uppercase">Visible columns</DropdownMenuLabel>
             </DropdownMenuGroup>
-            <DropdownMenuSeparator className="bg-blox-border" />
+            <DropdownMenuSeparator className="bg-border-subtle" />
             {cols.map((c) => (
               <DropdownMenuCheckboxItem
                 key={c.key}
                 checked={!hidden.has(c.key)}
                 onCheckedChange={() => toggleHidden(c.key)}
-                className="text-xs text-blox-text"
+                className={MF_MENU_ITEM}
               >
                 {c.label}
               </DropdownMenuCheckboxItem>
@@ -185,100 +169,81 @@ export function InventoryTable<R>({ rows, cols }: InventoryTableProps<R>) {
           </DropdownMenuContent>
         </DropdownMenu>
 
-        <span className="text-[10px] text-blox-muted font-mono tabular-nums ml-auto">
+        <span className="mf-kicker ml-auto">
           {filteredRows.length} of {rows.length} row{rows.length === 1 ? "" : "s"}
         </span>
       </div>
 
       {/* Table */}
-      <div className="bg-blox-card border border-blox-border rounded-xl overflow-hidden">
-        <Table>
-          <TableHeader>
-            <TableRow className="border-b-blox-border hover:bg-transparent">
-              {visibleCols.map((c) => (
-                <TableHead
-                  key={c.key}
-                  className={`text-blox-muted text-[11px] uppercase tracking-[0.06em] font-medium ${
-                    c.numeric ? "text-right" : ""
-                  }`}
-                >
-                  <button
-                    type="button"
-                    onClick={() => toggleSort(c.key)}
-                    className={`inline-flex items-center gap-1 hover:text-blox-text transition-colors ${
-                      c.numeric ? "ml-auto" : ""
-                    }`}
-                  >
-                    <span>{c.label}</span>
-                    {sortKey === c.key ? (
-                      sortDir === "asc" ? (
-                        <ArrowUp className="w-2.5 h-2.5 text-blox-blue" />
+      <div className="mf-panel overflow-hidden">
+        <div className="mf-table-wrap overflow-x-auto">
+          <table className="mf-table">
+            <thead>
+              <tr>
+                {visibleCols.map((c) => (
+                  <th key={c.key} className={c.numeric ? "text-right" : undefined}>
+                    <button
+                      type="button"
+                      onClick={() => toggleSort(c.key)}
+                      className={`inline-flex items-center gap-1.5 transition-colors hover:text-text-primary ${
+                        c.numeric ? "ml-auto" : ""
+                      }`}
+                      aria-label={`Sort by ${c.label}`}
+                    >
+                      <span>{c.label}</span>
+                      {sortKey === c.key ? (
+                        sortDir === "asc" ? (
+                          <ArrowUp className="w-2.5 h-2.5 text-accent" aria-hidden />
+                        ) : (
+                          <ArrowDown className="w-2.5 h-2.5 text-accent" aria-hidden />
+                        )
                       ) : (
-                        <ArrowDown className="w-2.5 h-2.5 text-blox-blue" />
-                      )
-                    ) : (
-                      <ArrowUpDown className="w-2.5 h-2.5 opacity-30" />
-                    )}
-                  </button>
-                </TableHead>
-              ))}
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {groupedRows ? (
-              groupedRows.map((g) => (
-                <GroupedRows key={g.groupValue} group={g} visibleCols={visibleCols} />
-              ))
-            ) : sortedRows.length === 0 ? (
-              <TableRow>
-                <TableCell
-                  colSpan={visibleCols.length}
-                  className="text-center py-8 text-blox-muted text-xs"
-                >
-                  {search ? "No rows match the filter" : "No data"}
-                </TableCell>
-              </TableRow>
-            ) : (
-              sortedRows.map((row, i) => (
-                <DataRow key={i} row={row} cols={visibleCols} alt={i % 2 === 1} />
-              ))
-            )}
-          </TableBody>
-        </Table>
+                        <ArrowUpDown className="w-2.5 h-2.5 opacity-30" aria-hidden />
+                      )}
+                    </button>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {groupedRows ? (
+                groupedRows.map((g) => (
+                  <GroupedRows key={g.groupValue} group={g} visibleCols={visibleCols} />
+                ))
+              ) : sortedRows.length === 0 ? (
+                <tr>
+                  <td colSpan={visibleCols.length} className="text-center text-[13px] text-text-tertiary">
+                    {search ? "No rows match the filter" : "No data"}
+                  </td>
+                </tr>
+              ) : (
+                sortedRows.map((row, i) => <DataRow key={i} row={row} cols={visibleCols} />)
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );
 }
 
-function DataRow<R>({
-  row,
-  cols,
-  alt,
-}: {
-  row: R;
-  cols: ColumnDef<R>[];
-  alt: boolean;
-}) {
+function DataRow<R>({ row, cols }: { row: R; cols: ColumnDef<R>[] }) {
   return (
-    <TableRow
-      className={`border-b-blox-border/30 hover:bg-blox-border/10 transition-colors ${
-        alt ? "bg-blox-bg/30" : ""
-      }`}
-    >
+    <tr>
       {cols.map((c) => {
         const text = c.render ? c.render(row) : String(c.value(row) ?? "—");
         return (
-          <TableCell
+          <td
             key={c.key}
-            className={`text-xs text-blox-text ${
-              c.numeric ? "text-right tabular-nums font-mono" : ""
+            className={`text-[13px] text-text-primary ${
+              c.numeric ? "mf-metric text-right" : ""
             }`}
           >
             {text}
-          </TableCell>
+          </td>
         );
       })}
-    </TableRow>
+    </tr>
   );
 }
 
@@ -291,19 +256,19 @@ function GroupedRows<R>({
 }) {
   return (
     <>
-      <TableRow className="bg-blox-bg/40 hover:bg-blox-bg/40 border-b-blox-border/40">
-        <TableCell
+      <tr className="bg-surface-sunken hover:bg-surface-sunken!">
+        <td
           colSpan={visibleCols.length}
-          className="text-[11px] uppercase tracking-[0.06em] font-medium text-blox-blue py-2"
+          className="h-auto! py-2.5! text-[11px] font-mono uppercase tracking-[0.05em] text-accent"
         >
           {group.groupValue}
-          <span className="ml-2 text-blox-muted normal-case font-normal tabular-nums">
+          <span className="ml-2 normal-case text-text-tertiary">
             {group.rows.length} row{group.rows.length === 1 ? "" : "s"}
           </span>
-        </TableCell>
-      </TableRow>
+        </td>
+      </tr>
       {group.rows.map((row, i) => (
-        <DataRow key={i} row={row} cols={visibleCols} alt={i % 2 === 1} />
+        <DataRow key={i} row={row} cols={visibleCols} />
       ))}
     </>
   );

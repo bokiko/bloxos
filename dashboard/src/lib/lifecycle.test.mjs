@@ -125,7 +125,7 @@ test("detail-page delete keeps the dialog retryable and shows the failure", () =
   assert.match(m[0], /finally \{[\s\S]*?setDeleting\(false\)/, "loading must reset in finally");
   assert.match(m[0], /setDeleteError\(/, "failure must surface an error");
   assert.doesNotMatch(m[0], /else \{[\s\S]*?setShowDeleteConfirm\(false\)/, "failure must not close the dialog silently");
-  assert.match(pageDetail, /deleteError && <p role="alert"/, "delete error must be rendered");
+  assert.match(pageDetail, /deleteError && \(\s*<p role="alert"/, "delete error must be rendered");
 });
 
 test("login labels are bound to their inputs", () => {

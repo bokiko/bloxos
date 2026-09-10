@@ -1,11 +1,16 @@
 "use client";
 
 import { useState, useCallback, useMemo } from "react";
-import { Edit3, Save, X, FileText } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Edit3, Save, X } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/components/Toast";
 import { HUB_URL } from "@/lib/session";
+import {
+  MF_BUTTON,
+  MF_BUTTON_QUIET,
+  MF_PANEL_HEAD,
+  MF_PANEL_TITLE,
+} from "@/lib/monoform-classes";
 
 const NOTES_MAX_LEN = 10000;
 
@@ -76,81 +81,66 @@ export function MachineNotes({ machineId, initialNotes }: MachineNotesProps) {
   const renderedNotes = useMemo(() => renderNotes(notes), [notes]);
 
   return (
-    <div className="bg-blox-card border border-blox-border rounded-xl p-5">
-      <div className="flex items-center justify-between gap-2 mb-4">
-        <div className="flex items-center gap-2.5">
-          <div className="p-1.5 rounded-lg bg-blox-blue/10">
-            <FileText className="w-3.5 h-3.5 text-blox-blue" />
-          </div>
-          <h3 className="text-sm font-semibold text-blox-text">Notes</h3>
-        </div>
+    <section className="mf-panel overflow-hidden">
+      <div className={MF_PANEL_HEAD}>
+        <h2 className={MF_PANEL_TITLE}>Notes</h2>
         {!isEditing && canEdit && (
-          <Button
-            onClick={startEdit}
-            variant="outline"
-            size="sm"
-            className="h-7 px-2 text-xs gap-1.5 border-blox-border text-blox-text"
-          >
-            <Edit3 className="w-3 h-3" />
+          <button type="button" onClick={startEdit} className={MF_BUTTON}>
+            <Edit3 className="w-3.5 h-3.5" aria-hidden />
             {notes ? "Edit" : "Add notes"}
-          </Button>
+          </button>
         )}
       </div>
 
-      {isEditing ? (
-        <div className="space-y-3">
-          <textarea
-            value={draft}
-            onChange={(e) => setDraft(e.target.value.slice(0, NOTES_MAX_LEN))}
-            placeholder="Free-form notes about this machine. Plain text. URLs are linkified in the read view."
-            className="w-full min-h-[180px] bg-blox-bg border border-blox-border rounded-lg p-3 text-xs text-blox-text font-mono leading-relaxed focus:outline-none focus:border-blox-blue/40 resize-y"
-            maxLength={NOTES_MAX_LEN}
-            autoFocus
-          />
-          <div className="flex items-center justify-between gap-2">
-            <span
-              className={`text-[10px] tabular-nums font-mono ${
-                draft.length > NOTES_MAX_LEN * 0.95
-                  ? "text-amber-400"
-                  : "text-blox-muted"
-              }`}
-            >
-              {draft.length} / {NOTES_MAX_LEN}
-            </span>
-            <div className="flex items-center gap-2">
-              <Button
-                onClick={cancelEdit}
-                variant="outline"
-                size="sm"
-                disabled={saving}
-                className="h-7 px-2 text-xs gap-1.5 border-blox-border text-blox-muted"
+      <div className="px-6 py-5">
+        {isEditing ? (
+          <div className="space-y-3">
+            <textarea
+              value={draft}
+              onChange={(e) => setDraft(e.target.value.slice(0, NOTES_MAX_LEN))}
+              placeholder="Free-form notes about this machine. Plain text. URLs are linkified in the read view."
+              className="min-h-[220px] w-full resize-y rounded-[10px] border border-border-default bg-surface-sunken p-3.5 font-mono text-xs leading-relaxed text-text-primary placeholder:text-text-disabled focus:border-accent focus:outline-none"
+              maxLength={NOTES_MAX_LEN}
+              aria-label="Machine notes"
+              autoFocus
+            />
+            <div className="flex items-center justify-between gap-2">
+              <span
+                className={`mf-metric text-[11px] ${
+                  draft.length > NOTES_MAX_LEN * 0.95 ? "text-status-warning" : "text-text-tertiary"
+                }`}
               >
-                <X className="w-3 h-3" />
-                Cancel
-              </Button>
-              <Button
-                onClick={save}
-                size="sm"
-                disabled={saving}
-                className="h-7 px-2 text-xs gap-1.5"
-              >
-                <Save className="w-3 h-3" />
-                {saving ? "Saving..." : "Save"}
-              </Button>
+                {draft.length} / {NOTES_MAX_LEN}
+              </span>
+              <div className="flex items-center gap-2">
+                <button type="button" onClick={cancelEdit} disabled={saving} className={MF_BUTTON_QUIET}>
+                  <X className="w-3.5 h-3.5" aria-hidden />
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={save}
+                  disabled={saving}
+                  className="mf-action inline-flex items-center gap-2"
+                >
+                  <Save className="w-3.5 h-3.5" aria-hidden />
+                  {saving ? "Saving…" : "Save"}
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      ) : notes ? (
-        <pre className="whitespace-pre-wrap break-words text-xs text-blox-text font-mono leading-relaxed">
-          {renderedNotes}
-        </pre>
-      ) : (
-        <p className="text-xs text-blox-muted/70 italic">
-          No notes yet.
-          {canEdit ? " Click “Add notes” to get started." : ""}
-        </p>
-      )}
-    </div>
+        ) : notes ? (
+          <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-text-primary">
+            {renderedNotes}
+          </pre>
+        ) : (
+          <p className="text-[13px] text-text-tertiary">
+            No notes yet.
+            {canEdit ? " Use “Add notes” to record why this machine exists." : ""}
+          </p>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -175,7 +165,7 @@ function renderNotes(text: string): React.ReactNode[] {
         href={url}
         target="_blank"
         rel="noopener noreferrer"
-        className="text-blox-blue underline decoration-dotted underline-offset-2 hover:text-blox-blue/80 break-all"
+        className="break-all text-accent underline decoration-dotted underline-offset-2 hover:text-accent-hover"
       >
         {url}
       </a>

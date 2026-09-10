@@ -24,6 +24,8 @@ interface ShellActionsValue {
   openAddMachine?: () => void;
   openAddAPIMachine?: () => void;
   openCommandPalette: () => void;
+  /** Alerts live on the fleet dashboard; this reaches them from any route. */
+  openAlerts: () => void;
 }
 
 const Context = createContext<ShellActionsValue | null>(null);
@@ -75,6 +77,7 @@ export function ShellActionsProvider({ children }: { children: ReactNode }) {
     openAddMachine: canCreateInstallTokens ? openAddMachine : undefined,
     openAddAPIMachine: canManageAPIMachines ? openAddAPIMachine : undefined,
     openCommandPalette,
+    openAlerts,
   };
 
   return (

@@ -7,7 +7,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
   DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
+import { MF_BUTTON_DANGER, MF_BUTTON_QUIET, MF_DIALOG } from "@/lib/monoform-classes";
 import { getStoredToken } from "@/lib/session";
 import { commandFeedback } from "@/lib/command-feedback.mjs";
 
@@ -46,39 +46,25 @@ export function RebootModal({ hostname, machineId, hubUrl, onClose }: RebootModa
 
   return (
     <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
-      <DialogContent className="bg-blox-card border-blox-border text-blox-text ring-0 sm:max-w-sm" showCloseButton={false}>
+      <DialogContent className={`${MF_DIALOG} sm:max-w-sm`} showCloseButton={false}>
         <DialogHeader>
-          <div className="flex items-center gap-3">
-            <div className="p-2 rounded-xl bg-red-500/10">
-              <AlertTriangle className="w-5 h-5 text-red-400" />
-            </div>
-            <DialogTitle className="text-blox-text">Confirm Reboot</DialogTitle>
-          </div>
-          <DialogDescription className="text-blox-muted text-xs mt-2">
-            Are you sure you want to reboot <span className="text-blox-text font-semibold">{hostname}</span>?
-            The machine will be temporarily unavailable.
+          <DialogTitle className="flex items-center gap-2.5">
+            <AlertTriangle className="w-4 h-4 text-status-critical" aria-hidden />
+            Confirm reboot
+          </DialogTitle>
+          <DialogDescription className="mt-2 text-[13px] leading-6 text-text-tertiary">
+            Reboot <span className="font-medium text-text-primary">{hostname}</span>? The machine will
+            be temporarily unavailable.
           </DialogDescription>
         </DialogHeader>
-        <DialogFooter className="bg-transparent border-t-blox-border">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={onClose}
-            disabled={loading}
-            className="text-blox-muted border-blox-border text-xs"
-          >
+        <DialogFooter>
+          <button type="button" onClick={onClose} disabled={loading} className={MF_BUTTON_QUIET}>
             Cancel
-          </Button>
-          <Button
-            variant="destructive"
-            size="sm"
-            onClick={handleReboot}
-            disabled={loading}
-            className="text-xs"
-          >
-            {loading ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : null}
+          </button>
+          <button type="button" onClick={handleReboot} disabled={loading} className={MF_BUTTON_DANGER}>
+            {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden /> : null}
             Reboot
-          </Button>
+          </button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

@@ -1,11 +1,11 @@
 "use client";
 import { AppShell } from "@/components/shell/AppShell";
 
-// Phase 10/11 — settings page.
+// Settings page.
 //
 // Sticky header with a back link to the fleet, hero with title + tagline,
-// and tabs for Profile (Phase 11), Preferences (Phase 11), Theme (Phase
-// 10), and Branding (Phase 10, admin only).
+// and tabs for Profile, Preferences (which now owns the single appearance
+// control), and Branding / AI Sessions / Updates for admins.
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
@@ -17,14 +17,13 @@ import {
   TabsTrigger,
   TabsContent,
 } from "@/components/ui/tabs";
-import { ThemeSettings } from "@/components/settings/ThemeSettings";
 import { BrandingSettings } from "@/components/settings/BrandingSettings";
 import { ProfileSettings } from "@/components/settings/ProfileSettings";
 import { PreferencesSettings } from "@/components/settings/PreferencesSettings";
 import { AISessionsSettings } from "@/components/settings/AISessionsSettings";
 import { UpdatesSettings } from "@/components/settings/UpdatesSettings";
 
-const SETTINGS_TABS = ["profile", "preferences", "theme", "branding", "ai-sessions", "updates"] as const;
+const SETTINGS_TABS = ["profile", "preferences", "branding", "ai-sessions", "updates"] as const;
 type SettingsTab = (typeof SETTINGS_TABS)[number];
 
 export default function SettingsPage() {
@@ -71,7 +70,6 @@ function SettingsContent() {
           <TabsList className="bg-blox-card border border-blox-border">
             <TabsTrigger value="profile">Profile</TabsTrigger>
             <TabsTrigger value="preferences">Preferences</TabsTrigger>
-            <TabsTrigger value="theme">Theme</TabsTrigger>
             {canEditBranding && <TabsTrigger value="branding">Branding</TabsTrigger>}
             {canManageAISessions && <TabsTrigger value="ai-sessions">AI Sessions</TabsTrigger>}
           {canManageAISessions && <TabsTrigger value="updates">Updates</TabsTrigger>}
@@ -83,10 +81,6 @@ function SettingsContent() {
 
           <TabsContent value="preferences" className="mt-6">
             <PreferencesSettings />
-          </TabsContent>
-
-          <TabsContent value="theme" className="mt-6">
-            <ThemeSettings />
           </TabsContent>
 
           {canEditBranding && (

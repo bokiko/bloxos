@@ -58,6 +58,21 @@ var validDefaultViews = map[string]struct{}{
 	"list": {},
 }
 
+// defaultViewForNewUser is the machine-surface view a freshly created account
+// starts on. Monoform's authoritative work surface is the Machine fleet table,
+// so new users land there; cards remain a user choice and the small-screen
+// fallback.
+//
+// This is applied at the two INSERT sites (auth.go bootstrap, users.go
+// add-user) rather than as the column default. The column was created as
+// `default_view TEXT NOT NULL DEFAULT 'grid'` (migrations.go:293) and SQLite
+// cannot ALTER a column's default; changing it would mean rebuilding `users` —
+// a ~20-column table with a BLOB and two ON DELETE CASCADE dependents — which
+// is not a risk worth taking for a default. Forward-only by construction:
+// existing rows are never rewritten, because their stored value is a real
+// preference the user chose, not an unset default.
+const defaultViewForNewUser = "list"
+
 var validDefaultSorts = map[string]struct{}{
 	"name":     {},
 	"status":   {},

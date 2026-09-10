@@ -2,11 +2,12 @@
 
 import { useEffect, useState, useCallback } from "react";
 import {
-  AreaChart, Area, XAxis, YAxis, ResponsiveContainer, Tooltip,
+  CartesianGrid, Line, LineChart, XAxis, YAxis, ResponsiveContainer, Tooltip,
 } from "recharts";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { HUB_URL, getStoredToken } from "@/lib/session";
 import { MetricsChartsSkeleton } from "./MetricsChartsSkeleton";
+import { MF_PANEL_HEAD, MF_PANEL_TITLE, MF_TAB } from "@/lib/monoform-classes";
 
 type Period = "30m" | "1h" | "6h" | "24h" | "7d";
 
@@ -44,13 +45,35 @@ function formatGB(bytes: number | undefined | null): string {
 
 const periods: Period[] = ["30m", "1h", "6h", "24h", "7d"];
 
+// Monoform: series colour identifies the *device*, never the health of the
+// reading — CPU and RAM are the product blue, everything GPU is the GPU
+// violet. Green / amber / red stay reserved for real nominal / warning /
+// critical state, which a continuous line cannot honestly express. Flat
+// strokes, no gradient fill.
+const HOST_SERIES = "var(--mf-blue)";
+const GPU_SERIES = "var(--mf-violet)";
+
+const axisTick = {
+  fontSize: 10,
+  fill: "var(--text-tertiary)",
+  fontFamily: "var(--font-mono)",
+} as const;
+
 const tooltipStyle = {
-  background: "#12121a",
-  border: "1px solid #1e1e2e",
+  background: "var(--surface-overlay)",
+  border: "1px solid var(--border-default)",
   borderRadius: 10,
   fontSize: 11,
-  boxShadow: "0 8px 32px rgba(0,0,0,0.4)",
-};
+  color: "var(--text-primary)",
+  boxShadow: "var(--mf-shadow-overlay)",
+} as const;
+
+const lineProps = {
+  type: "monotone",
+  dot: false,
+  strokeWidth: 1.5,
+  isAnimationActive: false,
+} as const;
 
 export function MetricCharts({ machineId, hasGpu }: MetricChartsProps) {
   const [period, setPeriod] = useState<Period>("1h");
@@ -99,7 +122,7 @@ export function MetricCharts({ machineId, hasGpu }: MetricChartsProps) {
       <Tabs value={period} onValueChange={(v) => setPeriod(v as Period)}>
         <TabsList variant="line" className="gap-1">
           {periods.map((p) => (
-            <TabsTrigger key={p} value={p} className="text-sm px-4 py-1.5 font-mono tabular-nums">
+            <TabsTrigger key={p} value={p} className={`${MF_TAB} font-mono tabular-nums`}>
               {p}
             </TabsTrigger>
           ))}
@@ -109,187 +132,126 @@ export function MetricCharts({ machineId, hasGpu }: MetricChartsProps) {
       {data.length < 2 ? (
         <MetricsChartsSkeleton hasGpu={hasGpu} />
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {/* CPU Chart */}
-          <div className="bg-blox-bg/50 border border-blox-border/50 rounded-xl p-4">
-            <h4 className="text-xs font-medium text-blox-text mb-3">CPU Usage (%)</h4>
-            <ResponsiveContainer width="100%" height={180}>
-              <AreaChart data={data}>
-                <defs>
-                  <linearGradient id="cpuGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.25} />
-                    <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <XAxis
-                  dataKey="timestamp"
-                  tickFormatter={formatTime}
-                  tick={{ fontSize: 10, fill: "#6b6b80", fontFamily: "var(--font-mono)" }}
-                  axisLine={false}
-                  tickLine={false}
-                />
-                <YAxis
-                  domain={[0, 100]}
-                  tick={{ fontSize: 10, fill: "#6b6b80", fontFamily: "var(--font-mono)" }}
-                  axisLine={false}
-                  tickLine={false}
-                  width={30}
-                />
-                <Tooltip
-                  contentStyle={tooltipStyle}
-                  labelFormatter={formatTooltipLabel}
-                  formatter={(v) => [`${Number(v ?? 0).toFixed(1)}%`, "CPU"]}
-                />
-                <Area type="monotone" dataKey="cpu_percent" stroke="#3b82f6" fill="url(#cpuGrad)" strokeWidth={1.5} />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <Chart
+            title="CPU"
+            unit="%"
+            data={data}
+            dataKey="cpu_percent"
+            stroke={HOST_SERIES}
+            domain={[0, 100]}
+            format={(v) => `${v.toFixed(1)}%`}
+          />
 
-          {/* RAM Chart */}
-          <div className="bg-blox-bg/50 border border-blox-border/50 rounded-xl p-4">
-            <h4 className="text-xs font-medium text-blox-text mb-3">RAM Usage (GB)</h4>
-            <ResponsiveContainer width="100%" height={180}>
-              <AreaChart data={ramData}>
-                <defs>
-                  <linearGradient id="ramGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.25} />
-                    <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <XAxis
-                  dataKey="timestamp"
-                  tickFormatter={formatTime}
-                  tick={{ fontSize: 10, fill: "#6b6b80", fontFamily: "var(--font-mono)" }}
-                  axisLine={false}
-                  tickLine={false}
-                />
-                <YAxis
-                  tick={{ fontSize: 10, fill: "#6b6b80", fontFamily: "var(--font-mono)" }}
-                  axisLine={false}
-                  tickLine={false}
-                  width={30}
-                  tickFormatter={(v: number) => formatGB((v ?? 0) * 1024 ** 3)}
-                />
-                <Tooltip
-                  contentStyle={tooltipStyle}
-                  labelFormatter={formatTooltipLabel}
-                  formatter={(v) => [`${Number(v ?? 0).toFixed(1)} GB`, "RAM"]}
-                />
-                <Area type="monotone" dataKey="ram_gb" stroke="#8b5cf6" fill="url(#ramGrad)" strokeWidth={1.5} />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
+          <Chart
+            title="Memory"
+            unit="GB"
+            data={ramData}
+            dataKey="ram_gb"
+            stroke={HOST_SERIES}
+            tickFormatter={(v) => formatGB(v * 1024 ** 3)}
+            format={(v) => `${v.toFixed(1)} GB`}
+          />
 
-          {/* GPU Utilization Chart */}
           {hasGpu && (
-            <div className="bg-blox-bg/50 border border-blox-border/50 rounded-xl p-4">
-              <h4 className="text-xs font-medium text-blox-text mb-3">GPU Utilization (%)</h4>
-              <ResponsiveContainer width="100%" height={180}>
-                <AreaChart data={gpuData}>
-                  <defs>
-                    <linearGradient id="gpuUtilGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#10b981" stopOpacity={0.25} />
-                      <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <XAxis
-                    dataKey="timestamp"
-                    tickFormatter={formatTime}
-                    tick={{ fontSize: 10, fill: "#6b6b80", fontFamily: "var(--font-mono)" }}
-                    axisLine={false}
-                    tickLine={false}
-                  />
-                  <YAxis
-                    domain={[0, 100]}
-                    tick={{ fontSize: 10, fill: "#6b6b80", fontFamily: "var(--font-mono)" }}
-                    axisLine={false}
-                    tickLine={false}
-                    width={30}
-                  />
-                  <Tooltip
-                    contentStyle={tooltipStyle}
-                    labelFormatter={formatTooltipLabel}
-                    formatter={(v) => [`${Number(v ?? 0).toFixed(1)}%`, "GPU Util"]}
-                  />
-                  <Area type="monotone" dataKey="gpu_util" stroke="#10b981" fill="url(#gpuUtilGrad)" strokeWidth={1.5} />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
+            <Chart
+              title="GPU utilisation"
+              unit="%"
+              data={gpuData}
+              dataKey="gpu_util"
+              stroke={GPU_SERIES}
+              domain={[0, 100]}
+              format={(v) => `${v.toFixed(1)}%`}
+            />
           )}
 
-          {/* GPU Temp Chart */}
           {hasGpu && (
-            <div className="bg-blox-bg/50 border border-blox-border/50 rounded-xl p-4">
-              <h4 className="text-xs font-medium text-blox-text mb-3">GPU Temperature (C)</h4>
-              <ResponsiveContainer width="100%" height={180}>
-                <AreaChart data={gpuData}>
-                  <defs>
-                    <linearGradient id="gpuTempGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.25} />
-                      <stop offset="95%" stopColor="#f59e0b" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <XAxis
-                    dataKey="timestamp"
-                    tickFormatter={formatTime}
-                    tick={{ fontSize: 10, fill: "#6b6b80", fontFamily: "var(--font-mono)" }}
-                    axisLine={false}
-                    tickLine={false}
-                  />
-                  <YAxis
-                    tick={{ fontSize: 10, fill: "#6b6b80", fontFamily: "var(--font-mono)" }}
-                    axisLine={false}
-                    tickLine={false}
-                    width={30}
-                  />
-                  <Tooltip
-                    contentStyle={tooltipStyle}
-                    labelFormatter={formatTooltipLabel}
-                    formatter={(v) => [`${Number(v ?? 0).toFixed(0)} C`, "GPU Temp"]}
-                  />
-                  <Area type="monotone" dataKey="gpu_temp" stroke="#f59e0b" fill="url(#gpuTempGrad)" strokeWidth={1.5} />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
+            <Chart
+              title="GPU temperature"
+              unit="°C"
+              data={gpuData}
+              dataKey="gpu_temp"
+              stroke={GPU_SERIES}
+              format={(v) => `${v.toFixed(0)}°C`}
+            />
           )}
 
-          {/* VRAM Chart */}
           {hasGpu && (
-            <div className="bg-blox-bg/50 border border-blox-border/50 rounded-xl p-4">
-              <h4 className="text-xs font-medium text-blox-text mb-3">VRAM Usage (GB)</h4>
-              <ResponsiveContainer width="100%" height={180}>
-                <AreaChart data={gpuData}>
-                  <defs>
-                    <linearGradient id="vramGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#10b981" stopOpacity={0.25} />
-                      <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <XAxis
-                    dataKey="timestamp"
-                    tickFormatter={formatTime}
-                    tick={{ fontSize: 10, fill: "#6b6b80", fontFamily: "var(--font-mono)" }}
-                    axisLine={false}
-                    tickLine={false}
-                  />
-                  <YAxis
-                    tick={{ fontSize: 10, fill: "#6b6b80", fontFamily: "var(--font-mono)" }}
-                    axisLine={false}
-                    tickLine={false}
-                    width={30}
-                  />
-                  <Tooltip
-                    contentStyle={tooltipStyle}
-                    labelFormatter={formatTooltipLabel}
-                    formatter={(v) => [`${Number(v ?? 0).toFixed(1)} GB`, "VRAM"]}
-                  />
-                  <Area type="monotone" dataKey="vram_gb" stroke="#10b981" fill="url(#vramGrad)" strokeWidth={1.5} />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
+            <Chart
+              title="VRAM"
+              unit="GB"
+              data={gpuData}
+              dataKey="vram_gb"
+              stroke={GPU_SERIES}
+              tickFormatter={(v) => formatGB(v * 1024 ** 3)}
+              format={(v) => `${v.toFixed(1)} GB`}
+            />
           )}
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * One series over time. Every chart on this page is this component, so the
+ * axes, grid, tooltip and stroke weight cannot drift apart between them.
+ */
+function Chart({
+  title,
+  unit,
+  data,
+  dataKey,
+  stroke,
+  domain,
+  tickFormatter,
+  format,
+}: {
+  title: string;
+  unit: string;
+  data: readonly object[];
+  dataKey: string;
+  stroke: string;
+  domain?: [number, number];
+  tickFormatter?: (value: number) => string;
+  format: (value: number) => string;
+}) {
+  return (
+    <section className="mf-panel overflow-hidden">
+      <div className={MF_PANEL_HEAD}>
+        <h4 className={MF_PANEL_TITLE}>{title}</h4>
+        <span className="mf-kicker">{unit}</span>
+      </div>
+      <div className="px-3 py-4">
+        <ResponsiveContainer width="100%" height={180}>
+          <LineChart data={data} margin={{ top: 4, right: 12, bottom: 0, left: 0 }}>
+            <CartesianGrid stroke="var(--border-subtle)" strokeDasharray="2 4" vertical={false} />
+            <XAxis
+              dataKey="timestamp"
+              tickFormatter={formatTime}
+              tick={axisTick}
+              axisLine={false}
+              tickLine={false}
+              minTickGap={28}
+            />
+            <YAxis
+              domain={domain}
+              tick={axisTick}
+              axisLine={false}
+              tickLine={false}
+              width={38}
+              tickFormatter={tickFormatter}
+            />
+            <Tooltip
+              contentStyle={tooltipStyle}
+              cursor={{ stroke: "var(--border-strong)", strokeWidth: 1 }}
+              labelFormatter={formatTooltipLabel}
+              formatter={(v) => [format(Number(v ?? 0)), title]}
+            />
+            <Line {...lineProps} dataKey={dataKey} stroke={stroke} />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+    </section>
   );
 }

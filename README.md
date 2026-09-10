@@ -17,9 +17,9 @@ See what is running, understand your hardware, and manage your fleet from one da
 
 </div>
 
-![Operations Wall showing connected Linux and Windows demo machines, fleet resource usage, and machine controls](https://cdn.jsdelivr.net/gh/bokiko/bloxos@bca13c456ecc1e5bd89282f96486a43b602bc4f9/docs/screenshots/operations-wall.png)
+![The BloxOS dashboard showing connected Linux and Windows demo machines, fleet resource usage, and machine controls](https://cdn.jsdelivr.net/gh/bokiko/bloxos@bca13c456ecc1e5bd89282f96486a43b602bc4f9/docs/screenshots/operations-wall.png)
 
-*Actual v1.1.0 dashboard with synthetic demo machines. Missing GPU sensors display N/A; no private fleet data is shown.*
+*Actual v1.1.0 dashboard with synthetic demo machines, captured before the Monoform design reset. Missing GPU sensors display N/A; no private fleet data is shown.*
 
 ## One place to look. One place to act.
 
@@ -29,32 +29,29 @@ No Kubernetes, Redis, or external database required.
 
 | See your fleet | Operate it | Make it yours |
 | --- | --- | --- |
-| Live CPU, RAM, disk, GPU and freshness indicators | Linux web terminals with non-root shells and re-authentication | Three live layouts, each with Original, Bright and Dark colors |
-| Hardware inventory with search, filters and exports | Machine actions, service and container controls where supported | Classic dashboard with eight palettes |
+| Live CPU, RAM, disk, GPU and freshness indicators | Linux web terminals with non-root shells and re-authentication | One dashboard design in your choice of two contrast modes |
+| Hardware inventory with search, filters and exports | Machine actions, service and container controls where supported | Account profile with display name and avatar |
 | Supported AI-tool session metadata across machines | Viewer, operator and admin permissions | Per-user preferences, pins and saved filters |
 | 24-hour component power history with averages and sampled peaks | Native Linux and Windows agents with signed updates | Instance logo, favicon and welcome-message branding |
 
-### Three designs. The same working app.
+### One design. The whole app.
 
-**Operations Wall** gives you an open fleet overview. **Grove Workspace** adds a
-sidebar and a separate context column. **Precision Console** puts the machine
-table first.
+Every page uses the same shell: a fixed left rail carrying all the navigation,
+and a top bar carrying the page title and the global actions. Fleet overview,
+machine details, inventory, AI Sessions, versions and settings all read the
+same way.
 
-Choose **Account menu → Design**, then a color. Navigation continues through
-machine details, inventory, AI Sessions, versions and settings. Existing
-accounts keep Classic until they choose another design.
+The only appearance choice is contrast — **Gray** (the default) or **Dark**.
+Change it from the toggle in the top bar, or in **Settings → Preferences**.
+The choice is saved to your account, so it follows you to another browser.
 
-| Grove Workspace · Original | Precision Console · Bright |
-| --- | --- |
-| [![Grove Workspace dashboard with synthetic demo machines](https://cdn.jsdelivr.net/gh/bokiko/bloxos@bca13c456ecc1e5bd89282f96486a43b602bc4f9/docs/screenshots/grove-workspace.png)](https://cdn.jsdelivr.net/gh/bokiko/bloxos@bca13c456ecc1e5bd89282f96486a43b602bc4f9/docs/screenshots/grove-workspace.png) | [![Precision Console dashboard with synthetic demo machines](https://cdn.jsdelivr.net/gh/bokiko/bloxos@bca13c456ecc1e5bd89282f96486a43b602bc4f9/docs/screenshots/precision-console.png)](https://cdn.jsdelivr.net/gh/bokiko/bloxos@bca13c456ecc1e5bd89282f96486a43b602bc4f9/docs/screenshots/precision-console.png) |
-
-[See all three dashboards →](docs/screenshots/README.md) · [Design and color guide →](docs/themes/README.md)
+[Design guide →](docs/themes/README.md) · [Screenshot gallery →](docs/screenshots/README.md)
 
 ### Machines stay where you put them
 
 Name sorting no longer moves machines when connectivity changes. Choose
 **Arrange machines**, drag or use the arrows, then **Save order**. Your **My
-order** is saved per account across grid/list and all four layouts. New machines
+order** is saved per account and applies to both grid and list views. New machines
 appear after your saved set. [Machine arrangement guide →](docs/machine-order.md)
 
 ### AI activity, without reading the conversation

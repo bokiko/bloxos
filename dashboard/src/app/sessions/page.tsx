@@ -5,16 +5,16 @@ import { AppShell } from "@/components/shell/AppShell";
 //
 // Groups the live snapshot by machine. Truth comes from the AISessions
 // context (GET on connect, SSE deltas after); this page adds no fetching.
+//
+// Monoform: the shell owns the title, the rail and every global action, so
+// this file starts at the page lead and renders only panels.
 
 import Link from "next/link";
 import { useMemo } from "react";
-import { motion } from "framer-motion";
-import { ArrowLeft, Bot, RefreshCw, WifiOff } from "lucide-react";
+import { Bot, RefreshCw, WifiOff } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useAISessions, useNow } from "@/contexts/AISessionsContext";
 import { useSSE } from "@/contexts/SSEContext";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import {
   SessionList,
   SessionsDisabledNotice,
@@ -25,6 +25,7 @@ import {
   StaleNotice,
 } from "@/components/AISessionsList";
 import { isSnapshotStale, sortMachines, summarize } from "@/lib/ai-sessions";
+import { MF_BUTTON } from "@/lib/monoform-classes";
 import { cn } from "@/lib/utils";
 
 export default function SessionsPage() {
@@ -44,7 +45,7 @@ function SessionsContent() {
   let body: React.ReactNode;
   if (!hasLoaded) {
     body = (
-      <div className="bg-blox-card border border-blox-border rounded-xl p-5">
+      <div className="mf-panel p-6">
         <SessionsSkeleton rows={4} />
       </div>
     );
@@ -52,16 +53,16 @@ function SessionsContent() {
     body = <SessionsErrorNotice error={error} onRetry={() => void refresh()} />;
   } else if (enabled === false) {
     body = (
-      <div className="bg-blox-card border border-blox-border rounded-xl p-5">
+      <div className="mf-panel p-6">
         <SessionsDisabledNotice canManage={hasScope("fleet.admin")} />
       </div>
     );
   } else if (withSessions.length === 0) {
     body = (
-      <div className="bg-blox-card border border-blox-border rounded-xl p-5">
+      <div className="mf-panel p-6">
         <SessionsEmpty scope="fleet" />
         {totals.reporting > 0 && (
-          <p className="text-center text-[11px] text-blox-muted -mt-4 pb-4">
+          <p className="text-center text-[11px] text-text-tertiary -mt-4 pb-4">
             {totals.reporting} machine{totals.reporting === 1 ? "" : "s"} reporting, none with a session.
           </p>
         )}
@@ -76,99 +77,94 @@ function SessionsContent() {
             <section
               key={m.machineId}
               aria-labelledby={`ai-sessions-${m.machineId}`}
-              className={cn(
-                "bg-blox-card border rounded-xl p-5 transition-opacity",
-                stale ? "border-status-stale/30 opacity-80" : "border-blox-border",
-              )}
+              className={cn("mf-panel", stale && "opacity-80")}
               data-testid="ai-sessions-machine"
             >
-              <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
-                <div className="flex items-center gap-2 min-w-0">
-                  <h2 id={`ai-sessions-${m.machineId}`} className="text-sm font-semibold text-blox-text truncate">
-                    <Link href={`/machine/${encodeURIComponent(m.machineId)}?tab=ai-sessions`} className="hover:underline">
+              <div className="flex items-center justify-between gap-3 flex-wrap border-b border-border-subtle px-6 py-3.5">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <h2 id={`ai-sessions-${m.machineId}`} className="text-[13px] font-semibold text-text-primary truncate">
+                    <Link
+                      href={`/machine/${encodeURIComponent(m.machineId)}?tab=ai-sessions`}
+                      className="text-accent hover:underline"
+                    >
                       {m.hostname || m.machineId}
                     </Link>
                   </h2>
-                  <span className="text-[10px] text-blox-muted font-mono tabular-nums">
-                    ({m.sessions.length})
+                  <span className="mf-metric text-[11px] text-text-tertiary">
+                    {m.sessions.length} session{m.sessions.length === 1 ? "" : "s"}
                   </span>
                 </div>
                 <StaleNotice machine={m} now={now} staleAfterSeconds={staleAfterSeconds} />
               </div>
-              <SessionList sessions={m.sessions} now={now} />
+              <div className="px-4 py-3">
+                <SessionList sessions={m.sessions} now={now} />
+              </div>
             </section>
           );
         })}
-        <div className="px-1">
-          <SessionsLegend />
-        </div>
+        <SessionsLegend />
       </div>
     );
   }
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.25, ease: "easeOut" }}
-      className="min-h-screen bg-blox-bg" data-design-page
-    >
-      <header className="sticky top-0 z-50 bg-blox-bg/80 backdrop-blur-xl border-b border-blox-border/50">
-        <div className="max-w-[1200px] mx-auto px-4 sm:px-6 h-12 flex items-center justify-between">
-          <Link
-            href="/"
-            className="flex items-center gap-1.5 text-blox-muted hover:text-blox-text transition-colors text-xs"
-          >
-            <ArrowLeft className="w-3.5 h-3.5" aria-hidden />
-            <span>Fleet</span>
-          </Link>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => void refresh()}
-            disabled={loading}
-            className="text-xs text-blox-muted hover:text-blox-text gap-1.5 h-8"
-          >
-            <RefreshCw className={cn("w-3.5 h-3.5", loading && "animate-spin")} aria-hidden />
-            Refresh
-          </Button>
-        </div>
-      </header>
-
-      <section className="border-b border-blox-border/50 bg-blox-bg/40">
-        <div className="max-w-[1200px] mx-auto px-4 sm:px-6 py-6">
-          <div className="flex items-center gap-3 flex-wrap">
-            <h1 className="text-xl sm:text-2xl font-semibold text-blox-text tracking-tight inline-flex items-center gap-2">
-              <Bot className="w-5 h-5 text-blox-blue" aria-hidden />
-              AI Sessions
-            </h1>
-            {hasLoaded && enabled !== false && (
-              <Badge variant="outline" className="border-blox-border text-blox-muted text-[10px] tabular-nums">
-                {totals.sessions} session{totals.sessions === 1 ? "" : "s"} · {totals.machines} machine
-                {totals.machines === 1 ? "" : "s"}
-              </Badge>
-            )}
-            {hasLoaded && enabled === false && (
-              <Badge variant="outline" className="border-blox-border text-blox-muted text-[10px]">
-                off
-              </Badge>
-            )}
-            {!connected && (
-              <span className="inline-flex items-center gap-1 text-[11px] text-status-warning" role="status">
-                <WifiOff className="w-3 h-3" aria-hidden />
-                live updates paused
-              </span>
-            )}
+    <>
+      <div className="mf-intro">
+        <div className="min-w-0">
+          <dl className="flex flex-wrap items-baseline gap-x-7 gap-y-2">
+            <Stat label="Sessions" value={hasLoaded && enabled !== false ? totals.sessions : "—"} />
+            <Stat label="Machines" value={hasLoaded && enabled !== false ? totals.machines : "—"} />
+            <div className="flex items-baseline gap-2">
+              <dt className="mf-kicker">Feed</dt>
+              <dd>
+                {enabled === false ? (
+                  <span className="inline-flex items-center gap-1.5 text-[13px] text-text-tertiary">
+                    <Bot className="w-3.5 h-3.5" aria-hidden />
+                    Monitoring off
+                  </span>
+                ) : connected ? (
+                  <span className="mf-status-live inline-flex items-center gap-1.5 text-[13px]">
+                    <span className="mf-status-dot" aria-hidden />
+                    Live
+                  </span>
+                ) : (
+                  <span className="mf-status-warning inline-flex items-center gap-1.5 text-[13px]" role="status">
+                    <WifiOff className="w-3.5 h-3.5" aria-hidden />
+                    Updates paused
+                  </span>
+                )}
+              </dd>
+            </div>
+          </dl>
+          <div className="mt-5">
+            <button
+              type="button"
+              onClick={() => void refresh()}
+              disabled={loading}
+              className={MF_BUTTON}
+            >
+              <RefreshCw className={cn("w-3.5 h-3.5", loading && "animate-spin")} aria-hidden />
+              {loading ? "Refreshing…" : "Refresh sessions"}
+            </button>
           </div>
-          <p className="text-[12px] text-blox-muted mt-1.5 max-w-2xl">
-            Claude Code, Codex and Kimi sessions currently running across the fleet. Metadata only: the
-            tool, an explicitly chosen model, the project folder name, and how long the process has run.
-            Live only — nothing is kept once a session ends.
-          </p>
         </div>
-      </section>
+        <p>
+          Claude Code, Codex and Kimi sessions running across the fleet. Metadata only — the tool, an
+          explicitly chosen model, the project folder and how long the process has run. Nothing is kept
+          once a session ends.
+        </p>
+      </div>
 
-      <main className="max-w-[1200px] mx-auto px-4 sm:px-6 py-6 space-y-6">{body}</main>
-    </motion.div>
+      {body}
+    </>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: number | string }) {
+  return (
+    <div className="flex items-baseline gap-2">
+      <dt className="mf-kicker">{label}</dt>
+      <dd className="mf-metric text-[15px] text-text-primary">{value}</dd>
+    </div>
   );
 }

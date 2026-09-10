@@ -1,0 +1,856 @@
+/* BloxOS Monoform — the single product visual system.
+ *
+ * One visual language, two contrast modes: `gray` (default) and `dark`.
+ * Same components, same geometry, same spacing in both — only token values
+ * differ. There is no light mode and no system mode.
+ *
+ * Rules this file embodies:
+ *   - Dark-gray canvas, slightly raised graphite panels, 1px hairline borders.
+ *   - No gradients, no glow, no glassmorphism, no decorative shadow.
+ *   - One blue (#6380FF) for primary action, selection, focus, links, CPU.
+ *   - Green / amber / red only for real nominal / warning / critical data.
+ *   - Geist for language; Geist Mono only for values, timestamps, IDs, table
+ *     headers, counts and compact metadata, with tabular numerals on metrics.
+ *   - No continuous animation. 160–220ms transitions, reduced-motion honored.
+ *
+ * This is the ONLY place BloxOS colour, radius and elevation tokens are
+ * defined. Adding a second definition of any of these anywhere else is a bug.
+ */
+
+/* ============================================================================
+ * Contrast mode: gray (default)
+ * ========================================================================== */
+
+:root,
+html[data-appearance="gray"] {
+  --mf-void: #101010;
+  --mf-canvas: #171717;
+  --mf-panel: #20201f;
+  --mf-panel-hover: #262625;
+  --mf-panel-selected: #2b2b2e;
+  --mf-table-head: #1a1a19;
+  --mf-line: #383836;
+  --mf-line-strong: #51514e;
+  --mf-text: #f2f2ef;
+  --mf-text-secondary: #c5c5bf;
+  --mf-muted: #a3a39c;
+  --mf-quiet: #6e6e69;
+  --mf-blue: #6380ff;
+  --mf-blue-pressed: #4f6cf0;
+  --mf-blue-soft: rgb(99 128 255 / 14%);
+  --mf-green: #58bd88;
+  --mf-green-soft: rgb(88 189 136 / 12%);
+  --mf-amber: #e9a34b;
+  --mf-amber-soft: rgb(233 163 75 / 12%);
+  --mf-red: #e56767;
+  --mf-red-soft: rgb(229 103 103 / 12%);
+  --mf-violet: #9b87e8;
+  --mf-violet-soft: rgb(155 135 232 / 12%);
+  --mf-radius-control: 10px;
+  --mf-radius-panel: 18px;
+  --mf-shadow-overlay: 0 20px 60px rgb(0 0 0 / 38%);
+}
+
+/* ============================================================================
+ * Contrast mode: dark
+ * ========================================================================== */
+
+html[data-appearance="dark"] {
+  --mf-void: #090909;
+  --mf-canvas: #111111;
+  --mf-panel: #1a1a1a;
+  --mf-panel-hover: #222222;
+  --mf-panel-selected: #27272a;
+  --mf-table-head: #151515;
+  --mf-line: #303030;
+  --mf-line-strong: #494949;
+  --mf-text: #f4f4f2;
+  --mf-text-secondary: #c2c2bd;
+  --mf-muted: #969691;
+  --mf-quiet: #686864;
+  --mf-blue: #708bff;
+  --mf-blue-pressed: #5c77ef;
+  --mf-blue-soft: rgb(112 139 255 / 15%);
+  --mf-green: #63c695;
+  --mf-green-soft: rgb(99 198 149 / 12%);
+  --mf-amber: #edaa57;
+  --mf-amber-soft: rgb(237 170 87 / 12%);
+  --mf-red: #ea7474;
+  --mf-red-soft: rgb(234 116 116 / 12%);
+  --mf-violet: #aa97ed;
+  --mf-violet-soft: rgb(170 151 237 / 12%);
+}
+
+/* ============================================================================
+ * Named aliases for code that reads custom properties directly.
+ *
+ * A number of components pass `var(--accent)`, `var(--status-critical)`,
+ * `var(--surface-sunken)` etc. straight into inline styles and SVG attributes
+ * (Gauge, RankedBar, MetricsChartsSkeleton, the machine detail charts), so
+ * these names have to exist as real custom properties, not just as Tailwind
+ * theme keys. They are pure aliases — every value comes from a --mf-* token
+ * above, so both contrast modes follow automatically.
+ * ========================================================================== */
+
+:root {
+  --surface-sunken: var(--mf-void);
+  --surface-base: var(--mf-canvas);
+  --surface-raised: var(--mf-panel);
+  --surface-elevated: var(--mf-panel-hover);
+  --surface-overlay: var(--mf-panel-hover);
+
+  --text-primary: var(--mf-text);
+  --text-secondary: var(--mf-text-secondary);
+  --text-tertiary: var(--mf-muted);
+  --text-disabled: var(--mf-quiet);
+
+  --border-subtle: var(--mf-line);
+  --border-default: var(--mf-line);
+  --border-strong: var(--mf-line-strong);
+
+  --accent: var(--mf-blue);
+  --accent-hover: var(--mf-blue-pressed);
+  --accent-subtle: var(--mf-blue-soft);
+  --accent-foreground: #ffffff;
+
+  --status-ok: var(--mf-green);
+  --status-ok-tint: var(--mf-green-soft);
+  --status-warning: var(--mf-amber);
+  --status-warning-tint: var(--mf-amber-soft);
+  --status-critical: var(--mf-red);
+  --status-critical-tint: var(--mf-red-soft);
+  --status-stale: var(--mf-violet);
+  --status-stale-tint: var(--mf-violet-soft);
+  --status-offline: var(--mf-red);
+  --status-offline-tint: var(--mf-red-soft);
+
+  /* Motion — the only sanctioned range. No continuous animation. */
+  --motion-fast: 160ms;
+  --motion-base: 200ms;
+  --motion-slow: 220ms;
+}
+
+/* Density — set on <html> by PreferencesContext. Geometry only, no colour. */
+.density-comfortable {
+  --card-padding: 1rem;
+  --grid-gap: 1rem;
+  --grid-min-col: 300px;
+  --card-text-scale: 1;
+}
+
+.density-compact {
+  --card-padding: 0.75rem;
+  --grid-gap: 0.625rem;
+  --grid-min-col: 260px;
+  --card-text-scale: 0.95;
+}
+
+/* ============================================================================
+ * Tailwind theme mapping.
+ *
+ * Every entry is `inline` so utilities compile down to the --mf-* token
+ * directly. Each Tailwind theme key is defined EXACTLY ONCE in this block —
+ * a repeated key silently shadows the earlier one and is always a bug.
+ * ========================================================================== */
+
+@theme inline {
+  --color-surface-base: var(--mf-canvas);
+  --color-surface-sunken: var(--mf-void);
+  --color-surface-raised: var(--mf-panel);
+  --color-surface-elevated: var(--mf-panel-hover);
+  --color-surface-overlay: var(--mf-panel-hover);
+
+  --color-text-primary: var(--mf-text);
+  --color-text-secondary: var(--mf-text-secondary);
+  --color-text-tertiary: var(--mf-muted);
+  --color-text-disabled: var(--mf-quiet);
+
+  --color-border-subtle: var(--mf-line);
+  --color-border-default: var(--mf-line);
+  --color-border-strong: var(--mf-line-strong);
+
+  /* The one blue. `accent` is the solid action/selection blue; `accent-subtle`
+     is its 14% wash. shadcn's focus surfaces (`focus:bg-accent`) and the
+     product's primary buttons both land on it, which is the intent: one blue
+     means one selected state. */
+  --color-accent: var(--mf-blue);
+  --color-accent-hover: var(--mf-blue-pressed);
+  --color-accent-subtle: var(--mf-blue-soft);
+  --color-accent-foreground: #ffffff;
+  --color-action-primary: var(--mf-blue);
+
+  --color-status-ok: var(--mf-green);
+  --color-status-ok-tint: var(--mf-green-soft);
+  --color-status-warning: var(--mf-amber);
+  --color-status-warning-tint: var(--mf-amber-soft);
+  --color-status-critical: var(--mf-red);
+  --color-status-critical-tint: var(--mf-red-soft);
+  --color-status-stale: var(--mf-violet);
+  --color-status-stale-tint: var(--mf-violet-soft);
+  --color-status-offline: var(--mf-red);
+  --color-status-offline-tint: var(--mf-red-soft);
+
+  /* Compatibility aliases for the existing BloxOS component inventory.
+     Roughly 1200 call sites use the bg-blox- / text-blox- / border-blox-
+     utilities these generate; the aliases are permanent, not transitional. */
+  --color-blox-bg: var(--mf-canvas);
+  --color-blox-card: var(--mf-panel);
+  --color-blox-border: var(--mf-line);
+  --color-blox-text: var(--mf-text);
+  --color-blox-muted: var(--mf-muted);
+  --color-blox-blue: var(--mf-blue);
+  --color-blox-green: var(--mf-green);
+  --color-blox-amber: var(--mf-amber);
+  --color-blox-red: var(--mf-red);
+
+  /* shadcn/ui token surface. */
+  --color-background: var(--mf-canvas);
+  --color-foreground: var(--mf-text);
+  --color-card: var(--mf-panel);
+  --color-card-foreground: var(--mf-text);
+  --color-popover: var(--mf-panel-hover);
+  --color-popover-foreground: var(--mf-text);
+  --color-primary: var(--mf-blue);
+  --color-primary-foreground: #ffffff;
+  --color-secondary: var(--mf-panel-hover);
+  --color-secondary-foreground: var(--mf-text);
+  --color-muted: var(--mf-panel-hover);
+  --color-muted-foreground: var(--mf-muted);
+  --color-destructive: var(--mf-red);
+  --color-border: var(--mf-line);
+  --color-input: var(--mf-line);
+  --color-ring: var(--mf-blue);
+
+  /* Charts. CPU is the product blue; the rest are the data-meaning colours. */
+  --color-chart-1: var(--mf-blue);
+  --color-chart-2: var(--mf-violet);
+  --color-chart-3: var(--mf-green);
+  --color-chart-4: var(--mf-amber);
+  --color-chart-5: var(--mf-red);
+
+  /* Elevation. Monoform has exactly one shadow and it is for real overlays —
+     dialogs, popovers, dropdowns. Everything else is flat with a hairline, so
+     the small end of Tailwind's shadow ramp is deliberately nulled out and the
+     large end collapses onto the single overlay shadow. Tailwind bakes these
+     into the `shadow-*` utilities at build time, which is why they belong in
+     @theme rather than in a plain :root block. */
+  --shadow-2xs: none;
+  --shadow-xs: none;
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: var(--mf-shadow-overlay);
+  --shadow-xl: var(--mf-shadow-overlay);
+  --shadow-2xl: var(--mf-shadow-overlay);
+  --inset-shadow-2xs: none;
+  --inset-shadow-xs: none;
+  --inset-shadow-sm: none;
+
+  /* Geometry. `--mf-radius-control` for controls and cells,
+     `--mf-radius-panel` for panels. */
+  --radius: var(--mf-radius-control);
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: var(--mf-radius-control);
+  --radius-xl: 14px;
+  --radius-2xl: var(--mf-radius-panel);
+  --radius-3xl: 24px;
+  --radius-4xl: 32px;
+
+  /* Fonts. next/font in layout.tsx names its variables --font-sans (Geist)
+     and --font-mono (Geist Mono) and sets them via a class on <html>, which
+     is the same element as :root. Redeclaring those two keys here as
+     `--font-sans: var(--font-sans)` — as this file used to — makes Tailwind
+     emit a self-referential `:root { --font-sans: var(--font-sans) }`. That
+     only works while next/font's stylesheet is ordered after globals.css
+     (it is today: the layout's entryCSSFiles lists globals first); if the
+     order ever flips, the property becomes a cycle, resolves to the
+     guaranteed-invalid value, and every Geist face silently drops to the
+     system stack.
+
+     So we do NOT redeclare them. Tailwind's own defaults stay in :root as a
+     non-cyclic fallback, next/font's class overrides them on <html>, and
+     `font-sans` / `font-mono` pick up Geist either way. Only the derived
+     key needs declaring. */
+  --font-heading: var(--font-sans);
+}
+
+/* ============================================================================
+ * Base
+ * ========================================================================== */
+
+@layer base {
+  html,
+  body {
+    min-height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--mf-canvas);
+    color: var(--mf-text);
+    font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  button,
+  input,
+  select,
+  textarea {
+    font: inherit;
+  }
+
+  button:focus-visible,
+  a:focus-visible,
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible,
+  [role="button"]:focus-visible,
+  [role="menuitem"]:focus-visible,
+  [role="option"]:focus-visible,
+  [role="tab"]:focus-visible,
+  [tabindex="0"]:focus-visible {
+    outline: 2px solid var(--mf-blue);
+    outline-offset: 2px;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: var(--mf-canvas);
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--mf-line);
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--mf-line-strong);
+  }
+}
+
+/* ============================================================================
+ * Shell
+ * ========================================================================== */
+
+@layer components {
+  .mf-shell {
+    min-height: 100vh;
+    display: grid;
+    grid-template-columns: 238px minmax(0, 1fr);
+    background: var(--mf-canvas);
+  }
+  .mf-rail {
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    padding: 30px 18px 22px;
+    background: var(--mf-void);
+    border-right: 1px solid var(--mf-line);
+    /* The rail ground is near-black, so everything inside it starts light and
+       BrandedHeader's mark can render in plain currentColor. */
+    color: var(--mf-text);
+  }
+  /* Sits at the bottom of the column rail. At the 700px strip it flattens into
+     the row instead — see the breakpoint. */
+  .mf-rail-footer {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    margin-top: auto;
+    padding-top: 22px;
+  }
+  .mf-main {
+    min-width: 0;
+  }
+  .mf-topbar {
+    min-height: 117px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+    padding: 28px clamp(24px, 4vw, 44px);
+    border-bottom: 1px solid var(--mf-line);
+  }
+  .mf-topbar-title {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  /* The kicker owns the gap above the title, so a title without one sits
+     flush against the top of the block. */
+  .mf-topbar-title > .mf-page-title:first-child {
+    margin-top: 0;
+  }
+  .mf-topbar-actions {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 8px;
+  }
+  .mf-content {
+    width: min(100%, 1440px);
+    margin: 0 auto;
+    padding: 42px clamp(24px, 4vw, 44px) 48px;
+  }
+
+  /* ============================================================================
+   * Brand
+   * ========================================================================== */
+
+  .mf-brand {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 10px;
+    min-height: 32px;
+    margin-bottom: 26px;
+    color: var(--mf-text);
+    text-decoration: none;
+  }
+  .mf-brand:hover,
+  .mf-brand:visited {
+    color: var(--mf-text);
+  }
+  .mf-brand-mark {
+    flex: 0 0 auto;
+  }
+  .mf-brand-word {
+    white-space: nowrap;
+  }
+
+  /* ============================================================================
+   * Surfaces and type
+   * ========================================================================== */
+
+  .mf-panel {
+    border: 1px solid var(--mf-line);
+    border-radius: var(--mf-radius-panel);
+    background: var(--mf-panel);
+    transition: border-color 160ms ease;
+  }
+  .mf-panel:hover {
+    border-color: var(--mf-line-strong);
+  }
+  .mf-kicker,
+  .mf-table-meta {
+    font: 11px/1.2 var(--font-mono), ui-monospace, monospace;
+    color: var(--mf-muted);
+    letter-spacing: 0.02em;
+  }
+  .mf-page-title {
+    margin: 7px 0 0;
+    font-size: 31px;
+    font-weight: 620;
+    line-height: 1;
+    letter-spacing: -0.04em;
+  }
+  .mf-intro {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 32px;
+    margin: 0 0 31px;
+  }
+  .mf-intro h1 {
+    max-width: 720px;
+    margin: 0;
+    font-size: clamp(34px, 4vw, 46px);
+    font-weight: 550;
+    line-height: 1.03;
+    letter-spacing: -0.055em;
+  }
+  .mf-intro strong {
+    color: var(--mf-blue);
+    font-weight: inherit;
+  }
+  .mf-intro p {
+    width: 250px;
+    margin: 0;
+    color: var(--mf-muted);
+    font-size: 13px;
+    line-height: 1.55;
+  }
+
+  /* ============================================================================
+   * Controls
+   * ========================================================================== */
+
+  .mf-action {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 36px;
+    border: 1px solid transparent;
+    border-radius: var(--mf-radius-control);
+    background: var(--mf-blue);
+    color: #fff;
+    padding: 8px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    transition: background-color 160ms ease;
+  }
+  .mf-action:hover {
+    background: var(--mf-blue-pressed);
+  }
+  .mf-utility-label {
+    white-space: nowrap;
+  }
+  .mf-icon-button {
+    /* `position: relative` is load-bearing: .mf-badge anchors to it. */
+    position: relative;
+    display: grid;
+    width: 38px;
+    height: 38px;
+    place-items: center;
+    border: 1px solid var(--mf-line);
+    border-radius: var(--mf-radius-control);
+    background: var(--mf-panel);
+    color: var(--mf-text);
+    transition: background-color 160ms ease;
+  }
+  .mf-icon-button:hover {
+    background: var(--mf-panel-hover);
+  }
+  .mf-icon-button:disabled {
+    color: var(--mf-quiet);
+    cursor: not-allowed;
+  }
+  .mf-icon-button:disabled:hover {
+    background: var(--mf-panel);
+  }
+  /* Count badge. The number is the state — it is always rendered as text, and
+     the red only reinforces it. Ringed in the surrounding canvas so it reads
+     as a separate chip against the button edge in both contrast modes. */
+  .mf-badge {
+    position: absolute;
+    top: -6px;
+    right: -6px;
+    display: grid;
+    place-items: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 4px;
+    border: 1px solid var(--mf-canvas);
+    border-radius: 9px;
+    background: var(--mf-red);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ============================================================================
+   * Navigation
+   * ========================================================================== */
+
+  /* One group of rail links. `.mf-nav-label` is the group heading, and
+     `.mf-nav-copy` is an individual item's own text — the 980px breakpoint
+     collapses both to leave an icon-only rail, and the 700px strip brings
+     back the item text only. */
+  .mf-nav-group {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .mf-nav-group + .mf-nav-group {
+    margin-top: 22px;
+  }
+  .mf-nav-label {
+    padding: 0 12px 8px;
+    color: var(--mf-quiet);
+    font: 500 10px/1.2 var(--font-mono), ui-monospace, monospace;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .mf-nav-item {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-height: 42px;
+    padding: 0 12px;
+    border-radius: 10px;
+    color: var(--mf-muted);
+    font-size: 14px;
+    font-weight: 510;
+    text-decoration: none;
+    transition: background-color 160ms ease, color 160ms ease;
+  }
+  .mf-nav-copy {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .mf-nav-item:hover {
+    color: var(--mf-text);
+    background: var(--mf-panel-hover);
+  }
+  .mf-nav-item[aria-current="page"] {
+    background: var(--mf-panel-hover);
+    color: var(--mf-text);
+  }
+  .mf-nav-item[aria-current="page"]::before {
+    position: absolute;
+    left: -18px;
+    top: 10px;
+    bottom: 10px;
+    width: 3px;
+    border-radius: 0 3px 3px 0;
+    background: var(--mf-blue);
+    content: "";
+  }
+
+  /* Identity row at the foot of the rail. Not interactive — account actions
+     live in the top bar's UserMenu — so it gets no hover or focus treatment. */
+  .mf-account {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 44px;
+    padding: 14px 4px 0;
+    border-top: 1px solid var(--mf-line);
+  }
+  .mf-user-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+    line-height: 1.25;
+  }
+  .mf-user-copy > span:first-child {
+    overflow: hidden;
+    color: var(--mf-text);
+    font-size: 13px;
+    font-weight: 500;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* The role, when there is one. Sibling selector rather than :last-child so a
+     name with no role keeps the name's own styling. */
+  .mf-user-copy > span + span {
+    color: var(--mf-quiet);
+    font-size: 10px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+
+  /* ============================================================================
+   * Status and metrics
+   * ========================================================================== */
+
+  .mf-status-dot {
+    width: 8px;
+    height: 8px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    background: currentColor;
+  }
+  .mf-status-live {
+    color: var(--mf-green);
+  }
+  .mf-status-warning {
+    color: var(--mf-amber);
+  }
+  .mf-status-critical,
+  .mf-status-offline {
+    color: var(--mf-red);
+  }
+  .mf-status-stale {
+    color: var(--mf-violet);
+  }
+  .mf-metric {
+    font-family: var(--font-mono), ui-monospace, monospace;
+    font-variant-numeric: tabular-nums slashed-zero;
+  }
+
+  /* ============================================================================
+   * Tables
+   * ========================================================================== */
+
+  .mf-table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  .mf-table thead {
+    background: var(--mf-table-head);
+  }
+  .mf-table th {
+    padding: 13px 28px;
+    border-bottom: 1px solid var(--mf-line);
+    color: var(--mf-muted);
+    font: 500 10px/1.2 var(--font-mono), ui-monospace, monospace;
+    letter-spacing: 0.05em;
+    text-align: left;
+    text-transform: uppercase;
+  }
+  .mf-table td {
+    height: 56px;
+    padding: 12px 28px;
+    border-bottom: 1px solid var(--mf-line);
+    vertical-align: middle;
+  }
+  .mf-table tbody tr {
+    transition: background-color 160ms ease;
+  }
+  .mf-table tbody tr:hover {
+    background: var(--mf-panel-hover);
+  }
+  .mf-table tbody tr[data-selected="true"] {
+    background: var(--mf-panel-selected);
+  }
+  .mf-table tbody tr[data-selected="true"] td:first-child {
+    box-shadow: inset 3px 0 0 var(--mf-blue);
+  }
+  .mf-meter {
+    display: inline-block;
+    width: 44px;
+    height: 3px;
+    margin-left: 8px;
+    overflow: hidden;
+    background: var(--mf-line);
+    vertical-align: middle;
+  }
+  .mf-meter > i {
+    display: block;
+    height: 100%;
+    background: var(--mf-blue);
+  }
+  .mf-meter--gpu > i {
+    background: var(--mf-violet);
+  }
+  .mf-meter--warning > i {
+    background: var(--mf-amber);
+  }
+
+  /* ============================================================================
+   * Responsive
+   * ========================================================================== */
+
+  @media (max-width: 980px) {
+    .mf-shell {
+      grid-template-columns: 72px minmax(0, 1fr);
+    }
+    .mf-rail {
+      padding-left: 10px;
+      padding-right: 10px;
+    }
+    .mf-rail .mf-brand-word,
+    .mf-rail .mf-nav-label,
+    .mf-rail .mf-nav-copy,
+    .mf-rail .mf-user-copy {
+      display: none;
+    }
+    .mf-brand,
+    .mf-account {
+      justify-content: center;
+    }
+    .mf-nav-item {
+      justify-content: center;
+      padding: 0;
+    }
+    .mf-nav-item[aria-current="page"]::before {
+      left: -10px;
+    }
+    .mf-topbar {
+      align-items: flex-start;
+    }
+    .mf-intro {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+    .mf-intro p {
+      width: auto;
+      max-width: 48ch;
+    }
+  }
+
+  @media (max-width: 700px) {
+    .mf-shell {
+      display: block;
+    }
+    .mf-rail {
+      position: sticky;
+      z-index: 20;
+      width: 100%;
+      height: auto;
+      min-height: 64px;
+      flex-direction: row;
+      align-items: center;
+      padding: 10px 16px;
+      border-right: 0;
+      border-bottom: 1px solid var(--mf-line);
+      overflow-x: auto;
+    }
+    .mf-brand {
+      margin-bottom: 0;
+    }
+    /* The footer stops being a footer: its nav group joins the strip as a
+       sibling so Settings and Users stay one tap away, and only the identity
+       row drops (account actions are in the top bar's UserMenu). */
+    .mf-rail .mf-rail-footer {
+      display: contents;
+    }
+    .mf-rail .mf-account {
+      display: none;
+    }
+    .mf-rail .mf-nav-group {
+      flex: 0 0 auto;
+      flex-direction: row;
+      gap: 4px;
+      margin-left: 16px;
+    }
+    .mf-rail .mf-nav-group + .mf-nav-group {
+      margin-top: 0;
+    }
+    .mf-rail .mf-brand-word,
+    .mf-rail .mf-nav-copy {
+      display: inline;
+    }
+    .mf-nav-item {
+      flex: 0 0 auto;
+      min-height: 36px;
+      padding: 0 10px;
+      white-space: nowrap;
+    }
+    .mf-nav-item[aria-current="page"]::before {
+      left: 8px;
+      top: auto;
+      bottom: 2px;
+      width: calc(100% - 16px);
+      height: 2px;
+    }
+    .mf-topbar {
+      min-height: 0;
+      padding: 18px 16px;
+    }
+    .mf-content {
+      padding: 30px 16px;
+    }
+    .mf-topbar .mf-utility-label {
+      display: none;
+    }
+    .mf-table-wrap {
+      overflow-x: auto;
+    }
+    .mf-table {
+      min-width: 820px;
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

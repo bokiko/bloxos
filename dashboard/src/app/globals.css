@@ -1,499 +1,31 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
-@import "./design-themes.css";
-@import "./design-layouts.css";
+@import "./monoform.css";
 
 @custom-variant dark (&:is(.dark *));
 
 /* ============================================================================
- * BloxOS design tokens — Phase 1
+ * BloxOS global stylesheet.
  *
- * Tokens are defined in :root (light theme) and .dark (dark theme).
- * The @theme inline block below maps them onto Tailwind utilities so existing
- * classes like `bg-blox-card` and `text-blox-text` automatically follow the
- * active theme.
- *
- * Naming convention:
- *   --surface-*    background layers, increasing in elevation
- *   --text-*       text, decreasing in emphasis
- *   --border-*     borders, increasing in strength
- *   --accent       brand color (blue)
- *   --success/warning/danger   intent colors
- *
- * Existing brand-prefixed tokens (--color-blox-*) remain available as
- * transitional shims until Phase 3 migrates components to semantic names.
- * ============================================================================ */
-
-:root {
-  /* Surfaces */
-  --surface-base: #fafafa;
-  --surface-raised: #ffffff;
-  --surface-overlay: #ffffff;
-  --surface-sunken: #f4f4f5;
-
-  /* Text */
-  --text-primary: #18181b;
-  --text-secondary: #52525b;
-  --text-tertiary: #a1a1aa;
-  --text-disabled: #d4d4d8;
-
-  /* Borders */
-  --border-subtle: rgba(24, 24, 27, 0.06);
-  --border-default: rgba(24, 24, 27, 0.10);
-  --border-strong: rgba(24, 24, 27, 0.18);
-
-  /* Brand + intent */
-  --accent: #3b82f6;
-  --accent-hover: #2563eb;
-  --accent-subtle: rgba(59, 130, 246, 0.10);
-  --accent-foreground: #ffffff;
-
-  --success: #16a34a;
-  --success-subtle: rgba(22, 163, 74, 0.10);
-
-  --warning: #d97706;
-  --warning-subtle: rgba(217, 119, 6, 0.10);
-
-  --danger: #dc2626;
-  --danger-subtle: rgba(220, 38, 38, 0.10);
-
-  /* Shadows — light theme uses softer, more diffuse shadows */
-  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
-  --shadow-md: 0 4px 12px -2px rgba(0, 0, 0, 0.08);
-  --shadow-lg: 0 12px 32px -8px rgba(0, 0, 0, 0.12);
-  --shadow-overlay: 0 24px 64px -16px rgba(0, 0, 0, 0.20);
-}
-
-.dark {
-  /* Surfaces — cool-neutral OKLCH ramp (not slate, not zinc).
-     Sunken < base < raised < overlay < elevated. Tint surfaces are used
-     for state-aware card backgrounds without color flooding. */
-  --surface-sunken: oklch(0.115 0.008 240);
-  --surface-base: oklch(0.155 0.008 240);
-  --surface-raised: oklch(0.195 0.008 240);
-  --surface-elevated: oklch(0.225 0.008 240);
-  --surface-overlay: oklch(0.245 0.008 240);
-
-  /* Text — cool-neutral, four-step descending emphasis */
-  --text-primary: oklch(0.97 0.005 240);
-  --text-secondary: oklch(0.72 0.012 240);
-  --text-tertiary: oklch(0.52 0.012 240);
-  --text-disabled: oklch(0.36 0.008 240);
-
-  /* Borders */
-  --border-subtle: rgba(255, 255, 255, 0.05);
-  --border-default: rgba(255, 255, 255, 0.08);
-  --border-strong: rgba(255, 255, 255, 0.16);
-
-  /* Accent — instrument-cyan-shifted blue, not Tailwind blue-500.
-     Used for selection, focus, primary actions, "alive" state hints. */
-  --accent: oklch(0.7 0.155 230);
-  --accent-hover: oklch(0.76 0.14 230);
-  --accent-subtle: oklch(0.7 0.155 230 / 0.14);
-  --accent-foreground: oklch(0.155 0.008 240);
-
-  /* Status — 5 intent states for fleet health.
-     Tints are translucent surfaces used as card backgrounds for state. */
-  --status-ok: oklch(0.74 0.16 158);
-  --status-ok-tint: oklch(0.74 0.16 158 / 0.08);
-  --status-warning: oklch(0.8 0.16 75);
-  --status-warning-tint: oklch(0.8 0.16 75 / 0.07);
-  --status-critical: oklch(0.7 0.21 25);
-  --status-critical-tint: oklch(0.7 0.21 25 / 0.08);
-  --status-stale: oklch(0.62 0.06 285);
-  --status-stale-tint: oklch(0.62 0.06 285 / 0.06);
-  --status-offline: oklch(0.48 0.008 240);
-  --status-offline-tint: oklch(0.4 0.005 240 / 0.5);
-
-  /* Legacy intent aliases — keep so other pages don't break.
-     These now alias the new status namespace. */
-  --success: var(--status-ok);
-  --success-subtle: var(--status-ok-tint);
-  --warning: var(--status-warning);
-  --warning-subtle: var(--status-warning-tint);
-  --danger: var(--status-critical);
-  --danger-subtle: var(--status-critical-tint);
-
-  /* Shadows — deeper, more defined edges suited to layered console UI */
-  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.32);
-  --shadow-md: 0 4px 14px -2px rgba(0, 0, 0, 0.45);
-  --shadow-lg: 0 18px 40px -10px rgba(0, 0, 0, 0.55);
-  --shadow-overlay: 0 28px 72px -18px rgba(0, 0, 0, 0.72);
-  --shadow-focus-ring: 0 0 0 1px var(--accent), 0 0 0 4px oklch(0.7 0.155 230 / 0.18);
-}
+ * Every colour, radius, elevation and motion token lives in monoform.css —
+ * this file must never define one. What stays here is behaviour that is not
+ * part of the token system: metric typography, the shadcn base layer, and the
+ * cmdk command palette, all expressed in --mf-* tokens.
+ * ========================================================================== */
 
 /* ============================================================================
- * Phase 10 — additional themes
+ * Metric typography — every numeric readout in the fleet UI.
  *
- * Each named theme overrides the same tokens defined above. The `theme-bloxos`
- * default needs no class — the existing `:root` and `.dark` blocks already
- * cover it. Adding `theme-<name>` to <html> swaps the palette; `dark` is
- * applied alongside for dark-mode variants.
- *
- * Dark-only themes (Dracula, Tokyo Night) ignore `light` mode and always
- * paint dark; the `.dark` toggle is applied by the ThemeProvider regardless
- * of user mode choice for these themes.
- * ============================================================================ */
+ * Geist Mono with tabular-nums + slashed-zero and tight tracking, so columns
+ * of values like "0.8%" and "73%" scan as one block. Apply `.metric-value`
+ * to display values and `.metric-figure` to inline figures.
+ * ========================================================================== */
 
-/* --- Solarized Light --- */
-.theme-solarized:not(.dark) {
-  --surface-base: #fdf6e3;
-  --surface-raised: #eee8d5;
-  --surface-overlay: #fdf6e3;
-  --surface-sunken: #e4dcc4;
-
-  --text-primary: #073642;
-  --text-secondary: #586e75;
-  --text-tertiary: #93a1a1;
-  --text-disabled: #b8b09a;
-
-  --border-subtle: rgba(7, 54, 66, 0.06);
-  --border-default: rgba(7, 54, 66, 0.12);
-  --border-strong: rgba(7, 54, 66, 0.22);
-
-  --accent: #268bd2;
-  --accent-hover: #1d6fa5;
-  --accent-subtle: rgba(38, 139, 210, 0.12);
-  --accent-foreground: #fdf6e3;
-
-  --success: #859900;
-  --success-subtle: rgba(133, 153, 0, 0.14);
-  --warning: #b58900;
-  --warning-subtle: rgba(181, 137, 0, 0.14);
-  --danger: #dc322f;
-  --danger-subtle: rgba(220, 50, 47, 0.14);
-
-  --shadow-sm: 0 1px 2px 0 rgba(7, 54, 66, 0.06);
-  --shadow-md: 0 4px 12px -2px rgba(7, 54, 66, 0.10);
-  --shadow-lg: 0 12px 32px -8px rgba(7, 54, 66, 0.14);
-  --shadow-overlay: 0 24px 64px -16px rgba(7, 54, 66, 0.22);
-}
-
-/* --- Solarized Dark --- */
-.theme-solarized.dark {
-  --surface-base: #002b36;
-  --surface-raised: #073642;
-  --surface-overlay: #0a3a47;
-  --surface-sunken: #001f27;
-
-  --text-primary: #fdf6e3;
-  --text-secondary: #93a1a1;
-  --text-tertiary: #657b83;
-  --text-disabled: #586e75;
-
-  --border-subtle: rgba(253, 246, 227, 0.06);
-  --border-default: rgba(253, 246, 227, 0.10);
-  --border-strong: rgba(253, 246, 227, 0.20);
-
-  --accent: #268bd2;
-  --accent-hover: #4ea4dd;
-  --accent-subtle: rgba(38, 139, 210, 0.18);
-  --accent-foreground: #fdf6e3;
-
-  --success: #859900;
-  --success-subtle: rgba(133, 153, 0, 0.18);
-  --warning: #b58900;
-  --warning-subtle: rgba(181, 137, 0, 0.18);
-  --danger: #dc322f;
-  --danger-subtle: rgba(220, 50, 47, 0.18);
-
-  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.30);
-  --shadow-md: 0 4px 12px -2px rgba(0, 0, 0, 0.40);
-  --shadow-lg: 0 12px 32px -8px rgba(0, 0, 0, 0.50);
-  --shadow-overlay: 0 24px 64px -16px rgba(0, 0, 0, 0.70);
-}
-
-/* --- Dracula (dark-only) --- */
-.theme-dracula,
-.theme-dracula:not(.dark) {
-  --surface-base: #282a36;
-  --surface-raised: #343746;
-  --surface-overlay: #3d4053;
-  --surface-sunken: #1e1f29;
-
-  --text-primary: #f8f8f2;
-  --text-secondary: #bd93f9;
-  --text-tertiary: #6272a4;
-  --text-disabled: #44475a;
-
-  --border-subtle: rgba(248, 248, 242, 0.06);
-  --border-default: rgba(248, 248, 242, 0.12);
-  --border-strong: rgba(248, 248, 242, 0.22);
-
-  --accent: #bd93f9;
-  --accent-hover: #cdaaff;
-  --accent-subtle: rgba(189, 147, 249, 0.18);
-  --accent-foreground: #282a36;
-
-  --success: #50fa7b;
-  --success-subtle: rgba(80, 250, 123, 0.16);
-  --warning: #ffb86c;
-  --warning-subtle: rgba(255, 184, 108, 0.16);
-  --danger: #ff5555;
-  --danger-subtle: rgba(255, 85, 85, 0.16);
-
-  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.30);
-  --shadow-md: 0 4px 12px -2px rgba(0, 0, 0, 0.40);
-  --shadow-lg: 0 12px 32px -8px rgba(0, 0, 0, 0.50);
-  --shadow-overlay: 0 24px 64px -16px rgba(0, 0, 0, 0.70);
-}
-
-/* --- Nord Light --- */
-.theme-nord:not(.dark) {
-  --surface-base: #eceff4;
-  --surface-raised: #e5e9f0;
-  --surface-overlay: #ffffff;
-  --surface-sunken: #d8dee9;
-
-  --text-primary: #2e3440;
-  --text-secondary: #4c566a;
-  --text-tertiary: #8fa1b3;
-  --text-disabled: #b8c0cc;
-
-  --border-subtle: rgba(46, 52, 64, 0.06);
-  --border-default: rgba(46, 52, 64, 0.12);
-  --border-strong: rgba(46, 52, 64, 0.22);
-
-  --accent: #5e81ac;
-  --accent-hover: #4c6f9a;
-  --accent-subtle: rgba(94, 129, 172, 0.14);
-  --accent-foreground: #eceff4;
-
-  --success: #a3be8c;
-  --success-subtle: rgba(163, 190, 140, 0.18);
-  --warning: #ebcb8b;
-  --warning-subtle: rgba(235, 203, 139, 0.18);
-  --danger: #bf616a;
-  --danger-subtle: rgba(191, 97, 106, 0.16);
-
-  --shadow-sm: 0 1px 2px 0 rgba(46, 52, 64, 0.05);
-  --shadow-md: 0 4px 12px -2px rgba(46, 52, 64, 0.08);
-  --shadow-lg: 0 12px 32px -8px rgba(46, 52, 64, 0.12);
-  --shadow-overlay: 0 24px 64px -16px rgba(46, 52, 64, 0.18);
-}
-
-/* --- Nord Dark --- */
-.theme-nord.dark {
-  --surface-base: #2e3440;
-  --surface-raised: #3b4252;
-  --surface-overlay: #434c5e;
-  --surface-sunken: #232831;
-
-  --text-primary: #eceff4;
-  --text-secondary: #d8dee9;
-  --text-tertiary: #8fa1b3;
-  --text-disabled: #4c566a;
-
-  --border-subtle: rgba(236, 239, 244, 0.06);
-  --border-default: rgba(236, 239, 244, 0.10);
-  --border-strong: rgba(236, 239, 244, 0.20);
-
-  --accent: #88c0d0;
-  --accent-hover: #a3d4e0;
-  --accent-subtle: rgba(136, 192, 208, 0.18);
-  --accent-foreground: #2e3440;
-
-  --success: #a3be8c;
-  --success-subtle: rgba(163, 190, 140, 0.18);
-  --warning: #ebcb8b;
-  --warning-subtle: rgba(235, 203, 139, 0.18);
-  --danger: #bf616a;
-  --danger-subtle: rgba(191, 97, 106, 0.18);
-
-  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.30);
-  --shadow-md: 0 4px 12px -2px rgba(0, 0, 0, 0.40);
-  --shadow-lg: 0 12px 32px -8px rgba(0, 0, 0, 0.50);
-  --shadow-overlay: 0 24px 64px -16px rgba(0, 0, 0, 0.70);
-}
-
-/* --- Tokyo Night (dark-only) --- */
-.theme-tokyo-night,
-.theme-tokyo-night:not(.dark) {
-  --surface-base: #1a1b26;
-  --surface-raised: #24283b;
-  --surface-overlay: #2f334d;
-  --surface-sunken: #16161e;
-
-  --text-primary: #c0caf5;
-  --text-secondary: #9aa5ce;
-  --text-tertiary: #565f89;
-  --text-disabled: #414868;
-
-  --border-subtle: rgba(192, 202, 245, 0.06);
-  --border-default: rgba(192, 202, 245, 0.10);
-  --border-strong: rgba(192, 202, 245, 0.20);
-
-  --accent: #7aa2f7;
-  --accent-hover: #9bb8ff;
-  --accent-subtle: rgba(122, 162, 247, 0.18);
-  --accent-foreground: #1a1b26;
-
-  --success: #9ece6a;
-  --success-subtle: rgba(158, 206, 106, 0.16);
-  --warning: #e0af68;
-  --warning-subtle: rgba(224, 175, 104, 0.16);
-  --danger: #f7768e;
-  --danger-subtle: rgba(247, 118, 142, 0.16);
-
-  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.30);
-  --shadow-md: 0 4px 12px -2px rgba(0, 0, 0, 0.40);
-  --shadow-lg: 0 12px 32px -8px rgba(0, 0, 0, 0.50);
-  --shadow-overlay: 0 24px 64px -16px rgba(0, 0, 0, 0.70);
-}
-
-/* ============================================================================
- * Phase 11 — density tokens
- *
- * These vary card padding, grid gap, and minimum column width. The class is
- * applied to <html> by PreferencesContext and inherited by every descendant.
- * ============================================================================ */
-
-.density-comfortable {
-  --card-padding: 1rem;
-  --grid-gap: 1rem;
-  --grid-min-col: 300px;
-  --card-text-scale: 1;
-}
-
-.density-compact {
-  --card-padding: 0.75rem;
-  --grid-gap: 0.625rem;
-  --grid-min-col: 260px;
-  --card-text-scale: 0.95;
-}
-
-/* ============================================================================
- * Tailwind theme mapping — exposes tokens as utility classes
- * ============================================================================ */
-
-@theme inline {
-  /* New semantic tokens (use these in Phase 3+) */
-  --color-surface-base: var(--surface-base);
-  --color-surface-raised: var(--surface-raised);
-  --color-surface-overlay: var(--surface-overlay);
-  --color-surface-sunken: var(--surface-sunken);
-  --color-surface-elevated: var(--surface-elevated, var(--surface-overlay));
-
-  /* Status palette — 5 intent states for fleet health */
-  --color-status-ok: var(--status-ok, var(--success));
-  --color-status-ok-tint: var(--status-ok-tint, var(--success-subtle));
-  --color-status-warning: var(--status-warning, var(--warning));
-  --color-status-warning-tint: var(--status-warning-tint, var(--warning-subtle));
-  --color-status-critical: var(--status-critical, var(--danger));
-  --color-status-critical-tint: var(--status-critical-tint, var(--danger-subtle));
-  --color-status-stale: var(--status-stale, var(--text-tertiary));
-  --color-status-stale-tint: var(--status-stale-tint, var(--surface-sunken));
-  --color-status-offline: var(--status-offline, var(--text-tertiary));
-  --color-status-offline-tint: var(--status-offline-tint, var(--surface-sunken));
-
-  --color-text-primary: var(--text-primary);
-  --color-text-secondary: var(--text-secondary);
-  --color-text-tertiary: var(--text-tertiary);
-  --color-text-disabled: var(--text-disabled);
-
-  --color-border-subtle: var(--border-subtle);
-  --color-border-default: var(--border-default);
-  --color-border-strong: var(--border-strong);
-
-  --color-accent: var(--accent);
-  --color-accent-hover: var(--accent-hover);
-  --color-accent-subtle: var(--accent-subtle);
-  --color-accent-foreground: var(--accent-foreground);
-
-  --color-success: var(--success);
-  --color-success-subtle: var(--success-subtle);
-  --color-warning: var(--warning);
-  --color-warning-subtle: var(--warning-subtle);
-  --color-danger: var(--danger);
-  --color-danger-subtle: var(--danger-subtle);
-
-  /* blox-* token aliases — PERMANENT.
-     These were introduced in Phase 1 as transitional shims, but the migration
-     to semantic tokens (--surface-base, --text-primary, etc.) was never
-     necessary — the shims work transparently and have zero overhead.
-     Treating them as permanent simplifies future work: new components
-     can use either shim names (bg-blox-card) or semantic names
-     (bg-surface-raised) with identical results. */
-  --color-blox-bg: var(--surface-base);
-  --color-blox-card: var(--surface-raised);
-  --color-blox-border: var(--border-default);
-  --color-blox-text: var(--text-primary);
-  --color-blox-muted: var(--text-secondary);
-  --color-blox-blue: var(--accent);
-  --color-blox-green: var(--success);
-  --color-blox-amber: var(--warning);
-  --color-blox-red: var(--danger);
-
-  /* Motion tokens (unchanged) */
-  --motion-fast: 150ms;
-  --motion-base: 250ms;
-  --motion-slow: 400ms;
-
-  --font-heading: var(--font-sans);
-  --font-sans: var(--font-sans);
-  --font-mono: var(--font-mono);
-
-  /* shadcn/ui token mappings — kept for component compatibility.
-     These map to semantic tokens so shadcn components also follow the theme. */
-  --color-background: var(--surface-base);
-  --color-foreground: var(--text-primary);
-  --color-card: var(--surface-raised);
-  --color-card-foreground: var(--text-primary);
-  --color-popover: var(--surface-overlay);
-  --color-popover-foreground: var(--text-primary);
-  --color-primary: var(--text-primary);
-  --color-primary-foreground: var(--surface-base);
-  --color-secondary: var(--surface-sunken);
-  --color-secondary-foreground: var(--text-primary);
-  --color-muted: var(--surface-sunken);
-  --color-muted-foreground: var(--text-secondary);
-  --color-accent: var(--accent-subtle);
-  --color-accent-foreground: var(--text-primary);
-  --color-destructive: var(--danger);
-  --color-border: var(--border-default);
-  --color-input: var(--border-default);
-  --color-ring: var(--accent);
-
-  --color-sidebar: var(--surface-raised);
-  --color-sidebar-foreground: var(--text-primary);
-  --color-sidebar-primary: var(--accent);
-  --color-sidebar-primary-foreground: var(--accent-foreground);
-  --color-sidebar-accent: var(--surface-sunken);
-  --color-sidebar-accent-foreground: var(--text-primary);
-  --color-sidebar-border: var(--border-default);
-  --color-sidebar-ring: var(--accent);
-
-  --color-chart-1: var(--accent);
-  --color-chart-2: var(--success);
-  --color-chart-3: var(--warning);
-  --color-chart-4: var(--danger);
-  --color-chart-5: var(--text-secondary);
-
-  --radius: 0.5rem;
-  --radius-sm: calc(var(--radius) * 0.5);
-  --radius-md: calc(var(--radius) * 0.75);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) * 1.5);
-  --radius-2xl: calc(var(--radius) * 2);
-  --radius-3xl: calc(var(--radius) * 2.5);
-  --radius-4xl: calc(var(--radius) * 3);
-}
-
-/* ============================================================================
- * Metric typography — applies to all numeric readouts in the fleet UI.
- *
- * Pairs Geist Mono with tabular-nums + slashed-zero + a tight tracking
- * so values like "0.8%" and "73%" align reliably and read at a glance.
- * Apply via `.metric-value` (display values) or `.metric-figure`
- * (inline figures). Critical for any dashboard cell where columns of
- * numbers need to scan visually as one block.
- * ============================================================================ */
 .metric-value,
 .metric-figure {
-  font-family: var(--font-mono);
+  font-family: var(--font-mono), ui-monospace, monospace;
   font-variant-numeric: tabular-nums slashed-zero;
-  font-feature-settings: "ss06", "ss07";
   letter-spacing: -0.01em;
 }
 .metric-value {
@@ -504,118 +36,40 @@
   font-weight: 400;
 }
 
-/* Unit suffix paired with a metric-value — sized down, muted, baseline-aligned. */
+/* Unit suffix paired with a metric-value — sized down, muted, set in Geist. */
 .metric-unit {
-  font-family: var(--font-sans);
-  color: var(--text-tertiary);
-  font-feature-settings: normal;
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  color: var(--mf-muted);
   font-variant-numeric: normal;
   letter-spacing: 0;
 }
 
-/* ============================================================================
- * Base styles
- * ============================================================================ */
-
-body {
-  background: var(--surface-base);
-  color: var(--text-primary);
-  /* Smooth transition when switching themes */
-  transition: background-color var(--motion-base) ease, color var(--motion-base) ease;
-}
-
-/* Scrollbar styling — adapts to theme */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-::-webkit-scrollbar-track {
-  background: var(--surface-base);
-}
-::-webkit-scrollbar-thumb {
-  background: var(--border-default);
-  border-radius: 3px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: var(--border-strong);
-}
-
-/* Tabular nums utility */
-.tabular-nums {
-  font-variant-numeric: tabular-nums;
-}
-
-/* Pulse animation for online status (unchanged) */
-@keyframes status-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
-}
-.animate-status-pulse {
-  animation: status-pulse 2s ease-in-out infinite;
-}
-
-/* Shimmer loading effect (theme-aware) */
-@keyframes shimmer {
-  0% { background-position: -200% 0; }
-  100% { background-position: 200% 0; }
-}
+/* Skeleton placeholder. Monoform allows no continuous animation and no
+   gradients, so this is a flat raised block; the class name is kept because
+   the component inventory still applies it. */
 .animate-shimmer {
-  background: linear-gradient(
-    90deg,
-    var(--border-subtle) 25%,
-    var(--surface-raised) 50%,
-    var(--border-subtle) 75%
-  );
-  background-size: 200% 100%;
-  animation: shimmer 1.5s ease-in-out infinite;
+  background: var(--mf-panel-hover);
 }
 
 @layer base {
   * {
     @apply border-border outline-ring/50;
   }
-  body {
-    @apply bg-background text-foreground;
-  }
   html {
     @apply font-sans;
-  }
-
-  /*
-   * Canonical fallback focus ring.
-   *
-   * shadcn/ui primitives (Button, Input, DropdownMenuItem, TabsTrigger)
-   * include their own focus-visible:ring-3 focus-visible:ring-ring/50
-   * classes — those win in specificity and provide a more polished ring.
-   *
-   * This rule below is the canonical fallback for native elements and any
-   * custom interactive element that doesn't use a shadcn primitive.
-   * Both rings resolve to --accent so they're visually consistent.
-   */
-  button:focus-visible,
-  a:focus-visible,
-  [role="button"]:focus-visible,
-  [role="tab"]:focus-visible,
-  [role="menuitem"]:focus-visible,
-  [role="option"]:focus-visible,
-  input:focus-visible,
-  select:focus-visible,
-  textarea:focus-visible,
-  [tabindex="0"]:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-    border-radius: 6px;
   }
 }
 
 /* ============================================================================
- * cmdk command palette styling
- * ============================================================================ */
+ * cmdk command palette
+ * ========================================================================== */
 
 [cmdk-root] {
   width: 100%;
-  background: var(--surface-overlay);
-  border-radius: 12px;
+  background: var(--mf-panel-hover);
+  border: 1px solid var(--mf-line);
+  border-radius: var(--mf-radius-control);
+  box-shadow: var(--mf-shadow-overlay);
   overflow: hidden;
 }
 
@@ -626,12 +80,12 @@ body {
   background: transparent;
   border: none;
   outline: none;
-  color: var(--text-primary);
-  border-bottom: 1px solid var(--border-default);
+  color: var(--mf-text);
+  border-bottom: 1px solid var(--mf-line);
 }
 
 [cmdk-input]::placeholder {
-  color: var(--text-tertiary);
+  color: var(--mf-muted);
 }
 
 [cmdk-list] {
@@ -645,15 +99,16 @@ body {
   padding: 32px 16px;
   text-align: center;
   font-size: 13px;
-  color: var(--text-tertiary);
+  color: var(--mf-muted);
 }
 
 [cmdk-group-heading] {
-  font-size: 11px;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 10px;
   font-weight: 500;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-tertiary);
+  letter-spacing: 0.05em;
+  color: var(--mf-muted);
   padding: 8px 12px 4px;
 }
 
@@ -664,14 +119,15 @@ body {
   padding: 8px 12px;
   border-radius: 6px;
   font-size: 13px;
-  color: var(--text-primary);
+  color: var(--mf-text);
   cursor: pointer;
   user-select: none;
+  transition: background-color 160ms ease, color 160ms ease;
 }
 
 [cmdk-item][data-selected="true"] {
-  background: var(--accent-subtle);
-  color: var(--accent);
+  background: var(--mf-blue-soft);
+  color: var(--mf-blue);
 }
 
 [cmdk-item][data-disabled="true"] {
@@ -688,42 +144,10 @@ body {
 [cmdk-item] kbd {
   margin-left: auto;
   padding: 2px 6px;
-  font-family: var(--font-mono);
+  font-family: var(--font-mono), ui-monospace, monospace;
   font-size: 10px;
-  color: var(--text-tertiary);
-  background: var(--surface-sunken);
-  border: 1px solid var(--border-default);
+  color: var(--mf-muted);
+  background: var(--mf-void);
+  border: 1px solid var(--mf-line);
   border-radius: 4px;
-}
-
-/* ============================================================================
- * Reduced-motion support
- *
- * When the user has set a system-level reduced-motion preference, suppress
- * decorative animations (status pulses, shimmer skeletons, fade-ins) and
- * collapse transition durations to imperceptible. Critical UI feedback
- * (focus rings, color changes on hover) is preserved.
- *
- * The 0.01ms instead of 0 is intentional: it keeps transition events firing
- * (so onTransitionEnd callbacks still work) while making them imperceptible.
- *
- * Framer Motion respects prefers-reduced-motion via its built-in
- * useReducedMotion() hook; this CSS block covers our CSS-driven animations.
- * ============================================================================ */
-
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-    scroll-behavior: auto !important;
-  }
-
-  .animate-status-pulse,
-  .animate-shimmer {
-    animation: none !important;
-    opacity: 1 !important;
-  }
 }
