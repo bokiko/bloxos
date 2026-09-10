@@ -70,8 +70,12 @@ Component sensors are sampled locally every second, collected into 30-second
 averages and sampled peaks, and retained in a rolling 24-hour history.
 Unavailable readings stay unavailable, and incomplete totals are labelled.
 
-**Component power is not wall power.** CPU and GPU readings do not include every
-part of a machine or power-supply losses. [How power history works →](docs/power-history.md)
+**Component power is not wall power.** CPU, DRAM and GPU readings do not include
+every part of a machine or power-supply losses. Where a machine exposes a genuine
+whole-system counter — a RAPL platform zone, a discharging battery, a BMC, a
+board-level shunt — it is reported separately as `system` and labelled with the
+backend that measured it. Machines with no counter report nothing; nothing is
+estimated. [How power history works →](docs/power-history.md)
 
 ### Know what your agents are running
 

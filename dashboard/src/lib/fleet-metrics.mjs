@@ -27,8 +27,25 @@ const STATUS_TH = {
 // StatusBadge.tsx for existing imports). Freshness outranks thresholds: data
 // older than METRICS_STALE_MS is stale, not warning/critical — a badge based
 // on aged readings would overstate what we know.
-/** @param {import("./demo-data").MachineMetrics} m @returns {import("../components/StatusBadge").MachineClassification} */
-export function classifyMachine(m) {
+//
+// EXPECTED HIGH LOAD
+// Some machines are meant to sit at 100% CPU: a miner, a renderer, a training
+// box. For those, CPU saturation is the machine doing its job, not an
+// incident, and classifying it `critical` makes the one correctly-working
+// machine the loudest thing on the dashboard. `options.expectedHighCpu`
+// suppresses the CPU rule for ONE machine and nothing else — offline, stale,
+// RAM, disk and GPU temperature all still escalate exactly as before, because
+// those are genuinely different problems that a busy CPU says nothing about.
+//
+// The suppression is never silent: when the CPU rule would have fired, the
+// classification carries `suppressed` with the reading it swallowed, so the UI
+// can mark the machine instead of claiming it is plainly nominal.
+/**
+ * @param {import("./demo-data").MachineMetrics} m
+ * @param {{ expectedHighCpu?: boolean }} [options]
+ * @returns {import("../components/StatusBadge").MachineClassification}
+ */
+export function classifyMachine(m, options) {
   const age = Date.now() - (m.last_seen || 0);
   if (!m.last_seen || age > OFFLINE_MS) return { status: "offline" };
   if (age > METRICS_STALE_MS) return { status: "stale" };
@@ -44,17 +61,24 @@ export function classifyMachine(m) {
   const cpu = m.cpu_percent ?? 0;
   const gpuT = m.gpu_temp ?? 0;
 
-  if (cpu >= STATUS_TH.cpuCrit) return { status: "critical", reason: `CPU ${cpu.toFixed(0)}%` };
-  if (ramPct >= STATUS_TH.ramCrit) return { status: "critical", reason: `RAM ${ramPct.toFixed(0)}%` };
-  if (diskPct >= STATUS_TH.diskCrit) return { status: "critical", reason: `Disk ${diskPct.toFixed(0)}%` };
-  if (gpuT >= STATUS_TH.gpuCrit) return { status: "critical", reason: `GPU ${gpuT.toFixed(0)}°C` };
+  const expectedHighCpu = options?.expectedHighCpu === true;
+  // Recorded whenever the flag actually swallows a reading the fleet would
+  // otherwise have escalated; absent when the machine is simply not busy.
+  const carry =
+    expectedHighCpu && cpu >= STATUS_TH.cpuWarn ? { suppressed: `CPU ${cpu.toFixed(0)}%` } : null;
+  const out = (status, reason) => ({ status, ...(reason ? { reason } : null), ...carry });
 
-  if (cpu >= STATUS_TH.cpuWarn) return { status: "warning", reason: `CPU ${cpu.toFixed(0)}%` };
-  if (ramPct >= STATUS_TH.ramWarn) return { status: "warning", reason: `RAM ${ramPct.toFixed(0)}%` };
-  if (diskPct >= STATUS_TH.diskWarn) return { status: "warning", reason: `Disk ${diskPct.toFixed(0)}%` };
-  if (gpuT >= STATUS_TH.gpuWarn) return { status: "warning", reason: `GPU ${gpuT.toFixed(0)}°C` };
+  if (!expectedHighCpu && cpu >= STATUS_TH.cpuCrit) return out("critical", `CPU ${cpu.toFixed(0)}%`);
+  if (ramPct >= STATUS_TH.ramCrit) return out("critical", `RAM ${ramPct.toFixed(0)}%`);
+  if (diskPct >= STATUS_TH.diskCrit) return out("critical", `Disk ${diskPct.toFixed(0)}%`);
+  if (gpuT >= STATUS_TH.gpuCrit) return out("critical", `GPU ${gpuT.toFixed(0)}°C`);
 
-  return { status: "live" };
+  if (!expectedHighCpu && cpu >= STATUS_TH.cpuWarn) return out("warning", `CPU ${cpu.toFixed(0)}%`);
+  if (ramPct >= STATUS_TH.ramWarn) return out("warning", `RAM ${ramPct.toFixed(0)}%`);
+  if (diskPct >= STATUS_TH.diskWarn) return out("warning", `Disk ${diskPct.toFixed(0)}%`);
+  if (gpuT >= STATUS_TH.gpuWarn) return out("warning", `GPU ${gpuT.toFixed(0)}°C`);
+
+  return out("live");
 }
 
 /** @param {number | undefined} lastSeen @param {number} now */

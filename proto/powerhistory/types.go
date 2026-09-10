@@ -11,9 +11,54 @@ const (
 	RetentionSeconds     = 24 * 60 * 60
 	WindowSeconds        = 30
 	MaxFutureSkewSeconds = 15 * 60
+	// MaxDomainSources bounds Bucket.Sources. Three scalar domains exist
+	// today; the slack leaves room for an additive fourth without another
+	// protocol change.
+	MaxDomainSources = 8
+	// MaxSourceLen bounds a single domain or backend identifier.
+	MaxSourceLen = 64
 	// All protocol counters are exactly representable by dashboard JavaScript.
 	MaxSeq = uint64(1<<53 - 1)
 )
+
+// Measurement domains. They are DISJOINT SCOPES, never summands of one
+// another: where the hardware can measure it, System already contains CPU,
+// DRAM and the GPUs, so a consumer must never add domains together and must
+// never derive one from another. Each is measured by its own backend on its
+// own schedule, so even their sample counts need not agree.
+const (
+	// DomainSystem is whole-platform power — board input, not one component.
+	// Present only where a genuine whole-system counter exists.
+	DomainSystem = "system"
+	// DomainCPU is CPU package power.
+	DomainCPU = "cpu"
+	// DomainDRAM is memory-controller power, reported separately from CPU
+	// and never folded into it.
+	DomainDRAM = "dram"
+)
+
+// Stable backend identifiers. Every reading names the backend that produced
+// it, so a consumer can say WHAT was measured and HOW instead of presenting
+// unlike measurements as one number.
+const (
+	SourceRAPLPsys    = "rapl-psys"    // powercap RAPL platform (psys) zone
+	SourceRAPLPackage = "rapl-package" // sum of top-level RAPL package zones
+	SourceRAPLDRAM    = "rapl-dram"    // sum of RAPL dram sub-zones
+	SourceBattery     = "battery"      // power_supply class discharge power
+	SourceIPMIDCMI    = "ipmi-dcmi"    // BMC DCMI instantaneous platform power
+	// SourceHwmonPrefix prefixes a generic hwmon backend with its chip name,
+	// e.g. "hwmon:power_meter".
+	SourceHwmonPrefix = "hwmon:"
+)
+
+// DomainSource names the backend that produced one domain's statistics in
+// this bucket. It is emitted only for a domain that actually carries samples
+// here; a domain whose samples came from more than one backend inside the
+// window is omitted entirely rather than averaged across methods.
+type DomainSource struct {
+	Domain string `json:"domain"`
+	Source string `json:"source"`
+}
 
 // Stats describes observed samples in one window. Nil watts means unavailable;
 // zero watts is a valid reading. Peak is a sampled maximum, not electrical peak.
@@ -38,8 +83,31 @@ type Bucket struct {
 	// summing independent per-device peaks. Nil means no complete observation.
 	GPUTotal *Stats `json:"gpu_total,omitempty"`
 	CPU      *Stats `json:"cpu,omitempty"`
+	// System is whole-platform power for this window, measured by a
+	// whole-system counter (RAPL psys, battery discharge, BMC DCMI, a
+	// whole-board hwmon shunt). Nil means no such counter — never an
+	// estimate, and never a sum of the component domains.
+	System *Stats `json:"system,omitempty"`
+	// DRAM is memory-controller power. Nil means unavailable. It is reported
+	// beside CPU, never inside it.
+	DRAM *Stats `json:"dram,omitempty"`
+	// Sources names the backend behind each scalar domain present above.
+	// Absent on buckets from agents predating source labelling: an unlabelled
+	// CPU reading is a RAPL package sum, which is what those agents measured.
+	Sources []DomainSource `json:"sources,omitempty"`
 	// GapBefore marks local collection/journal loss before this window.
 	GapBefore bool `json:"gap_before,omitempty"`
+}
+
+// SourceFor returns the backend identifier recorded for a domain, or "" when
+// the bucket carries no label for it.
+func (b *Bucket) SourceFor(domain string) string {
+	for _, s := range b.Sources {
+		if s.Domain == domain {
+			return s.Source
+		}
+	}
+	return ""
 }
 
 // RetainedFrom is the oldest sequence still available for unacknowledged replay.

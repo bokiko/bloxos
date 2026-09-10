@@ -4,6 +4,76 @@ Power history supplements the existing instantaneous GPU readings. It does not
 measure wall power and must not be described as total machine electricity use.
 CPU readings, when available, describe supported CPU package sensors only.
 
+Where a machine exposes a genuine whole-system counter, that reading is carried
+separately as the `system` domain and labelled with the backend behind it. It is
+still not a wall measurement: a RAPL platform zone covers the board the SoC can
+see, and a discharging battery excludes the charger losses that are not
+occurring while it discharges. Machines with no counter report nothing at all.
+
+## Domains and backends
+
+Buckets carry four independent measurements. They are **disjoint scopes, never
+summands**: on hardware that can measure it, `system` already contains `cpu`,
+`dram` and the GPUs, so consumers must never add domains together or derive one
+from another. Each is sampled by its own backend on its own schedule, so even
+their sample counts need not agree.
+
+| Domain | Backends, in preference order | Path or command | Units |
+| --- | --- | --- | --- |
+| `system` | `rapl-psys` | `/sys/class/powercap/intel-rapl:<n>` named `psys` | µJ counter |
+| | `battery` | `/sys/class/power_supply/*` with `type=Battery` and `scope` unset or `System` | µW, else µA × µV |
+| | `ipmi-dcmi` | `ipmitool dcmi power reading` | watts |
+| | `hwmon:<chip>` | `/sys/class/hwmon/hwmon<n>/power1_average` or `power1_input` | µW |
+| `cpu` | `rapl-package` | top-level `intel-rapl:<n>` zones named `package-*`, summed | µJ counter |
+| `dram` | `rapl-dram` | `intel-rapl:<n>:<m>` sub-zones named `dram`, summed | µJ counter |
+| GPUs | NVIDIA streaming query | `nvidia-smi --query-gpu=...` | watts |
+| | DRM hwmon | `/sys/class/drm/card*/device/hwmon/hwmon*/power1_average` | µW |
+
+Detection runs once at startup and logs what it found. The rules that keep the
+numbers honest:
+
+- **psys is preferred over the package sum for `system`, never added to it.**
+  The package zones keep answering for `cpu` in their own field. Nothing here
+  or downstream sums two domains into one number.
+- A psys zone that a vendor exposes but never advances is rejected at startup,
+  so it cannot shadow a battery or BMC that does work.
+- A battery counts only while it is **discharging**. On AC it measures charge
+  current, which is not system power, so the domain reports nothing until the
+  machine is unplugged again. Multiple discharging packs are summed; a pack that
+  disappears makes the backend unavailable rather than silently halving the
+  measured draw.
+- The generic hwmon list is deliberately short (`power_meter` and the INA2xx
+  shunt monitors). A GPU or CPU chip's power channel is a component sensor and
+  is never promoted to whole-system power.
+- `ipmitool` is executed only when a BMC character device exists, and then at
+  most once every five seconds; a slow BMC lowers that window's sample count
+  rather than delaying any other domain.
+- Every measured domain is emitted together with a `sources` entry naming its
+  backend. An unlabelled `cpu` reading comes from an agent predating labelling
+  and means the RAPL package sum, which is what those agents measured.
+- If a domain's samples inside one window came from **more than one backend**
+  (a laptop unplugged mid-window), the domain is omitted for that window rather
+  than averaged across measurement methods. The other domains are unaffected
+  and the next stable window reports normally. This is the rule GPU totals
+  already apply to a changing device set.
+- RAPL counters wrap at `max_energy_range_uj`; wrap is corrected, and an
+  implausible interval or result re-primes instead of reporting a wrong number.
+- **Nothing is estimated.** ARM SoCs such as the RK3588 expose regulator
+  voltages with no current, so watts are not derivable and none are invented.
+  Windows RAPL needs a signed ring-0 driver and is unavailable inside a VM
+  regardless, so the scalar domains stay absent there.
+
+NVIDIA cards are excluded from the DRM hwmon scan: `nvidia-smi` already streams
+them, and a second identifier for the same device would inflate the sensor list.
+On a machine with both an NVIDIA card and an AMD one, the two producers report
+different device sets, so the combined GPU total is omitted for those windows —
+no single simultaneous observation of all GPUs exists. Per-GPU readings are
+unaffected.
+
+Sensor and backend identifiers are provenance strings only. They never reach a
+path, a query or a machine identity, which is taken from the authenticated
+connection.
+
 ## Data flow
 
 The agent samples power separately from the expensive hardware, services and
@@ -14,9 +84,12 @@ each device's independently observed maximum. Missing sensors are unavailable,
 not zero. The existing `power_watts` instantaneous field keeps its meaning.
 
 If GPU membership changes inside a window, its combined GPU total is omitted
-rather than mixing different device sets. Per-GPU readings and CPU statistics
-are retained, and combined totals resume in the next stable window. This keeps
-the recorded window valid for replay without relaxing hub validation.
+rather than mixing different device sets. Per-GPU readings and scalar-domain
+statistics are retained, and combined totals resume in the next stable window.
+The same rule covers a scalar domain whose backend changed inside the window.
+This keeps the recorded window valid for replay without relaxing hub validation.
+A window in which everything observed was discarded emits no bucket at all and
+is declared as a gap, rather than claiming coverage it does not have.
 
 Completed windows are saved locally before becoming eligible for upload. The
 local journal is bounded by 24 hours and a byte limit. The network sends bounded
@@ -33,10 +106,12 @@ one-second sampled peak is not a guaranteed electrical transient maximum.
 
 ## Storage and traffic budget
 
-There are 2,880 completed 30-second windows per day. A representative JSON
-record with two GPU sensors, GPU-total statistics and CPU statistics measures
-524 bytes including its newline: about 1.5 MB for a full day. The same fixture
-with 16 GPUs is about 6.5 MB per day. Actual sizes vary with sensor identifiers
+There are 2,880 completed 30-second windows per day. A worst-case JSON record —
+two GPU sensors, GPU-total statistics and all three labelled scalar domains —
+measures 835 bytes including its newline: about 2.4 MB for a full day. The same
+fixture with 16 GPUs is 2,585 bytes, about 7.4 MB per day. Most machines send
+less, because a domain with no counter is omitted from the wire entirely rather
+than sent as a zero. Actual sizes vary with sensor identifiers
 and numeric precision; these are encoded-data measurements, not filesystem or
 network-overhead estimates. The reproducible size check is
 `cd proto && go test -v ./powerhistory -run TestRepresentativeStorageAndBatchSize`.
@@ -61,10 +136,37 @@ segments are safely compacted, and a one-minute maintenance tick ages out data
 even when sensors stop reporting. An unfinished 30-second window stays in
 memory; completed windows are flushed to disk before upload.
 
-GPU history currently uses NVIDIA's streaming query. CPU history uses readable
-Linux RAPL package counters and excludes overlapping subdomains. Windows CPU
-package power is unavailable; no CPU estimate is invented. Set
-`BLOXOS_POWER_HISTORY=0` on an agent before startup to disable the feature.
+GPU history uses NVIDIA's streaming query and, for non-NVIDIA cards, DRM hwmon
+power channels. The scalar domains use the backends tabulated above and exclude
+overlapping subdomains. On Windows every scalar domain is unavailable and no
+estimate is invented. Set `BLOXOS_POWER_HISTORY=0` on an agent before startup to
+disable the feature.
+
+## Protocol compatibility
+
+`system`, `dram` and `sources` were added to `powerhistory.Bucket` as optional
+fields. There is no version negotiation for these frames; compatibility is a
+property of the encoding, in both directions:
+
+- **Old agent → new hub.** An old bucket omits the new fields, so they decode as
+  nil — unavailable, not zero — and validation never requires them. An
+  unlabelled `cpu` reading is accepted exactly as before and is never given an
+  invented label. Fleet agents that cannot be updated keep reporting forever.
+- **New agent → old hub.** An old hub ignores fields it does not know, stores
+  everything it does understand, and normalizes both sides of a replay
+  comparison through its own schema — so dropping the new fields is symmetric
+  and a retransmission is still recognised as identical rather than as a data
+  conflict. The cost is that the new domains are not persisted by that hub.
+- **Newer agent → this hub.** A `sources` entry naming a domain this hub does
+  not interpret is bounds-checked and stored rather than rejected, so a hub
+  upgrade is never a precondition for an agent upgrade.
+
+The hub validates the new fields with the same rigour as the old ones: finite
+watts within range, mean not above peak, statistics present exactly when samples
+are, samples not above the window's expected count, bounded and unique domain
+labels, and no label for a domain that carries no statistics. It deliberately
+enforces **no arithmetic relation between domains** — not even "system exceeds
+cpu" — because they come from different backends on different schedules.
 
 ## Failure boundaries
 
@@ -165,3 +267,13 @@ The subsequent GPU-membership correction advances the agent release marker to 3.
 The hardware canary above tested release 2; it is not a hardware test of this
 later correction. Membership transitions have separate accumulator and hub
 regression coverage.
+
+### Broadened backend coverage
+
+The source-agnostic backend layer (`system`/`dram` domains, battery, IPMI/DCMI,
+generic hwmon and DRM GPU hwmon) has unit coverage against fake sysfs trees and
+a fake BMC, plus hub validation and protocol-compatibility tests in both
+directions. It has **not** been run against real hardware for any of the new
+backends: no psys zone, battery pack, BMC, INA shunt or AMD card has been read
+on a physical machine yet, and no reading has been compared against a wall
+meter. Treat every new backend as unverified until a canary says otherwise.

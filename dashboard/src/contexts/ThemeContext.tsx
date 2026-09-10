@@ -1,19 +1,29 @@
 "use client";
 
-// Monoform — one visual system, two contrast modes.
+// Monoform — one visual system, two themes.
 //
-// There is no light mode, no system mode and no theme gallery. The only
-// user-facing choice is `gray` (default) or `dark`, and both are dark-family
-// surfaces: the document keeps the `dark` class permanently so component
-// styles have a single branch to reason about.
+// There is no system mode and no theme gallery. The only user-facing choice is
+// `dark` (the default) or `light`, and it is an explicit choice — the OS
+// preference is deliberately not consulted, because a fleet dashboard left on
+// a wall should not change appearance at sunset.
+//
+// The `dark` class on <html> is what Tailwind's `dark:` variants key off, so
+// it is present in dark and absent in light, and `color-scheme` follows the
+// theme so form controls, scrollbars and the browser's own chrome match.
+//
+// MIGRATION. The previous release shipped two dark-family contrast modes named
+// `gray` and `dark`. `gray` no longer exists: a stored `gray`, a stored
+// legacy value, and anything unrecognised all resolve to `dark`. The same rule
+// is implemented three times over — here, in the pre-hydration bootstrap in
+// app/layout.tsx, and in the hub's normalizer (hub/user_prefs.go) — and the
+// three must agree.
 //
 // Persistence layers:
 //   1. localStorage  — instant, works pre-auth
 //   2. /api/me/theme — synced after login so the choice follows the user
 //
-// The inline bootstrap script in layout.tsx applies the stored appearance to
-// <html> before this provider mounts, so there is never a flash of a light
-// page.
+// The inline bootstrap script in layout.tsx applies the stored theme to <html>
+// before this provider mounts, so there is never a flash of the wrong theme.
 
 import {
   createContext,
@@ -26,11 +36,18 @@ import {
 import { HUB_URL } from "@/lib/session";
 import { useAuth } from "@/contexts/AuthContext";
 
-export type AppearanceMode = "gray" | "dark";
+export type AppearanceMode = "dark" | "light";
 
 const STORAGE_KEY = "bloxos-appearance";
-// Pre-Monoform key. Read once so an existing "dark" choice survives the reset.
-const LEGACY_MODE_KEY = "bloxos-theme-mode";
+
+// The pre-Monoform key `bloxos-theme-mode` is deliberately no longer read.
+// While the two modes were `gray` and `dark`, that key existed to rescue an
+// existing "dark" choice from the reset. `dark` is now the default, so the
+// only value the key could still rescue is the one an absent key already
+// produces — reading it is dead code. A legacy "light" is NOT honoured either:
+// it named a palette from the retired multi-theme gallery, its owner has been
+// on a dark surface for a full release, and silently flipping them to a
+// different light theme now would be a surprise, not a restoration.
 
 type AppearanceContextValue = {
   appearance: AppearanceMode;
@@ -39,28 +56,32 @@ type AppearanceContextValue = {
 
 const AppearanceContext = createContext<AppearanceContextValue | null>(null);
 
+/** Anything that is not the one non-default theme resolves to `dark`. This is
+ * the single rule the bootstrap and the hub normalizer both restate. */
 function normalizeAppearance(value: unknown): AppearanceMode {
-  return value === "dark" ? "dark" : "gray";
+  return value === "light" ? "light" : "dark";
 }
 
 function readInitialAppearance(): AppearanceMode {
-  if (typeof window === "undefined") return "gray";
+  if (typeof window === "undefined") return "dark";
   try {
-    const current = localStorage.getItem(STORAGE_KEY);
-    if (current === "gray" || current === "dark") return current;
-    return localStorage.getItem(LEGACY_MODE_KEY) === "dark" ? "dark" : "gray";
+    return normalizeAppearance(localStorage.getItem(STORAGE_KEY));
   } catch {
     // Storage can be unavailable (private mode, blocked cookies). Default.
-    return "gray";
+    return "dark";
   }
 }
 
 export function applyAppearanceToDocument(appearance: AppearanceMode) {
   if (typeof document === "undefined") return;
   const root = document.documentElement;
+  const dark = appearance !== "light";
   root.dataset.appearance = appearance;
-  root.classList.add("dark");
-  root.style.colorScheme = "dark";
+  // Tailwind's `dark:` variants key off this class, so it has to come off in
+  // light mode — leaving it on is how a "light theme" ends up with dark form
+  // fields and dark focus surfaces from the shadcn primitives.
+  root.classList.toggle("dark", dark);
+  root.style.colorScheme = dark ? "dark" : "light";
   // Strip anything the retired multi-theme / multi-layout system may have left
   // on <html> from a previous session.
   Array.from(root.classList)

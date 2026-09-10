@@ -17,40 +17,45 @@ interface TerminalProps {
 /* ============================================================================
  * Terminal palette
  *
- * Monoform is dark-only, so there is no light palette left to choose between.
- * The terminal follows the gray/dark appearance instead, drawn from the same
- * tokens the rest of the product uses, so terminal output sits in the same
- * colour world as the surrounding UI. ANSI semantics are preserved throughout
- * — red errors stay red, green diffs stay green.
+ * The terminal follows the product theme, drawn from the same tokens the rest
+ * of the UI uses, so terminal output sits in the same colour world as the
+ * panel around it. ANSI semantics are preserved in both — red errors stay red,
+ * green diffs stay green — but the light palette is a real light terminal, not
+ * the dark one on a pale background: every hue is the darker, light-ground
+ * member of its family, and the ANSI "bright" variants get DARKER rather than
+ * lighter, because on white it is depth, not lift, that reads as emphasis.
  * ============================================================================ */
 
 // Mirrors the `--mf-*` tokens in app/monoform.css. xterm.js needs concrete
-// values, so the two token blocks are duplicated here; the ANSI "bright"
-// variants are a shared lift of the same hues. Cyan has no Monoform token —
-// it is derived, because collapsing it onto blue would cost the ANSI
+// values, so the two token blocks are duplicated here. Cyan has no Monoform
+// token — it is derived, because collapsing it onto blue would cost the ANSI
 // distinction that makes terminal output readable.
 const PALETTES: Record<AppearanceMode, ITheme> = {
-  gray: {
-    background: "#101010",
-    foreground: "#f2f2ef",
-    cursor: "#6380ff",
-    selectionBackground: "rgba(99, 128, 255, 0.28)",
-    black: "#101010",
-    red: "#e56767",
-    green: "#58bd88",
-    yellow: "#e9a34b",
-    blue: "#6380ff",
-    magenta: "#9b87e8",
-    cyan: "#5fb8c4",
-    white: "#f2f2ef",
-    brightBlack: "#a3a39c",
-    brightRed: "#f08a8a",
-    brightGreen: "#7bd0a4",
-    brightYellow: "#f2bb74",
-    brightBlue: "#8b9fff",
-    brightMagenta: "#b6a6f0",
-    brightCyan: "#82cdd7",
-    brightWhite: "#ffffff",
+  light: {
+    // The well is the table-head tone rather than pure white, so the terminal
+    // still reads as recessed inside a white panel.
+    background: "#f7f7f5",
+    foreground: "#191918",
+    cursor: "#3149d9",
+    selectionBackground: "rgba(49, 73, 217, 0.20)",
+    black: "#191918",
+    red: "#c62828",
+    green: "#0d7346",
+    yellow: "#8a5300",
+    blue: "#3149d9",
+    magenta: "#6244c4",
+    cyan: "#0d6a72",
+    // ANSI "white" is a foreground, not the page: on a light ground it has to
+    // become a readable grey, and brightWhite the near-black emphasis tone.
+    white: "#67675f",
+    brightBlack: "#84847d",
+    brightRed: "#9c1c1c",
+    brightGreen: "#095b37",
+    brightYellow: "#6b4000",
+    brightBlue: "#2739b4",
+    brightMagenta: "#4d329f",
+    brightCyan: "#095157",
+    brightWhite: "#191918",
   },
   dark: {
     background: "#090909",
@@ -77,7 +82,7 @@ const PALETTES: Record<AppearanceMode, ITheme> = {
 };
 
 function terminalTheme(appearance: AppearanceMode): ITheme {
-  return PALETTES[appearance] ?? PALETTES.gray;
+  return PALETTES[appearance] ?? PALETTES.dark;
 }
 
 export function Terminal({ sessionId, browserToken, onDisconnect }: TerminalProps) {
@@ -86,7 +91,7 @@ export function Terminal({ sessionId, browserToken, onDisconnect }: TerminalProp
   const wsRef = useRef<WebSocket | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const [status, setStatus] = useState<"connecting" | "connected" | "disconnected">("connecting");
-  // Monoform is always dark; the appearance only shifts how deep the well is.
+  // The terminal repaints live when the theme changes — see the effect below.
   const { appearance } = useTheme();
 
   const cleanup = useCallback(() => {

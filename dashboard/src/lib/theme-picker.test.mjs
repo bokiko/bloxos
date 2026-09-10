@@ -15,13 +15,39 @@ test("appearance picker offers the complete set of appearance modes", () => {
   );
   const modes = registry.match(/export type AppearanceMode\s*=\s*([^;]+);/);
   assert.ok(modes, "appearance modes must be exported for consumers");
-  for (const mode of ["gray", "dark"]) {
+  for (const mode of ["dark", "light"]) {
     assert.ok(modes[1].includes(`"${mode}"`), `missing ${mode}`);
     assert.ok(preferences.includes(`"${mode}"`), `picker does not offer ${mode}`);
   }
-  // No light or system mode survives the Monoform reset.
-  assert.doesNotMatch(modes[1], /"light"|"system"/);
+  // Still no system mode, and no retired contrast mode lingering as a third
+  // option the picker would render but nothing else understands.
+  assert.doesNotMatch(modes[1], /"system"|"gray"/);
   assert.match(preferences, /aria-pressed=\{appearance === option\}/);
+});
+
+test("every theme the product offers is a theme the hub will store", () => {
+  // The dashboard PATCHes theme_mode to /api/me/theme and the hub rejects a
+  // mode outside its own allow-list with a 400, so a theme added to one side
+  // and not the other is a choice that silently fails to persist. The two
+  // lists are compared directly rather than trusted to stay in step.
+  const registry = readFileSync(new URL("../contexts/ThemeContext.tsx", import.meta.url), "utf8");
+  const hub = readFileSync(new URL("../../../hub/user_prefs.go", import.meta.url), "utf8");
+
+  const union = registry.match(/export type AppearanceMode\s*=\s*([^;]+);/);
+  assert.ok(union, "AppearanceMode must be exported");
+  const clientModes = [...union[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]).sort();
+
+  const block = hub.match(/var validThemeModes = map\[string\]struct\{\}\{([\s\S]*?)\n\}/);
+  assert.ok(block, "hub/user_prefs.go must declare validThemeModes");
+  const hubModes = [...block[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]).sort();
+
+  assert.deepEqual(clientModes, hubModes, "client and hub must accept the same theme modes");
+
+  // ...and both ends must fall back to the same default, or a user carrying a
+  // retired value would be shown one theme while another one is stored.
+  assert.match(hub, /COALESCE\(theme_name, 'monoform'\), COALESCE\(theme_mode, 'dark'\)/);
+  assert.match(hub, /const defaultThemeMode = "dark"/, "the hub normalizer defaults to dark");
+  assert.match(registry, /value === "light" \? "light" : "dark"/, "the client defaults to dark");
 });
 
 test("appearance is chosen in one place only", () => {

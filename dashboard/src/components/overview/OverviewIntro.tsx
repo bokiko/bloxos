@@ -7,6 +7,13 @@
 // date and goes straight to a sentence that states the fleet's actual
 // posture. The three sentences are the only ones this component can say, and
 // which one appears is decided from live machine state by the caller.
+//
+// It is ONE line. This used to be a 46px display headline stacked under its
+// own date kicker, beside a fixed sentence ("Live infrastructure state across
+// your production workspace") that restated the page's existence and told the
+// operator nothing — about 150px of screen to carry one fact. That sentence is
+// gone and the date has moved onto the same baseline as the claim, so the
+// fleet-posture grid starts near the top of the viewport instead of below it.
 
 import { useSyncExternalStore } from "react";
 
@@ -48,15 +55,13 @@ export function OverviewIntro({ posture }: { posture: FleetPosture }) {
   const [lead, rest] = HEADLINES[posture];
 
   return (
-    <header className="mf-intro">
-      <div>
-        {/* Non-breaking space holds the line's height before the date resolves. */}
-        <div className="mf-kicker">{today ?? " "}</div>
-        <h1 className="mt-2.5">
-          <strong>{lead}</strong> {rest}
-        </h1>
-      </div>
-      <p>Live infrastructure state across your production workspace.</p>
+    <header className="mf-overview-intro">
+      {/* Non-breaking space reserves the line before the date resolves, so the
+          sentence beside it does not jump on the first client paint. */}
+      <span className="mf-kicker mf-overview-intro-date">{today ?? "\u00a0"}</span>
+      <h1>
+        <strong>{lead}</strong> {rest}
+      </h1>
     </header>
   );
 }

@@ -3,10 +3,19 @@ package main
 // Monoform — per-user appearance preference.
 //
 // Stored on the users row as theme_name + theme_mode, kept for wire and schema
-// compatibility. There is now exactly one theme ("monoform") and two contrast
-// modes ("gray", "dark"); everything else is a historical value that gets
-// normalized away on read. Both endpoints require authentication; users only
-// ever read or write their own row.
+// compatibility. There is now exactly one theme ("monoform") in two modes:
+// "dark" (the default) and "light". Everything else — the retired "gray"
+// contrast mode, the pre-Monoform "system", a retired palette name such as
+// "dracula", NULL — is a historical value.
+//
+// Those values are normalized on READ, not migrated. The column keeps whatever
+// it holds: rewriting every user's row for a value that is already corrected
+// in the one place it is consumed buys nothing, and would have to be repeated
+// for every future rename. A write from any current client replaces the stale
+// value naturally.
+//
+// Both endpoints require authentication; users only ever read or write their
+// own row.
 
 import (
 	"database/sql"
@@ -20,9 +29,15 @@ var validThemeNames = map[string]struct{}{
 }
 
 var validThemeModes = map[string]struct{}{
-	"gray": {},
-	"dark": {},
+	"dark":  {},
+	"light": {},
 }
+
+// defaultThemeMode is what an unset, unrecognised or retired theme_mode
+// resolves to. It must stay in step with normalizeAppearance() in
+// dashboard/src/contexts/ThemeContext.tsx and with the pre-hydration bootstrap
+// in dashboard/src/app/layout.tsx — all three implement the same rule.
+const defaultThemeMode = "dark"
 
 type themePrefs struct {
 	ThemeName string `json:"theme_name"`
@@ -37,7 +52,7 @@ func (s *Server) handleGetMyThemePrefs(c echo.Context) error {
 
 	var prefs themePrefs
 	err := s.db.QueryRow(
-		`SELECT COALESCE(theme_name, 'monoform'), COALESCE(theme_mode, 'gray') FROM users WHERE id = ?`,
+		`SELECT COALESCE(theme_name, 'monoform'), COALESCE(theme_mode, 'dark') FROM users WHERE id = ?`,
 		claims.UserID,
 	).Scan(&prefs.ThemeName, &prefs.ThemeMode)
 	if err == sql.ErrNoRows {
@@ -47,15 +62,14 @@ func (s *Server) handleGetMyThemePrefs(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database error"})
 	}
 
-	// Defensive: snap unknown values back to defaults so the dashboard never
-	// has to handle a stale value from a retired theme or contrast mode. Rows
-	// written before Monoform still hold e.g. "dracula" / "system"; they are
-	// normalized here rather than migrated.
+	// Defensive: snap unknown values back to the defaults so the dashboard
+	// never has to handle a stale value. Rows written before this release hold
+	// "gray"; rows written before Monoform hold e.g. "dracula" / "system".
 	if _, ok := validThemeNames[prefs.ThemeName]; !ok {
 		prefs.ThemeName = "monoform"
 	}
 	if _, ok := validThemeModes[prefs.ThemeMode]; !ok {
-		prefs.ThemeMode = "gray"
+		prefs.ThemeMode = defaultThemeMode
 	}
 	return c.JSON(http.StatusOK, prefs)
 }

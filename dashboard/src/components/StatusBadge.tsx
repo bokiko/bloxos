@@ -25,6 +25,10 @@ export type MachineStatus = "live" | "stale" | "warning" | "critical" | "offline
 export interface MachineClassification {
   status: MachineStatus;
   reason?: string;
+  /** Present when this machine is flagged "expected high load" AND its CPU was
+   * actually in a threshold band — the reading the flag swallowed, e.g.
+   * "CPU 100%". The UI must surface it; a suppression is never silent. */
+  suppressed?: string;
 }
 
 /** Ordering for sort-by-status — problem machines first. */

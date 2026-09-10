@@ -67,7 +67,12 @@ function SettingsContent() {
         </section>
 
         <Tabs defaultValue={defaultTab} className="w-full">
-          <TabsList className="bg-blox-card border border-blox-border">
+          {/* The one non-`line` tab list in the product. Its ground is the
+              SUNKEN surface, not the panel: shadcn's selected trigger paints
+              `bg-background`, so a panel-coloured list made the selected tab
+              the darker one in light and the lighter one in dark. Recessed
+              list, raised selection — the same way round in both themes. */}
+          <TabsList className="bg-surface-sunken border border-blox-border">
             <TabsTrigger value="profile">Profile</TabsTrigger>
             <TabsTrigger value="preferences">Preferences</TabsTrigger>
             {canEditBranding && <TabsTrigger value="branding">Branding</TabsTrigger>}

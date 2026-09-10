@@ -176,27 +176,25 @@ function UsersContent() {
   return (
     <>
       <div className="mf-intro">
-        <div className="min-w-0">
-          <dl className="flex flex-wrap items-baseline gap-x-8 gap-y-3">
-            <div className="flex items-baseline gap-2">
-              <dt className="mf-kicker">Accounts</dt>
-              <dd className="mf-metric text-[19px] leading-none text-text-primary">{users.length}</dd>
-            </div>
-            <div className="flex items-baseline gap-2">
-              <dt className="mf-kicker">Admins</dt>
-              <dd className="mf-metric text-[19px] leading-none text-text-primary">{adminCount}</dd>
-            </div>
-          </dl>
-          <div className="mt-5">
-            <button type="button" onClick={() => setAddOpen(true)} className="mf-action inline-flex items-center gap-2">
-              <Plus className="w-3.5 h-3.5" aria-hidden />
-              Add User
-            </button>
+        <dl className="flex flex-wrap items-baseline gap-x-8 gap-y-3">
+          <div className="flex items-baseline gap-2">
+            <dt className="mf-kicker">Accounts</dt>
+            <dd className="mf-metric text-[19px] leading-none text-text-primary">{users.length}</dd>
           </div>
+          <div className="flex items-baseline gap-2">
+            <dt className="mf-kicker">Admins</dt>
+            <dd className="mf-metric text-[19px] leading-none text-text-primary">{adminCount}</dd>
+          </div>
+        </dl>
+        <div className="mf-intro-actions">
+          <button type="button" onClick={() => setAddOpen(true)} className="mf-action inline-flex items-center gap-2">
+            <Plus className="w-3.5 h-3.5" aria-hidden />
+            Add User
+          </button>
         </div>
         <p>
-          Signed in as <span className="text-text-primary">{myRole}</span>. New accounts are created with
-          a temporary password and PIN, both of which must be rotated at first sign-in.
+          Signed in as <span className="text-text-primary">{myRole}</span>. New accounts get a
+          temporary password and PIN, both rotated at first sign-in.
         </p>
       </div>
 

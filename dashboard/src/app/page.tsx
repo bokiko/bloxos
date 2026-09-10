@@ -32,6 +32,7 @@ import { bulkCommandFeedback, selectionAfterBulkAttempt } from "@/lib/command-fe
 import { AppShell } from "@/components/shell/AppShell";
 import { OPEN_ALERTS, OPEN_COMMAND, API_MACHINES_CHANGED } from "@/components/shell/ShellActions";
 import { classifyMachine, STATUS_ORDER, type MachineStatus } from "@/components/StatusBadge";
+import type { LoadBaselines } from "@/components/fleet/fleetModel";
 import { MachineCard, MachineCardSkeleton } from "@/components/MachineCard";
 import { AlertPanel } from "@/components/AlertPanel";
 import { AddAPIMachineModal, type EditableAPIMachine } from "@/components/AddAPIMachineModal";
@@ -58,15 +59,35 @@ import {
   type ViewMode,
 } from "@/components/overview/MachineFleetToolbar";
 import { MachineFleetTable } from "@/components/overview/MachineFleetTable";
+import { MachineNoteDialog } from "@/components/overview/MachineNoteDialog";
+import { Disclosure } from "@/components/overview/Disclosure";
+import { useWorkspacePrefs } from "@/components/overview/useWorkspacePrefs";
+import { useMachineNotes } from "@/components/overview/useMachineNotes";
 
-/** The two-column geometry both context rows share; it stacks below 900px. */
-const POSTURE_GRID =
-  "grid gap-5 [grid-template-columns:minmax(0,1.25fr)_minmax(320px,0.75fr)] max-[900px]:[grid-template-columns:minmax(0,1fr)]";
-const CONTEXT_GRID =
-  "grid gap-5 [grid-template-columns:minmax(0,1.6fr)_minmax(300px,0.9fr)] max-[900px]:[grid-template-columns:minmax(0,1fr)]";
+/* POSTURE / CONTEXT — the two paired-panel rows.
+   They now share ONE geometry, `.mf-pane-grid` in monoform.css, instead of a
+   1.25/0.75 split above a 1.6/0.9 one. Four panels read as a block, and four
+   different widths made that block look accidental. The class also gives an
+   EXPANDED panel a common minimum height so the two rows land as a 2×2, and
+   stacks everything below 900px.
 
-function getStatus(m: MachineMetrics): MachineStatus {
-  return classifyMachine(m).status;
+   WHEN ONE OF A PAIR IS FOLDED, THE FOLDED ONE KEEPS ITS COLUMN. It shrinks to
+   a single line at the top of its cell (`align-self: start`) and its open
+   partner keeps its own half and sets the row height. The alternative — the
+   open pane widening to span both columns — was rejected for three reasons:
+   the pane nobody touched would re-lay out its ranking or its chart as a side
+   effect of a click elsewhere; folding and unfolding would shuttle the page
+   between a one- and a two-column layout; and the point of the equal columns
+   is that the four panes read as one symmetric block, which a reflow to full
+   width breaks the moment anybody folds anything. What you folded stays where
+   you left it, ready to unfold in place. */
+
+// Severity for one machine under the reader's baseline policy. classifyMachine
+// (lib/fleet-metrics.mjs) is the single place status is decided; `baselines`
+// only ever suppresses the CPU-saturation rule, so an expected-high-load
+// machine still counts as offline, stale, or critical on RAM/disk/GPU here.
+function getStatus(m: MachineMetrics, baselines: LoadBaselines): MachineStatus {
+  return classifyMachine(m, { expectedHighCpu: baselines.has(m.machine_id) }).status;
 }
 
 function OverviewContent() {
@@ -86,11 +107,23 @@ function OverviewContent() {
   const canManageAPIMachines = hasScope("api_machines.admin");
   const canControlFleet = hasScope("fleet.control");
   const canDeleteMachines = hasScope("fleet.admin");
+  // Same scope the machine detail page's Notes tab gates its editor on.
+  const canEditNotes = hasScope("fleet.metadata");
 
   // Phase 11 — hydrate viewMode/sortBy from per-user preferences. The
   // PreferencesContext lazy-init reads from localStorage so the defaults
   // are correct on first paint after a reload (no flash).
   const { preferences, updateScalar, saveMachineOrder, loading: preferencesLoading } = usePreferences();
+  // Collapsed sections, the load ranking's metric and the expected-high-load
+  // flags. Browser-local per user — see components/overview/useWorkspacePrefs.
+  const {
+    isCollapsed,
+    toggleSection,
+    loadMetric,
+    setLoadMetric,
+    baselines,
+    toggleBaseline,
+  } = useWorkspacePrefs();
   const [arrangeOpen, setArrangeOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
@@ -184,6 +217,14 @@ function OverviewContent() {
     [source],
   );
 
+  // Machine notes, read per machine from the hub — see useMachineNotes for why
+  // that is a fan-out and what it costs. Disabled in demo mode: demo machines
+  // do not exist on any hub, so asking about their notes would produce a burst
+  // of 404s and a table full of "unavailable".
+  const machineIDs = useMemo(() => machines.map((m) => m.machine_id), [machines]);
+  const notes = useMachineNotes(machineIDs, !isDemo);
+  const [noteTarget, setNoteTarget] = useState<{ id: string; hostname: string } | null>(null);
+
   const loadAPIMachines = useCallback(async () => {
     try {
       const res = await authFetch(`${HUB_URL}/api/api-machines`);
@@ -258,7 +299,7 @@ function OverviewContent() {
   const counts = useMemo<AvailabilityCounts>(() => {
     let live = 0, warning = 0, critical = 0, stale = 0, offline = 0;
     for (const m of machines) {
-      switch (getStatus(m)) {
+      switch (getStatus(m, baselines)) {
         case "live": live += 1; break;
         case "warning": warning += 1; break;
         case "critical": critical += 1; break;
@@ -274,7 +315,7 @@ function OverviewContent() {
     };
     // classifyMachine reads the wall clock; the tick is the deliberate dep.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [machines, now]);
+  }, [machines, now, baselines]);
 
   // "Healthy" has to mean nothing is wrong — a fleet with a warning or a
   // stale machine cannot claim it, or the headline would contradict the
@@ -296,7 +337,7 @@ function OverviewContent() {
     }
 
     if (statusFilter !== "all") {
-      result = result.filter((m) => getStatus(m) === statusFilter);
+      result = result.filter((m) => getStatus(m, baselines) === statusFilter);
     }
 
     if (tagFilter) {
@@ -309,10 +350,10 @@ function OverviewContent() {
       sort: sortBy,
       order: preferences.machine_order,
       pinned: preferences.pinned_machines,
-      status: m => STATUS_ORDER[getStatus(m)],
+      status: m => STATUS_ORDER[getStatus(m, baselines)],
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [machines, now, search, statusFilter, sortBy, tagFilter, preferences.pinned_machines, preferences.machine_order]);
+  }, [machines, now, search, statusFilter, sortBy, tagFilter, baselines, preferences.pinned_machines, preferences.machine_order]);
 
   const handleAcknowledge = useCallback(async (id: string) => {
     try {
@@ -438,6 +479,14 @@ function OverviewContent() {
     setDeleteTarget({ id, hostname });
   }, []);
 
+  const openNote = useCallback(
+    (id: string) => {
+      const machine = machines.find((m) => m.machine_id === id);
+      setNoteTarget({ id, hostname: machine?.hostname || id });
+    },
+    [machines],
+  );
+
   const openAlertPanel = useCallback(() => setAlertPanelOpen(true), []);
   const openCommandPalette = useCallback(
     () => window.dispatchEvent(new CustomEvent(OPEN_COMMAND)),
@@ -445,6 +494,15 @@ function OverviewContent() {
   );
 
   const showBulkBar = selected.size > 0 && viewMode === "list" && canControlFleet;
+
+  // A folded fleet still reports its size, and says so honestly when a filter
+  // is narrowing it — otherwise collapsing would hide the fact that most of
+  // the fleet is filtered out.
+  const fleetOpen = !isCollapsed("fleet");
+  const fleetSummary =
+    filteredMachines.length === machines.length
+      ? `${machines.length} ${machines.length === 1 ? "machine" : "machines"}`
+      : `${filteredMachines.length} of ${machines.length} machines`;
 
   return (
     <>
@@ -476,172 +534,215 @@ function OverviewContent() {
       </AnimatePresence>
 
       {/* B — fleet posture */}
-      <div className={POSTURE_GRID}>
-        <FleetAvailabilityPanel counts={counts} />
+      <div className="mf-pane-grid">
+        <FleetAvailabilityPanel
+          counts={counts}
+          open={!isCollapsed("availability")}
+          onToggle={() => toggleSection("availability")}
+        />
         <MonoformAttentionPanel
           machines={machines}
           alertsCount={alertCount}
           onOpenAlerts={openAlertPanel}
           now={now}
+          baselines={baselines}
+          onToggleBaseline={toggleBaseline}
+          open={!isCollapsed("attention")}
+          onToggle={() => toggleSection("attention")}
         />
       </div>
 
       {/* C — context */}
-      <div className={`${CONTEXT_GRID} mt-5`}>
-        <CapacityPane />
-        <HighestLoadPane machines={machines} now={now} />
+      <div className="mf-pane-grid mt-5">
+        <CapacityPane
+          open={!isCollapsed("capacity")}
+          onToggle={() => toggleSection("capacity")}
+        />
+        <HighestLoadPane
+          machines={machines}
+          now={now}
+          metric={loadMetric}
+          onMetricChange={setLoadMetric}
+          open={!isCollapsed("load")}
+          onToggle={() => toggleSection("load")}
+        />
       </div>
 
-      {/* D — the one machine work surface */}
-      <section className="mt-11" aria-labelledby="machine-fleet-heading">
-        <div className="flex flex-wrap items-baseline justify-between gap-3">
-          <div>
-            <div className="mf-kicker">Machine fleet</div>
-            <h2
-              id="machine-fleet-heading"
-              className="mt-1.5 text-[19px] font-medium tracking-[-0.02em] text-text-primary"
-            >
-              Every machine, and everything you can do to it
-            </h2>
-          </div>
-        </div>
+      {/* D — the one machine work surface.
+          The section had a second, larger line under the kicker ("Every
+          machine, and everything you can do to it"). It restated what a table
+          of machines with buttons on it evidently is, so the kicker is now the
+          whole heading — and, since it is also the disclosure toggle, it is
+          the thing that folds the section away.
 
-        <AnimatePresence>
-          {showBulkBar && (
-            <motion.div
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: "auto", opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              className="overflow-hidden"
-            >
-              <div className="mt-5 flex flex-wrap items-center gap-3 rounded-[10px] border border-accent/30 bg-accent-subtle px-3 py-2">
-                <span className="mf-metric text-xs font-medium text-accent">
-                  {selected.size} selected
-                </span>
-                <Button
-                  variant="outline"
-                  size="xs"
-                  onClick={() => handleBulkRestart("ollama")}
-                  disabled={bulkLoading}
-                  className="border-border-subtle text-xs text-text-primary"
-                >
-                  Restart Ollama
-                </Button>
-                <Button
-                  variant="outline"
-                  size="xs"
-                  onClick={() => handleBulkRestart("docker")}
-                  disabled={bulkLoading}
-                  className="border-border-subtle text-xs text-text-primary"
-                >
-                  Restart Docker
-                </Button>
-                <Button
-                  variant="destructive"
-                  size="xs"
-                  onClick={handleBulkReboot}
-                  disabled={bulkLoading}
-                  className="gap-1 text-xs"
-                >
-                  <RotateCcw className="h-3 w-3" aria-hidden="true" />
-                  Reboot All
-                </Button>
-                <button
-                  type="button"
-                  onClick={() => setSelected(new Set())}
-                  className="ml-auto text-xs text-text-tertiary transition-colors duration-[var(--motion-fast)] hover:text-text-primary"
-                >
-                  Clear
-                </button>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+          It is a `.mf-section` like the four panes above it, so it is a panel
+          while it is open and one quiet line on a hairline once it is folded.
+          The table inside therefore draws its own inset frame rather than a
+          second panel around the first.
 
-        <div className="mt-5">
-          <MachineFleetToolbar
-            search={search}
-            onSearchChange={setSearch}
-            onOpenCommandPalette={openCommandPalette}
-            statusFilter={statusFilter}
-            onStatusFilterChange={setStatusFilter}
-            sortBy={sortBy}
-            onSortChange={changeSort}
-            tags={allTags}
-            tagFilter={tagFilter}
-            onTagFilterChange={setTagFilter}
-            savedFilterCount={preferences.saved_filters.length}
-            onApplySavedFilter={applySavedFilter}
-            canSaveFilter={canControlFleet || preferences.saved_filters.length < 20}
-            viewMode={viewMode}
-            onViewModeChange={changeView}
-            onArrange={() => setArrangeOpen(true)}
-            arrangeDisabled={preferencesLoading || !hasReceivedData || machines.length < 2}
-            resultCount={filteredMachines.length}
-          />
-        </div>
-
-        <div className="mt-5">
-          {viewMode === "list" ? (
-            <MachineFleetTable
-              machines={filteredMachines}
-              selected={selected}
-              onToggleSelect={toggleSelect}
-              onToggleSelectAll={toggleSelectAll}
-              canControlFleet={canControlFleet}
-              canDeleteMachines={canDeleteMachines}
-              canManageAPIMachines={canManageAPIMachines}
-              onRefresh={canControlFleet ? refreshMachine : undefined}
-              onEditAPIMachine={canManageAPIMachines ? openEditAPIMachine : undefined}
-              onDelete={canDeleteMachines ? requestDelete : undefined}
-            />
-          ) : (
-            <>
-              <div
-                className="grid auto-rows-fr justify-start"
-                style={{
-                  gap: "var(--grid-gap)",
-                  // min(100%, …) clamps the column to the container at very
-                  // narrow widths so a fixed 260–300px min never overflows.
-                  gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, var(--grid-min-col)), 360px))",
-                }}
+          The top margin shrinks with the section. 44px of air above a panel is
+          separation between two blocks; 44px above a single folded line is
+          just the space the fold was supposed to reclaim. */}
+      <section
+        className={`mf-section ${fleetOpen ? "mt-11" : "mt-6"}`}
+        aria-labelledby="machine-fleet-heading"
+        data-open={fleetOpen ? "true" : "false"}
+      >
+        <Disclosure
+          id="fleet"
+          label="Machine fleet"
+          headingID="machine-fleet-heading"
+          open={fleetOpen}
+          onToggle={() => toggleSection("fleet")}
+          summary={fleetSummary}
+        >
+          <AnimatePresence>
+            {showBulkBar && (
+              <motion.div
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: "auto", opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                className="overflow-hidden"
               >
-                {!hasReceivedData && machines.length === 0 && !isDemo &&
-                  Array.from({ length: 4 }).map((_, i) => (
-                    <MachineCardSkeleton key={`skeleton-${i}`} />
-                  ))}
-
-                {/* `layout` is real filter/sort state moving, not an entrance
-                    flourish — there is no initial fade here. */}
-                <AnimatePresence mode="popLayout">
-                  {filteredMachines.map((m) => (
-                    <motion.div
-                      key={m.machine_id}
-                      layout
-                      exit={{ opacity: 0 }}
-                      transition={{ duration: 0.2 }}
-                      className="h-full"
-                    >
-                      <MachineCard
-                        machine={m}
-                        onDelete={canDeleteMachines ? requestDelete : undefined}
-                        onEdit={canManageAPIMachines ? openEditAPIMachine : undefined}
-                        onRefresh={canControlFleet ? refreshMachine : undefined}
-                      />
-                    </motion.div>
-                  ))}
-                </AnimatePresence>
-              </div>
-
-              {filteredMachines.length === 0 && hasReceivedData && (
-                <div className="flex flex-col items-center justify-center py-20 text-text-tertiary">
-                  <Monitor className="mb-4 h-12 w-12 opacity-20" aria-hidden="true" />
-                  <p className="text-sm">No machines match the current filters.</p>
+                <div className="mt-5 flex flex-wrap items-center gap-3 rounded-[10px] border border-accent/30 bg-accent-subtle px-3 py-2">
+                  <span className="mf-metric text-xs font-medium text-accent">
+                    {selected.size} selected
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="xs"
+                    onClick={() => handleBulkRestart("ollama")}
+                    disabled={bulkLoading}
+                    className="border-border-subtle text-xs text-text-primary"
+                  >
+                    Restart Ollama
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="xs"
+                    onClick={() => handleBulkRestart("docker")}
+                    disabled={bulkLoading}
+                    className="border-border-subtle text-xs text-text-primary"
+                  >
+                    Restart Docker
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    size="xs"
+                    onClick={handleBulkReboot}
+                    disabled={bulkLoading}
+                    className="gap-1 text-xs"
+                  >
+                    <RotateCcw className="h-3 w-3" aria-hidden="true" />
+                    Reboot All
+                  </Button>
+                  <button
+                    type="button"
+                    onClick={() => setSelected(new Set())}
+                    className="ml-auto text-xs text-text-tertiary transition-colors duration-[var(--motion-fast)] hover:text-text-primary"
+                  >
+                    Clear
+                  </button>
                 </div>
-              )}
-            </>
-          )}
-        </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          <div className="mt-5">
+            <MachineFleetToolbar
+              search={search}
+              onSearchChange={setSearch}
+              onOpenCommandPalette={openCommandPalette}
+              statusFilter={statusFilter}
+              onStatusFilterChange={setStatusFilter}
+              sortBy={sortBy}
+              onSortChange={changeSort}
+              tags={allTags}
+              tagFilter={tagFilter}
+              onTagFilterChange={setTagFilter}
+              savedFilterCount={preferences.saved_filters.length}
+              onApplySavedFilter={applySavedFilter}
+              canSaveFilter={canControlFleet || preferences.saved_filters.length < 20}
+              viewMode={viewMode}
+              onViewModeChange={changeView}
+              onArrange={() => setArrangeOpen(true)}
+              arrangeDisabled={preferencesLoading || !hasReceivedData || machines.length < 2}
+              resultCount={filteredMachines.length}
+            />
+          </div>
+
+          <div className="mt-5">
+            {viewMode === "list" ? (
+              <MachineFleetTable
+                machines={filteredMachines}
+                selected={selected}
+                onToggleSelect={toggleSelect}
+                onToggleSelectAll={toggleSelectAll}
+                canControlFleet={canControlFleet}
+                canDeleteMachines={canDeleteMachines}
+                canManageAPIMachines={canManageAPIMachines}
+                onRefresh={canControlFleet ? refreshMachine : undefined}
+                onEditAPIMachine={canManageAPIMachines ? openEditAPIMachine : undefined}
+                onDelete={canDeleteMachines ? requestDelete : undefined}
+                baselines={baselines}
+                onToggleBaseline={toggleBaseline}
+                noteOf={notes.note}
+                onOpenNote={openNote}
+                canEditNotes={canEditNotes}
+              />
+            ) : (
+              <>
+                <div
+                  className="grid auto-rows-fr justify-start"
+                  style={{
+                    gap: "var(--grid-gap)",
+                    // min(100%, …) clamps the column to the container at very
+                    // narrow widths so a fixed 260–300px min never overflows.
+                    gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, var(--grid-min-col)), 360px))",
+                  }}
+                >
+                  {!hasReceivedData && machines.length === 0 && !isDemo &&
+                    Array.from({ length: 4 }).map((_, i) => (
+                      <MachineCardSkeleton key={`skeleton-${i}`} />
+                    ))}
+
+                  {/* `layout` is real filter/sort state moving, not an entrance
+                      flourish — there is no initial fade here. */}
+                  <AnimatePresence mode="popLayout">
+                    {filteredMachines.map((m) => (
+                      <motion.div
+                        key={m.machine_id}
+                        layout
+                        exit={{ opacity: 0 }}
+                        transition={{ duration: 0.2 }}
+                        className="h-full"
+                      >
+                        <MachineCard
+                          machine={m}
+                          expectedHighLoad={baselines.has(m.machine_id)}
+                          onToggleExpectedHighLoad={toggleBaseline}
+                          note={notes.note(m.machine_id)}
+                          onOpenNote={openNote}
+                          canEditNotes={canEditNotes}
+                          onDelete={canDeleteMachines ? requestDelete : undefined}
+                          onEdit={canManageAPIMachines ? openEditAPIMachine : undefined}
+                          onRefresh={canControlFleet ? refreshMachine : undefined}
+                        />
+                      </motion.div>
+                    ))}
+                  </AnimatePresence>
+                </div>
+
+                {filteredMachines.length === 0 && hasReceivedData && (
+                  <div className="flex flex-col items-center justify-center py-20 text-text-tertiary">
+                    <Monitor className="mb-4 h-12 w-12 opacity-20" aria-hidden="true" />
+                    <p className="text-sm">No machines match the current filters.</p>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </Disclosure>
       </section>
 
       {arrangeOpen && (
@@ -651,7 +752,7 @@ function OverviewContent() {
             sort: sortBy,
             order: preferences.machine_order,
             pinned: preferences.pinned_machines,
-            status: m => STATUS_ORDER[getStatus(m)],
+            status: m => STATUS_ORDER[getStatus(m, baselines)],
           })}
           onClose={() => setArrangeOpen(false)}
           onSave={saveMachineOrder}
@@ -693,6 +794,22 @@ function OverviewContent() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Notes, edited without leaving the Overview. Keyed on the machine so
+          switching rows remounts the editor with that machine's text instead
+          of copying props into state in an effect. */}
+      {noteTarget && (
+        <MachineNoteDialog
+          key={noteTarget.id}
+          machineID={noteTarget.id}
+          hostname={noteTarget.hostname}
+          note={notes.note(noteTarget.id)}
+          canEdit={canEditNotes}
+          onSave={notes.save}
+          onReload={notes.reload}
+          onClose={() => setNoteTarget(null)}
+        />
+      )}
 
       <AlertPanel
         open={alertPanelOpen}

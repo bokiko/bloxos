@@ -18,8 +18,9 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// Power history: a 1 Hz component-power sampler (GPU via a streaming
-// nvidia-smi process, CPU via the Linux RAPL energy counter where readable)
+// Power history: a 1 Hz power sampler (GPU via a streaming nvidia-smi
+// process or DRM hwmon nodes; the system, cpu and dram domains via whichever
+// software counter this host exposes — see power_sources_linux.go)
 // feeding a 30 s accumulator whose completed buckets are appended to a
 // bounded local journal and fsync'd BEFORE they become eligible for upload.
 // Upload is one bounded batch per 30 s metrics tick; the hub ACKs a
@@ -104,12 +105,40 @@ func (a *statsAcc) stats() powerhistory.Stats {
 	return powerhistory.Stats{MeanWatts: &mean, PeakWatts: &peak, Samples: a.n}
 }
 
+// domainAcc accumulates one scalar domain (system, cpu, dram) together with
+// the backend identifier that produced it. A window whose samples for a
+// domain came from more than one backend is MIXED and the domain is omitted:
+// a mean spanning two measurement methods with different scopes is not a
+// measurement. This is the discipline the GPU total already applies to a
+// changing device set.
+type domainAcc struct {
+	acc    statsAcc
+	source string
+	mixed  bool
+}
+
+// add records one sample. limit bounds the sample count so producer jitter
+// can never over-report; backend membership is tracked even for samples
+// beyond the limit, because a switch of backend must not be hidden by it.
+func (d *domainAcc) add(source string, watts float64, limit int) {
+	if d.source == "" {
+		d.source = source
+	} else if source != d.source {
+		d.mixed = true
+	}
+	if d.acc.n < limit {
+		d.acc.add(watts)
+	}
+}
+
 type powerWindowState struct {
-	gpus  map[string]*statsAcc
-	order []string
-	total statsAcc
-	cpu   statsAcc
-	any   bool
+	gpus   map[string]*statsAcc
+	order  []string
+	total  statsAcc
+	system domainAcc
+	cpu    domainAcc
+	dram   domainAcc
+	any    bool
 	// totalSig is the device set (order-independent) the running total is
 	// being computed over, fixed by the first complete tick of the window;
 	// totalMembers is its size. totalMixed is set once a later complete
@@ -216,9 +245,31 @@ func (a *powerAccumulator) emit(endMS int64) {
 		s := w.total.stats()
 		b.GPUTotal = &s
 	}
-	if w.cpu.n > 0 {
-		s := w.cpu.stats()
-		b.CPU = &s
+	// Scalar domains, in a fixed order so replaying a window re-encodes
+	// byte-identically. A domain is emitted only when it observed samples
+	// from exactly one backend, and it is always emitted together with the
+	// label naming that backend.
+	for _, d := range []struct {
+		name string
+		acc  *domainAcc
+		dst  **powerhistory.Stats
+	}{
+		{powerhistory.DomainSystem, &w.system, &b.System},
+		{powerhistory.DomainCPU, &w.cpu, &b.CPU},
+		{powerhistory.DomainDRAM, &w.dram, &b.DRAM},
+	} {
+		if d.acc.acc.n == 0 || d.acc.mixed {
+			continue
+		}
+		s := d.acc.acc.stats()
+		*d.dst = &s
+		b.Sources = append(b.Sources, powerhistory.DomainSource{Domain: d.name, Source: d.acc.source})
+	}
+	// Everything the window saw was discarded (every domain mixed, no GPU
+	// readings). Recording an empty window as data would misreport coverage.
+	if len(b.GPUs) == 0 && b.System == nil && b.CPU == nil && b.DRAM == nil {
+		a.gapPending = true
+		return
 	}
 	a.ready = append(a.ready, b)
 }
@@ -265,16 +316,37 @@ func (a *powerAccumulator) addGPUAt(t powerGPUTick, wallMS int64) {
 	}
 }
 
-func (a *powerAccumulator) addCPU(at time.Time, watts float64) { a.addCPUAt(at, at.UnixMilli(), watts) }
+// addDomain records one scalar-domain sample, labelled with the backend that
+// produced it. Domains are never summed into one another here or anywhere
+// downstream.
+func (a *powerAccumulator) addDomain(domain string, at time.Time, watts float64, source string) {
+	a.addDomainAt(domain, at, at.UnixMilli(), watts, source)
+}
 
-func (a *powerAccumulator) addCPUAt(at time.Time, wallMS int64, watts float64) {
+func (a *powerAccumulator) addDomainAt(domain string, at time.Time, wallMS int64, watts float64, source string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.roll(at, wallMS)
-	if a.cur.cpu.n < a.expected {
-		a.cur.cpu.add(watts)
-		a.cur.any = true
+	d := a.cur.domain(domain)
+	if d == nil {
+		return
 	}
+	d.add(source, watts, a.expected)
+	a.cur.any = true
+}
+
+// domain resolves a domain name to its accumulator; an unknown name is
+// dropped rather than silently folded into another domain.
+func (w *powerWindowState) domain(name string) *domainAcc {
+	switch name {
+	case powerhistory.DomainSystem:
+		return &w.system
+	case powerhistory.DomainCPU:
+		return &w.cpu
+	case powerhistory.DomainDRAM:
+		return &w.dram
+	}
+	return nil
 }
 
 // tick advances the window clock and drains completed buckets (Seq unset;
@@ -299,12 +371,65 @@ func (a *powerAccumulator) markGap() {
 	a.mu.Unlock()
 }
 
-// powerCPUSampler is implemented per platform (RAPL on Linux). Nil means the
-// backend is unavailable on this host.
-type powerCPUSampler interface {
-	// sample returns package watts since the previous call, or false when no
-	// rate is available yet (first call, counter reset, read error).
+// powerSource is one software power backend bound to one domain. Nil means
+// the backend is unavailable on this host; the platform decides which
+// backends exist and which one wins each domain (see newPowerSources).
+type powerSource interface {
+	// source is the stable machine-readable backend identifier carried with
+	// every reading it produces (powerhistory.Source*).
+	source() string
+	// sample returns watts for this instant, or false when no value is
+	// available: first call on an energy counter, counter reset, read error,
+	// a backend that has gone away (battery unplugged, permissions changed),
+	// or a reading outside the backend's plausible range. False is always
+	// "unavailable", never zero watts.
 	sample(now time.Time) (float64, bool)
+}
+
+// powerGPUPoller is a pull-based GPU sensor group (AMD/Intel DRM hwmon nodes,
+// as opposed to NVIDIA's streaming query). One poll is one simultaneous read
+// of every device it discovered, which is what makes a GPU total truthful.
+type powerGPUPoller interface {
+	poll(now time.Time) powerGPUTick
+}
+
+// powerSourceSet is what a platform detected at startup: at most one winning
+// backend per domain. system and cpu are DIFFERENT FIELDS, never summed —
+// on hardware exposing both, system already contains cpu.
+type powerSourceSet struct {
+	system powerSource
+	cpu    powerSource
+	dram   powerSource
+	gpu    powerGPUPoller
+}
+
+func (s powerSourceSet) empty() bool {
+	return s.system == nil && s.cpu == nil && s.dram == nil && s.gpu == nil
+}
+
+// describe renders the detected backends for the startup log, so an operator
+// can see what a machine is actually measuring.
+func (s powerSourceSet) describe() string {
+	parts := make([]string, 0, 4)
+	for _, d := range []struct {
+		name string
+		src  powerSource
+	}{
+		{powerhistory.DomainSystem, s.system},
+		{powerhistory.DomainCPU, s.cpu},
+		{powerhistory.DomainDRAM, s.dram},
+	} {
+		if d.src != nil {
+			parts = append(parts, d.name+"="+d.src.source())
+		}
+	}
+	if s.gpu != nil {
+		parts = append(parts, "gpu-hwmon")
+	}
+	if len(parts) == 0 {
+		return "none"
+	}
+	return strings.Join(parts, " ")
 }
 
 // powerHistory is the process-wide singleton wiring sampler → accumulator →
@@ -367,10 +492,10 @@ func startPowerHistory() {
 }
 
 func bootPowerHistory(ctx context.Context, dir string, retry time.Duration) {
-	gpu := resolveNvidiaSmiPath() != ""
-	cpu := newPowerCPUSampler()
-	if !gpu && cpu == nil {
-		log.Println("power-history: no supported power sensor on this host (no nvidia-smi, no readable CPU energy counter); not started")
+	nvidia := resolveNvidiaSmiPath() != ""
+	src := newPowerSources()
+	if !nvidia && src.empty() {
+		log.Println("power-history: no supported power sensor on this host (no nvidia-smi, no readable energy counter); not started")
 		return
 	}
 	var j *powerJournal
@@ -391,18 +516,32 @@ func bootPowerHistory(ctx context.Context, dir string, retry time.Duration) {
 	}
 	// Log journal state before the worker owns it; afterwards only the
 	// worker may read these fields.
-	log.Printf("power-history: starting stream=%s dir=%s gpu=%v cpu=%v next_seq=%d acked=%d retained=%d",
-		j.streamID, j.dir, gpu, cpu != nil, j.nextSeq, j.acked, len(j.records))
+	log.Printf("power-history: starting stream=%s dir=%s nvidia=%v sources=[%s] next_seq=%d acked=%d retained=%d",
+		j.streamID, j.dir, nvidia, src.describe(), j.nextSeq, j.acked, len(j.records))
 	ph := newPowerHistory(j)
 	ctx, ph.cancel = context.WithCancel(ctx)
 	go ph.journalWorker(ctx)
 	go ph.windowLoop(ctx)
-	if gpu {
+	if nvidia {
 		s := newNvidiaPowerStream(resolveNvidiaSmiPath, ph.acc.addGPU)
 		go s.run(ctx)
 	}
-	if cpu != nil {
-		go ph.cpuLoop(ctx, cpu)
+	// One goroutine per backend: a slow source (a BMC round trip) delays
+	// only itself, never another domain's cadence or the window clock.
+	for _, d := range []struct {
+		name string
+		src  powerSource
+	}{
+		{powerhistory.DomainSystem, src.system},
+		{powerhistory.DomainCPU, src.cpu},
+		{powerhistory.DomainDRAM, src.dram},
+	} {
+		if d.src != nil {
+			go ph.sourceLoop(ctx, d.name, d.src)
+		}
+	}
+	if src.gpu != nil {
+		go ph.gpuPollLoop(ctx, src.gpu)
 	}
 	powerInst.Store(ph)
 }
@@ -525,7 +664,10 @@ func (ph *powerHistory) offerAck(ack powerhistory.Ack) {
 	}
 }
 
-func (ph *powerHistory) cpuLoop(ctx context.Context, s powerCPUSampler) {
+// sourceLoop samples one backend at the sampling cadence. A tick that yields
+// nothing simply lowers the window's sample count for that domain; it never
+// substitutes a stale, interpolated or estimated value.
+func (ph *powerHistory) sourceLoop(ctx context.Context, domain string, s powerSource) {
 	t := time.NewTicker(powerSampleInterval)
 	defer t.Stop()
 	for {
@@ -534,7 +676,25 @@ func (ph *powerHistory) cpuLoop(ctx context.Context, s powerCPUSampler) {
 			return
 		case now := <-t.C:
 			if w, ok := s.sample(now); ok {
-				ph.acc.addCPU(now, w)
+				ph.acc.addDomain(domain, now, w, s.source())
+			}
+		}
+	}
+}
+
+// gpuPollLoop drives a pull-based GPU sensor group. Each tick is one
+// simultaneous read of every device the poller found, so the GPU total keeps
+// meaning the same thing it does for the NVIDIA stream.
+func (ph *powerHistory) gpuPollLoop(ctx context.Context, p powerGPUPoller) {
+	t := time.NewTicker(powerSampleInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-t.C:
+			if tick := p.poll(now); len(tick.readings) > 0 {
+				ph.acc.addGPU(tick)
 			}
 		}
 	}

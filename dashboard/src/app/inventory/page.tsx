@@ -134,36 +134,34 @@ function InventoryContent() {
   return (
     <>
       <div className="mf-intro">
-        <div className="min-w-0">
-          {data ? (
-            <InventorySummary totals={data.totals} />
-          ) : (
-            <p className="text-[13px] text-text-tertiary">
-              {status === "error" ? "Inventory unavailable." : "Reading hardware from the fleet…"}
-            </p>
+        {data ? (
+          <InventorySummary totals={data.totals} />
+        ) : (
+          <span className="text-[13px] text-text-tertiary">
+            {status === "error" ? "Inventory unavailable." : "Reading hardware from the fleet…"}
+          </span>
+        )}
+        <div className="mf-intro-actions">
+          <button
+            type="button"
+            onClick={() => refresh()}
+            disabled={status === "loading"}
+            className={MF_BUTTON}
+            title="Refresh inventory data"
+          >
+            <RefreshCw
+              className={`w-3.5 h-3.5 ${status === "loading" ? "animate-spin" : ""}`}
+              aria-hidden
+            />
+            {status === "loading" ? "Refreshing…" : "Refresh inventory"}
+          </button>
+          {data?.generated_at && (
+            <span className="mf-kicker">Collected {timeSince(data.generated_at)}</span>
           )}
-          <div className="mt-5 flex flex-wrap items-center gap-3">
-            <button
-              type="button"
-              onClick={() => refresh()}
-              disabled={status === "loading"}
-              className={MF_BUTTON}
-              title="Refresh inventory data"
-            >
-              <RefreshCw
-                className={`w-3.5 h-3.5 ${status === "loading" ? "animate-spin" : ""}`}
-                aria-hidden
-              />
-              {status === "loading" ? "Refreshing…" : "Refresh inventory"}
-            </button>
-            {data?.generated_at && (
-              <span className="mf-kicker">Collected {timeSince(data.generated_at)}</span>
-            )}
-          </div>
         </div>
         <p>
-          Every CPU, DIMM, disk, GPU and NIC reported by agents and API-polled machines. Sort, filter,
-          group and export any view for capacity planning and rotation.
+          Every CPU, DIMM, disk, GPU and NIC the fleet reports. Any view can be sorted, grouped and
+          exported.
         </p>
       </div>
 

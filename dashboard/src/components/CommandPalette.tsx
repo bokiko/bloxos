@@ -15,8 +15,8 @@ import { useTheme } from "@/contexts/ThemeContext";
 import {
   Monitor,
   Server,
-  Contrast,
   Moon,
+  Sun,
   Plus,
   Bell,
   Users,
@@ -203,22 +203,22 @@ export function CommandPalette({
               </Command.Group>
             )}
 
-            {/* Appearance — the two Monoform contrast modes. There is no
-                light or system mode to offer any more. */}
+            {/* Appearance — the two Monoform themes. There is no system mode
+                to offer, and no palette gallery behind them. */}
             <Command.Group heading="Appearance">
               <Command.Item
-                value="appearance gray contrast light"
-                onSelect={() => runCommand(() => setAppearance("gray"))}
-              >
-                <Contrast />
-                <span>Use gray appearance</span>
-              </Command.Item>
-              <Command.Item
-                value="appearance dark contrast"
+                value="appearance dark theme night"
                 onSelect={() => runCommand(() => setAppearance("dark"))}
               >
                 <Moon />
-                <span>Use dark appearance</span>
+                <span>Use dark theme</span>
+              </Command.Item>
+              <Command.Item
+                value="appearance light theme bright day"
+                onSelect={() => runCommand(() => setAppearance("light"))}
+              >
+                <Sun />
+                <span>Use light theme</span>
               </Command.Item>
             </Command.Group>
 

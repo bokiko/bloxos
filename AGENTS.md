@@ -72,6 +72,12 @@ Fleet management dashboard for AI machines. Go hub + agent, Next.js dashboard.
   instantaneous `power_watts` separate from the 30-second mean and sampled peak
   in `proto/powerhistory`. Missing sensors are unavailable, not zero. GPU-total
   peaks require complete simultaneous readings; never sum per-device maxima.
+  The `system`, `cpu` and `dram` domains are disjoint scopes measured by
+  different backends: never sum them, never derive one from another, and always
+  emit the `sources` label naming what measured each. A domain whose backend
+  changed inside a window is omitted, not averaged. Never estimate — a machine
+  with no counter reports nothing. Protocol changes here must stay additive:
+  old agents that cannot be updated keep sending old buckets forever.
   The local journal is isolated from credentials and CA/update-key files. Only
   durable windows are replayed, the authenticated socket supplies machine
   identity, and the hub ACKs after commit. See `docs/power-history.md`.
