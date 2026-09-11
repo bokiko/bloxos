@@ -2,7 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   DEFAULT_WORKSPACE_PREFS,
-  OVERVIEW_SECTIONS,
   POWER_CURRENCIES,
   POWER_MAX_RATE,
   POWER_PERIODS,
@@ -23,7 +22,6 @@ test("keys are scoped per user, like the preferences cache", () => {
 
 test("the defaults are the behaviour that shipped", () => {
   const d = normalizeWorkspacePrefs(null);
-  assert.deepEqual(d.collapsed, [], "nothing starts collapsed");
   assert.deepEqual(d.expected_high_cpu, []);
   assert.equal(DEFAULT_WORKSPACE_PREFS.power_period, "6h");
 });
@@ -31,42 +29,24 @@ test("the defaults are the behaviour that shipped", () => {
 test("garbage in storage degrades to defaults instead of throwing", () => {
   for (const junk of [undefined, 0, "", "nope", [], { collapsed: "all" }]) {
     const out = normalizeWorkspacePrefs(junk);
-    assert.deepEqual(out.collapsed, []);
     assert.deepEqual(out.expected_high_cpu, []);
+    assert.equal(out.power_period, DEFAULT_WORKSPACE_PREFS.power_period);
   }
 });
 
-test("unknown section ids are dropped, not stored", () => {
+test("a collapse state from the folding era is dropped, not fatal", () => {
+  // The Overview no longer folds anything — power is always visible and the
+  // machine table is a work surface, not a disclosure. Every operator who ever
+  // folded a pane still has those ids in localStorage, so the normalizer has
+  // to read them, ignore them, and never write them back. Throwing or
+  // preserving them would break a workspace over a preference nothing reads.
   const out = normalizeWorkspacePrefs({
-    collapsed: ["fleet", "not-a-section", "", 7, "fleet"],
+    collapsed: ["availability", "capacity", "fleet", "attention", "load"],
+    power_period: "24h",
   });
-  assert.deepEqual(out.collapsed, ["fleet"], "unknown, empty and duplicate ids all go");
-  for (const id of out.collapsed) assert.ok(OVERVIEW_SECTIONS.includes(id));
-});
-
-test("every declared section survives a round trip", () => {
-  const out = normalizeWorkspacePrefs({ collapsed: [...OVERVIEW_SECTIONS] });
-  assert.deepEqual(out.collapsed, [...OVERVIEW_SECTIONS]);
-});
-
-test("a collapse state stored for a removed pane is dropped, not fatal", () => {
-  // The Overview dropped the "needs attention" and "highest load" panes. An
-  // operator who had folded either one still has those ids in localStorage.
-  // They must fall out on the next read — silently, and without disturbing
-  // the sections that are still here.
-  const out = normalizeWorkspacePrefs({
-    collapsed: ["attention", "availability", "load", "fleet"],
-  });
-  assert.deepEqual(out.collapsed, ["availability", "fleet"]);
-  for (const gone of ["attention", "load"]) {
-    assert.ok(!OVERVIEW_SECTIONS.includes(gone), `${gone} is not a section any more`);
-  }
-  // And the pruned value is what gets written back, so the dead ids do not
-  // linger in storage for the life of the browser profile.
-  assert.deepEqual(
-    normalizeWorkspacePrefs(out).collapsed,
-    ["availability", "fleet"],
-  );
+  assert.ok(!("collapsed" in out), "the retired key must not survive a read");
+  assert.equal(out.power_period, "24h", "the rest of the workspace is untouched");
+  assert.deepEqual(normalizeWorkspacePrefs(out).power_period, "24h");
 });
 
 test("the retired load-ranking metric is gone from the schema entirely", () => {

@@ -59,12 +59,15 @@ import {
   DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
 
-import { OverviewIntro } from "@/components/overview/OverviewIntro";
+import { usePageTitle } from "@/components/shell/PageTitle";
+import { healthLine, healthTone } from "@/lib/overview-layout.mjs";
+import { OverviewIntro, useToday } from "@/components/overview/OverviewIntro";
 import {
-  FleetAvailabilityPanel,
   type AvailabilityCounts,
-} from "@/components/overview/FleetAvailabilityPanel";
-import { FleetPowerPane } from "@/components/overview/FleetPowerPane";
+  type MachineStateFilter,
+} from "@/components/overview/FleetAvailabilityMini";
+import { OverviewWorkspace } from "@/components/overview/OverviewWorkspace";
+import { OverviewCustomizeMenu } from "@/components/overview/OverviewCustomizeMenu";
 import {
   MachineFleetToolbar,
   type SortOption,
@@ -73,38 +76,34 @@ import {
 } from "@/components/overview/MachineFleetToolbar";
 import { MachineFleetTable } from "@/components/overview/MachineFleetTable";
 import { MachineNoteDialog } from "@/components/overview/MachineNoteDialog";
-import { Disclosure } from "@/components/overview/Disclosure";
 import { useWorkspacePrefs } from "@/components/overview/useWorkspacePrefs";
 import { useMachineNotes } from "@/components/overview/useMachineNotes";
 
-/* POSTURE — the one paired-panel row.
-   `.mf-pane-grid` in monoform.css: two equal `minmax(0,1fr)` columns, an
-   EXPANDED panel given a common minimum height, stacked below 900px. Equal
-   halves, so neither of the two reads as the subordinate one.
+/* THE ADAPTIVE REGION between the intro and the machine table.
+   `OverviewWorkspace` owns it. Fleet power is the anchor and is ALWAYS
+   visible; what sits beside it is three compact modules the operator picks in
+   Settings (or in the Customize menu on the intro row), and the arrangement —
+   machine-first, balanced, power-focus — decides where they sit.
 
-   The 288px floor is kept as-is. With four panes it was what stopped a short
-   pane looking like a stub beside a tall one; with these two it is inert in
-   the normal case — the power pane's chart, readouts and cost row run well
-   past it and availability's own content lands around the same height. Where
-   it still earns its keep is the degenerate case: an empty fleet, or a hub
-   with no power counters at all, where FleetPowerPane draws an empty state
-   that is deliberately sized to its content and CENTRED in the slack this
-   floor creates. Lower the floor and that empty state hugs the header and
-   reads as a chart that failed to load; raise it and an empty fleet gets two
-   panels of mostly nothing. Availability keeps its content top-aligned and
-   lets the difference fall as whitespace at the bottom, exactly as it did
-   next to the taller attention panel before.
+   Nothing on this page folds any more. The two panes and the machine table
+   used to be collapsible sections, which let an operator configure the working
+   surface off their own screen; getting the table higher is what the
+   arrangement does now, and it does it without hiding anything. The section,
+   region and fixed-pane-row classes went with the Disclosure component.
 
-   WHEN ONE OF A PAIR IS FOLDED, THE FOLDED ONE KEEPS ITS COLUMN. It shrinks to
-   a single line at the top of its cell (`align-self: start`) and its open
-   partner keeps its own half and sets the row height. The alternative — the
-   open pane widening to span both columns — was rejected for three reasons:
-   the pane nobody touched would re-lay out its chart as a side effect of a
-   click elsewhere; folding and unfolding would shuttle the page between a one-
-   and a two-column layout; and the point of the equal columns is that the
-   panes read as one symmetric block, which a reflow to full width breaks the
-   moment anybody folds anything. What you folded stays where you left it,
-   ready to unfold in place. */
+   The grid is keyed on how many modules WILL RENDER, not on how many are
+   selected: a module with no honest data returns null (Most urgent alert on a
+   quiet fleet), and a column held open for something never drawn is a hole.
+   `visibleOverviewModules` in lib/overview-layout.mjs makes that decision in
+   the parent, because React cannot report a child's null render upwards.
+
+   THE SUMMARY MODULES LEAD TO THEIR OWN DATA. Fleet availability counts
+   machine STATE classified on this client, so its rows filter the table below
+   and move focus to it. Needs attention is built from the hub's alert list, so
+   it is the one that opens the alert sheet. The two can legitimately disagree
+   — a stale machine with no rule firing, an alert outliving its condition —
+   and pointing either at the other's data would be a control that promises a
+   list it cannot deliver. */
 
 // Severity for one machine under the reader's baseline policy. classifyMachine
 // (lib/fleet-metrics.mjs) is the single place status is decided; `baselines`
@@ -137,12 +136,10 @@ function OverviewContent() {
   // PreferencesContext lazy-init reads from localStorage so the defaults
   // are correct on first paint after a reload (no flash).
   const { preferences, updateScalar, saveMachineOrder, loading: preferencesLoading } = usePreferences();
-  // Collapsed sections, the power window and tariff, and the expected-high-load
-  // flags. Browser-local per user — see components/overview/useWorkspacePrefs.
+  // The power window and tariff, and the expected-high-load flags. Browser-local per user — see components/overview/useWorkspacePrefs.
   // The tariff is read here and set in Settings → Preferences, so this page
   // takes `powerRate` without its setter.
-  const { isCollapsed, toggleSection, baselines, toggleBaseline, powerPeriod, setPowerPeriod, powerRate } =
-    useWorkspacePrefs();
+  const { baselines, toggleBaseline, powerPeriod, setPowerPeriod, powerRate } = useWorkspacePrefs();
   const [arrangeOpen, setArrangeOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
@@ -350,7 +347,14 @@ function OverviewContent() {
     }
 
     if (statusFilter !== "all") {
-      result = result.filter((m) => getStatus(m, baselines) === statusFilter);
+      // "needs review" is the union Fleet availability counts under that
+      // name, so the module and the table agree on which machines they mean.
+      result = statusFilter === "needs-review"
+        ? result.filter((m) => {
+            const status = getStatus(m, baselines);
+            return status === "warning" || status === "critical" || status === "stale";
+          })
+        : result.filter((m) => getStatus(m, baselines) === statusFilter);
     }
 
     if (tagFilter) {
@@ -508,18 +512,30 @@ function OverviewContent() {
 
   const showBulkBar = selected.size > 0 && viewMode === "list" && canControlFleet;
 
-  // A folded fleet still reports its size, and says so honestly when a filter
-  // is narrowing it — otherwise collapsing would hide the fact that most of
-  // the fleet is filtered out.
-  const fleetOpen = !isCollapsed("fleet");
-  const fleetSummary =
-    filteredMachines.length === machines.length
-      ? `${machines.length} ${machines.length === 1 ? "machine" : "machines"}`
-      : `${filteredMachines.length} of ${machines.length} machines`;
+  // The date rides in the top bar's kicker, above the "Overview" title the
+  // shell already renders — the same place every other route puts its context.
+  const today = useToday();
+  usePageTitle("Overview", today ?? undefined);
+
+  // A summary module counts machines; activating it has to hand over those
+  // machines. So it filters the table below and moves focus there, rather than
+  // opening the alert sheet, which is a different list about different things.
+  const applyStatusFilter = useCallback((filter: MachineStateFilter) => {
+    setStatusFilter(filter);
+    const heading = document.getElementById("machine-fleet-heading");
+    if (!heading) return;
+    const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    heading.scrollIntoView({ block: "start", behavior: reduced ? "auto" : "smooth" });
+    heading.focus({ preventScroll: true });
+  }, []);
 
   return (
     <>
-      <OverviewIntro />
+      <OverviewIntro
+        health={healthLine(counts) as string}
+        tone={healthTone(counts) as "ok" | "warning" | "critical" | "neutral"}
+        actions={<OverviewCustomizeMenu />}
+      />
 
       {isDemo && (
         <p className="mb-6 inline-flex items-center gap-2 rounded-[10px] border border-status-warning/30 bg-status-warning-tint px-3 py-1.5 text-[12px] text-status-warning">
@@ -546,57 +562,38 @@ function OverviewContent() {
         )}
       </AnimatePresence>
 
-      {/* B — fleet posture: how much of the fleet is up, and what it is
-             drawing. The two rows in the availability pane that count
-             something wrong open the alerts sheet — the same sheet, with the
-             same acknowledge actions, that the shell's bell opens. */}
-      <div className="mf-pane-grid">
-        <FleetAvailabilityPanel
-          counts={counts}
-          onOpenAlerts={openAlertPanel}
-          open={!isCollapsed("availability")}
-          onToggle={() => toggleSection("availability")}
-        />
-        {/* The section id stays "capacity": it is the persistence key for the
-            collapse state, and renaming it would silently unfold this pane for
-            every operator who had folded it. */}
-        <FleetPowerPane
-          open={!isCollapsed("capacity")}
-          onToggle={() => toggleSection("capacity")}
-          period={powerPeriod}
-          onPeriodChange={setPowerPeriod}
-          rate={powerRate}
-        />
-      </div>
+      {/* B — fleet posture. Power is the anchor and is always visible; what
+             sits beside it is the operator's choice, and the grid is sized by
+             what will actually render rather than by what was selected. */}
+      <OverviewWorkspace
+        arrangement={preferences.overview_layout}
+        widgets={preferences.overview_widgets}
+        ready={hasReceivedData || isDemo}
+        counts={counts}
+        alerts={alerts}
+        onOpenAlerts={openAlertPanel}
+        onFilterStatus={applyStatusFilter}
+        powerPeriod={powerPeriod}
+        onPowerPeriodChange={setPowerPeriod}
+        powerRate={powerRate}
+      />
 
-      {/* C — the one machine work surface.
-          The section had a second, larger line under the kicker ("Every
-          machine, and everything you can do to it"). It restated what a table
-          of machines with buttons on it evidently is, so the kicker is now the
-          whole heading — and, since it is also the disclosure toggle, it is
-          the thing that folds the section away.
+      {/* C — the one machine work surface, and it is NOT foldable.
+          This is where the operator searches, filters, compares and acts; a
+          dashboard whose working surface can be folded away is a dashboard
+          that can be configured into uselessness. What the fold used to buy —
+          getting the table higher — is now the arrangement's job, and it does
+          it without hiding anything.
 
-          It is a `.mf-section` like the four panes above it, so it is a panel
-          while it is open and one quiet line on a hairline once it is folded.
-          The table inside therefore draws its own inset frame rather than a
-          second panel around the first.
-
-          The top margin shrinks with the section. 44px of air above a panel is
-          separation between two blocks; 44px above a single folded line is
-          just the space the fold was supposed to reclaim. */}
-      <section
-        className={`mf-section ${fleetOpen ? "mt-11" : "mt-6"}`}
-        aria-labelledby="machine-fleet-heading"
-        data-open={fleetOpen ? "true" : "false"}
-      >
-        <Disclosure
-          id="fleet"
-          label="Machine fleet"
-          headingID="machine-fleet-heading"
-          open={fleetOpen}
-          onToggle={() => toggleSection("fleet")}
-          summary={fleetSummary}
-        >
+          The heading is the kicker alone: a second line under it ("Every
+          machine, and everything you can do to it") restated what a table of
+          machines with buttons on it evidently is. It carries tabIndex={-1} so
+          a summary module can move focus here after filtering. */}
+      <section className="mf-panel mt-11 px-6 py-5" aria-labelledby="machine-fleet-heading">
+        <h2 id="machine-fleet-heading" className="mf-kicker" tabIndex={-1}>
+          Machine fleet
+        </h2>
+        <div>
           <AnimatePresence>
             {showBulkBar && (
               <motion.div
@@ -743,7 +740,7 @@ function OverviewContent() {
               </>
             )}
           </div>
-        </Disclosure>
+        </div>
       </section>
 
       {arrangeOpen && (

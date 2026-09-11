@@ -510,27 +510,21 @@ test("formatting keeps small numbers legible and absent ones absent", () => {
 const PANE = readFileSync(new URL("../components/overview/FleetPowerPane.tsx", import.meta.url), "utf8");
 const PAGE = readFileSync(new URL("../app/page.tsx", import.meta.url), "utf8");
 
-test("the pane keeps the collapsible-section contract it inherited", () => {
-  // "capacity" is the persistence key in workspace-prefs. Renaming the section
-  // would silently unfold this pane for every operator who had folded it.
-  assert.match(PANE, /<Disclosure\s[\s\S]*?id="capacity"/);
-  assert.match(PANE, /className="mf-section min-w-0"/);
-  assert.match(PANE, /data-open=\{open \? "true" : "false"\}/);
-  // The pane is one of the equal-width panes, not a full-width block. It is
-  // now the RIGHT half of the Overview's single pane row, beside fleet
-  // availability — the second `.mf-pane-grid` row was removed with the panes
-  // that filled it.
-  assert.match(PAGE, /<div className="mf-pane-grid">[\s\S]*?<FleetPowerPane/);
-  assert.equal(
-    (PAGE.match(/className="mf-pane-grid/g) ?? []).length,
-    1,
-    "the Overview has exactly one pane row",
-  );
-  // The pane it replaced is gone rather than merely unimported.
-  assert.doesNotMatch(PAGE, /CapacityPane/);
-  // So are the two panes the Overview shed. Unimported is not enough: an
+const WORKSPACE = readFileSync(new URL("../components/overview/OverviewWorkspace.tsx", import.meta.url), "utf8");
+
+test("the pane is mounted once, by the component that owns the arrangement", () => {
+  // The Overview no longer folds anything: power is the anchor and is always
+  // visible, so the pane is a plain panel and the page composes a workspace
+  // rather than a fixed pane row.
+  assert.equal(count(WORKSPACE, /<FleetPowerPane\b/g), 1, "the workspace mounts the pane exactly once");
+  assert.equal(count(PAGE, /<OverviewWorkspace\b/g), 1, "the page mounts the workspace exactly once");
+  assert.doesNotMatch(PAGE, /<FleetPowerPane\b/, "the page composes the workspace, not the pane");
+  assert.doesNotMatch(PAGE + WORKSPACE, /mf-pane-grid/, "the fixed two-column pane row is gone");
+  assert.doesNotMatch(PAGE, /id="fleet"/, "the machine table is a work surface, not a disclosure");
+
+  // The panes this Overview shed stay shed. Unimported is not enough: an
   // orphaned pane file is how the last four-panel layout kept coming back.
-  assert.doesNotMatch(PAGE, /AttentionPanel|HighestLoadPane/);
+  assert.doesNotMatch(PAGE, /CapacityPane|AttentionPanel|HighestLoadPane/);
 });
 
 test("the pane draws flat lines in tokens, with no invented decoration", () => {
@@ -603,3 +597,7 @@ test("the tariff is set in Settings and only displayed on the pane", () => {
   assert.match(settings, /useWorkspacePrefs/, "and into the same store, not a new one");
   assert.match(preferences, /<PowerRateSettings\s*\/>/, "mounted beside the other preferences");
 });
+
+function count(source, pattern) {
+  return (source.match(pattern) ?? []).length;
+}

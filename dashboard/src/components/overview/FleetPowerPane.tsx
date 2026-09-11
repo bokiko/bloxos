@@ -65,8 +65,10 @@ import {
   normalizeFleetPower,
   shortfallSentence,
 } from "@/lib/fleet-power.mjs";
-import { Disclosure } from "./Disclosure";
+import { MF_PANEL_HEAD, MF_PANEL_TITLE } from "@/lib/monoform-classes";
 import type { PowerPeriod, PowerRate } from "./useWorkspacePrefs";
+
+export type { PowerPeriod, PowerRate };
 
 /* Strokes. In whole-machine mode the two lines are one quantity told two ways,
    so they differ by KIND: solid product blue for what was measured, dashed
@@ -109,8 +111,6 @@ interface FleetPowerHistory {
 }
 
 export interface FleetPowerPaneProps {
-  open: boolean;
-  onToggle: () => void;
   period: PowerPeriod;
   onPeriodChange: (period: PowerPeriod) => void;
   /** Read-only here. The control that sets it lives in Settings → Preferences
@@ -119,7 +119,7 @@ export interface FleetPowerPaneProps {
   rate: PowerRate;
 }
 
-export function FleetPowerPane({ open, onToggle, period, onPeriodChange, rate }: FleetPowerPaneProps) {
+export function FleetPowerPane({ period, onPeriodChange, rate }: FleetPowerPaneProps) {
   const [state, setState] = useState<{ period: string; data?: FleetPowerHistory; error?: string }>({
     period,
   });
@@ -201,7 +201,6 @@ export function FleetPowerPane({ open, onToggle, period, onPeriodChange, rate }:
       | null,
   }));
 
-  const summary = summaryFor(readouts, coverage);
 
   const periodSwitch = (
     <div className="mf-segment" role="group" aria-label="Power window">
@@ -220,19 +219,12 @@ export function FleetPowerPane({ open, onToggle, period, onPeriodChange, rate }:
   );
 
   return (
-    <section
-      className="mf-section min-w-0"
-      aria-label="Fleet power"
-      data-open={open ? "true" : "false"}
-    >
-      <Disclosure
-        id="capacity"
-        label="Fleet power"
-        open={open}
-        onToggle={onToggle}
-        summary={summary}
-        actions={open ? periodSwitch : null}
-      >
+    <section className="mf-panel mf-power-anchor min-w-0 overflow-hidden" aria-label="Fleet power">
+      <div className={MF_PANEL_HEAD}>
+        <h2 className={MF_PANEL_TITLE}>Fleet power</h2>
+        {periodSwitch}
+      </div>
+      <div className="mf-power-anchor-body">
         {DEMO_MODE ? (
           <EmptyState
             title="Not in the demo data."
@@ -397,7 +389,7 @@ export function FleetPowerPane({ open, onToggle, period, onPeriodChange, rate }:
             />
           </>
         )}
-      </Disclosure>
+      </div>
     </section>
   );
 }
@@ -566,20 +558,3 @@ function formatTime(timestamp: number): string {
   return new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-/**
- * The one line a folded pane still says. It names the kind of every number it
- * shows, so a collapsed estimate can never be mistaken for a measurement.
- */
-function summaryFor(
-  readouts: { kind: string; latest: { watts: number } | null }[],
-  coverage?: { machinesTotal: number; machinesReporting: number },
-): string {
-  const measured = readouts.find((r) => r.kind === "measured" && r.latest);
-  const estimated = readouts.find((r) => r.kind === "estimated" && r.latest);
-  const parts: string[] = [];
-  if (measured?.latest) parts.push(formatWatts(measured.latest.watts) as string);
-  if (estimated?.latest) parts.push(`≈${formatWatts(estimated.latest.watts)} est`);
-  if (parts.length === 0) return "no power data";
-  if (coverage) parts.push(`${coverage.machinesReporting}/${coverage.machinesTotal}`);
-  return parts.join(" · ");
-}

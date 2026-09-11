@@ -872,204 +872,95 @@ html[data-appearance="light"] {
   }
 
   /* ============================================================================
-   * Disclosure — every collapsible Overview section
+   * The adaptive overview region
+   *
+   * One anchor (fleet power) and a stack of compact modules the operator
+   * chooses. The grid is keyed on two data attributes the workspace sets:
+   * `data-arrangement` is the intent, and `data-modules` is how many modules
+   * WILL ACTUALLY RENDER — not how many were selected. That distinction is the
+   * whole point: a module with no honest data returns null, and a layout keyed
+   * on the preference instead would hold a column open for something that was
+   * never drawn.
+   *
+   * The attribute is `data-arrangement`. The retired five-layout dashboard
+   * vocabulary is forbidden outright in every source file, CSS included
+   * (lib/monoform-guard.test.mjs), and this is a different thing anyway: it
+   * selects a composition of the same components, not a different product.
    * ========================================================================== */
 
-  /* A collapsible section.
-   *
-   * Expanded, it is a panel: hairline, panel ground, panel padding, panel
-   * radius. COLLAPSED, IT IS NOT A PANEL AT ALL — no border box, no ground, no
-   * padding, no radius, no height floor. What is left is one quiet line on a
-   * hairline rule: the chevron, the section's name, and its one number.
-   *
-   * That is the whole point of folding a section. The reader folds it to get
-   * the vertical space back; a folded section that still drew a card handed
-   * most of that space straight back and reclaimed only the body. Nothing here
-   * reserves the height the expanded panel had, so everything below moves up.
-   *
-   * Only the painting changes. The button keeps `aria-expanded`, still
-   * controls the same region, is still a native button, and the region still
-   * animates on the shared 200ms — see `.mf-region` below. */
-  /* Both states declare the SAME properties and differ only in their values,
-     so the box can animate between them on the region's own 200ms instead of
-     snapping. Dropping the border to `0 none` when collapsed would have been
-     tidier to read, but border-style is not interpolable, so the chrome would
-     vanish on the first frame and leave the contents folding in mid-air for
-     the rest of the transition. Collapsed therefore keeps 1px of transparent
-     border on three sides — 2px of width on an 826px column — and colours
-     only the top edge. */
-  .mf-section {
-    border: 1px solid transparent;
-    border-top-color: var(--mf-line);
-    border-radius: 0;
-    background: transparent;
-    box-shadow: none;
-    padding: 7px 0 0;
-    transition:
-      background-color var(--motion-base) ease,
-      border-color var(--motion-base) ease,
-      border-radius var(--motion-base) ease,
-      box-shadow var(--motion-base) ease,
-      padding var(--motion-base) ease;
+  .mf-overview-workspace {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 20px;
+    min-width: 0;
   }
-  /* 20/24, not 24/28. The panes above the machine table hold numbers and
-     three-word labels now, not paragraphs, and padding sized for prose around
-     content that no longer is reads as a half-empty box. */
-  .mf-section[data-open="true"] {
-    border-color: var(--mf-line);
+  /* The anchor gets a companion column only when something will sit in it. */
+  .mf-overview-workspace[data-arrangement="machine-first"]:not([data-modules="0"]) {
+    grid-template-columns: minmax(0, 1fr) 300px;
+  }
+  .mf-overview-stack {
+    display: grid;
+    align-content: start;
+    gap: 12px;
+    min-width: 0;
+  }
+  /* Balanced reads as one row of context above a full-width anchor, so its
+     modules flow across instead of stacking. Same modules, same sizes — the
+     arrangement changes where they sit, never what they are. */
+  .mf-overview-workspace[data-arrangement="balanced"] > .mf-overview-stack {
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  }
+
+  .mf-overview-module {
+    min-width: 0;
+    padding: 14px 16px;
+    border: 1px solid var(--mf-line);
     border-radius: var(--mf-radius-panel);
     background: var(--mf-panel);
     box-shadow: var(--mf-shadow-panel);
-    padding: 20px 24px;
   }
-
-  .mf-disclosure-head {
+  .mf-overview-module-head {
     display: flex;
-    align-items: center;
+    align-items: baseline;
     justify-content: space-between;
-    gap: 16px;
-    min-width: 0;
-  }
-  .mf-disclosure-toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    min-width: 0;
-    padding: 2px 0;
-    border-radius: 6px;
-    color: var(--mf-muted);
-    text-align: left;
-    transition: color 160ms ease;
-  }
-  .mf-disclosure-toggle:hover {
-    color: var(--mf-text);
-  }
-  .mf-disclosure-toggle:hover .mf-kicker {
-    color: inherit;
-  }
-  .mf-disclosure-chevron {
-    width: 13px;
-    height: 13px;
-    flex: 0 0 auto;
-    transition: transform 160ms ease;
-  }
-  .mf-disclosure-toggle[aria-expanded="false"] .mf-disclosure-chevron {
-    transform: rotate(-90deg);
-  }
-  /* The one number a folded section still carries. */
-  .mf-disclosure-summary {
-    min-width: 0;
-    overflow: hidden;
-    color: var(--mf-text-secondary);
-    font-size: 11px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    gap: 10px;
+    min-height: 18px;
   }
 
-  /* The region. `grid-template-rows: 1fr → 0fr` is what animates; the inner
-     wrapper supplies the `min-height: 0` and `overflow: hidden` that makes an
-     `fr` row actually clip. `visibility` is delayed by the full duration when
-     collapsing so the content is still visible while it folds, and reverts
-     instantly when expanding because the delayed transition only exists on
-     the collapsed rule. Hidden visibility is also what removes the contents
-     from the tab order and the accessibility tree. */
-  .mf-region {
-    display: grid;
-    grid-template-rows: 1fr;
-    /* The region is a flex item inside the panels that use a column layout;
-       auto min-height there would refuse to shrink past its content. */
-    min-height: 0;
-    transition: grid-template-rows var(--motion-base) ease;
-  }
-  /* `clip` rather than `hidden` so this never becomes a scroll container, and
-     an 8px clip margin so a focus ring on a control sitting flush against the
-     region's edge is not sheared off. `hidden` stays first as the fallback for
-     anything that does not know `clip`. */
-  .mf-region > .mf-region-inner {
-    min-height: 0;
-    overflow: hidden;
-    overflow: clip;
-    overflow-clip-margin: 8px;
-  }
-  .mf-region[data-collapsed="true"] {
-    grid-template-rows: 0fr;
-  }
-  .mf-region[data-collapsed="true"] > .mf-region-inner {
-    visibility: hidden;
-    transition: visibility 0s linear var(--motion-base);
-  }
-
-  /* ============================================================================
-   * Paired-panel rows
-   *
-   * The Overview's two context rows. Both are 50/50 at desktop: the posture
-   * row used to be 1.25fr / 0.75fr and the context row 1.6fr / 0.9fr, which
-   * made four panels of four different widths out of two rows that are read as
-   * one block.
-   *
-   * The floor below used to be 288px, which was a cross-ROW contract: with two
-   * pane rows, a grid row stretches its own two children to match each other
-   * but nothing relates row A's height to row B's, so a shared floor was what
-   * put the four boxes on one rhythm. There is one pane row now, and the grid
-   * already matches its two children on its own — so the floor's remaining job
-   * is much smaller: keep a pane that is nearly empty (fleet power with no
-   * counters anywhere, whose empty state centres itself in the slack) from
-   * collapsing to a caption on a hairline. 200px is enough for that, and 88px
-   * less of it stands between the operator and the machine table.
-   *
-   * The floor and the equal columns are an EXPANDED-state contract. A folded
-   * pane is not a panel at all (see `.mf-section`), so it takes neither.
-   * ========================================================================== */
-
-  .mf-pane-grid {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    gap: 20px;
-  }
-  .mf-pane-grid > .mf-section[data-open="true"] {
+  /* The anchor keeps a floor so that a fleet reporting no power at all draws a
+     panel with a centred empty state, not a caption on a hairline. The body is
+     a column so that empty state can take the slack. */
+  .mf-power-anchor {
     display: flex;
     flex-direction: column;
     min-height: 200px;
   }
-  /* The disclosure's region is a direct child of the pane, so it is what takes
-     up the slack the floor creates. A pane whose content is shorter than the
-     floor can then place that content in the space — see FleetPowerPane's
-     empty state, which centres itself in the slack — rather than leaving a
-     void hanging under it. */
-  .mf-pane-grid > .mf-section[data-open="true"] > .mf-region {
+  .mf-power-anchor-body {
+    display: flex;
     flex: 1 1 auto;
-  }
-  /* A grid item stretches to fill its row by default. A folded pane beside an
-     open one would therefore inherit the open one's height and draw a rule
-     with a word on it across 350px of nothing. `start` makes it hug its own
-     single line; the open sibling alone sets the row height.
-     The folded pane KEEPS ITS COLUMN rather than yielding the width to its
-     partner — see the note above POSTURE/CONTEXT in app/page.tsx for why. */
-  .mf-pane-grid > .mf-section[data-open="false"] {
-    align-self: start;
+    flex-direction: column;
+    padding: 16px 24px 20px;
   }
 
-  /* A pane that opts into filling the height its partner sets. The grid row
-     stretches both panes to match; a pane whose content is much shorter than
-     its partner's would otherwise draw 80px of empty panel under its last
-     row, which reads as content that failed to load. The opted-in pane makes
-     its own body a column, and whichever child says `flex: 1` absorbs the
-     slack — for fleet availability that is the state list. */
-  .mf-pane-grid > .mf-section.mf-pane-fill[data-open="true"] > .mf-region > .mf-region-inner {
+  /* Power focus hides the modules; it does not hide an incident. */
+  .mf-overview-warning {
     display: flex;
-    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    border: 1px solid var(--mf-line);
+    border-radius: var(--mf-radius-control);
+    background: var(--mf-panel);
+    box-shadow: var(--mf-shadow-panel);
   }
-  .mf-pane-fill .mf-state-list {
+
+  /* The intro row: one line of state, and the control that changes what is
+     below it. */
+  .mf-overview-intro-actions {
     display: flex;
-    flex: 1 1 auto;
-    flex-direction: column;
-  }
-  /* Equal shares of the slack, so three counts stay a rhythm rather than one
-     tall row and two short ones. `0` basis, not `auto`: the rows must divide
-     the space, not their own differing content heights plus the space. */
-  .mf-pane-fill .mf-state-list > li {
-    display: flex;
-    flex: 1 1 0;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
   }
 
   /* Fleet availability's state rows.
@@ -1268,11 +1159,16 @@ html[data-appearance="light"] {
    * ========================================================================== */
 
   @media (max-width: 900px) {
-    .mf-pane-grid {
+    .mf-overview-workspace[data-arrangement="machine-first"]:not([data-modules="0"]) {
       grid-template-columns: minmax(0, 1fr);
     }
-    /* Stacked, the floor buys nothing and costs a screenful of scrolling. */
-    .mf-pane-grid > .mf-section[data-open="true"] {
+    /* Stacked, the modules read better as a row of facts than a tall column,
+       and the anchor's floor buys nothing while costing a screenful of
+       scrolling before the machine table. */
+    .mf-overview-stack {
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    }
+    .mf-power-anchor {
       min-height: 0;
     }
   }
@@ -1401,12 +1297,5 @@ html[data-appearance="light"] {
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
-  }
-  /* The blanket rule above zeroes durations but not delays, and the region's
-     collapsed rule delays `visibility` by a full transition. Without this, a
-     reduced-motion collapse would snap shut and then leave its contents
-     reachable for another 200ms. */
-  .mf-region[data-collapsed="true"] > .mf-region-inner {
-    transition-delay: 0s !important;
   }
 }

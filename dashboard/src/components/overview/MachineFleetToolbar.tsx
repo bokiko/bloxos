@@ -22,7 +22,18 @@ import { SaveFilterButton } from "@/components/SaveFilterButton";
 import { SavedFiltersDropdown } from "@/components/SavedFiltersDropdown";
 
 export type SortOption = "manual" | "name" | "status" | "cpu" | "gpu_temp";
-export type StatusFilter = "all" | "live" | "warning" | "critical" | "offline" | "stale";
+// "needs-review" is a derived bucket, not a machine state: it is
+// warning ∪ critical ∪ stale, the same set Fleet availability counts under
+// that name. It exists so a summary module can hand the operator exactly the
+// machines it was counting, rather than a state they then have to guess at.
+export type StatusFilter =
+  | "all"
+  | "needs-review"
+  | "live"
+  | "warning"
+  | "critical"
+  | "offline"
+  | "stale";
 export type ViewMode = "grid" | "list";
 
 export const SORT_LABELS: Record<SortOption, string> = {
@@ -35,6 +46,7 @@ export const SORT_LABELS: Record<SortOption, string> = {
 
 const STATUS_OPTIONS: { value: StatusFilter; label: string; tone: string }[] = [
   { value: "all", label: "All states", tone: "text-text-primary" },
+  { value: "needs-review", label: "Needs review", tone: "text-status-warning" },
   { value: "live", label: "Live", tone: "text-status-ok" },
   { value: "warning", label: "Warning", tone: "text-status-warning" },
   { value: "critical", label: "Critical", tone: "text-status-critical" },
