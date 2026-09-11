@@ -516,10 +516,21 @@ test("the pane keeps the collapsible-section contract it inherited", () => {
   assert.match(PANE, /<Disclosure\s[\s\S]*?id="capacity"/);
   assert.match(PANE, /className="mf-section min-w-0"/);
   assert.match(PANE, /data-open=\{open \? "true" : "false"\}/);
-  // The pane is one of the equal-width panes, not a full-width block.
-  assert.match(PAGE, /<div className="mf-pane-grid mt-5">[\s\S]*?<FleetPowerPane/);
+  // The pane is one of the equal-width panes, not a full-width block. It is
+  // now the RIGHT half of the Overview's single pane row, beside fleet
+  // availability — the second `.mf-pane-grid` row was removed with the panes
+  // that filled it.
+  assert.match(PAGE, /<div className="mf-pane-grid">[\s\S]*?<FleetPowerPane/);
+  assert.equal(
+    (PAGE.match(/className="mf-pane-grid/g) ?? []).length,
+    1,
+    "the Overview has exactly one pane row",
+  );
   // The pane it replaced is gone rather than merely unimported.
   assert.doesNotMatch(PAGE, /CapacityPane/);
+  // So are the two panes the Overview shed. Unimported is not enough: an
+  // orphaned pane file is how the last four-panel layout kept coming back.
+  assert.doesNotMatch(PAGE, /AttentionPanel|HighestLoadPane/);
 });
 
 test("the pane draws flat lines in tokens, with no invented decoration", () => {
@@ -550,4 +561,45 @@ test("estimated readings are labelled in words wherever they appear", () => {
   assert.match(PANE, /est/, "the folded summary marks its estimate");
   // And nothing in the pane adds the two together.
   assert.doesNotMatch(PANE, /measured\s*\+\s*estimated|estimated\s*\+\s*measured/);
+});
+
+test("coverage stays on the pane after the prose came off it", () => {
+  // The pane was cut down to figures: the coverage SENTENCE and the shortfall
+  // sentence no longer have a paragraph of their own. They must not have been
+  // dropped with it — a partial sum presented as a fleet total is the exact
+  // failure this file exists to prevent.
+  //
+  // Short form, beside the number it qualifies:
+  assert.match(PANE, /reporting/, "the visible readout still says how many machines are behind it");
+  assert.match(PANE, /machinesReporting/, "and it counts them rather than asserting a total");
+  // Long form, still built from the same numbers, for the tooltip and for the
+  // chart's accessible name:
+  assert.match(PANE, /coverageSentence\(/);
+  assert.match(PANE, /shortfallSentence\(/);
+  assert.match(PANE, /aria-label=\{`[\s\S]*?coverageDetail\(coverage\)/);
+});
+
+test("the tariff is set in Settings and only displayed on the pane", () => {
+  const settings = readFileSync(
+    new URL("../components/settings/PowerRateSettings.tsx", import.meta.url),
+    "utf8",
+  );
+  const preferences = readFileSync(
+    new URL("../components/settings/PreferencesSettings.tsx", import.meta.url),
+    "utf8",
+  );
+
+  // A rate is typed once and read on every visit, so its control does not
+  // belong on the Overview. The pane keeps the cost; it loses the input.
+  assert.doesNotMatch(PANE, /<input/, "no field on the pane");
+  assert.doesNotMatch(PANE, /<select/, "no currency picker on the pane");
+  assert.doesNotMatch(PANE, /onRateChange/, "the pane cannot write the rate at all");
+  assert.match(PANE, /formatMoney\(/, "it still shows what the energy cost");
+  assert.match(PANE, /Set a rate/, "and points at where the rate is set");
+
+  // Both halves of it moved, to the one place that owns it, and it is mounted.
+  assert.match(settings, /POWER_CURRENCIES/, "currency moved too, not just the number");
+  assert.match(settings, /POWER_MAX_RATE/, "with the same typo ceiling it had on the pane");
+  assert.match(settings, /useWorkspacePrefs/, "and into the same store, not a new one");
+  assert.match(preferences, /<PowerRateSettings\s*\/>/, "mounted beside the other preferences");
 });

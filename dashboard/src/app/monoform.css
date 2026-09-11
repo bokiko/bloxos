@@ -487,10 +487,10 @@ html[data-appearance="light"] {
      `.mf-intro` is the shared header for Versions, Sessions, Inventory, Users
      and the machine detail page; `.mf-overview-intro` is the Overview's. They
      stay separate class names because their CONTENT differs — the Overview
-     carries a date and one sentence, the other five carry live stats, their
-     page actions and one sentence — but every dimension they have in common is
-     declared once, here, so the five pages cannot drift back into a tall
-     block while the Overview stays short. */
+     carries only the date, the other five carry live stats, their page actions
+     and one sentence — but every dimension they have in common is declared
+     once, here, so the five pages cannot drift back into a tall block while
+     the Overview stays short. */
   .mf-intro,
   .mf-overview-intro {
     display: flex;
@@ -536,34 +536,15 @@ html[data-appearance="light"] {
     margin: 0 0 0 auto;
   }
 
-  /* The Overview's opening statement.
-     It used to be a 46px two-line headline stacked under its own date kicker,
-     beside a fixed sentence that restated the page's existence: roughly 150px
-     of vertical space to carry one fact. It is now one baseline-aligned row —
-     the date, then the sentence — at a size that reads as a lead paragraph
-     rather than a marketing hero, so the fleet-posture grid starts near the
-     top of a 900px-tall viewport instead of below its fold. */
+  /* The Overview's date line — one kicker, and nothing else.
+     It was a 46px two-line headline over its own date kicker (~150px to carry
+     one fact), then one baseline-aligned row of date plus a posture sentence
+     (~50px). The sentence went too: the panes beneath it show the same state
+     as numbers, so it was a claim restating a count. All that is left is the
+     date, and the pane row now starts about 130px higher than it did. */
   .mf-overview-intro {
     gap: 6px 14px;
-  }
-  .mf-overview-intro h1 {
-    max-width: 92ch;
-    margin: 0;
-    font-size: 24px;
-    font-weight: 550;
-    line-height: 1.25;
-    letter-spacing: -0.025em;
-    color: var(--mf-text-secondary);
-  }
-  /* The posture sentence itself. It is deliberately NOT blue. Blue is the
-     action colour, and painting "Your fleet needs attention." in it puts a
-     severity statement in the one hue that is supposed to mean "click this".
-     Hierarchy comes from tone and weight instead — the claim is full-strength
-     text, the follow-up sentence is secondary — which leaves colour free to
-     keep meaning severity. */
-  .mf-overview-intro strong {
-    color: var(--mf-text);
-    font-weight: 560;
+    margin-bottom: 14px;
   }
   .mf-overview-intro-date {
     flex: 0 0 auto;
@@ -824,11 +805,14 @@ html[data-appearance="light"] {
       border-radius var(--motion-base) ease,
       padding var(--motion-base) ease;
   }
+  /* 20/24, not 24/28. The panes above the machine table hold numbers and
+     three-word labels now, not paragraphs, and padding sized for prose around
+     content that no longer is reads as a half-empty box. */
   .mf-section[data-open="true"] {
     border-color: var(--mf-line);
     border-radius: var(--mf-radius-panel);
     background: var(--mf-panel);
-    padding: 24px 28px;
+    padding: 20px 24px;
   }
   .mf-section[data-open="true"]:hover {
     border-color: var(--mf-line-strong);
@@ -918,11 +902,15 @@ html[data-appearance="light"] {
    * made four panels of four different widths out of two rows that are read as
    * one block.
    *
-   * Equal width is not enough to make them read as a 2×2 — a grid row already
-   * stretches its own two children to match, but nothing relates row A's
-   * height to row B's. The floor below does: an EXPANDED panel is at least
-   * 288px tall, so the four boxes land on a common rhythm instead of one row
-   * being twice the other.
+   * The floor below used to be 288px, which was a cross-ROW contract: with two
+   * pane rows, a grid row stretches its own two children to match each other
+   * but nothing relates row A's height to row B's, so a shared floor was what
+   * put the four boxes on one rhythm. There is one pane row now, and the grid
+   * already matches its two children on its own — so the floor's remaining job
+   * is much smaller: keep a pane that is nearly empty (fleet power with no
+   * counters anywhere, whose empty state centres itself in the slack) from
+   * collapsing to a caption on a hairline. 200px is enough for that, and 88px
+   * less of it stands between the operator and the machine table.
    *
    * The floor and the equal columns are an EXPANDED-state contract. A folded
    * pane is not a panel at all (see `.mf-section`), so it takes neither.
@@ -936,7 +924,7 @@ html[data-appearance="light"] {
   .mf-pane-grid > .mf-section[data-open="true"] {
     display: flex;
     flex-direction: column;
-    min-height: 288px;
+    min-height: 200px;
   }
   /* The disclosure's region is a direct child of the pane, so it is what takes
      up the slack the floor creates. A pane whose content is shorter than the
@@ -954,6 +942,92 @@ html[data-appearance="light"] {
      partner — see the note above POSTURE/CONTEXT in app/page.tsx for why. */
   .mf-pane-grid > .mf-section[data-open="false"] {
     align-self: start;
+  }
+
+  /* A pane that opts into filling the height its partner sets. The grid row
+     stretches both panes to match; a pane whose content is much shorter than
+     its partner's would otherwise draw 80px of empty panel under its last
+     row, which reads as content that failed to load. The opted-in pane makes
+     its own body a column, and whichever child says `flex: 1` absorbs the
+     slack — for fleet availability that is the state list. */
+  .mf-pane-grid > .mf-section.mf-pane-fill[data-open="true"] > .mf-region > .mf-region-inner {
+    display: flex;
+    flex-direction: column;
+  }
+  .mf-pane-fill .mf-state-list {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+  }
+  /* Equal shares of the slack, so three counts stay a rhythm rather than one
+     tall row and two short ones. `0` basis, not `auto`: the rows must divide
+     the space, not their own differing content heights plus the space. */
+  .mf-pane-fill .mf-state-list > li {
+    display: flex;
+    flex: 1 1 0;
+  }
+
+  /* Fleet availability's state rows.
+     A row whose bucket has something in it is a real button into the alerts
+     sheet; a row at zero is a plain line, because there is nothing behind it
+     to open. Both draw identically at rest — the difference is announced by
+     the trailing arrow and by hover/focus, never by giving the same state a
+     different colour. The hairlines live on the <li> so the button's hover
+     tint can bleed past them without breaking the rule. */
+  .mf-state-list {
+    border-top: 1px solid var(--mf-line);
+  }
+  .mf-state-list > li {
+    border-bottom: 1px solid var(--mf-line);
+  }
+  .mf-state-list > li:last-child {
+    border-bottom: 0;
+  }
+  /* 10px, not 14. Three rows at 14 made a list of three counts the tallest
+     thing in the pane, taller than the hero number it belongs to. At 10 the
+     row is still a 40px pointer target, which is what the padding is for. */
+  .mf-state-row {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 0;
+    text-align: left;
+  }
+  /* The tint reaches 8px past the text on both sides so the row reads as a
+     band rather than as a highlighted sentence. The content does not move:
+     the negative margin pays for the padding. */
+  button.mf-state-row {
+    width: calc(100% + 16px);
+    margin-inline: -8px;
+    padding-inline: 8px;
+    border-radius: 7px;
+    transition: background-color 160ms ease;
+  }
+  button.mf-state-row:hover {
+    background: var(--mf-panel-hover);
+  }
+  /* Drawn inside the row. The global ring sits 2px outside, which on a row
+     this wide would land on the region's 8px clip margin and be sheared. */
+  button.mf-state-row:focus-visible {
+    outline-offset: -2px;
+  }
+  /* The slot is on every row and the arrow only on the ones that lead
+     somewhere, so the counts stay in a single right-aligned column instead of
+     stepping in and out by the width of an icon. */
+  .mf-state-row-go {
+    display: flex;
+    flex: 0 0 auto;
+    width: 13px;
+    color: var(--mf-muted);
+    transition: color 160ms ease;
+  }
+  .mf-state-row-go > svg {
+    width: 13px;
+    height: 13px;
+  }
+  button.mf-state-row:hover .mf-state-row-go {
+    color: var(--mf-text);
   }
 
   /* A labelled, low-emphasis action that lives inside a row, a card or a table

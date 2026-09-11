@@ -8,13 +8,28 @@
  * toggle and the user menu, so nothing in here draws chrome.
  *
  * The page reads top to bottom as one argument:
- *   1. an intro that states the fleet's real posture in a sentence,
- *   2. fleet availability beside what needs attention,
- *   3. capacity context beside the current load ranking,
- *   4. the single Machine fleet work surface and all of its tooling.
+ *   1. the date,
+ *   2. fleet availability beside fleet power,
+ *   3. the single Machine fleet work surface and all of its tooling.
  *
- * This controller holds the state and the handlers; the four sections above
- * are presentational components under components/overview/.
+ * There is no explanatory prose anywhere on it. Every sentence the page used
+ * to open with — the posture claim, the availability summary, the paragraph
+ * under the power chart — restated a number that was already on screen and
+ * cost a line of vertical space on every visit to do it. Figures and short
+ * labels only; the long-form caveats live in `title` tooltips and in
+ * docs/power-history.md.
+ *
+ * It used to be four panes over two rows — availability beside a "needs
+ * attention" list, and power beside a highest-load ranking. Four dense panels
+ * above a dense table is more than the page can carry: it read as a wall, and
+ * the two rankings restated, in a second and third shape, what the table
+ * underneath them already says per machine. Two panes, one row. The attention
+ * list's job is not dropped — availability's "Needs review" and "Offline"
+ * rows are now buttons into the alerts sheet, which is also on the shell's
+ * top bar on every route.
+ *
+ * This controller holds the state and the handlers; the sections above are
+ * presentational components under components/overview/.
  * ========================================================================== */
 
 import { useState, useMemo, useCallback, useEffect } from "react";
@@ -44,14 +59,12 @@ import {
   DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
 
-import { OverviewIntro, type FleetPosture } from "@/components/overview/OverviewIntro";
+import { OverviewIntro } from "@/components/overview/OverviewIntro";
 import {
   FleetAvailabilityPanel,
   type AvailabilityCounts,
 } from "@/components/overview/FleetAvailabilityPanel";
-import { MonoformAttentionPanel } from "@/components/overview/AttentionPanel";
 import { FleetPowerPane } from "@/components/overview/FleetPowerPane";
-import { HighestLoadPane } from "@/components/overview/HighestLoadPane";
 import {
   MachineFleetToolbar,
   type SortOption,
@@ -64,23 +77,34 @@ import { Disclosure } from "@/components/overview/Disclosure";
 import { useWorkspacePrefs } from "@/components/overview/useWorkspacePrefs";
 import { useMachineNotes } from "@/components/overview/useMachineNotes";
 
-/* POSTURE / CONTEXT — the two paired-panel rows.
-   They now share ONE geometry, `.mf-pane-grid` in monoform.css, instead of a
-   1.25/0.75 split above a 1.6/0.9 one. Four panels read as a block, and four
-   different widths made that block look accidental. The class also gives an
-   EXPANDED panel a common minimum height so the two rows land as a 2×2, and
-   stacks everything below 900px.
+/* POSTURE — the one paired-panel row.
+   `.mf-pane-grid` in monoform.css: two equal `minmax(0,1fr)` columns, an
+   EXPANDED panel given a common minimum height, stacked below 900px. Equal
+   halves, so neither of the two reads as the subordinate one.
+
+   The 288px floor is kept as-is. With four panes it was what stopped a short
+   pane looking like a stub beside a tall one; with these two it is inert in
+   the normal case — the power pane's chart, readouts and cost row run well
+   past it and availability's own content lands around the same height. Where
+   it still earns its keep is the degenerate case: an empty fleet, or a hub
+   with no power counters at all, where FleetPowerPane draws an empty state
+   that is deliberately sized to its content and CENTRED in the slack this
+   floor creates. Lower the floor and that empty state hugs the header and
+   reads as a chart that failed to load; raise it and an empty fleet gets two
+   panels of mostly nothing. Availability keeps its content top-aligned and
+   lets the difference fall as whitespace at the bottom, exactly as it did
+   next to the taller attention panel before.
 
    WHEN ONE OF A PAIR IS FOLDED, THE FOLDED ONE KEEPS ITS COLUMN. It shrinks to
    a single line at the top of its cell (`align-self: start`) and its open
    partner keeps its own half and sets the row height. The alternative — the
    open pane widening to span both columns — was rejected for three reasons:
-   the pane nobody touched would re-lay out its ranking or its chart as a side
-   effect of a click elsewhere; folding and unfolding would shuttle the page
-   between a one- and a two-column layout; and the point of the equal columns
-   is that the four panes read as one symmetric block, which a reflow to full
-   width breaks the moment anybody folds anything. What you folded stays where
-   you left it, ready to unfold in place. */
+   the pane nobody touched would re-lay out its chart as a side effect of a
+   click elsewhere; folding and unfolding would shuttle the page between a one-
+   and a two-column layout; and the point of the equal columns is that the
+   panes read as one symmetric block, which a reflow to full width breaks the
+   moment anybody folds anything. What you folded stays where you left it,
+   ready to unfold in place. */
 
 // Severity for one machine under the reader's baseline policy. classifyMachine
 // (lib/fleet-metrics.mjs) is the single place status is decided; `baselines`
@@ -97,7 +121,6 @@ function OverviewContent() {
     connected,
     hasReceivedData,
     alerts,
-    alertCount,
     setAlerts,
     setAlertCount,
     refreshMachine,
@@ -114,20 +137,12 @@ function OverviewContent() {
   // PreferencesContext lazy-init reads from localStorage so the defaults
   // are correct on first paint after a reload (no flash).
   const { preferences, updateScalar, saveMachineOrder, loading: preferencesLoading } = usePreferences();
-  // Collapsed sections, the load ranking's metric and the expected-high-load
+  // Collapsed sections, the power window and tariff, and the expected-high-load
   // flags. Browser-local per user — see components/overview/useWorkspacePrefs.
-  const {
-    isCollapsed,
-    toggleSection,
-    loadMetric,
-    setLoadMetric,
-    baselines,
-    toggleBaseline,
-    powerPeriod,
-    setPowerPeriod,
-    powerRate,
-    setPowerRate,
-  } = useWorkspacePrefs();
+  // The tariff is read here and set in Settings → Preferences, so this page
+  // takes `powerRate` without its setter.
+  const { isCollapsed, toggleSection, baselines, toggleBaseline, powerPeriod, setPowerPeriod, powerRate } =
+    useWorkspacePrefs();
   const [arrangeOpen, setArrangeOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
@@ -321,12 +336,6 @@ function OverviewContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [machines, now, baselines]);
 
-  // "Healthy" has to mean nothing is wrong — a fleet with a warning or a
-  // stale machine cannot claim it, or the headline would contradict the
-  // "Needs review" count sitting directly beneath it.
-  const posture: FleetPosture =
-    counts.total === 0 ? "waiting" : counts.live === counts.total ? "healthy" : "attention";
-
   /* -- Machine fleet ------------------------------------------------------ */
 
   const filteredMachines = useMemo(() => {
@@ -510,7 +519,7 @@ function OverviewContent() {
 
   return (
     <>
-      <OverviewIntro posture={posture} />
+      <OverviewIntro />
 
       {isDemo && (
         <p className="mb-6 inline-flex items-center gap-2 rounded-[10px] border border-status-warning/30 bg-status-warning-tint px-3 py-1.5 text-[12px] text-status-warning">
@@ -537,27 +546,17 @@ function OverviewContent() {
         )}
       </AnimatePresence>
 
-      {/* B — fleet posture */}
+      {/* B — fleet posture: how much of the fleet is up, and what it is
+             drawing. The two rows in the availability pane that count
+             something wrong open the alerts sheet — the same sheet, with the
+             same acknowledge actions, that the shell's bell opens. */}
       <div className="mf-pane-grid">
         <FleetAvailabilityPanel
           counts={counts}
+          onOpenAlerts={openAlertPanel}
           open={!isCollapsed("availability")}
           onToggle={() => toggleSection("availability")}
         />
-        <MonoformAttentionPanel
-          machines={machines}
-          alertsCount={alertCount}
-          onOpenAlerts={openAlertPanel}
-          now={now}
-          baselines={baselines}
-          onToggleBaseline={toggleBaseline}
-          open={!isCollapsed("attention")}
-          onToggle={() => toggleSection("attention")}
-        />
-      </div>
-
-      {/* C — context */}
-      <div className="mf-pane-grid mt-5">
         {/* The section id stays "capacity": it is the persistence key for the
             collapse state, and renaming it would silently unfold this pane for
             every operator who had folded it. */}
@@ -567,19 +566,10 @@ function OverviewContent() {
           period={powerPeriod}
           onPeriodChange={setPowerPeriod}
           rate={powerRate}
-          onRateChange={setPowerRate}
-        />
-        <HighestLoadPane
-          machines={machines}
-          now={now}
-          metric={loadMetric}
-          onMetricChange={setLoadMetric}
-          open={!isCollapsed("load")}
-          onToggle={() => toggleSection("load")}
         />
       </div>
 
-      {/* D — the one machine work surface.
+      {/* C — the one machine work surface.
           The section had a second, larger line under the kicker ("Every
           machine, and everything you can do to it"). It restated what a table
           of machines with buttons on it evidently is, so the kicker is now the
