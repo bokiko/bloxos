@@ -43,6 +43,8 @@ export interface OverviewWorkspaceProps {
   ready: boolean;
   counts: AvailabilityCounts;
   alerts: AlertData[];
+  /** Whether the alert list could be read at all. */
+  alertsStatus: "loading" | "ready" | "error";
   /** Opens the alert sheet. Only ever wired to real alert data. */
   onOpenAlerts: () => void;
   /** Filters the machine table below and moves focus to it. */
@@ -58,6 +60,7 @@ export function OverviewWorkspace({
   ready,
   counts,
   alerts,
+  alertsStatus,
   onOpenAlerts,
   onFilterStatus,
   powerPeriod,
@@ -71,7 +74,7 @@ export function OverviewWorkspace({
       case "availability":
         return <FleetAvailabilityMini key={key} counts={counts} onFilterStatus={onFilterStatus} />;
       case "attention":
-        return <NeedsAttentionMini key={key} alerts={alerts} onOpenAlerts={onOpenAlerts} />;
+        return <NeedsAttentionMini key={key} alerts={alerts} status={alertsStatus} onOpenAlerts={onOpenAlerts} />;
       case "urgent_alert":
         return <UrgentAlertMini key={key} alerts={alerts} />;
       default:
