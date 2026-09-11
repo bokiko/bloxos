@@ -149,3 +149,80 @@ test("terminal start surfaces actionable hub errors and copy is awaited", () => 
   assert.match(pageDetail, /await navigator\.clipboard\.writeText/, "copy must be awaited");
   assert.match(pageDetail, /Copy failed — select and copy the text manually/, "copy failure must not claim success");
 });
+
+/* ============================================================================
+ * Lumen guards — the safety and honesty contracts the redesign must not move.
+ *
+ * These are deliberately behavioural and few. They name the promises a user
+ * relies on (a power number that says what it measures, an action that is
+ * gated, a terminal that survives a tab switch), not the markup that currently
+ * keeps them. Presentation is free to change; these are not.
+ * ========================================================================== */
+
+const powerHistory = readFileSync(new URL("../components/PowerHistory.tsx", import.meta.url), "utf8");
+const metricCharts = readFileSync(new URL("../components/MetricCharts.tsx", import.meta.url), "utf8");
+
+test("power history still says what it is measuring", () => {
+  // Component sensors are not a wall socket. Dropping this sentence turns a
+  // partial figure into an apparent machine total.
+  assert.match(powerHistory, /Component power, not wall power\./);
+  assert.match(powerHistory, /powerProblemLabel\(/, "agent-side problems must stay surfaced");
+});
+
+test("power history draws gaps as gaps", () => {
+  // Missing data is not zero watts: both series must break rather than
+  // interpolate across a window the agent never sent.
+  assert.equal(
+    (powerHistory.match(/connectNulls=\{false\}/g) ?? []).length, 2,
+    "both the average and the sampled-peak line must refuse to bridge gaps",
+  );
+  assert.match(powerHistory, /now - latest\.timestamp > 90000/, "stale readings must still be called stale");
+});
+
+test("machine actions keep their permission gates and confirmations", () => {
+  // Reboot is operator-only, never offered to a machine that cannot answer.
+  assert.match(pageDetail, /!isAPIMachine && canControl/, "reboot/terminal need fleet.control on a non-API machine");
+  assert.match(pageDetail, /disabled=\{!isOnline\}/, "a machine that is not reporting accepts no commands");
+  // Credential revoke and Windows re-enrollment are admin-only.
+  assert.match(pageDetail, /canDelete && !isAPIMachine/, "revoke needs fleet.admin on a non-API machine");
+  assert.match(
+    pageDetail,
+    /canDelete && !isAPIMachine && \(machine\.os\?\.toLowerCase\(\)\.includes\("windows"\) \?\? false\)/,
+    "re-enrollment stays Windows-only",
+  );
+  // Every destructive path still routes through its confirm dialog.
+  for (const [trigger, dialog] of [
+    ["setShowDeleteConfirm(true)", "open={showDeleteConfirm}"],
+    ["setShowRevokeConfirm(true)", "open={showRevokeConfirm}"],
+    ["setShowReenrollDialog(true)", "open={showReenrollDialog}"],
+  ]) {
+    assert.ok(pageDetail.includes(trigger), `${trigger} must exist`);
+    assert.ok(pageDetail.includes(dialog), `${dialog} must still be rendered`);
+  }
+});
+
+test("the terminal session survives a tab switch", () => {
+  // Unmounting the panel kills the PTY WebSocket; a user who checks Services
+  // mid-session must not come back to a dead terminal.
+  assert.match(pageDetail, /<TabsContent value="terminal" keepMounted/);
+});
+
+test("the machine route keeps its shareable tab in the URL", () => {
+  assert.match(pageDetail, /params\.delete\("tab"\)/, "the default tab must not be written to the URL");
+  assert.match(pageDetail, /\{ scroll: false \}/, "changing tab must not jump the page");
+});
+
+test("metric charts keep one series per card, so no axis lies", () => {
+  // CPU is a percentage and memory is gigabytes; GPU load is a percentage and
+  // temperature is degrees. Each card carries exactly one of them.
+  assert.equal(
+    (metricCharts.match(/<Line /g) ?? []).length, 1,
+    "the shared Chart renders one line; a second would share an axis with unrelated units",
+  );
+  for (const key of ["cpu_percent", "ram_gb", "gpu_util", "gpu_temp", "vram_gb"]) {
+    assert.equal(
+      (metricCharts.match(new RegExp(`dataKey="${key}"`, "g")) ?? []).length, 1,
+      `${key} must be charted exactly once`,
+    );
+  }
+});
