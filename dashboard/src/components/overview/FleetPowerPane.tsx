@@ -43,6 +43,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { ChartTooltip } from "@/components/charts/ChartTooltip";
 import { Zap } from "lucide-react";
 
 import { DEMO_MODE, HUB_URL, getStoredToken } from "@/lib/session";
@@ -344,7 +345,7 @@ export function FleetPowerPane({ open, onToggle, period, onPeriodChange, rate }:
             >
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={rows} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
-                  <CartesianGrid stroke="var(--border-subtle)" strokeDasharray="2 4" vertical={false} />
+                  <CartesianGrid stroke="var(--border-subtle)" vertical={false} />
                   <XAxis
                     dataKey="timestamp"
                     type="number"
@@ -357,19 +358,16 @@ export function FleetPowerPane({ open, onToggle, period, onPeriodChange, rate }:
                   />
                   <YAxis unit=" W" tick={axisTick} axisLine={false} tickLine={false} width={56} />
                   <Tooltip
-                    labelFormatter={(label) => formatTime(Number(label))}
-                    formatter={(value, name) => [
-                      formatWatts(typeof value === "number" ? value : null),
-                      String(name),
-                    ]}
                     cursor={{ stroke: "var(--border-strong)", strokeWidth: 1 }}
-                    contentStyle={{
-                      background: "var(--surface-overlay)",
-                      border: "1px solid var(--border-default)",
-                      borderRadius: 10,
-                      color: "var(--text-primary)",
-                      fontSize: 11,
-                    }}
+                    content={
+                      <ChartTooltip
+                        labelFormatter={(label) => formatTime(Number(label))}
+                        formatter={(value, name) => [
+                          formatWatts(typeof value === "number" ? value : null),
+                          String(name ?? ""),
+                        ]}
+                      />
+                    }
                   />
                   {series.map((s) => (
                     <Line

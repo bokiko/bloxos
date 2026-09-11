@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { ChartTooltip } from "@/components/charts/ChartTooltip";
 import { HUB_URL, getStoredToken } from "@/lib/session";
 import { mergePowerHistory, powerChartPoints, powerProblemLabel, powerSensorIDs, sampleAgeLabel } from "@/lib/power-history.mjs";
 import { MF_INPUT } from "@/lib/monoform-classes";
@@ -124,22 +125,23 @@ export function PowerHistory({ machineId }: { machineId: string }) {
           >
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={chart} margin={{ top: 4, right: 12, bottom: 0, left: 0 }}>
-                <CartesianGrid stroke="var(--border-subtle)" strokeDasharray="2 4" vertical={false} />
+                <CartesianGrid stroke="var(--border-subtle)" vertical={false} />
                 <XAxis
                   dataKey="timestamp" type="number" domain={["dataMin", "dataMax"]}
                   tickFormatter={formatTime} tick={axisTick} axisLine={false} tickLine={false} minTickGap={28}
                 />
                 <YAxis unit=" W" tick={axisTick} axisLine={false} tickLine={false} width={64} />
                 <Tooltip
-                  labelFormatter={(label) => formatTime(Number(label))}
                   cursor={{ stroke: "var(--border-strong)", strokeWidth: 1 }}
-                  contentStyle={{
-                    background: "var(--surface-overlay)",
-                    border: "1px solid var(--border-default)",
-                    borderRadius: 10,
-                    color: "var(--text-primary)",
-                    fontSize: 11,
-                  }}
+                  content={
+                    <ChartTooltip
+                      labelFormatter={(label) => formatTime(Number(label))}
+                      formatter={(value, name) => [
+                        value == null ? "—" : `${Math.round(Number(value))} W`,
+                        String(name ?? ""),
+                      ]}
+                    />
+                  }
                 />
                 <Line dataKey="mean" name="Average (W)" stroke={MEAN_STROKE} strokeWidth={1.5}
                   dot={false} connectNulls={false} isAnimationActive={false} />

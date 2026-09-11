@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from "react";
 import {
   CartesianGrid, Line, LineChart, XAxis, YAxis, ResponsiveContainer, Tooltip,
 } from "recharts";
+import { ChartTooltip } from "@/components/charts/ChartTooltip";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { HUB_URL, getStoredToken } from "@/lib/session";
 import { MetricsChartsSkeleton } from "./MetricsChartsSkeleton";
@@ -57,15 +58,6 @@ const axisTick = {
   fontSize: 10,
   fill: "var(--text-tertiary)",
   fontFamily: "var(--font-mono)",
-} as const;
-
-const tooltipStyle = {
-  background: "var(--surface-overlay)",
-  border: "1px solid var(--border-default)",
-  borderRadius: 10,
-  fontSize: 11,
-  color: "var(--text-primary)",
-  boxShadow: "var(--mf-shadow-overlay)",
 } as const;
 
 const lineProps = {
@@ -225,7 +217,7 @@ function Chart({
       <div className="px-3 py-4">
         <ResponsiveContainer width="100%" height={180}>
           <LineChart data={data} margin={{ top: 4, right: 12, bottom: 0, left: 0 }}>
-            <CartesianGrid stroke="var(--border-subtle)" strokeDasharray="2 4" vertical={false} />
+            <CartesianGrid stroke="var(--border-subtle)" vertical={false} />
             <XAxis
               dataKey="timestamp"
               tickFormatter={formatTime}
@@ -243,10 +235,13 @@ function Chart({
               tickFormatter={tickFormatter}
             />
             <Tooltip
-              contentStyle={tooltipStyle}
               cursor={{ stroke: "var(--border-strong)", strokeWidth: 1 }}
-              labelFormatter={formatTooltipLabel}
-              formatter={(v) => [format(Number(v ?? 0)), title]}
+              content={
+                <ChartTooltip
+                  labelFormatter={formatTooltipLabel}
+                  formatter={(v) => [v == null ? "—" : format(Number(v)), title]}
+                />
+              }
             />
             <Line {...lineProps} dataKey={dataKey} stroke={stroke} />
           </LineChart>

@@ -4,18 +4,15 @@
 // option and no palette picker: the product has a dark theme and a light one.
 
 import { Moon, Sun } from "lucide-react";
-import { useTheme } from "@/contexts/ThemeContext";
+import { APPEARANCE_LABELS, useTheme } from "@/contexts/ThemeContext";
 import { Button } from "@/components/ui/button";
 
-const NEXT_LABEL = {
-  dark: "Switch to light theme",
-  light: "Switch to dark theme",
-} as const;
+
 
 export function ThemeToggle() {
   const { appearance, setAppearance } = useTheme();
   const next = appearance === "dark" ? "light" : "dark";
-  const label = NEXT_LABEL[appearance];
+  const label = `Switch to ${APPEARANCE_LABELS[next]} theme`;
 
   return (
     <Button

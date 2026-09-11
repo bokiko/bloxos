@@ -38,6 +38,14 @@ import { useAuth } from "@/contexts/AuthContext";
 
 export type AppearanceMode = "dark" | "light";
 
+// What the user is offered them as. The stored value, the `data-appearance`
+// attribute and the hub's `theme_mode` stay "dark"/"light" — this is the label
+// only, so renaming what people read never touches what is persisted.
+export const APPEARANCE_LABELS: Record<AppearanceMode, string> = {
+  dark: "Dark",
+  light: "Bright",
+};
+
 const STORAGE_KEY = "bloxos-appearance";
 
 // The pre-Monoform key `bloxos-theme-mode` is deliberately no longer read.

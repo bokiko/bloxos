@@ -9,7 +9,7 @@
 import { Trash2, LayoutGrid, List as ListIcon } from "lucide-react";
 import { PowerRateSettings } from "./PowerRateSettings";
 import { usePreferences, type Density, type DefaultView, type DefaultSort } from "@/contexts/PreferencesContext";
-import { useTheme } from "@/contexts/ThemeContext";
+import { useTheme, APPEARANCE_LABELS } from "@/contexts/ThemeContext";
 import { useSSE } from "@/contexts/SSEContext";
 import { useToast } from "@/components/Toast";
 import { Button } from "@/components/ui/button";
@@ -65,13 +65,13 @@ export function PreferencesSettings() {
               onClick={() => setAppearance(option)}
               aria-pressed={appearance === option}
               className={cn(
-                "min-h-8 rounded-lg px-3 text-xs font-medium capitalize transition-colors",
+                "min-h-8 rounded-lg px-3 text-xs font-medium transition-colors",
                 appearance === option
                   ? "bg-blox-card text-blox-text shadow-sm"
                   : "text-blox-muted hover:text-blox-text",
               )}
             >
-              {option}
+              {APPEARANCE_LABELS[option]}
             </button>
           ))}
         </div>

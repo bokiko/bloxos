@@ -26,32 +26,35 @@
 
 :root,
 html[data-appearance="dark"] {
-  --mf-void: #090909;
-  --mf-canvas: #111111;
-  --mf-panel: #1a1a1a;
-  --mf-panel-hover: #222222;
-  --mf-panel-selected: #27272a;
-  --mf-table-head: #151515;
-  --mf-line: #303030;
-  --mf-line-strong: #494949;
-  --mf-text: #f4f4f2;
-  --mf-text-secondary: #c2c2bd;
-  --mf-muted: #969691;
-  --mf-quiet: #686864;
-  --mf-blue: #708bff;
-  --mf-blue-pressed: #5c77ef;
-  --mf-blue-soft: rgb(112 139 255 / 15%);
-  --mf-green: #63c695;
-  --mf-green-soft: rgb(99 198 149 / 12%);
-  --mf-amber: #edaa57;
-  --mf-amber-soft: rgb(237 170 87 / 12%);
-  --mf-red: #ea7474;
-  --mf-red-soft: rgb(234 116 116 / 12%);
-  --mf-violet: #aa97ed;
-  --mf-violet-soft: rgb(170 151 237 / 12%);
-  --mf-radius-control: 10px;
-  --mf-radius-panel: 18px;
-  --mf-shadow-overlay: 0 20px 60px rgb(0 0 0 / 38%);
+  --mf-void: #0c0d11;
+  --mf-canvas: #151720;
+  --mf-panel: #1c1f29;
+  --mf-panel-hover: #242836;
+  --mf-panel-selected: rgb(109 124 255 / 12%);
+  --mf-table-head: #191c25;
+  --mf-line: rgb(255 255 255 / 8.5%);
+  --mf-line-strong: rgb(255 255 255 / 15%);
+  --mf-text: #f5f6fa;
+  --mf-text-secondary: #c1c6d2;
+  --mf-muted: #858c9e;
+  --mf-quiet: #666e7f;
+  --mf-blue: #6d7cff;
+  --mf-blue-pressed: #5868ef;
+  --mf-blue-soft: rgb(109 124 255 / 14%);
+  --mf-green: #41c987;
+  --mf-green-soft: rgb(65 201 135 / 12%);
+  --mf-amber: #f5a84b;
+  --mf-amber-soft: rgb(245 168 75 / 12%);
+  --mf-red: #f06d76;
+  --mf-red-soft: rgb(240 109 118 / 12%);
+  --mf-violet: #a78bfa;
+  --mf-violet-soft: rgb(167 139 250 / 13%);
+  --mf-teal: #2dd4bf;
+  --mf-teal-soft: rgb(45 212 191 / 13%);
+  --mf-radius-control: 12px;
+  --mf-radius-panel: 20px;
+  --mf-shadow-panel: 0 1px 0 rgb(255 255 255 / 3.5%) inset, 0 12px 32px rgb(0 0 0 / 13%);
+  --mf-shadow-overlay: 0 20px 60px rgb(0 0 0 / 32%);
 }
 
 /* ============================================================================
@@ -62,30 +65,41 @@ html[data-appearance="dark"] {
  * raised surface, `line` is the hairline — but every value was picked for a
  * light ground rather than negated.
  *
- * The status hues are re-tuned, not reused. #63c695 / #edaa57 / #ea7474 are
- * built to carry against a near-black canvas and read as pale wash on white,
- * so each is replaced by a darker member of the same hue family. Measured
- * against the light canvas (#f4f4f2): green 5.36:1, amber 5.75:1, red 5.11:1,
- * blue 6.18:1, violet 6.07:1 — every one clears 4.5:1 as body-size text, and
- * each also clears 4.5:1 against the rail's deeper ground (#eaeae7). Text is
- * 15.98:1, secondary text 10.05:1 and muted 5.18:1 on the same canvas; the
- * deliberately de-emphasised `quiet` tone sits at 3.42:1, matching the 3.37:1
- * it has in dark rather than borrowing a stronger voice in one theme only.
+ * The status hues are re-tuned, not reused. A colour built to carry against a
+ * near-black canvas reads as pale wash on white, so each is a darker member of
+ * the same hue family.
+ *
+ * Lumen supplied this theme's surfaces, lines, text, blue and violet. It also
+ * supplied lighter status hues, and those were NOT taken: measured on this
+ * canvas (#f8f9fb) they are muted 3.93:1, amber 3.92:1, green 4.19:1,
+ * red 4.48:1 — every one of them below 4.5:1 at body size, in a product where
+ * the muted tone carries every kicker and table header and the status tones
+ * carry every warning line. The values kept here are the ones that already
+ * cleared it, re-measured against the new canvas: muted 5.41:1, green 5.60:1,
+ * amber 6.01:1, red 5.34:1, blue 6.46:1, violet 6.34:1. Text is 16.70:1 and
+ * secondary text 10.51:1.
+ *
+ * Two values are Lumen's hue taken one step darker so they can label as well
+ * as draw: teal (#0f9f8b was 3.14:1 — a stroke, but not a word) and quiet
+ * (#a2aab8 was 2.22:1, well under the 3.42:1 this deliberately de-emphasised
+ * tone has always had). Teal is now 5.18:1 and quiet 3.42:1, matching the
+ * 3.49:1 quiet has in dark rather than borrowing a stronger voice in one
+ * theme only.
  * ========================================================================== */
 
 html[data-appearance="light"] {
-  --mf-void: #eaeae7;
-  --mf-canvas: #f4f4f2;
+  --mf-void: #181a21; /* The rail stays graphite in Bright — it is chrome, not page. */
+  --mf-canvas: #f8f9fb;
   --mf-panel: #ffffff;
-  --mf-panel-hover: #efefec;
-  --mf-panel-selected: #e4e5f0;
-  --mf-table-head: #f7f7f5;
-  --mf-line: #d7d7d1;
-  --mf-line-strong: #adada4;
-  --mf-text: #191918;
-  --mf-text-secondary: #3c3c39;
+  --mf-panel-hover: #f1f3f7;
+  --mf-panel-selected: rgb(74 94 234 / 10%);
+  --mf-table-head: #f7f8fa;
+  --mf-line: #e6e9f0;
+  --mf-line-strong: #d6dbe5;
+  --mf-text: #171a23;
+  --mf-text-secondary: #465064;
   --mf-muted: #67675f;
-  --mf-quiet: #84847d;
+  --mf-quiet: #7f8798;
   --mf-blue: #3149d9;
   --mf-blue-pressed: #2739b4;
   --mf-blue-soft: rgb(49 73 217 / 10%);
@@ -97,9 +111,12 @@ html[data-appearance="light"] {
   --mf-red-soft: rgb(198 40 40 / 10%);
   --mf-violet: #6244c4;
   --mf-violet-soft: rgb(98 68 196 / 10%);
-  /* The one shadow, restated for a light ground: black at dark-mode strength
-     reads as soot under a dialog on white. */
-  --mf-shadow-overlay: 0 20px 60px rgb(25 25 24 / 16%);
+  --mf-teal: #0a7767;
+  --mf-teal-soft: rgb(10 119 103 / 11%);
+  /* Both shadows restated for a light ground: black at dark-mode strength
+     reads as soot under a panel on white. */
+  --mf-shadow-panel: 0 1px 2px rgb(20 30 50 / 3%), 0 10px 26px rgb(20 30 50 / 5%);
+  --mf-shadow-overlay: 0 20px 60px rgb(25 35 55 / 16%);
 }
 
 /* ============================================================================
@@ -144,6 +161,15 @@ html[data-appearance="light"] {
   --status-stale-tint: var(--mf-violet-soft);
   --status-offline: var(--mf-red);
   --status-offline-tint: var(--mf-red-soft);
+
+  /* Data-domain roles. A series is coloured by WHAT IT MEASURES, never by
+     whether the reading is healthy — a continuous line cannot honestly carry
+     nominal/warning/critical, and green/amber/red stay reserved for state.
+     Host compute is the product blue, anything GPU is the violet, and measured
+     energy is the teal that exists only for this role. */
+  --data-host: var(--mf-blue);
+  --data-gpu: var(--mf-violet);
+  --data-power: var(--mf-teal);
 
   /* Motion — the only sanctioned range. No continuous animation. */
   --motion-fast: 160ms;
@@ -249,12 +275,16 @@ html[data-appearance="light"] {
   --color-chart-4: var(--mf-amber);
   --color-chart-5: var(--mf-red);
 
-  /* Elevation. Monoform has exactly one shadow and it is for real overlays —
-     dialogs, popovers, dropdowns. Everything else is flat with a hairline, so
-     the small end of Tailwind's shadow ramp is deliberately nulled out and the
-     large end collapses onto the single overlay shadow. Tailwind bakes these
-     into the `shadow-*` utilities at build time, which is why they belong in
-     @theme rather than in a plain :root block. */
+  /* Elevation. There are exactly two shadows: `--mf-shadow-panel`, which gives
+     a panel its slight lift off the canvas, and `--mf-shadow-overlay` for
+     things that really float — dialogs, popovers, dropdowns. The panel one is
+     applied through the component classes that own a panel (.mf-panel and
+     friends), NOT through this ramp: `shadow-sm` is worn by small controls like
+     the appearance toggle, and giving a 32px button a panel's drop shadow is
+     how a flat product starts looking like a pile of cards. So the small end
+     stays nulled and the large end collapses onto the overlay shadow. Tailwind
+     bakes these into the `shadow-*` utilities at build time, which is why they
+     belong in @theme rather than in a plain :root block. */
   --shadow-2xs: none;
   --shadow-xs: none;
   --shadow-sm: none;
@@ -458,14 +488,31 @@ html[data-appearance="light"] {
    * Surfaces and type
    * ========================================================================== */
 
+  /* A panel is a hairline, a ground and a slight lift. It does NOT respond to
+     the pointer: a static panel that brightens under the cursor claims to be
+     clickable, and most of them are not. Anything that really navigates or
+     acts opts in with data-interactive="true" (or .mf-interactive-row for a
+     row), and only that gets the lift and the stronger edge. */
   .mf-panel {
     border: 1px solid var(--mf-line);
     border-radius: var(--mf-radius-panel);
     background: var(--mf-panel);
-    transition: border-color 160ms ease;
+    box-shadow: var(--mf-shadow-panel);
   }
-  .mf-panel:hover {
+  .mf-panel[data-interactive="true"],
+  .mf-interactive-row {
+    transition:
+      transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1),
+      background-color 180ms ease,
+      border-color 180ms ease,
+      box-shadow 180ms ease;
+  }
+  .mf-panel[data-interactive="true"]:hover,
+  .mf-interactive-row:hover {
+    background: var(--mf-panel-hover);
     border-color: var(--mf-line-strong);
+    box-shadow: var(--mf-shadow-overlay);
+    transform: translateY(-1px);
   }
   .mf-kicker,
   .mf-table-meta {
@@ -743,6 +790,42 @@ html[data-appearance="light"] {
     font-family: var(--font-mono), ui-monospace, monospace;
     font-variant-numeric: tabular-nums slashed-zero;
   }
+
+  /* Chart furniture — the tooltip and the inline legend that replaces
+     recharts' default block. The swatch is a 2px rule, the same mark the line
+     draws, so the legend cannot disagree with the chart about which colour is
+     which series. */
+  .mf-chart-tooltip {
+    padding: 8px 10px;
+    border: 1px solid var(--mf-line);
+    border-radius: var(--mf-radius-control);
+    background: var(--mf-panel);
+    box-shadow: var(--mf-shadow-overlay);
+    font-size: 11px;
+    color: var(--mf-text);
+  }
+  .mf-chart-tooltip-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 4px;
+  }
+  .mf-chart-legend {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-mono), ui-monospace, monospace;
+    font-size: 11px;
+    line-height: 1.2;
+    color: var(--mf-muted);
+  }
+  .mf-chart-tooltip-row > i,
+  .mf-chart-legend > i {
+    flex: 0 0 auto;
+    width: 10px;
+    height: 2px;
+    border-radius: 1px;
+  }
   /* A severity row whose count is zero. "Offline 0" is not an incident, so it
      does not get the incident colour — the dot and the number both go quiet
      and the colour is kept for the rows that actually mean something. */
@@ -798,11 +881,13 @@ html[data-appearance="light"] {
     border-top-color: var(--mf-line);
     border-radius: 0;
     background: transparent;
+    box-shadow: none;
     padding: 7px 0 0;
     transition:
       background-color var(--motion-base) ease,
       border-color var(--motion-base) ease,
       border-radius var(--motion-base) ease,
+      box-shadow var(--motion-base) ease,
       padding var(--motion-base) ease;
   }
   /* 20/24, not 24/28. The panes above the machine table hold numbers and
@@ -812,10 +897,8 @@ html[data-appearance="light"] {
     border-color: var(--mf-line);
     border-radius: var(--mf-radius-panel);
     background: var(--mf-panel);
+    box-shadow: var(--mf-shadow-panel);
     padding: 20px 24px;
-  }
-  .mf-section[data-open="true"]:hover {
-    border-color: var(--mf-line-strong);
   }
 
   .mf-disclosure-head {
