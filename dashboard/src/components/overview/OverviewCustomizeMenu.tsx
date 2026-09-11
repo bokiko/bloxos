@@ -18,6 +18,7 @@ import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuRadioGroup,
@@ -81,11 +82,14 @@ export function OverviewCustomizeMenu() {
         }
       />
       <DropdownMenuContent align="end" className={`${MF_MENU} min-w-[230px]`}>
-        <DropdownMenuLabel className="mf-kicker uppercase">Arrangement</DropdownMenuLabel>
         <DropdownMenuRadioGroup
           value={preferences.overview_layout}
           onValueChange={(value) => save({ overview_layout: value as OverviewLayout })}
         >
+          {/* Base UI requires a menu label to sit inside a group part — a
+              RadioGroup is one, so the heading belongs in here with the items
+              it names rather than floating above them. */}
+          <DropdownMenuLabel className="mf-kicker uppercase">Arrangement</DropdownMenuLabel>
           {ARRANGEMENTS.map((option) => (
             <DropdownMenuRadioItem key={option.value} value={option.value} className={MF_MENU_ITEM}>
               {option.label}
@@ -95,12 +99,14 @@ export function OverviewCustomizeMenu() {
 
         <DropdownMenuSeparator className="bg-border-subtle" />
 
-        <DropdownMenuLabel
-          className="mf-kicker uppercase"
-          title={modulesHidden ? "Power focus shows no modules; your choices are kept." : undefined}
-        >
-          Modules
-        </DropdownMenuLabel>
+        <DropdownMenuGroup>
+          <DropdownMenuLabel
+            className="mf-kicker uppercase"
+            title={modulesHidden ? "Power focus shows no modules; your choices are kept." : undefined}
+          >
+            Modules
+          </DropdownMenuLabel>
+        </DropdownMenuGroup>
         {MODULES.map(({ key, label }) => (
           <DropdownMenuCheckboxItem
             key={key}
