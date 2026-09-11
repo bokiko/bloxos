@@ -88,7 +88,7 @@ html[data-appearance="dark"] {
  * ========================================================================== */
 
 html[data-appearance="light"] {
-  --mf-void: #181a21; /* The rail stays graphite in Bright — it is chrome, not page. */
+  --mf-void: #eceef4;
   --mf-canvas: #f8f9fb;
   --mf-panel: #ffffff;
   --mf-panel-hover: #f1f3f7;
@@ -161,6 +161,20 @@ html[data-appearance="light"] {
   --status-stale-tint: var(--mf-violet-soft);
   --status-offline: var(--mf-red);
   --status-offline-tint: var(--mf-red-soft);
+
+  /* The rail is chrome, not page. It keeps one graphite ground in BOTH themes
+     — Lumen's own direction, and the reason the product still reads as one
+     application in Bright — so it cannot use the page's text tokens, which go
+     near-black on that ground. These values are the dark theme's, fixed here
+     rather than themed, and `.mf-rail` rebinds the text tokens to them for
+     everything inside it. `--mf-void` is therefore free to stay what its name
+     says: the recessed PAGE surface, light in Bright. */
+  --mf-rail: #181a21;
+  --mf-rail-line: rgb(255 255 255 / 9%);
+  --mf-rail-text: #f5f6fa;
+  --mf-rail-muted: #858c9e;
+  --mf-rail-quiet: #666e7f;
+  --mf-rail-hover: #242836;
 
   /* Data-domain roles. A series is coloured by WHAT IT MEASURES, never by
      whether the reading is healthy — a continuous line cannot honestly carry
@@ -399,11 +413,19 @@ html[data-appearance="light"] {
     display: flex;
     flex-direction: column;
     padding: 30px 18px 22px;
-    background: var(--mf-void);
-    border-right: 1px solid var(--mf-line);
-    /* The rail ground is near-black, so everything inside it starts light and
-       BrandedHeader's mark can render in plain currentColor. */
-    color: var(--mf-text);
+    background: var(--mf-rail);
+    border-right: 1px solid var(--mf-rail-line);
+    /* Rebinding the text tokens inside the rail is what lets every child rule
+       below stay theme-agnostic: they go on reading --mf-text / --mf-muted and
+       get the rail's fixed pair in both themes. The rail ground is graphite, so
+       everything inside it starts light and BrandedHeader's mark can render in
+       plain currentColor. */
+    --mf-text: var(--mf-rail-text);
+    --mf-muted: var(--mf-rail-muted);
+    --mf-quiet: var(--mf-rail-quiet);
+    --mf-panel-hover: var(--mf-rail-hover);
+    --mf-line: var(--mf-rail-line);
+    color: var(--mf-rail-text);
   }
   /* Sits at the bottom of the column rail. At the 700px strip it flattens into
      the row instead — see the breakpoint. */

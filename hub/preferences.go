@@ -82,6 +82,70 @@ var validDefaultSorts = map[string]struct{}{
 	"manual": {},
 }
 
+var validOverviewLayouts = map[string]struct{}{
+	// Power anchored, compact context beside it, machine table directly under.
+	"machine-first": {},
+	// Every context module in one row above a full-width power anchor.
+	"balanced": {},
+	// Power only. A critical/offline condition still forces a visible marker
+	// in the UI — hiding the modules never hides an incident.
+	"power-focus": {},
+}
+
+const defaultOverviewLayout = "machine-first"
+
+// OverviewWidgets is the set of compact context modules an operator keeps
+// above the machine table. Every key is present on the wire in both
+// directions: a partially-specified object is ambiguous about whether a
+// missing key means "off" or "unchanged", so the write path rejects it.
+type OverviewWidgets struct {
+	Availability bool `json:"availability"`
+	Attention    bool `json:"attention"`
+	UrgentAlert  bool `json:"urgent_alert"`
+}
+
+var defaultOverviewWidgets = OverviewWidgets{Availability: true, Attention: true, UrgentAlert: true}
+
+// normalizeOverviewWidgets is the READ path: a stored value that is empty,
+// corrupt or from an older shape falls back to the recommended set rather
+// than failing the whole preference bundle.
+func normalizeOverviewWidgets(raw string) OverviewWidgets {
+	value := defaultOverviewWidgets
+	if raw == "" || json.Unmarshal([]byte(raw), &value) != nil {
+		return defaultOverviewWidgets
+	}
+	return value
+}
+
+// parseOverviewWidgetsPatch is the WRITE path, and it is strict. It rejects
+// null, a non-object, an unknown key, a missing key and any non-boolean
+// value, so what lands in the column is always the canonical three-key object
+// and a client typo can never silently turn a module off.
+func parseOverviewWidgetsPatch(raw json.RawMessage) (OverviewWidgets, bool) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
+		return OverviewWidgets{}, false
+	}
+	keys := map[string]*bool{}
+	var widgets OverviewWidgets
+	keys["availability"] = &widgets.Availability
+	keys["attention"] = &widgets.Attention
+	keys["urgent_alert"] = &widgets.UrgentAlert
+	if len(fields) != len(keys) {
+		return OverviewWidgets{}, false
+	}
+	for name, value := range fields {
+		target, known := keys[name]
+		if !known {
+			return OverviewWidgets{}, false
+		}
+		if err := json.Unmarshal(value, target); err != nil {
+			return OverviewWidgets{}, false
+		}
+	}
+	return widgets, true
+}
+
 // SavedFilter is the public shape of a saved-filter row. The `Filter`
 // field is opaque JSON the client wrote; the hub doesn't introspect it
 // beyond size/syntax validation.
@@ -106,6 +170,11 @@ type UserPreferences struct {
 	// unset. May contain stale/deleted IDs — stored and returned harmlessly;
 	// the UI reconciles against the live fleet.
 	MachineOrder []string `json:"machine_order"`
+	// OverviewLayout and OverviewWidgets describe what sits above the machine
+	// table. Always populated: a client that sees them knows the hub can
+	// persist them.
+	OverviewLayout  string          `json:"overview_layout"`
+	OverviewWidgets OverviewWidgets `json:"overview_widgets"`
 }
 
 // handleGetMyPreferences returns the entire prefs bundle in one round-trip.
@@ -123,6 +192,7 @@ func (s *Server) handleGetMyPreferences(c echo.Context) error {
 	var avatarSHA sql.NullString
 	var hasAvatar sql.NullInt64
 	var machineOrderJSON string
+	var overviewWidgetsJSON string
 	err := s.db.QueryRow(`
 		SELECT
 			COALESCE(display_name, ''),
@@ -130,6 +200,8 @@ func (s *Server) handleGetMyPreferences(c echo.Context) error {
 			COALESCE(default_view, 'grid'),
 			COALESCE(default_sort, 'name'),
 			COALESCE(machine_order, '[]'),
+			COALESCE(overview_layout, 'machine-first'),
+			COALESCE(overview_widgets, ''),
 			avatar_sha,
 			CASE WHEN avatar_data IS NOT NULL AND length(avatar_data) > 0 THEN 1 ELSE 0 END
 		FROM users WHERE id = ?
@@ -139,6 +211,8 @@ func (s *Server) handleGetMyPreferences(c echo.Context) error {
 		&prefs.DefaultView,
 		&prefs.DefaultSort,
 		&machineOrderJSON,
+		&prefs.OverviewLayout,
+		&overviewWidgetsJSON,
 		&avatarSHA,
 		&hasAvatar,
 	)
@@ -162,6 +236,10 @@ func (s *Server) handleGetMyPreferences(c echo.Context) error {
 	if _, ok := validDefaultSorts[prefs.DefaultSort]; !ok {
 		prefs.DefaultSort = "name"
 	}
+	if _, ok := validOverviewLayouts[prefs.OverviewLayout]; !ok {
+		prefs.OverviewLayout = defaultOverviewLayout
+	}
+	prefs.OverviewWidgets = normalizeOverviewWidgets(overviewWidgetsJSON)
 	// Persistent machine order. Corrupt/legacy JSON snaps to an empty order
 	// rather than failing the whole bundle. Elements that are not non-empty
 	// strings are dropped defensively.
@@ -217,7 +295,9 @@ func (s *Server) handleGetMyPreferences(c echo.Context) error {
 	return c.JSON(http.StatusOK, prefs)
 }
 
-// handlePatchMyPreferences accepts {display_name?, density?, default_view?, default_sort?}.
+// handlePatchMyPreferences accepts {display_name?, density?, default_view?,
+// default_sort?, machine_order?, overview_layout?, overview_widgets?}. Every
+// field is optional; an omitted field is preserved, never reset.
 func (s *Server) handlePatchMyPreferences(c echo.Context) error {
 	claims, ok := authClaimsFromContext(c)
 	if !ok || claims.UserID == "" {
@@ -231,14 +311,18 @@ func (s *Server) handlePatchMyPreferences(c echo.Context) error {
 		DefaultSort *string `json:"default_sort,omitempty"`
 		// RawMessage so we can tell "omitted" (preserve) from an explicit
 		// null (reject) from an array. A type error surfaces on Unmarshal.
-		MachineOrder json.RawMessage `json:"machine_order,omitempty"`
+		MachineOrder    json.RawMessage `json:"machine_order,omitempty"`
+		OverviewLayout  *string         `json:"overview_layout,omitempty"`
+		OverviewWidgets json.RawMessage `json:"overview_widgets,omitempty"`
 	}
 	if err := c.Bind(&body); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid body"})
 	}
 
 	orderSupplied := len(body.MachineOrder) > 0
-	if body.DisplayName == nil && body.Density == nil && body.DefaultView == nil && body.DefaultSort == nil && !orderSupplied {
+	widgetsSupplied := len(body.OverviewWidgets) > 0
+	if body.DisplayName == nil && body.Density == nil && body.DefaultView == nil && body.DefaultSort == nil &&
+		!orderSupplied && body.OverviewLayout == nil && !widgetsSupplied {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "no fields to update"})
 	}
 
@@ -329,6 +413,30 @@ func (s *Server) handlePatchMyPreferences(c echo.Context) error {
 			args = append(args, "manual")
 			defaultSortSet = true
 		}
+	}
+
+	if body.OverviewLayout != nil {
+		if _, ok := validOverviewLayouts[*body.OverviewLayout]; !ok {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid overview_layout"})
+		}
+		sets = append(sets, "overview_layout = ?")
+		args = append(args, *body.OverviewLayout)
+	}
+	if widgetsSupplied {
+		widgets, ok := parseOverviewWidgetsPatch(body.OverviewWidgets)
+		if !ok {
+			return c.JSON(http.StatusBadRequest, map[string]string{
+				"error": "overview_widgets must set availability, attention and urgent_alert to true or false",
+			})
+		}
+		// Marshal from the struct so the column always holds canonical key
+		// order, whatever order the client sent.
+		encoded, err := json.Marshal(widgets)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not encode overview_widgets"})
+		}
+		sets = append(sets, "overview_widgets = ?")
+		args = append(args, string(encoded))
 	}
 
 	query := fmt.Sprintf(`UPDATE users SET %s WHERE id = ?`, strings.Join(sets, ", "))

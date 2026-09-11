@@ -8,12 +8,51 @@
 
 import { Trash2, LayoutGrid, List as ListIcon } from "lucide-react";
 import { PowerRateSettings } from "./PowerRateSettings";
-import { usePreferences, type Density, type DefaultView, type DefaultSort } from "@/contexts/PreferencesContext";
+import {
+  usePreferences,
+  type Density,
+  type DefaultView,
+  type DefaultSort,
+  type OverviewLayout,
+  type OverviewWidgets,
+} from "@/contexts/PreferencesContext";
+import {
+  DEFAULT_OVERVIEW_LAYOUT,
+  DEFAULT_OVERVIEW_WIDGETS,
+  isDefaultOverview,
+} from "@/lib/overview-layout.mjs";
+import { MF_BUTTON_QUIET } from "@/lib/monoform-classes";
 import { useTheme, APPEARANCE_LABELS } from "@/contexts/ThemeContext";
 import { useSSE } from "@/contexts/SSEContext";
 import { useToast } from "@/components/Toast";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+
+// Each arrangement is named by what it puts first, and described by what that
+// costs — the user chooses an intent, never a column width.
+const ARRANGEMENTS: { value: OverviewLayout; label: string; description: string }[] = [
+  {
+    value: "machine-first",
+    label: "Machine-first",
+    description: "Power anchored, context compact beside it, the machine table high on the page.",
+  },
+  {
+    value: "balanced",
+    label: "Balanced",
+    description: "Every context module in one row, with power full-width beneath it.",
+  },
+  {
+    value: "power-focus",
+    label: "Power focus",
+    description: "Power only. A critical or offline machine still raises a marker.",
+  },
+];
+
+const MODULES: { key: keyof OverviewWidgets; label: string }[] = [
+  { key: "availability", label: "Fleet availability" },
+  { key: "attention", label: "Needs attention" },
+  { key: "urgent_alert", label: "Most urgent alert" },
+];
 
 const SORT_LABELS: Record<DefaultSort, string> = {
   manual: "My order",
@@ -24,14 +63,16 @@ const SORT_LABELS: Record<DefaultSort, string> = {
 };
 
 export function PreferencesSettings() {
-  const { preferences, updateScalar, unpinMachine, deleteFilter } = usePreferences();
+  const { preferences, updateScalar, unpinMachine, deleteFilter, hubSupportsOverview } = usePreferences();
   const { appearance, setAppearance } = useTheme();
   const { machines } = useSSE();
   const { addToast } = useToast();
 
   const handleScalar = async (
     label: string,
-    patch: Partial<Pick<typeof preferences, "density" | "default_view" | "default_sort">>,
+    patch: Partial<
+      Pick<typeof preferences, "density" | "default_view" | "default_sort" | "overview_layout" | "overview_widgets">
+    >,
   ) => {
     try {
       await updateScalar(patch);
@@ -75,6 +116,94 @@ export function PreferencesSettings() {
             </button>
           ))}
         </div>
+      </section>
+
+      {/* Overview — what the operator keeps above the machine table. The
+          durable home for the choice; the Overview's own Customize control is
+          a shortcut into this same model, not a second one. */}
+      <section className="mf-panel p-5" aria-labelledby="overview-heading">
+        <h2 id="overview-heading" className="text-sm font-semibold text-blox-text">
+          Overview
+        </h2>
+        <p className="mt-1 text-xs text-blox-muted">
+          Fleet power and the machine table are always shown. These choose what sits between them.
+        </p>
+
+        {!hubSupportsOverview && (
+          <p role="status" className="mt-3 flex items-center gap-2 text-xs text-status-warning">
+            <span className="mf-status-dot mf-status-warning" aria-hidden="true" />
+            This hub cannot store an overview choice yet. Update the hub to change it.
+          </p>
+        )}
+
+        <fieldset disabled={!hubSupportsOverview} className="contents">
+          <h3 className="mf-kicker mt-5 uppercase">Arrangement</h3>
+          <div className="mt-3 grid max-w-2xl grid-cols-1 gap-3 sm:grid-cols-3">
+            {ARRANGEMENTS.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                onClick={() => void handleScalar("Arrangement", { overview_layout: option.value })}
+                aria-pressed={preferences.overview_layout === option.value}
+                className={cn(
+                  "rounded-[10px] border bg-surface-sunken p-4 text-left transition-colors disabled:opacity-50",
+                  preferences.overview_layout === option.value
+                    ? "border-blox-blue"
+                    : "border-blox-border hover:border-blox-muted/40",
+                )}
+              >
+                <span className="block text-sm font-medium text-blox-text">{option.label}</span>
+                <span className="mt-1 block text-xs text-blox-muted">{option.description}</span>
+              </button>
+            ))}
+          </div>
+
+          <h3 className="mf-kicker mt-6 uppercase">Supporting modules</h3>
+          <p className="mt-1 text-xs text-blox-muted">
+            Hidden in Power focus. A module with nothing real to report is left out and the row closes up.
+          </p>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            {MODULES.map(({ key, label }) => {
+              const on = preferences.overview_widgets[key];
+              return (
+                <Button
+                  key={key}
+                  size="sm"
+                  variant={on ? "default" : "outline"}
+                  aria-pressed={on}
+                  onClick={() =>
+                    void handleScalar("Overview modules", {
+                      // The hub requires the whole object: a partial one cannot
+                      // say whether a missing key means "off" or "unchanged".
+                      overview_widgets: { ...preferences.overview_widgets, [key]: !on },
+                    })
+                  }
+                >
+                  {label}
+                </Button>
+              );
+            })}
+          </div>
+
+          <div className="mt-5">
+            <button
+              type="button"
+              className={MF_BUTTON_QUIET}
+              disabled={
+                !hubSupportsOverview ||
+                isDefaultOverview(preferences.overview_layout, preferences.overview_widgets)
+              }
+              onClick={() =>
+                void handleScalar("Overview", {
+                  overview_layout: DEFAULT_OVERVIEW_LAYOUT as OverviewLayout,
+                  overview_widgets: { ...DEFAULT_OVERVIEW_WIDGETS } as OverviewWidgets,
+                })
+              }
+            >
+              Reset to recommended
+            </button>
+          </div>
+        </fieldset>
       </section>
 
       {/* Power rate — moved off the Overview's fleet power pane, which shows
