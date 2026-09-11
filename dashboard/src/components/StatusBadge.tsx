@@ -15,9 +15,9 @@ export { classifyMachine };
  *   critical  one or more metrics in danger zone (urgent operator attention)
  *   offline   no heartbeat in >120s
  *
- * `classifyMachine` is the single source of truth — used by the card, the
- * stat strip, the filter dropdown, and the NeedsAttention stripe. Keep
- * thresholds in sync with the hub-side `evaluateAlerts` rules.
+ * `classifyMachine` is the single source of truth — used by the machine
+ * card, the overview fleet table, and the status filter. Keep thresholds
+ * in sync with the hub-side `evaluateAlerts` rules.
  * ============================================================================ */
 
 export type MachineStatus = "live" | "stale" | "warning" | "critical" | "offline";
@@ -40,15 +40,10 @@ export const STATUS_ORDER: Record<MachineStatus, number> = {
   live: 4,
 };
 
-/** Operator-attention states surface at the top of the fleet. */
-export function isProblem(s: MachineStatus): boolean {
-  return s === "critical" || s === "warning" || s === "offline" || s === "stale";
-}
-
 /* ============================================================================
  * Visual tokens — color + label for each state.
- * Centralized so the StatCard, MachineCard, and NeedsAttention stripe
- * never drift. Every consumer reads from `STATUS_VIS`.
+ * Centralized so the machine card and the overview fleet table never
+ * drift. Every consumer reads from `STATUS_VIS`.
  * ============================================================================ */
 
 export interface StatusVisual {
@@ -123,7 +118,7 @@ export function StatusDot({ status, size = "sm", pulse = false }: StatusDotProps
 }
 
 /* ============================================================================
- * StatusBadge — dot + label, used in row contexts (NeedsAttention, machine
+ * StatusBadge — dot + label, used in row contexts (fleet table, machine
  * detail header). Compact, never colored borders, just a tinted pill.
  * ============================================================================ */
 

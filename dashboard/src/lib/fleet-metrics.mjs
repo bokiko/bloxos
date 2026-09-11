@@ -23,8 +23,8 @@ const STATUS_TH = {
 };
 
 // classifyMachine is the single source of truth for fleet status, used by the
-// card, stat strip, filter dropdown and NeedsAttention stripe (re-exported by
-// StatusBadge.tsx for existing imports). Freshness outranks thresholds: data
+// machine card, the overview fleet table and the status filter (re-exported
+// by StatusBadge.tsx for existing imports). Freshness outranks thresholds: data
 // older than METRICS_STALE_MS is stale, not warning/critical — a badge based
 // on aged readings would overstate what we know.
 //
