@@ -107,7 +107,7 @@ html[data-appearance="light"] {
  *
  * A number of components pass `var(--accent)`, `var(--status-critical)`,
  * `var(--surface-sunken)` etc. straight into inline styles and SVG attributes
- * (Gauge, RankedBar, MetricsChartsSkeleton, the machine detail charts), so
+ * (MetricsChartsSkeleton, the machine detail charts), so
  * these names have to exist as real custom properties, not just as Tailwind
  * theme keys. They are pure aliases — every value comes from a --mf-* token
  * above, so both contrast modes follow automatically.
