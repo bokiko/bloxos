@@ -15,6 +15,12 @@
 // alerts" is three words that say which one this is. There is no control at
 // zero: a button opening an empty sheet lies about there being something
 // behind it.
+//
+// And when the list could not be READ at all, it says so instead of printing
+// a zero. The count on the shell's bell and this list come from two different
+// places — a stream event and GET /api/alerts — so one can fail while the
+// other works. "0" would then be a claim nothing verified, sitting next to a
+// bell saying 1.
 
 import { ArrowRight } from "lucide-react";
 import type { AlertData } from "@/lib/demo-data";
@@ -22,11 +28,35 @@ import { alertBreakdown } from "@/lib/overview-layout.mjs";
 
 export function NeedsAttentionMini({
   alerts,
+  status,
   onOpenAlerts,
 }: {
   alerts: AlertData[];
+  /** Whether the alert list could be read at all. */
+  status: "loading" | "ready" | "error";
   onOpenAlerts: () => void;
 }) {
+  if (status !== "ready") {
+    const unknown = status === "error";
+    return (
+      <section className="mf-overview-module" aria-label="Needs attention">
+        <div className="mf-overview-module-head">
+          <h3 className="mf-kicker">Needs attention</h3>
+        </div>
+        <p className="mt-2">
+          <span className="mf-metric text-[24px] font-medium leading-none text-text-disabled">—</span>
+        </p>
+        <p
+          className={`mt-2 text-[13px] ${unknown ? "text-status-warning" : "text-text-tertiary"}`}
+          role={unknown ? "status" : undefined}
+          title={unknown ? "The hub's alert list could not be read. The count on the alerts button may still be accurate." : undefined}
+        >
+          {unknown ? "Alert list unavailable" : "Loading alerts…"}
+        </p>
+      </section>
+    );
+  }
+
   const { total, critical, warning } = alertBreakdown(alerts) as {
     total: number;
     critical: number;

@@ -120,6 +120,7 @@ function OverviewContent() {
     connected,
     hasReceivedData,
     alerts,
+    alertsStatus,
     setAlerts,
     setAlertCount,
     refreshMachine,
@@ -571,6 +572,7 @@ function OverviewContent() {
         ready={hasReceivedData || isDemo}
         counts={counts}
         alerts={alerts}
+        alertsStatus={alertsStatus}
         onOpenAlerts={openAlertPanel}
         onFilterStatus={applyStatusFilter}
         powerPeriod={powerPeriod}

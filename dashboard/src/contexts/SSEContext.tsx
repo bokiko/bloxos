@@ -36,6 +36,16 @@ interface SSEContextType {
   hasReceivedData: boolean;
   alertCount: number;
   alerts: AlertData[];
+  /**
+   * Whether the ACTIVE ALERT LIST could actually be read.
+   *
+   * `alertCount` and `alerts` come from different places — the count arrives
+   * on the stream, the list from GET /api/alerts — so one can succeed while
+   * the other fails. A consumer that renders "0 alerts" off an empty list
+   * would then be asserting something it never learned. Anything showing a
+   * count must check this first: "error" means unknown, not none.
+   */
+  alertsStatus: "loading" | "ready" | "error";
   setAlerts: React.Dispatch<React.SetStateAction<AlertData[]>>;
   setAlertCount: React.Dispatch<React.SetStateAction<number>>;
   refreshMachine: (machineID: string) => Promise<void>;
@@ -75,6 +85,7 @@ export function SSEProvider({ children }: { children: ReactNode }) {
   const [hasReceivedData, setHasReceivedData] = useState(false);
   const [alertCount, setAlertCount] = useState(0);
   const [alerts, setAlerts] = useState<AlertData[]>([]);
+  const [alertsStatus, setAlertsStatus] = useState<"loading" | "ready" | "error">("loading");
   const esRef = useRef<EventSource | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const backoffRef = useRef(3000);
@@ -157,6 +168,47 @@ export function SSEProvider({ children }: { children: ReactNode }) {
     cacheCancelRef.current = cancel;
   }, []);
 
+  /**
+   * Read the active alert list.
+   *
+   * Separate from the stream on purpose — the stream carries a COUNT, this
+   * carries the alerts themselves — which is exactly why its failure has to
+   * be recorded rather than swallowed. It used to end in `.catch(() => {})`,
+   * so a 401, a blip or a proxy hiccup left the list empty and silent for the
+   * life of the page while the count on the bell kept saying otherwise. The
+   * two then disagreed in public with nothing to explain why.
+   *
+   * The token captured at dispatch is re-checked before applying: a logout or
+   * re-login in flight must not repopulate state it just cleared.
+   */
+  const loadAlerts = useCallback(async () => {
+    const token = getStoredToken();
+    if (!token) return;
+    try {
+      const res = await fetch(`${HUB_URL}/api/alerts`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error(`alerts: ${res.status}`);
+      const data = await res.json();
+      if (!Array.isArray(data)) throw new Error("alerts: not a list");
+      if (mountedRef.current && getStoredToken() === token) {
+        setAlerts(data as AlertData[]);
+        // The list IS the count when we have just read it, so the two cannot
+        // drift apart on a successful load.
+        setAlertCount(data.length);
+        setAlertsStatus("ready");
+      }
+    } catch {
+      // Leave `alertCount` alone: the stream's count is still the best thing
+      // known about how many there are. Only the LIST is unknown.
+      if (mountedRef.current && getStoredToken() === token) setAlertsStatus("error");
+    }
+  }, []);
+  const alertsStatusRef = useRef(alertsStatus);
+  alertsStatusRef.current = alertsStatus;
+  const loadAlertsRef = useRef(loadAlerts);
+  loadAlertsRef.current = loadAlerts;
+
   const disconnect = useCallback((clearData = false) => {
     esRef.current?.close();
     esRef.current = null;
@@ -168,6 +220,7 @@ export function SSEProvider({ children }: { children: ReactNode }) {
       setMachineMap(new Map());
       setAlerts([]);
       setAlertCount(0);
+      setAlertsStatus("loading");
     }
   }, []);
 
@@ -222,6 +275,10 @@ export function SSEProvider({ children }: { children: ReactNode }) {
       if (!mountedRef.current || esRef.current !== es) return;
       setConnected(true);
       backoffRef.current = 3000;
+      // A stream that just came up is a working connection: retry a list that
+      // previously failed, so a transient error heals instead of persisting
+      // for the whole session.
+      if (alertsStatusRef.current === "error") void loadAlertsRef.current();
 
       if (sseTokenRefreshTimer.current) clearTimeout(sseTokenRefreshTimer.current);
       sseTokenRefreshTimer.current = setTimeout(() => {
@@ -424,24 +481,7 @@ export function SSEProvider({ children }: { children: ReactNode }) {
 
     connectRef.current();
 
-    // Fetch active alerts on mount. The token captured at dispatch time is
-    // re-checked before applying: a logout (or re-login) while the request
-    // is in flight must not repopulate state it just cleared.
-    const token = getStoredToken();
-    if (token) {
-      fetch(`${HUB_URL}/api/alerts`, {
-        headers: { Authorization: `Bearer ${token}` },
-      })
-        .then((r) => r.json())
-        .then((data) => {
-          if (!Array.isArray(data)) return;
-          if (mountedRef.current && getStoredToken() === token) {
-            setAlerts(data);
-            setAlertCount(data.length);
-          }
-        })
-        .catch(() => {});
-    }
+    loadAlertsRef.current();
 
     const onStorage = (e: StorageEvent) => {
       if (e.key === "bloxos_token") {
@@ -533,6 +573,7 @@ export function SSEProvider({ children }: { children: ReactNode }) {
         hasReceivedData,
         alertCount,
         alerts,
+        alertsStatus,
         setAlerts,
         setAlertCount,
         refreshMachine,

@@ -226,3 +226,25 @@ test("metric charts keep one series per card, so no axis lies", () => {
     );
   }
 });
+
+test("an alert count is never asserted from a list that failed to load", () => {
+  // The bell's count and the Needs-attention list come from two different
+  // places — an SSE event and GET /api/alerts — so one can fail while the
+  // other works. Rendering "0" off an empty list would then be a claim
+  // nothing verified, contradicting the bell in public. Seen in production:
+  // bell 1, module 0, with one genuinely active alert in the database.
+  const sse = readFileSync(new URL("../contexts/SSEContext.tsx", import.meta.url), "utf8");
+  assert.match(sse, /alertsStatus/, "the load state of the alert list must be observable");
+  assert.match(sse, /setAlertsStatus\("error"\)/, "a failed load must be recorded, not swallowed");
+  assert.match(sse, /setAlertsStatus\("ready"\)/, "a successful load must be recorded");
+
+  const mini = readFileSync(
+    new URL("../components/overview/NeedsAttentionMini.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    mini,
+    /if \(status !== "ready"\)/,
+    "the module must refuse to show a count before the list is known",
+  );
+});
