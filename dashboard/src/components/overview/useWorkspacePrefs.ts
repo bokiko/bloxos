@@ -1,7 +1,7 @@
 "use client";
 
-// The Overview's own per-user view state — collapsed sections, the fleet
-// power window and tariff, and the machines marked "expected high load".
+// The Overview's own per-user view state — the fleet power window and tariff,
+// and the machines marked "expected high load".
 //
 // This is deliberately NOT part of PreferencesContext. That context mirrors
 // the hub's user-preferences bundle, whose scalar fields are named columns on
@@ -32,15 +32,12 @@ export interface PowerRate {
 }
 
 export interface WorkspacePrefs {
-  collapsed: string[];
   expected_high_cpu: string[];
   power_period: PowerPeriod;
   power_rate: PowerRate;
 }
 
 export interface WorkspaceState {
-  isCollapsed: (sectionID: string) => boolean;
-  toggleSection: (sectionID: string) => void;
   /** Machine ids whose CPU saturation is their working state. */
   baselines: ReadonlySet<string>;
   toggleBaseline: (machineID: string) => void;
@@ -85,16 +82,9 @@ export function useWorkspacePrefs(): WorkspaceState {
     });
   }, []);
 
-  const collapsed = useMemo(() => new Set(prefs.collapsed), [prefs.collapsed]);
   const baselines = useMemo(() => new Set(prefs.expected_high_cpu), [prefs.expected_high_cpu]);
 
-  const isCollapsed = useCallback((sectionID: string) => collapsed.has(sectionID), [collapsed]);
 
-  const toggleSection = useCallback(
-    (sectionID: string) =>
-      update((prev) => ({ collapsed: toggleMember(prev.collapsed, sectionID) })),
-    [update],
-  );
 
   const toggleBaseline = useCallback(
     (machineID: string) =>
@@ -118,8 +108,6 @@ export function useWorkspacePrefs(): WorkspaceState {
   const powerRate = useMemo(() => normalizePowerRate(prefs.power_rate) as PowerRate, [prefs.power_rate]);
 
   return {
-    isCollapsed,
-    toggleSection,
     baselines,
     toggleBaseline,
     powerPeriod: isPowerPeriod(prefs.power_period) ? prefs.power_period : "6h",

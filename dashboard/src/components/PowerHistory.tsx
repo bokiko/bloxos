@@ -2,15 +2,16 @@
 
 import { useEffect, useState } from "react";
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { ChartTooltip } from "@/components/charts/ChartTooltip";
 import { HUB_URL, getStoredToken } from "@/lib/session";
-import { mergePowerHistory, powerChartPoints, powerProblemLabel, powerSensorIDs, sampleAgeLabel } from "@/lib/power-history.mjs";
-import { MF_INPUT } from "@/lib/monoform-classes";
+import { mergePowerHistory, powerChartPoints, powerProblemLabel, powerRailStats, powerSensorIDs, sampleAgeLabel } from "@/lib/power-history.mjs";
+import { MF_INPUT, MF_PANEL_HEAD, MF_PANEL_TITLE } from "@/lib/monoform-classes";
 
 // Monoform: average and peak are two views of the same measurement, not two
-// health states, so they are told apart by stroke style — solid product blue
-// for the average, dashed GPU violet for the sampled peak — and never by the
+// health states, so they are told apart by stroke style — solid measured-power
+// teal for the average, dashed violet for the sampled peak — and never by the
 // green/amber pair this product reserves for real nominal/warning data.
-const MEAN_STROKE = "var(--mf-blue)";
+const MEAN_STROKE = "var(--data-power, var(--mf-blue))";
 const PEAK_STROKE = "var(--mf-violet)";
 const axisTick = { fontSize: 10, fill: "var(--text-tertiary)", fontFamily: "var(--font-mono)" } as const;
 
@@ -70,17 +71,18 @@ export function PowerHistory({ machineId }: { machineId: string }) {
   const problem = powerProblemLabel(data?.problem);
   const hasCPU = points.some((point) => point.cpu && point.cpu.samples > 0);
   const stale = latest && now > 0 && now - latest.timestamp > 90000;
+  const rail = powerRailStats(points, sensor) as {
+    windows: number;
+    samples: number;
+    average: number | null;
+    peak: number | null;
+  };
   const formatTime = (timestamp: number) => new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   return (
-    <section
-      className="mt-8 space-y-3.5 border-t border-border-subtle pt-6"
-      aria-label="Component power history"
-    >
-      <div className="flex flex-wrap items-center justify-between gap-3">
+    <section className="mf-panel mf-machine-power overflow-hidden" aria-label="Component power history">
+      <div className={MF_PANEL_HEAD}>
         <div>
-          <h3 className="text-[13px] font-semibold text-text-primary">
-            Power history · last 24 hours
-          </h3>
+          <h2 className={MF_PANEL_TITLE}>Power history · last 24 hours</h2>
           <p className="mt-1 text-xs text-text-tertiary">
             30-second averages and sampled peaks. Component power, not wall power.
           </p>
@@ -96,6 +98,7 @@ export function PowerHistory({ machineId }: { machineId: string }) {
           <option value="cpu">CPU packages{hasCPU ? "" : " (unavailable)"}</option>
         </select>
       </div>
+      <div className="space-y-3.5 px-6 py-5">
       {error && (
         <p role="status" className="text-xs text-status-warning">
           {error} Existing readings may be stale.
@@ -112,11 +115,33 @@ export function PowerHistory({ machineId }: { machineId: string }) {
           ? "No power history yet. A supported agent normally sends its first completed window within about a minute."
           : error ? "Power history unavailable." : "Loading power history…"}</p>
       ) : (
-        <>
-          <p className={`text-xs ${stale ? "text-status-warning" : "text-text-tertiary"}`}>
-            Last window: {now ? sampleAgeLabel(latest?.timestamp, now) : "—"}{stale ? " · stale" : ""}
-            {latest?.coverage != null ? ` · ${Math.round(latest.coverage)}% sample coverage` : " · sensor unavailable"}
-          </p>
+        <div className="mf-machine-power-layout">
+          {/* The numbers this chart is made of. None of them is a new
+              measurement: the average is the sample-weighted mean of the
+              windows actually loaded (so a half-sampled window counts for
+              half), the peak is the highest single sampled peak of any window
+              and never a sum across sensors, and coverage is the LATEST
+              window's — a 24-hour ratio would read as a fault on a machine
+              enrolled an hour ago. A null reading prints an em dash, never 0. */}
+          <dl className="mf-power-rail">
+            <RailRow label="Latest 30 s average" value={formatWatts(latest?.mean)} lead />
+            <RailRow
+              label={`Average · ${rail.windows} window${rail.windows === 1 ? "" : "s"}`}
+              value={formatWatts(rail.average)}
+              title={`Sample-weighted mean of the ${rail.samples} samples in the ${rail.windows} completed windows loaded`}
+            />
+            <RailRow label="Highest sampled peak" value={formatWatts(rail.peak)} />
+            <RailRow
+              label="Last window"
+              value={`${now ? sampleAgeLabel(latest?.timestamp, now) : "—"}${stale ? " · stale" : ""}`}
+              tone={stale ? "warning" : undefined}
+            />
+            <RailRow
+              label="Coverage"
+              value={latest?.coverage != null ? `${Math.round(latest.coverage)}% sample coverage` : "sensor unavailable"}
+            />
+          </dl>
+          <div>
           <div
             className="h-52"
             role="img"
@@ -124,22 +149,23 @@ export function PowerHistory({ machineId }: { machineId: string }) {
           >
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={chart} margin={{ top: 4, right: 12, bottom: 0, left: 0 }}>
-                <CartesianGrid stroke="var(--border-subtle)" strokeDasharray="2 4" vertical={false} />
+                <CartesianGrid stroke="var(--border-subtle)" vertical={false} />
                 <XAxis
                   dataKey="timestamp" type="number" domain={["dataMin", "dataMax"]}
                   tickFormatter={formatTime} tick={axisTick} axisLine={false} tickLine={false} minTickGap={28}
                 />
                 <YAxis unit=" W" tick={axisTick} axisLine={false} tickLine={false} width={64} />
                 <Tooltip
-                  labelFormatter={(label) => formatTime(Number(label))}
                   cursor={{ stroke: "var(--border-strong)", strokeWidth: 1 }}
-                  contentStyle={{
-                    background: "var(--surface-overlay)",
-                    border: "1px solid var(--border-default)",
-                    borderRadius: 10,
-                    color: "var(--text-primary)",
-                    fontSize: 11,
-                  }}
+                  content={
+                    <ChartTooltip
+                      labelFormatter={(label) => formatTime(Number(label))}
+                      formatter={(value, name) => [
+                        value == null ? "—" : `${Math.round(Number(value))} W`,
+                        String(name ?? ""),
+                      ]}
+                    />
+                  }
                 />
                 <Line dataKey="mean" name="Average (W)" stroke={MEAN_STROKE} strokeWidth={1.5}
                   dot={false} connectNulls={false} isAnimationActive={false} />
@@ -148,12 +174,48 @@ export function PowerHistory({ machineId }: { machineId: string }) {
               </LineChart>
             </ResponsiveContainer>
           </div>
-          <p className="text-xs text-text-tertiary">
+          <p className="mt-2 text-xs text-text-tertiary">
             Solid line: average · dashed line: highest observed sample. Gaps and unavailable sensors
             are left blank.
           </p>
-        </>
+          </div>
+        </div>
       )}
+      </div>
     </section>
   );
+}
+
+/** One number on the rail. `lead` is the one the eye lands on first. */
+function RailRow({
+  label,
+  value,
+  lead,
+  tone,
+  title,
+}: {
+  label: string;
+  value: string;
+  lead?: boolean;
+  tone?: "warning";
+  title?: string;
+}) {
+  return (
+    <div>
+      <dt className="mf-kicker">{label}</dt>
+      <dd
+        className={`mf-metric ${lead ? "mf-power-rail-value" : "mt-1 text-[13px]"} ${
+          tone === "warning" ? "text-status-warning" : lead ? "" : "text-text-primary"
+        }`}
+        title={title}
+      >
+        {value}
+      </dd>
+    </div>
+  );
+}
+
+/** Watts, or an em dash. A missing reading is never printed as zero. */
+function formatWatts(value: number | null | undefined): string {
+  return value == null || !Number.isFinite(value) ? "—" : `${Math.round(value)} W`;
 }

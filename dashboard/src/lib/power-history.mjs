@@ -6,6 +6,15 @@ export function powerStats(point, sensor) {
   return point.gpus?.find((gpu) => gpu.id === sensor);
 }
 
+// A window is readable only when the agent actually sampled it and the numbers
+// are self-consistent. A peak below its own mean is a corrupt record, not a low
+// reading, so it is dropped rather than drawn or averaged.
+export function validPowerStats(stats) {
+  return Boolean(stats) && Number.isInteger(stats.samples) && stats.samples > 0 &&
+    Number.isFinite(stats.mean_watts) && stats.mean_watts >= 0 &&
+    Number.isFinite(stats.peak_watts) && stats.peak_watts >= stats.mean_watts;
+}
+
 export function powerChartPoints(points, sensor) {
   const ordered = points.filter((point) =>
     Number.isFinite(point.start_unix_ms) && Number.isFinite(point.end_unix_ms) &&
@@ -19,9 +28,7 @@ export function powerChartPoints(points, sensor) {
       result.push({ timestamp: point.start_unix_ms, mean: null, peak: null, coverage: null });
     }
     const stats = powerStats(point, sensor);
-    const valid = stats && Number.isInteger(stats.samples) && stats.samples > 0 &&
-      Number.isFinite(stats.mean_watts) && stats.mean_watts >= 0 &&
-      Number.isFinite(stats.peak_watts) && stats.peak_watts >= stats.mean_watts;
+    const valid = validPowerStats(stats);
     result.push({
       timestamp: point.end_unix_ms,
       mean: valid ? stats.mean_watts : null,
@@ -64,6 +71,32 @@ export function mergePowerHistory(previous, incoming, now) {
     if (point.end_unix_ms >= cutoff) points.set(JSON.stringify([point.stream_id, point.seq]), point);
   }
   return { ...incoming, points: [...points.values()] };
+}
+
+// The numbers beside the chart, for one sensor, over the points already loaded
+// (at most 24 h — see mergePowerHistory's cutoff).
+//
+// `average` is sample-weighted: a window the agent only half-sampled carries
+// half the weight of a full one, so the figure is the mean of every sample
+// taken rather than the mean of the window means. `peak` is the highest single
+// sampled peak of any window — never a sum, because independent sensors peak at
+// different instants and adding them would invent a machine peak that never
+// happened. `windows`/`samples` are what the average is made of, so the label
+// beside it can say so instead of implying a full day.
+export function powerRailStats(points, sensor) {
+  let windows = 0;
+  let samples = 0;
+  let weighted = 0;
+  let peak = null;
+  for (const point of points) {
+    const stats = powerStats(point, sensor);
+    if (!validPowerStats(stats)) continue;
+    windows += 1;
+    samples += stats.samples;
+    weighted += stats.mean_watts * stats.samples;
+    peak = peak === null ? stats.peak_watts : Math.max(peak, stats.peak_watts);
+  }
+  return { windows, samples, average: samples > 0 ? weighted / samples : null, peak };
 }
 
 export function sampleAgeLabel(endUnixMS, now) {

@@ -16,7 +16,7 @@ interface AlertPanelProps {
   onAcknowledgeAll: () => void;
 }
 
-function timeAgo(dateStr?: string): string {
+export function timeAgo(dateStr?: string): string {
   if (!dateStr) return "";
   const sec = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
   if (sec < 0 || isNaN(sec)) return "just now";
@@ -39,9 +39,9 @@ export function AlertPanel({ open, onClose, alerts, onAcknowledge, onAcknowledge
         <SheetHeader className="px-5 pt-5 pb-4 border-b border-blox-border">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2.5">
-              <AlertTriangle className="w-4 h-4 text-amber-400" />
+              <AlertTriangle className="w-4 h-4 text-status-warning" />
               <SheetTitle className="text-sm font-semibold text-blox-text">Active Alerts</SheetTitle>
-              <Badge variant="outline" className="border-red-500/30 bg-red-500/10 text-red-400 text-[10px] px-1.5 h-auto py-0">
+              <Badge variant="outline" className="border-status-critical/30 bg-status-critical-tint text-status-critical text-[10px] px-1.5 h-auto py-0">
                 {alerts.length}
               </Badge>
             </div>
@@ -50,7 +50,7 @@ export function AlertPanel({ open, onClose, alerts, onAcknowledge, onAcknowledge
                 variant="ghost"
                 size="xs"
                 onClick={onAcknowledgeAll}
-                className="text-[10px] text-blox-blue hover:bg-blox-blue/10"
+                className="text-[10px] text-accent hover:bg-accent-subtle"
               >
                 Acknowledge All
               </Button>
@@ -63,20 +63,24 @@ export function AlertPanel({ open, onClose, alerts, onAcknowledge, onAcknowledge
             <div className="flex flex-col items-center justify-center py-20 text-blox-muted">
               <CheckCircle className="w-10 h-10 mb-3 opacity-20" />
               <p className="text-sm">No active alerts</p>
-              <p className="text-xs mt-1 text-blox-muted/60">All systems operating normally</p>
+              <p className="text-xs mt-1 text-text-disabled">All systems operating normally</p>
             </div>
           ) : (
             <div>
               {alerts.map((alert, i) => (
                 <div key={alert.id}>
-                  <div className="px-5 py-4 hover:bg-blox-card/50 transition-colors">
+                  <div className="px-5 py-4 hover:bg-surface-elevated transition-colors">
                     <div className="flex items-start justify-between gap-3">
                       <div className="flex items-start gap-3 min-w-0">
+                        {/* The hub's alert rules emit only "warning" or
+                            "critical" (hub/alerts.go), so this branch is
+                            complete rather than a fallback swallowing a third
+                            severity. Both carry an icon AND the word. */}
                         <div className="mt-0.5 shrink-0">
                           {alert.severity === "critical" ? (
-                            <AlertOctagon className="w-4 h-4 text-red-400" />
+                            <AlertOctagon className="w-4 h-4 text-status-critical" />
                           ) : (
-                            <AlertTriangle className="w-4 h-4 text-amber-400" />
+                            <AlertTriangle className="w-4 h-4 text-status-warning" />
                           )}
                         </div>
                         <div className="min-w-0">
@@ -88,15 +92,15 @@ export function AlertPanel({ open, onClose, alerts, onAcknowledge, onAcknowledge
                               variant="outline"
                               className={`text-[10px] px-1.5 h-auto py-0 ${
                                 alert.severity === "critical"
-                                  ? "border-red-500/30 bg-red-500/10 text-red-400"
-                                  : "border-amber-500/30 bg-amber-500/10 text-amber-400"
+                                  ? "border-status-critical/30 bg-status-critical-tint text-status-critical"
+                                  : "border-status-warning/30 bg-status-warning-tint text-status-warning"
                               }`}
                             >
                               {alert.severity}
                             </Badge>
                           </div>
                           <p className="text-xs text-blox-muted leading-relaxed">{alert.message}</p>
-                          <p className="text-[10px] text-blox-muted/60 mt-1 font-mono tabular-nums">{timeAgo(alert.triggered_at)}</p>
+                          <p className="text-[10px] text-text-disabled mt-1 font-mono tabular-nums">{timeAgo(alert.triggered_at)}</p>
                         </div>
                       </div>
                       <Button
@@ -109,7 +113,7 @@ export function AlertPanel({ open, onClose, alerts, onAcknowledge, onAcknowledge
                       </Button>
                     </div>
                   </div>
-                  {i < alerts.length - 1 && <Separator className="bg-blox-border/50" />}
+                  {i < alerts.length - 1 && <Separator className="bg-border-subtle" />}
                 </div>
               ))}
             </div>

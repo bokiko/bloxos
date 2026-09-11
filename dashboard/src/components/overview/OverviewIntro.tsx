@@ -1,17 +1,22 @@
 "use client";
 
-// Monoform — the Overview's date line.
+// Monoform — the Overview's intro row: one line of fleet state, and the
+// control that changes what is shown below it.
 //
-// One kicker, and nothing else. The shell's top bar already renders "Overview"
-// as the page's <h1>, so this block does not repeat it.
+// The date moved to the top bar's kicker, above the "Overview" title the shell
+// already renders, so it is read where every other page's context is read.
 //
-// It used to also carry a sentence about the fleet's posture ("Your fleet
-// needs attention. Review the affected machines."). That sentence was read
-// once and never again: the panes directly under it already show the same
-// state as numbers, and a claim restating a number costs a line of prose on
-// every visit. A dashboard is glanceable — figures and short labels — so the
-// sentence is gone and the panes are what speak.
+// What is left is ONE line, and it is numbers: "All 6 machines live", or
+// "4 of 6 live · 1 needs review · 1 offline". It is computed from the same
+// counts the modules below use, never from an adjective — the earlier version
+// of this line said "Your fleet needs attention. Review the affected
+// machines.", which was a mood and an instruction restating a number nobody
+// had read yet. No second clause, no claim, nothing that is not measured.
+//
+// This is also the only <header> the Overview may have: the shell owns the
+// page header, and a test enforces that app/page.tsx contains none.
 
+import type { ReactNode } from "react";
 import { useSyncExternalStore } from "react";
 
 /** "Wednesday, 10 September" — weekday and month names follow the browser locale. */
@@ -31,18 +36,36 @@ const subscribeToNothing = () => () => {};
 const readToday = () => formatToday(new Date());
 const readNothing = () => null;
 
-export function OverviewIntro() {
-  const today = useSyncExternalStore<string | null>(
-    subscribeToNothing,
-    readToday,
-    readNothing,
-  );
+/**
+ * The formatted date, for whoever wants to render it. The Overview hands it to
+ * `usePageTitle` so it lands in the top bar's kicker; it is exported from here
+ * because this is where the hydration-safe read already lives.
+ */
+export function useToday(): string | null {
+  return useSyncExternalStore<string | null>(subscribeToNothing, readToday, readNothing);
+}
+
+export function OverviewIntro({
+  health,
+  tone,
+  actions,
+}: {
+  /** One line of measured fleet state. */
+  health: string;
+  tone: "ok" | "warning" | "critical" | "neutral";
+  /** The Customize control. */
+  actions?: ReactNode;
+}) {
+  const dotTone =
+    tone === "ok" ? "mf-status-live" : tone === "neutral" ? "mf-status-none" : `mf-status-${tone}`;
 
   return (
     <header className="mf-overview-intro">
-      {/* Non-breaking space reserves the line before the date resolves, so the
-          panes below it do not jump on the first client paint. */}
-      <span className="mf-kicker mf-overview-intro-date">{today ?? "\u00a0"}</span>
+      <p role="status" className="flex items-center gap-2 text-[13px] text-text-secondary">
+        <span className={`mf-status-dot ${dotTone}`} aria-hidden="true" />
+        {health}
+      </p>
+      {actions && <div className="mf-overview-intro-actions">{actions}</div>}
     </header>
   );
 }

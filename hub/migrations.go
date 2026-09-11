@@ -523,6 +523,28 @@ var migrations = []migration{
 			return nil
 		},
 	},
+	{
+		description: "per-user adaptive overview arrangement and modules",
+		apply: func(tx *sql.Tx) error {
+			// What the operator keeps above the machine table. `overview_layout`
+			// is machine-first | balanced | power-focus; `overview_widgets` is
+			// the canonical three-key object for the compact context modules.
+			//
+			// Both column defaults ARE the product defaults, so a new account
+			// needs no change at either INSERT site, and an existing row is
+			// never rewritten — it simply gains the recommended arrangement,
+			// which is what its owner is already looking at.
+			for _, statement := range []string{
+				`ALTER TABLE users ADD COLUMN overview_layout TEXT NOT NULL DEFAULT 'machine-first'`,
+				`ALTER TABLE users ADD COLUMN overview_widgets TEXT NOT NULL DEFAULT '{"availability":true,"attention":true,"urgent_alert":true}'`,
+			} {
+				if _, err := tx.Exec(statement); err != nil && !isDuplicateColumnErr(err) {
+					return err
+				}
+			}
+			return nil
+		},
+	},
 }
 
 // isDuplicateColumnErr returns true when SQLite rejects an ALTER TABLE ADD

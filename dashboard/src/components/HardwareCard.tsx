@@ -105,13 +105,13 @@ export function HardwareCard({ hw }: HardwareCardProps) {
   return (
     <section className="mf-panel overflow-hidden">
       <div className={MF_PANEL_HEAD}>
-        <h2 className={MF_PANEL_TITLE}>Hardware</h2>
+        <h2 className={MF_PANEL_TITLE}>Hardware profile</h2>
         <span className="mf-kicker">as reported by the agent</span>
       </div>
 
       {/* Two columns at md; the nth-child rule restores the horizontal rule
           between the two rows, which `divide-y-0` drops. */}
-      <div className="grid grid-cols-1 divide-y divide-border-subtle md:grid-cols-2 md:divide-y-0 md:divide-x md:[&>*:nth-child(n+3)]:border-t md:[&>*:nth-child(n+3)]:border-border-subtle">
+      <div className="mf-machine-hardware-grid">
         {/* SECTION 1: Compute */}
         <Section icon={<Cpu className="w-3.5 h-3.5" />} title="Compute">
           <PrimaryField label="Processor" value={hw.cpu_model || "—"} />
@@ -124,8 +124,11 @@ export function HardwareCard({ hw }: HardwareCardProps) {
                 <Zap className="w-2.5 h-2.5" aria-hidden />
                 Graphics
               </div>
-              {gpuNames.map((name) => (
-                <div key={name} className="font-mono text-xs leading-snug text-text-primary">
+              {/* Keyed by position, not by name: a box with two identical
+                  cards reports the same model string twice, which is the
+                  normal case rather than an edge one. */}
+              {gpuNames.map((name, index) => (
+                <div key={index} className="font-mono text-xs leading-snug text-text-primary">
                   {name}
                 </div>
               ))}

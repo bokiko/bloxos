@@ -4,10 +4,10 @@ import { useEffect, useState, useCallback } from "react";
 import {
   CartesianGrid, Line, LineChart, XAxis, YAxis, ResponsiveContainer, Tooltip,
 } from "recharts";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ChartTooltip } from "@/components/charts/ChartTooltip";
 import { HUB_URL, getStoredToken } from "@/lib/session";
 import { MetricsChartsSkeleton } from "./MetricsChartsSkeleton";
-import { MF_PANEL_HEAD, MF_PANEL_TITLE, MF_TAB } from "@/lib/monoform-classes";
+import { MF_PANEL_HEAD, MF_PANEL_TITLE } from "@/lib/monoform-classes";
 
 type Period = "30m" | "1h" | "6h" | "24h" | "7d";
 
@@ -57,15 +57,6 @@ const axisTick = {
   fontSize: 10,
   fill: "var(--text-tertiary)",
   fontFamily: "var(--font-mono)",
-} as const;
-
-const tooltipStyle = {
-  background: "var(--surface-overlay)",
-  border: "1px solid var(--border-default)",
-  borderRadius: 10,
-  fontSize: 11,
-  color: "var(--text-primary)",
-  boxShadow: "var(--mf-shadow-overlay)",
 } as const;
 
 const lineProps = {
@@ -118,21 +109,25 @@ export function MetricCharts({ machineId, hasGpu }: MetricChartsProps) {
 
   return (
     <div className="space-y-6">
-      {/* Period selector */}
-      <Tabs value={period} onValueChange={(v) => setPeriod(v as Period)}>
-        <TabsList variant="line" className="gap-1">
+      {/* The window, as a segmented control rather than a second line-variant
+          tab strip. Stacked directly under the page's own tab rail, two
+          identical underlined rows read as one broken navigation — and this
+          picks a range, it does not change what the page is showing. Same
+          control the fleet power pane uses for the same job. */}
+      <div className="mf-machine-metrics-toolbar">
+        <div className="mf-segment" role="group" aria-label="History window">
           {periods.map((p) => (
-            <TabsTrigger key={p} value={p} className={`${MF_TAB} font-mono tabular-nums`}>
+            <button key={p} type="button" aria-pressed={p === period} onClick={() => setPeriod(p)}>
               {p}
-            </TabsTrigger>
+            </button>
           ))}
-        </TabsList>
-      </Tabs>
+        </div>
+      </div>
 
       {data.length < 2 ? (
         <MetricsChartsSkeleton hasGpu={hasGpu} />
       ) : (
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <div className="mf-machine-metrics-grid">
           <Chart
             title="CPU"
             unit="%"
@@ -216,16 +211,31 @@ function Chart({
   tickFormatter?: (value: number) => string;
   format: (value: number) => string;
 }) {
+  // The last polled point, not a live "now": this component polls every 30s,
+  // and a number captioned as current that is half a minute old is worse than
+  // one the reader knows is the end of the line they are looking at.
+  const latest = data.length > 0 ? (data[data.length - 1] as Record<string, unknown>)[dataKey] : undefined;
   return (
     <section className="mf-panel overflow-hidden">
       <div className={MF_PANEL_HEAD}>
-        <h4 className={MF_PANEL_TITLE}>{title}</h4>
-        <span className="mf-kicker">{unit}</span>
+        <h3 className={MF_PANEL_TITLE}>{title}</h3>
+        {/* The legend is the swatch of the line itself, so it cannot disagree
+            with the chart about which colour means what. */}
+        <span className="mf-chart-legend">
+          <i style={{ background: stroke }} aria-hidden="true" />
+          {/* The formatted value already carries its unit, so the bare unit
+              only appears when there is no reading to show it with. */}
+          {typeof latest === "number" && Number.isFinite(latest) ? (
+            <span className="mf-metric text-text-primary">{format(latest)}</span>
+          ) : (
+            unit
+          )}
+        </span>
       </div>
       <div className="px-3 py-4">
         <ResponsiveContainer width="100%" height={180}>
           <LineChart data={data} margin={{ top: 4, right: 12, bottom: 0, left: 0 }}>
-            <CartesianGrid stroke="var(--border-subtle)" strokeDasharray="2 4" vertical={false} />
+            <CartesianGrid stroke="var(--border-subtle)" vertical={false} />
             <XAxis
               dataKey="timestamp"
               tickFormatter={formatTime}
@@ -243,10 +253,13 @@ function Chart({
               tickFormatter={tickFormatter}
             />
             <Tooltip
-              contentStyle={tooltipStyle}
               cursor={{ stroke: "var(--border-strong)", strokeWidth: 1 }}
-              labelFormatter={formatTooltipLabel}
-              formatter={(v) => [format(Number(v ?? 0)), title]}
+              content={
+                <ChartTooltip
+                  labelFormatter={formatTooltipLabel}
+                  formatter={(v) => [v == null ? "—" : format(Number(v)), title]}
+                />
+              }
             />
             <Line {...lineProps} dataKey={dataKey} stroke={stroke} />
           </LineChart>

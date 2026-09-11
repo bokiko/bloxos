@@ -17,15 +17,12 @@
 const KEY_PREFIX = "bloxos-workspace-u-";
 
 /**
- * The Overview sections an operator can collapse. Order is display order.
- *
- * "attention" and "load" were removed with the panes they named. They are NOT
- * listed here as retired ids, because normalizeWorkspacePrefs already filters
- * `collapsed` through this list: an operator who had folded either pane has a
- * stored id that no longer matches anything, and it is dropped on the next
- * read and never written back. Nothing throws, nothing else unfolds.
+ * The Overview no longer folds anything, so there are no collapsible sections
+ * left to remember. `collapsed` is deliberately still ACCEPTED and dropped on
+ * read (see normalizeWorkspacePrefs): every operator who ever folded a pane has
+ * the key sitting in localStorage, and a normalizer that threw or preserved it
+ * would either break their workspace or carry a preference nothing reads.
  */
-export const OVERVIEW_SECTIONS = ["availability", "capacity", "fleet"];
 
 /** Windows the fleet power pane can chart. They mirror the hub's `?period`
  * vocabulary; 7d is absent because power history is retained for 24 hours. */
@@ -43,8 +40,6 @@ export const POWER_CURRENCIES = [
 export const POWER_MAX_RATE = 100;
 
 export const DEFAULT_WORKSPACE_PREFS = Object.freeze({
-  /** Section ids from OVERVIEW_SECTIONS that are currently collapsed. */
-  collapsed: [],
   /** Machine ids whose CPU saturation is their normal working state. */
   expected_high_cpu: [],
   /** One of POWER_PERIODS. */
@@ -83,7 +78,8 @@ function stringList(raw, allowed) {
 export function normalizeWorkspacePrefs(raw) {
   const r = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
   return {
-    collapsed: stringList(r.collapsed, OVERVIEW_SECTIONS),
+    // `collapsed` is intentionally not carried through: the sections it named
+    // are gone, so a stored value is read, ignored and never written back.
     // Machine ids are opaque and are NOT validated against the live fleet: a
     // machine that is briefly absent from the SSE stream must not silently
     // lose its flag. Stale ids are inert.

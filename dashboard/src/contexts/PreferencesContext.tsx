@@ -32,6 +32,21 @@ import {
   readPreferencesCache,
   writePreferencesCache,
 } from "@/lib/preferences-cache.mjs";
+import {
+  DEFAULT_OVERVIEW_LAYOUT,
+  DEFAULT_OVERVIEW_WIDGETS,
+  isOverviewLayout,
+  normalizeOverviewWidgets,
+} from "@/lib/overview-layout.mjs";
+
+/** One of the three named arrangements above the machine table. */
+export type OverviewLayout = "machine-first" | "balanced" | "power-focus";
+/** The compact context modules. Every key is always present. */
+export interface OverviewWidgets {
+  availability: boolean;
+  attention: boolean;
+  urgent_alert: boolean;
+}
 
 export type Density = "comfortable" | "compact";
 export type DefaultView = "grid" | "list";
@@ -54,6 +69,10 @@ export interface Preferences {
   pinned_machines: string[];
   machine_order: string[];
   saved_filters: SavedFilter[];
+  /** Which arrangement sits above the machine table. */
+  overview_layout: OverviewLayout;
+  /** Which compact context modules are kept. */
+  overview_widgets: OverviewWidgets;
 }
 
 const DEFAULT_PREFS: Preferences = {
@@ -66,6 +85,8 @@ const DEFAULT_PREFS: Preferences = {
   pinned_machines: [],
   machine_order: [],
   saved_filters: [],
+  overview_layout: DEFAULT_OVERVIEW_LAYOUT,
+  overview_widgets: { ...DEFAULT_OVERVIEW_WIDGETS },
 };
 
 interface PreferencesContextValue {
@@ -74,8 +95,20 @@ interface PreferencesContextValue {
   saveMachineOrder: (ids: string[]) => Promise<void>;
   /** Optimistic scalar update — applies locally then PATCHes. */
   updateScalar: (
-    patch: Partial<Pick<Preferences, "display_name" | "density" | "default_view" | "default_sort">>,
+    patch: Partial<
+      Pick<
+        Preferences,
+        "display_name" | "density" | "default_view" | "default_sort" | "overview_layout" | "overview_widgets"
+      >
+    >,
   ) => Promise<void>;
+  /**
+   * Whether the hub that answered the last GET knows about the overview
+   * preference. False against a hub older than the arrangement feature, and
+   * before the first successful response. The overview controls read this and
+   * disable themselves rather than appearing to save into a void.
+   */
+  hubSupportsOverview: boolean;
   uploadAvatar: (file: File) => Promise<void>;
   removeAvatar: () => Promise<void>;
   pinMachine: (machineID: string) => Promise<void>;
@@ -116,6 +149,10 @@ function normalizePreferences(raw: unknown): Preferences {
     pinned_machines: pinned,
     machine_order: normalizeMachineOrder(r.machine_order),
     saved_filters: saved,
+    overview_layout: isOverviewLayout(r.overview_layout)
+      ? (r.overview_layout as OverviewLayout)
+      : DEFAULT_OVERVIEW_LAYOUT,
+    overview_widgets: normalizeOverviewWidgets(r.overview_widgets) as OverviewWidgets,
   };
 }
 
@@ -142,6 +179,7 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
     () => readPreferencesCache(userIDFromToken(getStoredToken()), normalizePreferences) ?? DEFAULT_PREFS,
   );
   const [loading, setLoading] = useState(true);
+  const [hubSupportsOverview, setHubSupportsOverview] = useState(false);
   // userID tracks the actual token, not just authenticated-ness: a cross-tab
   // or same-tab user switch with the same boolean state must still re-key.
   const userID = useMemo<string | null>(() => userIDFromToken(token), [token]);
@@ -194,6 +232,12 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
       // A user switch (or a newer refresh) while this request was in flight
       // must not write the old user's preferences into the new session.
       if (seq !== refreshSeqRef.current || userIDRef.current !== uid) return;
+      // An older hub answers without these keys. Recording that lets the
+      // overview controls disable themselves instead of writing a preference
+      // the hub will reject with "no fields to update".
+      setHubSupportsOverview(
+        typeof (data as Record<string, unknown>)?.overview_layout === "string",
+      );
       setAndCache(normalizePreferences(data));
     } catch {
       // Offline — leave cached prefs intact.
@@ -255,7 +299,12 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
 
   const updateScalar = useCallback(
     async (
-      patch: Partial<Pick<Preferences, "display_name" | "density" | "default_view" | "default_sort">>,
+      patch: Partial<
+        Pick<
+          Preferences,
+          "display_name" | "density" | "default_view" | "default_sort" | "overview_layout" | "overview_widgets"
+        >
+      >,
     ) => {
       const uid = userIDRef.current;
       // Optimistic local update.
@@ -271,6 +320,8 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
         if (patch.density !== undefined) owned.density = normalized.density;
         if (patch.default_view !== undefined) owned.default_view = normalized.default_view;
         if (patch.default_sort !== undefined) owned.default_sort = normalized.default_sort;
+        if (patch.overview_layout !== undefined) owned.overview_layout = normalized.overview_layout;
+        if (patch.overview_widgets !== undefined) owned.overview_widgets = normalized.overview_widgets;
         mergeAndCache(owned);
       } catch (e) {
         // Don't revert: we keep the optimistic state so the user isn't
@@ -429,6 +480,7 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
         saveFilter,
         deleteFilter,
         myAvatarURL,
+        hubSupportsOverview,
       }}
     >
       {children}

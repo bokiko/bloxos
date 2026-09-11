@@ -1,6 +1,6 @@
 "use client";
 
-// Monoform — the left half of the fleet posture row.
+// Monoform — fleet availability, as one compact module.
 //
 // Two things, and nothing else: the connected count, and three state rows. No
 // ring, no radial gauge, no decorative progress fill, no repeated metric
@@ -10,10 +10,9 @@
 //
 // It used to carry a sentence between the two ("1 in warning. The other 5
 // machines are reporting normally."). The rows underneath already say that,
-// per state, as numbers; the sentence was the same fact spelled out in prose
-// and it is gone. What it did add — the *reason* a machine is in the review
-// bucket, critical vs warning vs stale — is on the row's tooltip and in its
-// accessible name, where it costs no vertical space.
+// per state, as numbers. What the sentence did add — the *reason* a machine is
+// in the review bucket, critical vs warning vs stale — is on the row's tooltip
+// and in its accessible name, where it costs no vertical space.
 //
 // A row at zero is drawn quiet, not in its severity colour. "Offline 0" used
 // to paint a red dot on a fleet where nothing was offline, which is exactly
@@ -21,18 +20,20 @@
 // statement that nothing is. The label and the number are still there — the
 // row is not removed, only de-escalated.
 //
-// THE ROWS THAT COUNT SOMETHING WRONG ARE CONTROLS.
-// This pane is now the Overview's only summary of fleet posture — the
-// attention panel that used to sit beside it is gone — so "Needs review 3"
-// must be a way in, not a dead end. Those two rows are real <button>s that
-// open the alerts panel (the same sheet the shell's bell opens, with the same
-// acknowledge actions). A row at zero is NOT a control: there is nothing to
-// go and look at, and a button that opens an empty sheet is a lie about
-// there being something behind it.
+// THE ROWS THAT COUNT SOMETHING WRONG ARE CONTROLS, AND THEY LEAD TO MACHINES.
+// These counts are machine STATE, classified from live readings on this
+// client. They are not the hub's alert list: a machine can be stale with no
+// alert rule firing, and an alert can outlive the condition that raised it.
+// So "Needs review 3" filters the machine table directly below and takes you
+// to it — the three machines it is counting. Sending it to the alert sheet
+// would be a button promising a list that may be empty or may be about
+// something else. Needs attention, which really is built from hub alerts,
+// is the module that opens that sheet.
+//
+// A row at zero is NOT a control: there is nothing to go and look at.
 
 import type { ReactNode } from "react";
 import { ArrowRight } from "lucide-react";
-import { Disclosure } from "./Disclosure";
 
 export interface AvailabilityCounts {
   total: number;
@@ -46,6 +47,9 @@ export interface AvailabilityCounts {
   /** warning + critical + stale. live + needsReview + offline === total. */
   needsReview: number;
 }
+
+/** The table filters these rows can send the operator to. */
+export type MachineStateFilter = "needs-review" | "offline";
 
 /**
  * What is actually inside the "Needs review" bucket, as chips rather than a
@@ -64,77 +68,64 @@ export function reviewBreakdown(c: AvailabilityCounts): string {
   return parts.join(" · ");
 }
 
-export function FleetAvailabilityPanel({
+export function FleetAvailabilityMini({
   counts,
-  onOpenAlerts,
-  open,
-  onToggle,
+  onFilterStatus,
 }: {
   counts: AvailabilityCounts;
-  /** Opens the alerts sheet. Wired to the same handler as the shell's bell. */
-  onOpenAlerts: () => void;
-  open: boolean;
-  onToggle: () => void;
+  /** Filters the machine table below and moves focus to it. */
+  onFilterStatus: (filter: MachineStateFilter) => void;
 }) {
   // The "needs review" bucket takes its colour from the worst state inside it,
   // so an amber dot never stands in for a critical machine.
   const reviewTone = counts.critical > 0 ? "critical" : counts.warning > 0 ? "warning" : "stale";
 
   return (
-    // `mf-pane-fill`: this pane holds four numbers now, and its partner holds
-    // a chart, so the grid row stretches it well past its own content. Rather
-    // than leave 80px of nothing under the last row, the state list takes the
-    // slack and the three rows share it evenly.
-    <section
-      className="mf-section mf-pane-fill"
-      aria-label="Fleet availability"
-      data-open={open ? "true" : "false"}
-    >
-      <Disclosure
-        id="availability"
-        label="Fleet availability"
-        open={open}
-        onToggle={onToggle}
-        summary={`${counts.connected} / ${counts.total} connected`}
-      >
-        <div className="mt-4 flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
-          <span className="mf-metric text-[28px] font-medium leading-none text-text-primary">
-            {counts.connected}
-            <span className="text-text-disabled"> / </span>
-            <span className="text-text-tertiary">{counts.total}</span>
-          </span>
-          <span className="mf-kicker">connected</span>
-        </div>
+    <section className="mf-overview-module" aria-label="Fleet availability">
+      <div className="mf-overview-module-head">
+        <h3 className="mf-kicker">Fleet availability</h3>
+      </div>
 
-        {/* A list, not a <dl>: the two rows that count something wrong are
-            buttons, and a <button> is not a valid child of a definition
-            list. The dot / name / count reading order is unchanged. */}
-        <ul className="mf-state-list mt-4">
-          <StateRow tone="live" label="Online" count={counts.live} />
-          <StateRow
-            tone={reviewTone}
-            label="Needs review"
-            count={counts.needsReview}
-            detail={reviewBreakdown(counts)}
-            onActivate={onOpenAlerts}
-          />
-          <StateRow
-            tone="offline"
-            label="Offline"
-            count={counts.offline}
-            onActivate={onOpenAlerts}
-          />
-        </ul>
-      </Disclosure>
+      <div className="mt-2 flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
+        <span className="mf-metric text-[24px] font-medium leading-none text-text-primary">
+          {counts.connected}
+          <span className="text-text-disabled"> / </span>
+          <span className="text-text-tertiary">{counts.total}</span>
+        </span>
+        <span className="mf-kicker">connected</span>
+      </div>
+
+      {/* A list, not a <dl>: the two rows that count something wrong are
+          buttons, and a <button> is not a valid child of a definition list.
+          The dot / name / count reading order is unchanged. */}
+      <ul className="mf-state-list mt-3">
+        <StateRow tone="live" label="Online" count={counts.live} />
+        <StateRow
+          tone={reviewTone}
+          label="Needs review"
+          count={counts.needsReview}
+          detail={reviewBreakdown(counts)}
+          destination="machines that need review"
+          onActivate={() => onFilterStatus("needs-review")}
+        />
+        <StateRow
+          tone="offline"
+          label="Offline"
+          count={counts.offline}
+          destination="offline machines"
+          onActivate={() => onFilterStatus("offline")}
+        />
+      </ul>
     </section>
   );
 }
 
-function StateRow({
+export function StateRow({
   tone,
   label,
   count,
   detail,
+  destination,
   onActivate,
 }: {
   tone: "live" | "warning" | "critical" | "stale" | "offline";
@@ -142,6 +133,8 @@ function StateRow({
   count: number;
   /** What is inside the bucket, for the tooltip and the accessible name. */
   detail?: string;
+  /** Where activating the row goes, named in the accessible label. */
+  destination?: string;
   /** Given, and with something in the bucket, the row becomes a button. */
   onActivate?: () => void;
 }) {
@@ -177,6 +170,7 @@ function StateRow({
   // The breakdown, where there is one, rides along on both the tooltip and the
   // accessible name rather than being spelled out under the rows.
   const inside = !empty && detail ? ` (${detail})` : "";
+  const action = destination ? `Show ${destination}.` : "";
 
   return (
     <li>
@@ -188,8 +182,8 @@ function StateRow({
           // The visible row reads "Needs review 3". The name says what is in
           // the bucket and what the button DOES, because "3" is not a
           // destination and an amber dot is not a diagnosis.
-          aria-label={`${label}: ${machines}${inside}. Open alerts.`}
-          title={detail && !empty ? `${detail} — open alerts` : "Open alerts"}
+          aria-label={`${label}: ${machines}${inside}. ${action}`.trim()}
+          title={detail && !empty ? `${detail} — show them in the table` : "Show them in the table"}
         >
           {body}
         </button>

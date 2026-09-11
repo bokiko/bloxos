@@ -34,8 +34,8 @@ const PALETTES: Record<AppearanceMode, ITheme> = {
   light: {
     // The well is the table-head tone rather than pure white, so the terminal
     // still reads as recessed inside a white panel.
-    background: "#f7f7f5",
-    foreground: "#191918",
+    background: "#f7f8fa",
+    foreground: "#171a23",
     cursor: "#3149d9",
     selectionBackground: "rgba(49, 73, 217, 0.20)",
     black: "#191918",
@@ -58,25 +58,25 @@ const PALETTES: Record<AppearanceMode, ITheme> = {
     brightWhite: "#191918",
   },
   dark: {
-    background: "#090909",
-    foreground: "#f4f4f2",
-    cursor: "#708bff",
-    selectionBackground: "rgba(112, 139, 255, 0.28)",
-    black: "#090909",
-    red: "#ea7474",
-    green: "#63c695",
-    yellow: "#edaa57",
-    blue: "#708bff",
-    magenta: "#aa97ed",
-    cyan: "#6cc2ce",
-    white: "#f4f4f2",
-    brightBlack: "#969691",
-    brightRed: "#f08a8a",
-    brightGreen: "#7bd0a4",
-    brightYellow: "#f2bb74",
-    brightBlue: "#8b9fff",
-    brightMagenta: "#b6a6f0",
-    brightCyan: "#82cdd7",
+    background: "#0c0d11",
+    foreground: "#f5f6fa",
+    cursor: "#6d7cff",
+    selectionBackground: "rgba(109, 124, 255, 0.28)",
+    black: "#0c0d11",
+    red: "#f06d76",
+    green: "#41c987",
+    yellow: "#f5a84b",
+    blue: "#6d7cff",
+    magenta: "#a78bfa",
+    cyan: "#2dd4bf",
+    white: "#f5f6fa",
+    brightBlack: "#858c9e",
+    brightRed: "#f48f96",
+    brightGreen: "#68d6a1",
+    brightYellow: "#f8bd74",
+    brightBlue: "#8e99ff",
+    brightMagenta: "#bda6fb",
+    brightCyan: "#5fe0d0",
     brightWhite: "#ffffff",
   },
 };
@@ -229,9 +229,9 @@ export function Terminal({ sessionId, browserToken, onDisconnect }: TerminalProp
   return (
     <div className="relative w-full h-full">
       {status === "connecting" && (
-        <div className="absolute inset-0 flex items-center justify-center z-10 bg-blox-bg/80 backdrop-blur-sm">
-          <div className="flex items-center gap-2 text-blox-muted text-sm">
-            <div className="w-3 h-3 border-2 border-blox-blue border-t-transparent rounded-full animate-spin" />
+        <div className="absolute inset-0 z-10 flex items-center justify-center bg-surface-sunken/80">
+          <div className="flex items-center gap-2 text-[13px] text-text-tertiary">
+            <div className="h-3 w-3 animate-spin rounded-full border-2 border-accent border-t-transparent" />
             Connecting…
           </div>
         </div>

@@ -26,32 +26,35 @@
 
 :root,
 html[data-appearance="dark"] {
-  --mf-void: #090909;
-  --mf-canvas: #111111;
-  --mf-panel: #1a1a1a;
-  --mf-panel-hover: #222222;
-  --mf-panel-selected: #27272a;
-  --mf-table-head: #151515;
-  --mf-line: #303030;
-  --mf-line-strong: #494949;
-  --mf-text: #f4f4f2;
-  --mf-text-secondary: #c2c2bd;
-  --mf-muted: #969691;
-  --mf-quiet: #686864;
-  --mf-blue: #708bff;
-  --mf-blue-pressed: #5c77ef;
-  --mf-blue-soft: rgb(112 139 255 / 15%);
-  --mf-green: #63c695;
-  --mf-green-soft: rgb(99 198 149 / 12%);
-  --mf-amber: #edaa57;
-  --mf-amber-soft: rgb(237 170 87 / 12%);
-  --mf-red: #ea7474;
-  --mf-red-soft: rgb(234 116 116 / 12%);
-  --mf-violet: #aa97ed;
-  --mf-violet-soft: rgb(170 151 237 / 12%);
-  --mf-radius-control: 10px;
-  --mf-radius-panel: 18px;
-  --mf-shadow-overlay: 0 20px 60px rgb(0 0 0 / 38%);
+  --mf-void: #0c0d11;
+  --mf-canvas: #151720;
+  --mf-panel: #1c1f29;
+  --mf-panel-hover: #242836;
+  --mf-panel-selected: rgb(109 124 255 / 12%);
+  --mf-table-head: #191c25;
+  --mf-line: rgb(255 255 255 / 8.5%);
+  --mf-line-strong: rgb(255 255 255 / 15%);
+  --mf-text: #f5f6fa;
+  --mf-text-secondary: #c1c6d2;
+  --mf-muted: #858c9e;
+  --mf-quiet: #666e7f;
+  --mf-blue: #6d7cff;
+  --mf-blue-pressed: #5868ef;
+  --mf-blue-soft: rgb(109 124 255 / 14%);
+  --mf-green: #41c987;
+  --mf-green-soft: rgb(65 201 135 / 12%);
+  --mf-amber: #f5a84b;
+  --mf-amber-soft: rgb(245 168 75 / 12%);
+  --mf-red: #f06d76;
+  --mf-red-soft: rgb(240 109 118 / 12%);
+  --mf-violet: #a78bfa;
+  --mf-violet-soft: rgb(167 139 250 / 13%);
+  --mf-teal: #2dd4bf;
+  --mf-teal-soft: rgb(45 212 191 / 13%);
+  --mf-radius-control: 12px;
+  --mf-radius-panel: 20px;
+  --mf-shadow-panel: 0 1px 0 rgb(255 255 255 / 3.5%) inset, 0 12px 32px rgb(0 0 0 / 13%);
+  --mf-shadow-overlay: 0 20px 60px rgb(0 0 0 / 32%);
 }
 
 /* ============================================================================
@@ -62,30 +65,41 @@ html[data-appearance="dark"] {
  * raised surface, `line` is the hairline — but every value was picked for a
  * light ground rather than negated.
  *
- * The status hues are re-tuned, not reused. #63c695 / #edaa57 / #ea7474 are
- * built to carry against a near-black canvas and read as pale wash on white,
- * so each is replaced by a darker member of the same hue family. Measured
- * against the light canvas (#f4f4f2): green 5.36:1, amber 5.75:1, red 5.11:1,
- * blue 6.18:1, violet 6.07:1 — every one clears 4.5:1 as body-size text, and
- * each also clears 4.5:1 against the rail's deeper ground (#eaeae7). Text is
- * 15.98:1, secondary text 10.05:1 and muted 5.18:1 on the same canvas; the
- * deliberately de-emphasised `quiet` tone sits at 3.42:1, matching the 3.37:1
- * it has in dark rather than borrowing a stronger voice in one theme only.
+ * The status hues are re-tuned, not reused. A colour built to carry against a
+ * near-black canvas reads as pale wash on white, so each is a darker member of
+ * the same hue family.
+ *
+ * Lumen supplied this theme's surfaces, lines, text, blue and violet. It also
+ * supplied lighter status hues, and those were NOT taken: measured on this
+ * canvas (#f8f9fb) they are muted 3.93:1, amber 3.92:1, green 4.19:1,
+ * red 4.48:1 — every one of them below 4.5:1 at body size, in a product where
+ * the muted tone carries every kicker and table header and the status tones
+ * carry every warning line. The values kept here are the ones that already
+ * cleared it, re-measured against the new canvas: muted 5.41:1, green 5.60:1,
+ * amber 6.01:1, red 5.34:1, blue 6.46:1, violet 6.34:1. Text is 16.70:1 and
+ * secondary text 10.51:1.
+ *
+ * Two values are Lumen's hue taken one step darker so they can label as well
+ * as draw: teal (#0f9f8b was 3.14:1 — a stroke, but not a word) and quiet
+ * (#a2aab8 was 2.22:1, well under the 3.42:1 this deliberately de-emphasised
+ * tone has always had). Teal is now 5.18:1 and quiet 3.42:1, matching the
+ * 3.49:1 quiet has in dark rather than borrowing a stronger voice in one
+ * theme only.
  * ========================================================================== */
 
 html[data-appearance="light"] {
-  --mf-void: #eaeae7;
-  --mf-canvas: #f4f4f2;
+  --mf-void: #eceef4;
+  --mf-canvas: #f8f9fb;
   --mf-panel: #ffffff;
-  --mf-panel-hover: #efefec;
-  --mf-panel-selected: #e4e5f0;
-  --mf-table-head: #f7f7f5;
-  --mf-line: #d7d7d1;
-  --mf-line-strong: #adada4;
-  --mf-text: #191918;
-  --mf-text-secondary: #3c3c39;
+  --mf-panel-hover: #f1f3f7;
+  --mf-panel-selected: rgb(74 94 234 / 10%);
+  --mf-table-head: #f7f8fa;
+  --mf-line: #e6e9f0;
+  --mf-line-strong: #d6dbe5;
+  --mf-text: #171a23;
+  --mf-text-secondary: #465064;
   --mf-muted: #67675f;
-  --mf-quiet: #84847d;
+  --mf-quiet: #7f8798;
   --mf-blue: #3149d9;
   --mf-blue-pressed: #2739b4;
   --mf-blue-soft: rgb(49 73 217 / 10%);
@@ -97,9 +111,12 @@ html[data-appearance="light"] {
   --mf-red-soft: rgb(198 40 40 / 10%);
   --mf-violet: #6244c4;
   --mf-violet-soft: rgb(98 68 196 / 10%);
-  /* The one shadow, restated for a light ground: black at dark-mode strength
-     reads as soot under a dialog on white. */
-  --mf-shadow-overlay: 0 20px 60px rgb(25 25 24 / 16%);
+  --mf-teal: #0a7767;
+  --mf-teal-soft: rgb(10 119 103 / 11%);
+  /* Both shadows restated for a light ground: black at dark-mode strength
+     reads as soot under a panel on white. */
+  --mf-shadow-panel: 0 1px 2px rgb(20 30 50 / 3%), 0 10px 26px rgb(20 30 50 / 5%);
+  --mf-shadow-overlay: 0 20px 60px rgb(25 35 55 / 16%);
 }
 
 /* ============================================================================
@@ -144,6 +161,29 @@ html[data-appearance="light"] {
   --status-stale-tint: var(--mf-violet-soft);
   --status-offline: var(--mf-red);
   --status-offline-tint: var(--mf-red-soft);
+
+  /* The rail is chrome, not page. It keeps one graphite ground in BOTH themes
+     — Lumen's own direction, and the reason the product still reads as one
+     application in Bright — so it cannot use the page's text tokens, which go
+     near-black on that ground. These values are the dark theme's, fixed here
+     rather than themed, and `.mf-rail` rebinds the text tokens to them for
+     everything inside it. `--mf-void` is therefore free to stay what its name
+     says: the recessed PAGE surface, light in Bright. */
+  --mf-rail: #181a21;
+  --mf-rail-line: rgb(255 255 255 / 9%);
+  --mf-rail-text: #f5f6fa;
+  --mf-rail-muted: #858c9e;
+  --mf-rail-quiet: #666e7f;
+  --mf-rail-hover: #242836;
+
+  /* Data-domain roles. A series is coloured by WHAT IT MEASURES, never by
+     whether the reading is healthy — a continuous line cannot honestly carry
+     nominal/warning/critical, and green/amber/red stay reserved for state.
+     Host compute is the product blue, anything GPU is the violet, and measured
+     energy is the teal that exists only for this role. */
+  --data-host: var(--mf-blue);
+  --data-gpu: var(--mf-violet);
+  --data-power: var(--mf-teal);
 
   /* Motion — the only sanctioned range. No continuous animation. */
   --motion-fast: 160ms;
@@ -249,12 +289,16 @@ html[data-appearance="light"] {
   --color-chart-4: var(--mf-amber);
   --color-chart-5: var(--mf-red);
 
-  /* Elevation. Monoform has exactly one shadow and it is for real overlays —
-     dialogs, popovers, dropdowns. Everything else is flat with a hairline, so
-     the small end of Tailwind's shadow ramp is deliberately nulled out and the
-     large end collapses onto the single overlay shadow. Tailwind bakes these
-     into the `shadow-*` utilities at build time, which is why they belong in
-     @theme rather than in a plain :root block. */
+  /* Elevation. There are exactly two shadows: `--mf-shadow-panel`, which gives
+     a panel its slight lift off the canvas, and `--mf-shadow-overlay` for
+     things that really float — dialogs, popovers, dropdowns. The panel one is
+     applied through the component classes that own a panel (.mf-panel and
+     friends), NOT through this ramp: `shadow-sm` is worn by small controls like
+     the appearance toggle, and giving a 32px button a panel's drop shadow is
+     how a flat product starts looking like a pile of cards. So the small end
+     stays nulled and the large end collapses onto the overlay shadow. Tailwind
+     bakes these into the `shadow-*` utilities at build time, which is why they
+     belong in @theme rather than in a plain :root block. */
   --shadow-2xs: none;
   --shadow-xs: none;
   --shadow-sm: none;
@@ -369,11 +413,19 @@ html[data-appearance="light"] {
     display: flex;
     flex-direction: column;
     padding: 30px 18px 22px;
-    background: var(--mf-void);
-    border-right: 1px solid var(--mf-line);
-    /* The rail ground is near-black, so everything inside it starts light and
-       BrandedHeader's mark can render in plain currentColor. */
-    color: var(--mf-text);
+    background: var(--mf-rail);
+    border-right: 1px solid var(--mf-rail-line);
+    /* Rebinding the text tokens inside the rail is what lets every child rule
+       below stay theme-agnostic: they go on reading --mf-text / --mf-muted and
+       get the rail's fixed pair in both themes. The rail ground is graphite, so
+       everything inside it starts light and BrandedHeader's mark can render in
+       plain currentColor. */
+    --mf-text: var(--mf-rail-text);
+    --mf-muted: var(--mf-rail-muted);
+    --mf-quiet: var(--mf-rail-quiet);
+    --mf-panel-hover: var(--mf-rail-hover);
+    --mf-line: var(--mf-rail-line);
+    color: var(--mf-rail-text);
   }
   /* Sits at the bottom of the column rail. At the 700px strip it flattens into
      the row instead — see the breakpoint. */
@@ -458,14 +510,31 @@ html[data-appearance="light"] {
    * Surfaces and type
    * ========================================================================== */
 
+  /* A panel is a hairline, a ground and a slight lift. It does NOT respond to
+     the pointer: a static panel that brightens under the cursor claims to be
+     clickable, and most of them are not. Anything that really navigates or
+     acts opts in with data-interactive="true" (or .mf-interactive-row for a
+     row), and only that gets the lift and the stronger edge. */
   .mf-panel {
     border: 1px solid var(--mf-line);
     border-radius: var(--mf-radius-panel);
     background: var(--mf-panel);
-    transition: border-color 160ms ease;
+    box-shadow: var(--mf-shadow-panel);
   }
-  .mf-panel:hover {
+  .mf-panel[data-interactive="true"],
+  .mf-interactive-row {
+    transition:
+      transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1),
+      background-color 180ms ease,
+      border-color 180ms ease,
+      box-shadow 180ms ease;
+  }
+  .mf-panel[data-interactive="true"]:hover,
+  .mf-interactive-row:hover {
+    background: var(--mf-panel-hover);
     border-color: var(--mf-line-strong);
+    box-shadow: var(--mf-shadow-overlay);
+    transform: translateY(-1px);
   }
   .mf-kicker,
   .mf-table-meta {
@@ -540,14 +609,12 @@ html[data-appearance="light"] {
      It was a 46px two-line headline over its own date kicker (~150px to carry
      one fact), then one baseline-aligned row of date plus a posture sentence
      (~50px). The sentence went too: the panes beneath it show the same state
-     as numbers, so it was a claim restating a count. All that is left is the
-     date, and the pane row now starts about 130px higher than it did. */
+     as numbers, so it was a claim restating a count. What is left is one line
+     of measured state and the Customize control; the date moved to the top
+     bar's kicker, where every other route puts its context. */
   .mf-overview-intro {
     gap: 6px 14px;
     margin-bottom: 14px;
-  }
-  .mf-overview-intro-date {
-    flex: 0 0 auto;
   }
 
   /* ============================================================================
@@ -743,6 +810,42 @@ html[data-appearance="light"] {
     font-family: var(--font-mono), ui-monospace, monospace;
     font-variant-numeric: tabular-nums slashed-zero;
   }
+
+  /* Chart furniture — the tooltip and the inline legend that replaces
+     recharts' default block. The swatch is a 2px rule, the same mark the line
+     draws, so the legend cannot disagree with the chart about which colour is
+     which series. */
+  .mf-chart-tooltip {
+    padding: 8px 10px;
+    border: 1px solid var(--mf-line);
+    border-radius: var(--mf-radius-control);
+    background: var(--mf-panel);
+    box-shadow: var(--mf-shadow-overlay);
+    font-size: 11px;
+    color: var(--mf-text);
+  }
+  .mf-chart-tooltip-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 4px;
+  }
+  .mf-chart-legend {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-mono), ui-monospace, monospace;
+    font-size: 11px;
+    line-height: 1.2;
+    color: var(--mf-muted);
+  }
+  .mf-chart-tooltip-row > i,
+  .mf-chart-legend > i {
+    flex: 0 0 auto;
+    width: 10px;
+    height: 2px;
+    border-radius: 1px;
+  }
   /* A severity row whose count is zero. "Offline 0" is not an incident, so it
      does not get the incident colour — the dot and the number both go quiet
      and the colour is kept for the rows that actually mean something. */
@@ -767,204 +870,95 @@ html[data-appearance="light"] {
   }
 
   /* ============================================================================
-   * Disclosure — every collapsible Overview section
+   * The adaptive overview region
+   *
+   * One anchor (fleet power) and a stack of compact modules the operator
+   * chooses. The grid is keyed on two data attributes the workspace sets:
+   * `data-arrangement` is the intent, and `data-modules` is how many modules
+   * WILL ACTUALLY RENDER — not how many were selected. That distinction is the
+   * whole point: a module with no honest data returns null, and a layout keyed
+   * on the preference instead would hold a column open for something that was
+   * never drawn.
+   *
+   * The attribute is `data-arrangement`. The retired five-layout dashboard
+   * vocabulary is forbidden outright in every source file, CSS included
+   * (lib/monoform-guard.test.mjs), and this is a different thing anyway: it
+   * selects a composition of the same components, not a different product.
    * ========================================================================== */
 
-  /* A collapsible section.
-   *
-   * Expanded, it is a panel: hairline, panel ground, panel padding, panel
-   * radius. COLLAPSED, IT IS NOT A PANEL AT ALL — no border box, no ground, no
-   * padding, no radius, no height floor. What is left is one quiet line on a
-   * hairline rule: the chevron, the section's name, and its one number.
-   *
-   * That is the whole point of folding a section. The reader folds it to get
-   * the vertical space back; a folded section that still drew a card handed
-   * most of that space straight back and reclaimed only the body. Nothing here
-   * reserves the height the expanded panel had, so everything below moves up.
-   *
-   * Only the painting changes. The button keeps `aria-expanded`, still
-   * controls the same region, is still a native button, and the region still
-   * animates on the shared 200ms — see `.mf-region` below. */
-  /* Both states declare the SAME properties and differ only in their values,
-     so the box can animate between them on the region's own 200ms instead of
-     snapping. Dropping the border to `0 none` when collapsed would have been
-     tidier to read, but border-style is not interpolable, so the chrome would
-     vanish on the first frame and leave the contents folding in mid-air for
-     the rest of the transition. Collapsed therefore keeps 1px of transparent
-     border on three sides — 2px of width on an 826px column — and colours
-     only the top edge. */
-  .mf-section {
-    border: 1px solid transparent;
-    border-top-color: var(--mf-line);
-    border-radius: 0;
-    background: transparent;
-    padding: 7px 0 0;
-    transition:
-      background-color var(--motion-base) ease,
-      border-color var(--motion-base) ease,
-      border-radius var(--motion-base) ease,
-      padding var(--motion-base) ease;
+  .mf-overview-workspace {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 20px;
+    min-width: 0;
   }
-  /* 20/24, not 24/28. The panes above the machine table hold numbers and
-     three-word labels now, not paragraphs, and padding sized for prose around
-     content that no longer is reads as a half-empty box. */
-  .mf-section[data-open="true"] {
-    border-color: var(--mf-line);
+  /* The anchor gets a companion column only when something will sit in it. */
+  .mf-overview-workspace[data-arrangement="machine-first"]:not([data-modules="0"]) {
+    grid-template-columns: minmax(0, 1fr) 300px;
+  }
+  .mf-overview-stack {
+    display: grid;
+    align-content: start;
+    gap: 12px;
+    min-width: 0;
+  }
+  /* Balanced reads as one row of context above a full-width anchor, so its
+     modules flow across instead of stacking. Same modules, same sizes — the
+     arrangement changes where they sit, never what they are. */
+  .mf-overview-workspace[data-arrangement="balanced"] > .mf-overview-stack {
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  }
+
+  .mf-overview-module {
+    min-width: 0;
+    padding: 14px 16px;
+    border: 1px solid var(--mf-line);
     border-radius: var(--mf-radius-panel);
     background: var(--mf-panel);
-    padding: 20px 24px;
+    box-shadow: var(--mf-shadow-panel);
   }
-  .mf-section[data-open="true"]:hover {
-    border-color: var(--mf-line-strong);
-  }
-
-  .mf-disclosure-head {
+  .mf-overview-module-head {
     display: flex;
-    align-items: center;
+    align-items: baseline;
     justify-content: space-between;
-    gap: 16px;
-    min-width: 0;
-  }
-  .mf-disclosure-toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    min-width: 0;
-    padding: 2px 0;
-    border-radius: 6px;
-    color: var(--mf-muted);
-    text-align: left;
-    transition: color 160ms ease;
-  }
-  .mf-disclosure-toggle:hover {
-    color: var(--mf-text);
-  }
-  .mf-disclosure-toggle:hover .mf-kicker {
-    color: inherit;
-  }
-  .mf-disclosure-chevron {
-    width: 13px;
-    height: 13px;
-    flex: 0 0 auto;
-    transition: transform 160ms ease;
-  }
-  .mf-disclosure-toggle[aria-expanded="false"] .mf-disclosure-chevron {
-    transform: rotate(-90deg);
-  }
-  /* The one number a folded section still carries. */
-  .mf-disclosure-summary {
-    min-width: 0;
-    overflow: hidden;
-    color: var(--mf-text-secondary);
-    font-size: 11px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    gap: 10px;
+    min-height: 18px;
   }
 
-  /* The region. `grid-template-rows: 1fr → 0fr` is what animates; the inner
-     wrapper supplies the `min-height: 0` and `overflow: hidden` that makes an
-     `fr` row actually clip. `visibility` is delayed by the full duration when
-     collapsing so the content is still visible while it folds, and reverts
-     instantly when expanding because the delayed transition only exists on
-     the collapsed rule. Hidden visibility is also what removes the contents
-     from the tab order and the accessibility tree. */
-  .mf-region {
-    display: grid;
-    grid-template-rows: 1fr;
-    /* The region is a flex item inside the panels that use a column layout;
-       auto min-height there would refuse to shrink past its content. */
-    min-height: 0;
-    transition: grid-template-rows var(--motion-base) ease;
-  }
-  /* `clip` rather than `hidden` so this never becomes a scroll container, and
-     an 8px clip margin so a focus ring on a control sitting flush against the
-     region's edge is not sheared off. `hidden` stays first as the fallback for
-     anything that does not know `clip`. */
-  .mf-region > .mf-region-inner {
-    min-height: 0;
-    overflow: hidden;
-    overflow: clip;
-    overflow-clip-margin: 8px;
-  }
-  .mf-region[data-collapsed="true"] {
-    grid-template-rows: 0fr;
-  }
-  .mf-region[data-collapsed="true"] > .mf-region-inner {
-    visibility: hidden;
-    transition: visibility 0s linear var(--motion-base);
-  }
-
-  /* ============================================================================
-   * Paired-panel rows
-   *
-   * The Overview's two context rows. Both are 50/50 at desktop: the posture
-   * row used to be 1.25fr / 0.75fr and the context row 1.6fr / 0.9fr, which
-   * made four panels of four different widths out of two rows that are read as
-   * one block.
-   *
-   * The floor below used to be 288px, which was a cross-ROW contract: with two
-   * pane rows, a grid row stretches its own two children to match each other
-   * but nothing relates row A's height to row B's, so a shared floor was what
-   * put the four boxes on one rhythm. There is one pane row now, and the grid
-   * already matches its two children on its own — so the floor's remaining job
-   * is much smaller: keep a pane that is nearly empty (fleet power with no
-   * counters anywhere, whose empty state centres itself in the slack) from
-   * collapsing to a caption on a hairline. 200px is enough for that, and 88px
-   * less of it stands between the operator and the machine table.
-   *
-   * The floor and the equal columns are an EXPANDED-state contract. A folded
-   * pane is not a panel at all (see `.mf-section`), so it takes neither.
-   * ========================================================================== */
-
-  .mf-pane-grid {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    gap: 20px;
-  }
-  .mf-pane-grid > .mf-section[data-open="true"] {
+  /* The anchor keeps a floor so that a fleet reporting no power at all draws a
+     panel with a centred empty state, not a caption on a hairline. The body is
+     a column so that empty state can take the slack. */
+  .mf-power-anchor {
     display: flex;
     flex-direction: column;
     min-height: 200px;
   }
-  /* The disclosure's region is a direct child of the pane, so it is what takes
-     up the slack the floor creates. A pane whose content is shorter than the
-     floor can then place that content in the space — see FleetPowerPane's
-     empty state, which centres itself in the slack — rather than leaving a
-     void hanging under it. */
-  .mf-pane-grid > .mf-section[data-open="true"] > .mf-region {
+  .mf-power-anchor-body {
+    display: flex;
     flex: 1 1 auto;
-  }
-  /* A grid item stretches to fill its row by default. A folded pane beside an
-     open one would therefore inherit the open one's height and draw a rule
-     with a word on it across 350px of nothing. `start` makes it hug its own
-     single line; the open sibling alone sets the row height.
-     The folded pane KEEPS ITS COLUMN rather than yielding the width to its
-     partner — see the note above POSTURE/CONTEXT in app/page.tsx for why. */
-  .mf-pane-grid > .mf-section[data-open="false"] {
-    align-self: start;
+    flex-direction: column;
+    padding: 16px 24px 20px;
   }
 
-  /* A pane that opts into filling the height its partner sets. The grid row
-     stretches both panes to match; a pane whose content is much shorter than
-     its partner's would otherwise draw 80px of empty panel under its last
-     row, which reads as content that failed to load. The opted-in pane makes
-     its own body a column, and whichever child says `flex: 1` absorbs the
-     slack — for fleet availability that is the state list. */
-  .mf-pane-grid > .mf-section.mf-pane-fill[data-open="true"] > .mf-region > .mf-region-inner {
+  /* Power focus hides the modules; it does not hide an incident. */
+  .mf-overview-warning {
     display: flex;
-    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    border: 1px solid var(--mf-line);
+    border-radius: var(--mf-radius-control);
+    background: var(--mf-panel);
+    box-shadow: var(--mf-shadow-panel);
   }
-  .mf-pane-fill .mf-state-list {
+
+  /* The intro row: one line of state, and the control that changes what is
+     below it. */
+  .mf-overview-intro-actions {
     display: flex;
-    flex: 1 1 auto;
-    flex-direction: column;
-  }
-  /* Equal shares of the slack, so three counts stay a rhythm rather than one
-     tall row and two short ones. `0` basis, not `auto`: the rows must divide
-     the space, not their own differing content heights plus the space. */
-  .mf-pane-fill .mf-state-list > li {
-    display: flex;
-    flex: 1 1 0;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
   }
 
   /* Fleet availability's state rows.
@@ -1159,16 +1153,198 @@ html[data-appearance="light"] {
   }
 
   /* ============================================================================
+   * Machine detail — the single-machine inspection workspace
+   *
+   * These classes are the machine route's own. `.mf-intro` is deliberately
+   * untouched: Versions, Sessions, Inventory and Users share it, and
+   * restyling a header used by four other pages to suit a fifth is how a
+   * design system stops being one.
+   * ========================================================================== */
+
+  .mf-machine-lead {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 16px 32px;
+    align-items: start;
+    margin: 0 0 22px;
+  }
+  .mf-machine-state-line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    padding-top: 6px;
+    font-size: 13px;
+  }
+  .mf-machine-lead-side {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 12px;
+    min-width: 0;
+  }
+  .mf-machine-facts {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 6px 26px;
+    margin: 0;
+  }
+  .mf-machine-facts dd {
+    max-width: 28ch;
+  }
+  .mf-machine-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+
+  /* The active tab's underline hangs below the trigger, so the scroll
+     container needs room for it or it is clipped away on the active tab. */
+  .mf-tab-rail {
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding-bottom: 7px;
+    scrollbar-width: thin;
+  }
+
+  .mf-machine-overview-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.42fr) minmax(350px, 0.58fr);
+    gap: 18px;
+    align-items: start;
+  }
+  /* One GPU-less machine should not sit beside an empty column. */
+  .mf-machine-overview-grid[data-gpu="false"] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .mf-machine-hardware {
+    margin-top: 18px;
+  }
+
+  .mf-gpu-row {
+    padding: 14px 24px;
+    border-bottom: 1px solid var(--mf-line);
+  }
+  .mf-gpu-row:last-child {
+    border-bottom: 0;
+  }
+  .mf-gpu-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .mf-gpu-util {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 8px;
+  }
+  .mf-gpu-meta {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px 16px;
+    margin: 12px 0 0;
+  }
+
+  /* The hardware profile: four quiet columns of text, hairline-separated.
+     Nothing in it is live, so nothing in it is coloured. */
+  .mf-machine-hardware-grid {
+    display: grid;
+    grid-template-columns: 1.25fr 1fr 1fr 1fr;
+  }
+  .mf-machine-hardware-grid > * + * {
+    border-left: 1px solid var(--mf-line);
+  }
+
+  .mf-machine-metrics {
+    display: grid;
+    gap: 18px;
+  }
+  .mf-machine-metrics-toolbar {
+    display: flex;
+    justify-content: flex-end;
+  }
+  .mf-machine-metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 18px;
+  }
+  .mf-machine-power-layout {
+    display: grid;
+    grid-template-columns: 230px minmax(0, 1fr);
+    gap: 22px;
+    align-items: start;
+  }
+  .mf-power-rail {
+    display: grid;
+    gap: 12px;
+    margin: 0;
+    padding-right: 22px;
+    border-right: 1px solid var(--mf-line);
+  }
+  .mf-power-rail-value {
+    margin-top: 4px;
+    color: var(--mf-text);
+    font-size: 26px;
+    line-height: 1;
+    letter-spacing: -0.02em;
+  }
+
+  /* ============================================================================
    * Responsive
    * ========================================================================== */
 
   @media (max-width: 900px) {
-    .mf-pane-grid {
+    .mf-overview-workspace[data-arrangement="machine-first"]:not([data-modules="0"]) {
       grid-template-columns: minmax(0, 1fr);
     }
-    /* Stacked, the floor buys nothing and costs a screenful of scrolling. */
-    .mf-pane-grid > .mf-section[data-open="true"] {
+    /* Stacked, the modules read better as a row of facts than a tall column,
+       and the anchor's floor buys nothing while costing a screenful of
+       scrolling before the machine table. */
+    .mf-overview-stack {
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    }
+    .mf-power-anchor {
       min-height: 0;
+    }
+    .mf-machine-overview-grid,
+    .mf-machine-hardware-grid,
+    .mf-machine-metrics-grid,
+    .mf-machine-power-layout {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .mf-machine-hardware-grid > * + * {
+      border-left: 0;
+      border-top: 1px solid var(--mf-line);
+    }
+    /* The rail becomes a row of facts above the chart rather than a column
+       beside it. */
+    .mf-power-rail {
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      padding-right: 0;
+      padding-bottom: 14px;
+      border-right: 0;
+      border-bottom: 1px solid var(--mf-line);
+    }
+    .mf-machine-lead {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .mf-machine-lead-side {
+      align-items: flex-start;
+    }
+    .mf-machine-facts,
+    .mf-machine-actions {
+      justify-content: flex-start;
+    }
+    /* Terminal first when the actions wrap. DOM and focus order are unchanged;
+       only the painted order moves. */
+    .mf-machine-actions > .mf-action {
+      order: -1;
     }
   }
 
@@ -1285,6 +1461,17 @@ html[data-appearance="light"] {
     .mf-table {
       min-width: 1020px;
     }
+    /* Live readings is four short columns, not a fleet table: it fits a phone
+       without scrolling once the meter goes. The meter is aria-hidden
+       decoration of the value in the cell beside it, so hiding it costs no
+       information — the number and the state word both stay. */
+    .mf-machine-readings .mf-table {
+      min-width: 0;
+    }
+    .mf-machine-readings .mf-table th:nth-child(3),
+    .mf-machine-readings .mf-table td:nth-child(3) {
+      display: none;
+    }
   }
 }
 
@@ -1296,12 +1483,5 @@ html[data-appearance="light"] {
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
-  }
-  /* The blanket rule above zeroes durations but not delays, and the region's
-     collapsed rule delays `visibility` by a full transition. Without this, a
-     reduced-motion collapse would snap shut and then leave its contents
-     reachable for another 200ms. */
-  .mf-region[data-collapsed="true"] > .mf-region-inner {
-    transition-delay: 0s !important;
   }
 }

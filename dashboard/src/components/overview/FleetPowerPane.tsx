@@ -43,6 +43,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { ChartTooltip } from "@/components/charts/ChartTooltip";
 import { Zap } from "lucide-react";
 
 import { DEMO_MODE, HUB_URL, getStoredToken } from "@/lib/session";
@@ -64,8 +65,10 @@ import {
   normalizeFleetPower,
   shortfallSentence,
 } from "@/lib/fleet-power.mjs";
-import { Disclosure } from "./Disclosure";
+import { MF_PANEL_HEAD, MF_PANEL_TITLE } from "@/lib/monoform-classes";
 import type { PowerPeriod, PowerRate } from "./useWorkspacePrefs";
+
+export type { PowerPeriod, PowerRate };
 
 /* Strokes. In whole-machine mode the two lines are one quantity told two ways,
    so they differ by KIND: solid product blue for what was measured, dashed
@@ -108,8 +111,6 @@ interface FleetPowerHistory {
 }
 
 export interface FleetPowerPaneProps {
-  open: boolean;
-  onToggle: () => void;
   period: PowerPeriod;
   onPeriodChange: (period: PowerPeriod) => void;
   /** Read-only here. The control that sets it lives in Settings → Preferences
@@ -118,7 +119,7 @@ export interface FleetPowerPaneProps {
   rate: PowerRate;
 }
 
-export function FleetPowerPane({ open, onToggle, period, onPeriodChange, rate }: FleetPowerPaneProps) {
+export function FleetPowerPane({ period, onPeriodChange, rate }: FleetPowerPaneProps) {
   const [state, setState] = useState<{ period: string; data?: FleetPowerHistory; error?: string }>({
     period,
   });
@@ -200,7 +201,6 @@ export function FleetPowerPane({ open, onToggle, period, onPeriodChange, rate }:
       | null,
   }));
 
-  const summary = summaryFor(readouts, coverage);
 
   const periodSwitch = (
     <div className="mf-segment" role="group" aria-label="Power window">
@@ -219,19 +219,12 @@ export function FleetPowerPane({ open, onToggle, period, onPeriodChange, rate }:
   );
 
   return (
-    <section
-      className="mf-section min-w-0"
-      aria-label="Fleet power"
-      data-open={open ? "true" : "false"}
-    >
-      <Disclosure
-        id="capacity"
-        label="Fleet power"
-        open={open}
-        onToggle={onToggle}
-        summary={summary}
-        actions={open ? periodSwitch : null}
-      >
+    <section className="mf-panel mf-power-anchor min-w-0 overflow-hidden" aria-label="Fleet power">
+      <div className={MF_PANEL_HEAD}>
+        <h2 className={MF_PANEL_TITLE}>Fleet power</h2>
+        {periodSwitch}
+      </div>
+      <div className="mf-power-anchor-body">
         {DEMO_MODE ? (
           <EmptyState
             title="Not in the demo data."
@@ -344,7 +337,7 @@ export function FleetPowerPane({ open, onToggle, period, onPeriodChange, rate }:
             >
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={rows} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
-                  <CartesianGrid stroke="var(--border-subtle)" strokeDasharray="2 4" vertical={false} />
+                  <CartesianGrid stroke="var(--border-subtle)" vertical={false} />
                   <XAxis
                     dataKey="timestamp"
                     type="number"
@@ -357,19 +350,16 @@ export function FleetPowerPane({ open, onToggle, period, onPeriodChange, rate }:
                   />
                   <YAxis unit=" W" tick={axisTick} axisLine={false} tickLine={false} width={56} />
                   <Tooltip
-                    labelFormatter={(label) => formatTime(Number(label))}
-                    formatter={(value, name) => [
-                      formatWatts(typeof value === "number" ? value : null),
-                      String(name),
-                    ]}
                     cursor={{ stroke: "var(--border-strong)", strokeWidth: 1 }}
-                    contentStyle={{
-                      background: "var(--surface-overlay)",
-                      border: "1px solid var(--border-default)",
-                      borderRadius: 10,
-                      color: "var(--text-primary)",
-                      fontSize: 11,
-                    }}
+                    content={
+                      <ChartTooltip
+                        labelFormatter={(label) => formatTime(Number(label))}
+                        formatter={(value, name) => [
+                          formatWatts(typeof value === "number" ? value : null),
+                          String(name ?? ""),
+                        ]}
+                      />
+                    }
                   />
                   {series.map((s) => (
                     <Line
@@ -399,7 +389,7 @@ export function FleetPowerPane({ open, onToggle, period, onPeriodChange, rate }:
             />
           </>
         )}
-      </Disclosure>
+      </div>
     </section>
   );
 }
@@ -568,20 +558,3 @@ function formatTime(timestamp: number): string {
   return new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-/**
- * The one line a folded pane still says. It names the kind of every number it
- * shows, so a collapsed estimate can never be mistaken for a measurement.
- */
-function summaryFor(
-  readouts: { kind: string; latest: { watts: number } | null }[],
-  coverage?: { machinesTotal: number; machinesReporting: number },
-): string {
-  const measured = readouts.find((r) => r.kind === "measured" && r.latest);
-  const estimated = readouts.find((r) => r.kind === "estimated" && r.latest);
-  const parts: string[] = [];
-  if (measured?.latest) parts.push(formatWatts(measured.latest.watts) as string);
-  if (estimated?.latest) parts.push(`≈${formatWatts(estimated.latest.watts)} est`);
-  if (parts.length === 0) return "no power data";
-  if (coverage) parts.push(`${coverage.machinesReporting}/${coverage.machinesTotal}`);
-  return parts.join(" · ");
-}
