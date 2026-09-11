@@ -24,6 +24,7 @@ import { MetricCharts } from "@/components/MetricCharts";
 import { PowerHistory } from "@/components/PowerHistory";
 import { HardwareCard, type HardwareInfo } from "@/components/HardwareCard";
 import { MachineNotes } from "@/components/MachineNotes";
+import { MachineMoreActions, type MoreAction } from "@/components/MachineMoreActions";
 import { AISessionsPanel } from "@/components/AISessionsPanel";
 import { useAISessions } from "@/contexts/AISessionsContext";
 import { StatusCell, StatusMark, type MonoformTone } from "@/components/MonoformStatus";
@@ -181,11 +182,21 @@ const STATUS_TONE: Record<MachineStatus, MonoformTone> = {
 };
 
 /** The hairline load meter used in every reading row. */
-function Meter({ pct, variant }: { pct: number; variant?: "gpu" | "warning" }) {
+function Meter({
+  pct,
+  variant,
+  className = "w-32",
+}: {
+  pct: number;
+  variant?: "gpu" | "warning";
+  /** The meter is decoration for the value beside it, so its width belongs to
+   *  the layout that hosts it rather than to the meter. */
+  className?: string;
+}) {
   const clamped = Math.max(0, Math.min(100, pct));
   return (
     <span
-      className={`mf-meter w-32 ${variant === "gpu" ? "mf-meter--gpu" : ""} ${variant === "warning" ? "mf-meter--warning" : ""}`}
+      className={`mf-meter ${className} ${variant === "gpu" ? "mf-meter--gpu" : ""} ${variant === "warning" ? "mf-meter--warning" : ""}`}
       aria-hidden
     >
       <i style={{ width: `${clamped}%` }} />
@@ -580,6 +591,58 @@ function MachineDetailContent({ params }: { params: Promise<{ id: string }> }) {
   const machineTags = sseM?.tags ? sseM.tags.split(",").map((t: string) => t.trim().toLowerCase()) : [];
   const isAPIMachine = machineTags.includes("synology") || machineTags.includes("proxmox");
 
+  // The overflow menu's contents. Each gate is written out here, beside the
+  // dialog it opens, rather than inside the menu component — the menu is a
+  // renderer, and a permission check hidden one file away is a permission
+  // check nobody reviews. Every onSelect body is the click handler these
+  // actions already had; the dialogs themselves are untouched.
+  const moreActions: MoreAction[] = [];
+  if (canDelete && !isAPIMachine) {
+    moreActions.push({
+      key: "revoke",
+      label: "Revoke credential",
+      Icon: KeyRound,
+      onSelect: () => {
+        setRevokeError(null);
+        setShowRevokeConfirm(true);
+      },
+    });
+  }
+  if (canDelete && !isAPIMachine && (machine.os?.toLowerCase().includes("windows") ?? false)) {
+    moreActions.push({
+      key: "reenroll",
+      label: "Prepare Windows re-enrollment",
+      Icon: RefreshCw,
+      onSelect: () => {
+        setReenrollError(null);
+        setReenrollResponse(null);
+        setShowReenrollDialog(true);
+      },
+    });
+  }
+  if (canDelete) {
+    moreActions.push({
+      key: "delete",
+      label: "Delete machine",
+      Icon: Trash2,
+      destructive: true,
+      onSelect: () => {
+        setDeleteError(null);
+        setShowDeleteConfirm(true);
+      },
+    });
+  }
+
+  // The lead's Terminal button goes to the tab and, on a machine that can
+  // answer, advances the same locked -> pin_entry step the tab's own Unlock
+  // button performs. It is never disabled: the tab is worth reading offline
+  // (it shows the locked state and why), so hiding the way in would be worse
+  // than letting the PIN form explain itself.
+  const openTerminalTab = () => {
+    setActiveTab("terminal");
+    if (termState === "locked" && isOnline) setTermState("pin_entry");
+  };
+
   return (
     <>
       {/* Delete dialog */}
@@ -799,94 +862,85 @@ function MachineDetailContent({ params }: { params: Promise<{ id: string }> }) {
         />
       )}
 
-      {/* Page lead — live state and machine-scoped actions on the left, the
-          identity facts on the right. The shell's top bar already carries the
-          hostname, so nothing here repeats it. */}
-      <div className="mf-intro">
-        <dl className="flex flex-wrap items-baseline gap-x-8 gap-y-3">
-          <div className="flex items-baseline gap-2">
-            <dt className="mf-kicker">Status</dt>
-            <dd>
-              <StatusMark tone={STATUS_TONE[status]} label={status} className="capitalize" />
-            </dd>
-          </div>
-          <div className="flex items-baseline gap-2">
-            <dt className="mf-kicker">Last report</dt>
-            <dd className="mf-metric text-[15px] text-text-primary">
-              {effectiveLastUpdated ? timeSince(effectiveLastUpdated) : "—"}
-            </dd>
-          </div>
-          {(data.latency_ms ?? 0) > 0 && (
-            <div className="flex items-baseline gap-2">
-              <dt className="mf-kicker">Latency</dt>
-              <dd className="mf-metric text-[15px] text-text-primary">{data.latency_ms}ms</dd>
-            </div>
-          )}
-        </dl>
+      {/* The machine lead: what is true right now, the facts that identify it,
+          and what can safely be done to it.
 
-        <div className="mf-intro-actions">
-          {!isAPIMachine && canControl && (
-            <button
-              type="button"
-              onClick={() => setShowReboot(true)}
-              disabled={!isOnline}
-              className={MF_BUTTON}
-              title={isOnline ? "Reboot this machine" : "Machine is not reporting — reboot unavailable"}
-            >
-              <RotateCcw className="w-3.5 h-3.5" aria-hidden />
-              Reboot
-            </button>
-          )}
-          {canDelete && !isAPIMachine && (
-            <button
-              type="button"
-              onClick={() => {
-                setRevokeError(null);
-                setShowRevokeConfirm(true);
-              }}
-              className={MF_BUTTON}
-            >
-              <KeyRound className="w-3.5 h-3.5" aria-hidden />
-              Revoke credential
-            </button>
-          )}
-          {canDelete && !isAPIMachine && (machine.os?.toLowerCase().includes("windows") ?? false) && (
-            <button
-              type="button"
-              onClick={() => {
-                setReenrollError(null);
-                setReenrollResponse(null);
-                setShowReenrollDialog(true);
-              }}
-              className={MF_BUTTON}
-            >
-              <RefreshCw className="w-3.5 h-3.5" aria-hidden />
-              Prepare Windows re-enrollment
-            </button>
-          )}
-          {canDelete && (
-            <button
-              type="button"
-              onClick={() => {
-                setDeleteError(null);
-                setShowDeleteConfirm(true);
-              }}
-              className={MF_BUTTON_QUIET}
-            >
-              <Trash2 className="w-3.5 h-3.5" aria-hidden />
-              Delete
-            </button>
+          No hostname here. The shell's top bar already renders it as the
+          page's <h1> (usePageTitle above), and a second 28px copy of the same
+          word 60px underneath would be two headings for one machine.
+
+          No rack, slot or placement either: the machines table has hostname,
+          ip, os, status, tags, last_seen, hardware_info and notes, and nothing
+          that says where the box physically is. A lead that showed "Rack 01 ·
+          slot 01" would be furniture, not data.
+
+          Terminal is the one filled action because it is the one an operator
+          reaches for; Reboot stays outlined beside it; recovery and deletion
+          move into More with their gates and dialogs untouched. */}
+      <section className="mf-machine-lead" aria-label="Machine status and actions">
+        <div className="mf-machine-state-line">
+          <StatusMark tone={STATUS_TONE[status]} label={status} className="capitalize" />
+          {isAPIMachine && (
+            <span className="mf-suppressed" title="Polled over an API rather than running a BloxOS agent">
+              API-polled
+            </span>
           )}
         </div>
-        <dl className="mf-intro-trail flex flex-wrap items-baseline gap-x-6 gap-y-2">
-          {machine.ip && <Fact label="IP" value={machine.ip} mono />}
-          {machine.os && <Fact label="OS" value={machine.os} />}
-          {isAPIMachine && <Fact label="Source" value="API-polled" />}
-          <Fact label="ID" value={machine.id} mono small />
-        </dl>
-      </div>
+
+        <div className="mf-machine-lead-side">
+          <dl className="mf-machine-facts">
+            <Fact
+              stack
+              mono
+              label="Last report"
+              value={effectiveLastUpdated ? timeSince(effectiveLastUpdated) : "—"}
+            />
+            {(data.latency_ms ?? 0) > 0 && (
+              <Fact stack mono label="Latency" value={`${data.latency_ms} ms`} />
+            )}
+            {machine.ip && <Fact stack mono label="IP address" value={machine.ip} />}
+            {machine.os && <Fact stack label="Platform" value={machine.os} />}
+            <Fact stack mono small label="ID" value={machine.id} />
+          </dl>
+
+          <div className="mf-machine-actions">
+            {!isAPIMachine && canControl && (
+              <button
+                type="button"
+                onClick={() => setShowReboot(true)}
+                disabled={!isOnline}
+                className={MF_BUTTON}
+                title={isOnline ? "Reboot this machine" : "Machine is not reporting — reboot unavailable"}
+              >
+                <RotateCcw className="w-3.5 h-3.5" aria-hidden />
+                Reboot
+              </button>
+            )}
+            <MachineMoreActions items={moreActions} />
+            {!isAPIMachine && canControl && (
+              <button
+                type="button"
+                onClick={openTerminalTab}
+                className="mf-action"
+                title={
+                  isOnline
+                    ? "Open the remote terminal"
+                    : "Machine is not reporting — the terminal cannot connect"
+                }
+              >
+                <TerminalIcon className="w-3.5 h-3.5" aria-hidden />
+                {termState === "active" ? "Terminal" : "Open terminal"}
+              </button>
+            )}
+          </div>
+        </div>
+      </section>
 
       <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as DetailTab)}>
+        {/* The rail scrolls sideways rather than wrapping: seven tabs on a
+            narrow screen would otherwise become two noisy rows, and the active
+            underline would sit above the row it belongs to. */}
+        <div className="mf-tab-rail">
         <TabsList variant="line" className="gap-1">
           <TabsTrigger value="overview" className={MF_TAB}>
             <LayoutDashboard className="w-4 h-4" aria-hidden />
@@ -895,10 +949,18 @@ function MachineDetailContent({ params }: { params: Promise<{ id: string }> }) {
           <TabsTrigger value="services" className={MF_TAB}>
             <Box className="w-4 h-4" aria-hidden />
             Services
+            {/* A count only when there is something to count — "Services 0" is
+                not a finding, it is noise on every machine without units. */}
+            {liveServices.length > 0 && (
+              <span className="ml-1 font-mono text-[10px] text-text-tertiary">{liveServices.length}</span>
+            )}
           </TabsTrigger>
           <TabsTrigger value="containers" className={MF_TAB}>
             <ContainerIcon className="w-4 h-4" aria-hidden />
             Containers
+            {liveContainers.length > 0 && (
+              <span className="ml-1 font-mono text-[10px] text-text-tertiary">{liveContainers.length}</span>
+            )}
           </TabsTrigger>
           <TabsTrigger value="metrics" className={MF_TAB}>
             <BarChart3 className="w-4 h-4" aria-hidden />
@@ -927,11 +989,17 @@ function MachineDetailContent({ params }: { params: Promise<{ id: string }> }) {
             </TabsTrigger>
           )}
         </TabsList>
+        </div>
 
-        {/* Overview — the live readings as a table, then the static hardware
-            inventory. GPU rows only appear when a GPU is reported. */}
-        <TabsContent value="overview" className="mt-7 space-y-6">
-          <section className="mf-panel overflow-hidden">
+        {/* Overview — what is true right now, then what this machine is.
+            Live readings and Graphics sit side by side for inspection; the
+            hardware profile is a quiet full-width strip underneath. */}
+        <TabsContent value="overview" className="mt-7">
+          {/* data-gpu rather than :has() — the column count is a fact the page
+              already knows, and a machine with no GPU gives its readings the
+              full width instead of an empty panel beside them. */}
+          <div className="mf-machine-overview-grid" data-gpu={hasGpu ? "true" : "false"}>
+          <section className="mf-panel mf-machine-readings overflow-hidden">
             <div className={MF_PANEL_HEAD}>
               <h2 className={MF_PANEL_TITLE}>Live readings</h2>
               <span className="mf-kicker">
@@ -951,6 +1019,7 @@ function MachineDetailContent({ params }: { params: Promise<{ id: string }> }) {
                 <tbody>
                   <ReadingRow
                     label="CPU"
+                    detail={data.hardware_info?.cpu_model}
                     value={`${cpuPct.toFixed(1)}%`}
                     pct={cpuPct}
                     tone={loadTone(cpuPct)}
@@ -985,85 +1054,81 @@ function MachineDetailContent({ params }: { params: Promise<{ id: string }> }) {
           </section>
 
           {hasGpu && (
-            <section className="mf-panel overflow-hidden">
+            <section className="mf-panel mf-machine-graphics overflow-hidden">
               <div className={MF_PANEL_HEAD}>
                 <h2 className={MF_PANEL_TITLE}>Graphics</h2>
                 <span className="mf-kicker">
                   {gpus.length} device{gpus.length === 1 ? "" : "s"}
                 </span>
               </div>
-              <div className="mf-table-wrap overflow-x-auto">
-                <table className="mf-table">
-                  <thead>
-                    <tr>
-                      <th>GPU</th>
-                      <th>Utilisation</th>
-                      <th>Temperature</th>
-                      <th>VRAM</th>
-                      <th>Power</th>
-                      <th>Fan</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {gpus.map((gpu) => {
-                      const util = gpu.util_percent ?? 0;
-                      const temp = gpu.temp_c ?? 0;
-                      const vramPct = (gpu.mem_total_bytes ?? 0) > 0
-                        ? ((gpu.mem_used_bytes ?? 0) / gpu.mem_total_bytes) * 100
-                        : 0;
-                      const tTone = tempTone(temp);
-                      return (
-                        <tr key={gpu.index}>
-                          <td className="text-[13px] text-text-primary">
-                            <span className="mf-metric text-[11px] text-text-tertiary">
-                              {gpu.index}
-                            </span>
-                            <span className="ml-2.5">{gpu.name || "GPU"}</span>
-                          </td>
-                          <td>
-                            <span className="mf-metric text-[13px] text-text-primary">
-                              {util.toFixed(0)}%
-                            </span>
-                            <Meter pct={util} variant="gpu" />
-                          </td>
-                          <td>
-                            {tTone === "ok" ? (
-                              <span className="mf-metric text-[13px] text-text-primary">{temp}°C</span>
-                            ) : (
-                              <StatusCell tone={tTone} label={`${temp}°C`} Icon={AlertTriangle} />
-                            )}
-                          </td>
-                          <td>
-                            {(gpu.mem_total_bytes ?? 0) > 0 ? (
-                              <>
-                                <span className="mf-metric text-[13px] text-text-primary">
-                                  {formatBytes(gpu.mem_used_bytes)}
-                                </span>
-                                <span className="ml-1.5 font-mono text-[11px] text-text-tertiary">
-                                  / {formatBytes(gpu.mem_total_bytes)}
-                                </span>
-                                <Meter pct={vramPct} variant="gpu" />
-                              </>
-                            ) : (
-                              <span className="text-text-disabled">—</span>
-                            )}
-                          </td>
-                          <td className="mf-metric text-[13px] text-text-secondary">
-                            {(gpu.power_watts ?? 0) > 0 ? `${(gpu.power_watts ?? 0).toFixed(0)} W` : "—"}
-                          </td>
-                          <td className="mf-metric text-[13px] text-text-secondary">
-                            {(gpu.fan_percent ?? 0) > 0 ? `${(gpu.fan_percent ?? 0).toFixed(0)}%` : "—"}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+              {/* One section per device rather than six columns across. Power
+                  and fan appear only where the device reports them — the
+                  alternative, a permanent column of em dashes, spends the same
+                  width on the absence of data. Nothing is hidden behind a
+                  disclosure: a number worth showing is worth showing. */}
+              <div>
+                {gpus.map((gpu) => {
+                  const util = gpu.util_percent ?? 0;
+                  const temp = gpu.temp_c ?? 0;
+                  const vramPct = (gpu.mem_total_bytes ?? 0) > 0
+                    ? ((gpu.mem_used_bytes ?? 0) / gpu.mem_total_bytes) * 100
+                    : 0;
+                  const tTone = tempTone(temp);
+                  return (
+                    <div className="mf-gpu-row" key={gpu.index}>
+                      <div className="mf-gpu-head">
+                        <span className="min-w-0 truncate">
+                          <span className="mf-metric text-[11px] text-text-tertiary">GPU {gpu.index}</span>
+                          <span className="ml-2.5 text-[13px] font-semibold text-text-primary">
+                            {gpu.name || "GPU"}
+                          </span>
+                        </span>
+                        <span className="mf-gpu-util">
+                          <span className="mf-metric text-[13px] text-text-primary">{util.toFixed(0)}%</span>
+                          <Meter pct={util} variant="gpu" className="w-16" />
+                        </span>
+                      </div>
+                      <dl className="mf-gpu-meta">
+                        <GpuStat label="VRAM">
+                          {(gpu.mem_total_bytes ?? 0) > 0 ? (
+                            <>
+                              {formatBytes(gpu.mem_used_bytes)}
+                              <span className="ml-1.5 text-[11px] text-text-tertiary">
+                                / {formatBytes(gpu.mem_total_bytes)}
+                              </span>
+                              <Meter pct={vramPct} variant="gpu" className="mt-1.5 w-full" />
+                            </>
+                          ) : (
+                            <span className="text-text-disabled">—</span>
+                          )}
+                        </GpuStat>
+                        <GpuStat label="Temperature">
+                          {tTone === "ok" ? (
+                            `${temp}°C`
+                          ) : (
+                            <StatusCell tone={tTone} label={`${temp}°C`} Icon={AlertTriangle} />
+                          )}
+                        </GpuStat>
+                        {(gpu.power_watts ?? 0) > 0 && (
+                          <GpuStat label="Power">{`${(gpu.power_watts ?? 0).toFixed(0)} W`}</GpuStat>
+                        )}
+                        {(gpu.fan_percent ?? 0) > 0 && (
+                          <GpuStat label="Fan">{`${(gpu.fan_percent ?? 0).toFixed(0)}%`}</GpuStat>
+                        )}
+                      </dl>
+                    </div>
+                  );
+                })}
               </div>
             </section>
           )}
+          </div>
 
-          {data.hardware_info && <HardwareCard hw={data.hardware_info} />}
+          {data.hardware_info && (
+            <div className="mf-machine-hardware">
+              <HardwareCard hw={data.hardware_info} />
+            </div>
+          )}
         </TabsContent>
 
         <TabsContent value="services" className="mt-7">
@@ -1075,7 +1140,10 @@ function MachineDetailContent({ params }: { params: Promise<{ id: string }> }) {
         </TabsContent>
 
         <TabsContent value="metrics" className="mt-7">
-          <div className="mf-panel px-6 py-6">
+          {/* No outer panel: it existed only because PowerHistory was a
+              border-top continuation rather than a surface of its own. It is a
+              panel now, so the charts are no longer panels inside a panel. */}
+          <div className="mf-machine-metrics">
             <MetricCharts machineId={id} hasGpu={hasGpu} />
             {!isAPIMachine && <PowerHistory key={id} machineId={id} />}
           </div>
@@ -1298,22 +1366,35 @@ function MachineDetailContent({ params }: { params: Promise<{ id: string }> }) {
   );
 }
 
+/** One labelled GPU value. Label above, value below, mono. */
+function GpuStat({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="min-w-0">
+      <dt className="mf-kicker uppercase">{label}</dt>
+      <dd className="mf-metric mt-1 text-[13px] text-text-primary">{children}</dd>
+    </div>
+  );
+}
+
 function Fact({
   label,
   value,
   mono,
   small,
+  stack,
 }: {
   label: string;
   value: string;
   mono?: boolean;
   small?: boolean;
+  /** Label above value, left-aligned — the lead's column-of-facts form. */
+  stack?: boolean;
 }) {
   return (
-    <div className="flex items-baseline justify-between gap-3">
+    <div className={stack ? "flex flex-col items-start gap-1" : "flex items-baseline justify-between gap-3"}>
       <dt className="mf-kicker">{label}</dt>
       <dd
-        className={`min-w-0 truncate text-right ${
+        className={`min-w-0 truncate ${stack ? "" : "text-right"} ${
           mono ? "mf-metric" : ""
         } ${small ? "text-[11px] text-text-tertiary" : "text-[13px] text-text-secondary"}`}
         title={value}

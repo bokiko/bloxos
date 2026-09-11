@@ -1155,6 +1155,149 @@ html[data-appearance="light"] {
   }
 
   /* ============================================================================
+   * Machine detail — the single-machine inspection workspace
+   *
+   * These classes are the machine route's own. `.mf-intro` is deliberately
+   * untouched: Versions, Sessions, Inventory and Users share it, and
+   * restyling a header used by four other pages to suit a fifth is how a
+   * design system stops being one.
+   * ========================================================================== */
+
+  .mf-machine-lead {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 16px 32px;
+    align-items: start;
+    margin: 0 0 22px;
+  }
+  .mf-machine-state-line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    padding-top: 6px;
+    font-size: 13px;
+  }
+  .mf-machine-lead-side {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 12px;
+    min-width: 0;
+  }
+  .mf-machine-facts {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 6px 26px;
+    margin: 0;
+  }
+  .mf-machine-facts dd {
+    max-width: 28ch;
+  }
+  .mf-machine-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+
+  /* The active tab's underline hangs below the trigger, so the scroll
+     container needs room for it or it is clipped away on the active tab. */
+  .mf-tab-rail {
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding-bottom: 7px;
+    scrollbar-width: thin;
+  }
+
+  .mf-machine-overview-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.42fr) minmax(350px, 0.58fr);
+    gap: 18px;
+    align-items: start;
+  }
+  /* One GPU-less machine should not sit beside an empty column. */
+  .mf-machine-overview-grid[data-gpu="false"] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .mf-machine-hardware {
+    margin-top: 18px;
+  }
+
+  .mf-gpu-row {
+    padding: 14px 24px;
+    border-bottom: 1px solid var(--mf-line);
+  }
+  .mf-gpu-row:last-child {
+    border-bottom: 0;
+  }
+  .mf-gpu-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .mf-gpu-util {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 8px;
+  }
+  .mf-gpu-meta {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px 16px;
+    margin: 12px 0 0;
+  }
+
+  /* The hardware profile: four quiet columns of text, hairline-separated.
+     Nothing in it is live, so nothing in it is coloured. */
+  .mf-machine-hardware-grid {
+    display: grid;
+    grid-template-columns: 1.25fr 1fr 1fr 1fr;
+  }
+  .mf-machine-hardware-grid > * + * {
+    border-left: 1px solid var(--mf-line);
+  }
+
+  .mf-machine-metrics {
+    display: grid;
+    gap: 18px;
+  }
+  .mf-machine-metrics-toolbar {
+    display: flex;
+    justify-content: flex-end;
+  }
+  .mf-machine-metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 18px;
+  }
+  .mf-machine-power-layout {
+    display: grid;
+    grid-template-columns: 230px minmax(0, 1fr);
+    gap: 22px;
+    align-items: start;
+  }
+  .mf-power-rail {
+    display: grid;
+    gap: 12px;
+    margin: 0;
+    padding-right: 22px;
+    border-right: 1px solid var(--mf-line);
+  }
+  .mf-power-rail-value {
+    margin-top: 4px;
+    color: var(--mf-text);
+    font-size: 26px;
+    line-height: 1;
+    letter-spacing: -0.02em;
+  }
+
+  /* ============================================================================
    * Responsive
    * ========================================================================== */
 
@@ -1170,6 +1313,40 @@ html[data-appearance="light"] {
     }
     .mf-power-anchor {
       min-height: 0;
+    }
+    .mf-machine-overview-grid,
+    .mf-machine-hardware-grid,
+    .mf-machine-metrics-grid,
+    .mf-machine-power-layout {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .mf-machine-hardware-grid > * + * {
+      border-left: 0;
+      border-top: 1px solid var(--mf-line);
+    }
+    /* The rail becomes a row of facts above the chart rather than a column
+       beside it. */
+    .mf-power-rail {
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      padding-right: 0;
+      padding-bottom: 14px;
+      border-right: 0;
+      border-bottom: 1px solid var(--mf-line);
+    }
+    .mf-machine-lead {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .mf-machine-lead-side {
+      align-items: flex-start;
+    }
+    .mf-machine-facts,
+    .mf-machine-actions {
+      justify-content: flex-start;
+    }
+    /* Terminal first when the actions wrap. DOM and focus order are unchanged;
+       only the painted order moves. */
+    .mf-machine-actions > .mf-action {
+      order: -1;
     }
   }
 
@@ -1285,6 +1462,17 @@ html[data-appearance="light"] {
        toggle both arrived after the previous 820px floor was set. */
     .mf-table {
       min-width: 1020px;
+    }
+    /* Live readings is four short columns, not a fleet table: it fits a phone
+       without scrolling once the meter goes. The meter is aria-hidden
+       decoration of the value in the cell beside it, so hiding it costs no
+       information — the number and the state word both stay. */
+    .mf-machine-readings .mf-table {
+      min-width: 0;
+    }
+    .mf-machine-readings .mf-table th:nth-child(3),
+    .mf-machine-readings .mf-table td:nth-child(3) {
+      display: none;
     }
   }
 }
