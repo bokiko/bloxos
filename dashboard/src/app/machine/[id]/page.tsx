@@ -1054,7 +1054,7 @@ function MachineDetailContent({ params }: { params: Promise<{ id: string }> }) {
           </section>
 
           {hasGpu && (
-            <section className="mf-panel mf-machine-graphics overflow-hidden">
+            <section className="mf-panel overflow-hidden">
               <div className={MF_PANEL_HEAD}>
                 <h2 className={MF_PANEL_TITLE}>Graphics</h2>
                 <span className="mf-kicker">

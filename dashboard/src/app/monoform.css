@@ -609,14 +609,12 @@ html[data-appearance="light"] {
      It was a 46px two-line headline over its own date kicker (~150px to carry
      one fact), then one baseline-aligned row of date plus a posture sentence
      (~50px). The sentence went too: the panes beneath it show the same state
-     as numbers, so it was a claim restating a count. All that is left is the
-     date, and the pane row now starts about 130px higher than it did. */
+     as numbers, so it was a claim restating a count. What is left is one line
+     of measured state and the Customize control; the date moved to the top
+     bar's kicker, where every other route puts its context. */
   .mf-overview-intro {
     gap: 6px 14px;
     margin-bottom: 14px;
-  }
-  .mf-overview-intro-date {
-    flex: 0 0 auto;
   }
 
   /* ============================================================================
