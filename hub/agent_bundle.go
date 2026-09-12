@@ -383,3 +383,33 @@ func agentPayloadRelease(path string) (uint64, error) {
 	}
 	return seq, nil
 }
+
+// agentDeliveryStatus reports the resolution POLICY in force, and why it is
+// unusable if it is.
+//
+// One value, at one level, and deliberately not a per-platform claim.
+// "auto" means a managed bundle is AVAILABLE to the resolver; an explicit
+// per-architecture override still outranks it, so a hub on this policy can
+// legitimately serve an operator-pinned binary for one architecture. Each
+// platform's agentBinaryState carries the `source` it actually resolved from,
+// which is the authoritative answer. Summarising that here would create two
+// fields that must agree and eventually will not.
+func agentDeliveryStatus() (string, string) {
+	resolver := productionAgentBinaryResolver()
+	if resolver.initErr != nil {
+		// A hub in this state refuses to start, so an operator normally never
+		// sees it — except on a source build, where a bundle is optional and a
+		// misconfigured delivery mode still has to be visible somewhere.
+		return "unusable", resolver.initErr.Error()
+	}
+	if resolver.deliveryMode == agentDeliveryExternal {
+		return agentDeliveryExternal, ""
+	}
+	if resolver.bundle == nil {
+		// Auto mode with nothing to manage: a source build, where legacy
+		// discovery still applies. Naming it plainly beats reporting "auto"
+		// and leaving a reader to wonder why nothing resolves to a bundle.
+		return "legacy", ""
+	}
+	return agentDeliveryAuto, ""
+}

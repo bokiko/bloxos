@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -107,4 +108,81 @@ func copyHubDir(t *testing.T, hubDir string) string {
 		}
 	}
 	return target
+}
+
+// The production resolver must be built ONCE and retained.
+//
+// This is deliberately driven through an injected constructor rather than the
+// package-level cache. A test that simply called productionAgentBinaryResolver()
+// twice would compare two nil bundles in an ordinary `go test` — there is no
+// bundle beside the test binary — and would pass just as happily against the
+// old constructor that rebuilt every time. It has to observe a constructor
+// that would return something DIFFERENT on a second call.
+func TestTheProductionResolverIsBuiltOnceAndShared(t *testing.T) {
+	root := fullFixture(t)
+	loaded, err := loadAgentBundle(root, permissive)
+	if err != nil || loaded == nil {
+		t.Fatalf("fixture must load: %v", err)
+	}
+
+	calls := 0
+	build := func() agentBinaryResolver {
+		calls++
+		if calls == 1 {
+			return agentBinaryResolver{bundle: loaded, deliveryMode: agentDeliveryAuto}
+		}
+		// What a rebuild would pick up: a catalog that has since changed on
+		// disk, or a delivery mode that no longer matches what is serving.
+		return agentBinaryResolver{
+			bundle:       &agentBundle{Dir: "rebuilt", paths: map[string]string{}, expected: map[string]string{}},
+			deliveryMode: agentDeliveryExternal,
+			initErr:      errors.New("rebuilt after the on-disk catalog changed"),
+		}
+	}
+
+	cache := &memoizedResolver{build: build}
+	first, second := cache.get(), cache.get()
+
+	if calls != 1 {
+		t.Fatalf("the resolver was constructed %d times; the startup gate, resolution and "+
+			"reported status would each describe a different catalog", calls)
+	}
+	if first.bundle != second.bundle {
+		t.Fatal("the retained bundle was replaced by a later construction")
+	}
+	if second.bundle != loaded {
+		t.Fatal("a later call returned the rebuilt catalog rather than the one being served")
+	}
+	if second.deliveryMode != agentDeliveryAuto || second.initErr != nil {
+		t.Fatalf("a later call reported rebuilt state: mode=%q err=%v",
+			second.deliveryMode, second.initErr)
+	}
+
+	// CONTROL. Without memoisation the same constructor yields the divergence
+	// above, so these assertions genuinely depend on the retained instance.
+	calls = 0
+	unmemoized := build()
+	rebuilt := build()
+	if unmemoized.bundle == rebuilt.bundle || rebuilt.initErr == nil {
+		t.Fatal("the fixture does not diverge on a second construction, so the test above " +
+			"would pass with or without memoisation")
+	}
+}
+
+// The startup gate and the reported status must both come from the retained
+// instance, so neither can disagree with what is actually served.
+func TestTheGateAndStatusComeFromTheServingResolver(t *testing.T) {
+	retained := productionAgentBinaryResolver()
+
+	if gateErr := checkManagedAgentBundle(); (gateErr != nil) != (retained.initErr != nil) {
+		t.Fatalf("gate and retained resolver disagree: gate=%v retained=%v",
+			gateErr, retained.initErr)
+	}
+	status, statusErr := agentDeliveryStatus()
+	if retained.initErr != nil && status != "unusable" {
+		t.Fatalf("a retained init error must be reported, got %q/%q", status, statusErr)
+	}
+	if retained.initErr == nil && status == "unusable" {
+		t.Fatalf("status reports unusable while the serving resolver is healthy: %q", statusErr)
+	}
 }

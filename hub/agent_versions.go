@@ -862,7 +862,16 @@ func (s *Server) handleListVersions(c echo.Context) error {
 		byArch[platform.OS][platform.Arch] = currentAgentBinaryStateFor(platform.OS, platform.Arch)
 	}
 
+	// Delivery mode is reported ONCE, at the top level. Per-binary `source`
+	// already says where each platform actually resolved from, and repeating a
+	// derived summary next to it is how two fields that must agree start
+	// disagreeing. This answers the different question: which resolution
+	// policy is in force.
+	delivery, deliveryErr := agentDeliveryStatus()
+
 	return c.JSON(http.StatusOK, map[string]interface{}{
+		"agent_delivery":          delivery,
+		"agent_delivery_error":    deliveryErr,
 		"signing_enabled":         signingEnabled,
 		"signing_disabled_reason": signingDisabledReason,
 		"hub_sha":                 linuxState.SHA,

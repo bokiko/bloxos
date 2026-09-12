@@ -12,6 +12,16 @@ on:
       - "scripts/agent_bundle.py"
       - "scripts/export-agent-bundle.sh"
       - "scripts/export-server-bundle.py"
+      # Release-integrity scripts and their tests. Without these, a change to
+      # the gate that decides what may be promoted could merge without the
+      # integration workflow ever running.
+      - "scripts/release_identity.py"
+      - "scripts/release_history.py"
+      - "scripts/image_platform.py"
+      - "scripts/test_release_identity.py"
+      - "scripts/test_release_history.py"
+      - "scripts/test_server_bundle_agents.py"
+      - "scripts/test_hub_bundle_boot.py"
       - "scripts/updater/**"
       - "scripts/tests/test_updater*.py"
       - "scripts/test_agent_bundle.py"

@@ -93,8 +93,52 @@ the dashboard deliberately cannot submit paths, shell commands or image URLs.
 
 ## Server updates versus agent updates
 
-The native server updater replaces the hub and dashboard, not separately
-installed agent payloads. Use the [native agent guide](native-agent-upgrades.md)
-for those files. Compose images include agent payloads, so a new hub image can
-announce eligible signed agent updates. Offline-signing installations retain
-their installation-specific signing process. See [update signing](offline-update-signing.md).
+**A server update now carries the agent payloads too.** Both server archives
+ship all three agent binaries beside the hub executable, and the updater
+transports them like any other file in the release — there is no separate agent
+step and nothing to stage by hand. Compose images carry the same bundle.
+
+This is a change. The updater used to replace only the hub and dashboard, so a
+freshly updated hub kept offering whatever agent files were already on disk;
+machines reported "matches offered build" and were correct, because the offer
+itself was stale.
+
+### Three reasons the fleet can still sit on old agents
+
+They look identical on the Versions page until you read the right field, and
+the remedies are completely different.
+
+| What you see | What it means | Remedy |
+| --- | --- | --- |
+| **Delivery: System paths** or **Operator-managed** | The hub is not managing agents. Either it is a source build with no bundle, or `BLOXOS_AGENT_DELIVERY=external` is set, or an operator pin such as `BLOXOS_AGENT_BINARY` takes precedence. Upgrading the hub will not change the offer. | Remove the pin, or follow the [manual staging guide](native-agent-upgrades.md). |
+| **Signing: Disabled**, or a blocked-rollout reason | New agent bytes are present and the hub cannot authorise them. An offline install holds no private key, and no signature has been staged for these exact bytes. | Sign those bytes offline and place the signature by content address — see [native agent delivery](native-agent-upgrades.md#signatures). Nothing is wrong with the binaries. |
+| **Delivery: Broken** | The bundle failed validation. A packaged hub in this state refuses to start at all, so you will normally see a failed update and a rollback, not a running hub. | Read the hub's startup log; it names the payload and the reason. |
+
+The first is a configuration choice, the second is withheld authorisation, and
+the third is a bad artifact. Only the second leaves a healthy hub deliberately
+holding an update back.
+
+### Hub rollback and agent rollback are different things
+
+They share a word and nothing else.
+
+**Hub rollback** is the updater's. If a candidate release fails its readiness
+check — including a bad or missing agent bundle, which is refused before the
+database is even opened — the updater restores the previous release directory
+and restarts the old hub. It is automatic, local to the server, and affects no
+machine in the fleet.
+
+**Agent rollback protection** is each agent's own. A protocol-2 agent keeps a
+durable floor of the release number and SHA it is running, and refuses any
+offer that is older, or that carries the same release number with different
+bytes. Nothing on the hub can lower that floor, which is deliberate: it is what
+stops a compromised or confused hub from pushing an old agent back onto the
+fleet. Older protocol-1 agents do not enforce it.
+
+The practical consequence: rolling the hub back does NOT roll the fleet's
+agents back. Machines that already took an update keep the newer agent, and a
+rolled-back hub offering older bytes will simply be refused by them. Plan an
+agent change as a forward-only step.
+
+Offline-signing installations retain their installation-specific signing
+process. See [update signing](offline-update-signing.md).

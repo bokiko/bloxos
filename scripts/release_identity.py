@@ -2,11 +2,19 @@
 """Release identity gate: a (platform, release) pair names exactly one set of bytes.
 
 The agent release number is how the fleet decides whether an offer is newer
-than what it runs. If the same number can ever name different bytes, that
-decision is meaningless — two machines both "on release 9" may be running
-different binaries, and a floor check comparing numbers will happily approve a
-downgrade. This runs BEFORE promotion, because after a tag is published the
-ambiguity is permanent.
+than what it runs. If the same number can ever name different bytes, two
+machines both "on release 9" are running different binaries, and the number
+stops describing anything.
+
+What that actually breaks is the rollout, not the rollback floor. A protocol-2
+agent pins release number AND sha, so it REJECTS an offer carrying its own
+number with different bytes — correctly, and permanently: the fleet simply
+stops taking the update, and every affected machine stalls on a build nobody
+can replace without a number bump. Older protocol-1 agents do not enforce that
+pairing at all, so for them the same ambiguity is silent.
+
+This runs BEFORE promotion, because after a tag is published the ambiguity is
+permanent.
 
 Four things it enforces:
 

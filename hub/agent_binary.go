@@ -151,7 +151,43 @@ func newAgentBinaryStates() map[string]agentBinaryState {
 	return states
 }
 
+// The production resolver is built ONCE and retained.
+//
+// It used to be constructed afresh on every call, which was wrong in two ways
+// that compound. It re-read and re-hashed every agent payload each time — tens
+// of megabytes of sha256 on a route the Versions page polls. Worse, each call
+// produced an INDEPENDENT resolver: the one serving downloads is captured at
+// package init, so a later caller could load a different catalog, or a
+// different delivery mode, and report state the serving path does not use.
+// The startup gate had the same split — it validated a second load, not the
+// one that would actually serve.
+//
+// One instance means the gate, every resolution and the reported status all
+// describe the same catalog. Per-resolution payload identity is still
+// re-verified against that retained catalog, so a payload altered on disk
+// afterwards is still caught.
+// memoizedResolver builds its resolver at most once and returns that same
+// instance thereafter. A struct rather than package globals so a test can own
+// one, with its own constructor, and prove the behaviour without touching
+// anything another test is using.
+type memoizedResolver struct {
+	once  sync.Once
+	value agentBinaryResolver
+	build func() agentBinaryResolver
+}
+
+func (m *memoizedResolver) get() agentBinaryResolver {
+	m.once.Do(func() { m.value = m.build() })
+	return m.value
+}
+
+var productionResolverCache = &memoizedResolver{build: newProductionAgentBinaryResolver}
+
 func productionAgentBinaryResolver() agentBinaryResolver {
+	return productionResolverCache.get()
+}
+
+func newProductionAgentBinaryResolver() agentBinaryResolver {
 	r := agentBinaryResolver{
 		executablePath: os.Executable,
 		validate:       validateTrustedAgentBinary,
