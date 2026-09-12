@@ -545,6 +545,73 @@ var migrations = []migration{
 			return nil
 		},
 	},
+	{
+		description: "durable staged agent rollout state",
+		apply: func(tx *sql.Tx) error {
+			// Two tables, appended. The rollout used to be all-at-once with
+			// its failure state held only in memory, so a hub restart erased
+			// every in-flight expectation.
+			//
+			// `generation` is what makes candidate changes safe. A rollout to
+			// B, then back to A, must not revive A's earlier completed stages,
+			// so the candidate's identity is a monotonic generation rather
+			// than its SHA alone, and every slot is keyed by it. A callback
+			// naming an older generation is ignored, not applied.
+			//
+			// Health evidence is deliberately ABSENT from these tables. It is
+			// tied to a live connection, so persisting it would let a hub
+			// restart resurrect proof that a socket which no longer exists was
+			// healthy. Reservations, stage and completed outcomes are durable;
+			// in-flight dwell lives only in memory.
+			for _, statement := range []string{
+				`CREATE TABLE IF NOT EXISTS agent_rollout_platform (
+					platform           TEXT PRIMARY KEY,
+					generation         INTEGER NOT NULL,
+					candidate_sha      TEXT NOT NULL,
+					candidate_release  INTEGER NOT NULL DEFAULT 0,
+					stage              INTEGER NOT NULL DEFAULT 0,
+					status             TEXT NOT NULL DEFAULT 'active',
+					halt_reason        TEXT NOT NULL DEFAULT '',
+					updated_unix_ms    INTEGER NOT NULL
+				)`,
+				`CREATE TABLE IF NOT EXISTS agent_rollout_slot (
+					platform          TEXT NOT NULL,
+					generation        INTEGER NOT NULL,
+					machine_id        TEXT NOT NULL,
+					stage             INTEGER NOT NULL,
+					attempt           INTEGER NOT NULL DEFAULT 1,
+					state             TEXT NOT NULL,
+					reserved_unix_ms  INTEGER NOT NULL,
+					offered_unix_ms   INTEGER,
+					deadline_unix_ms  INTEGER NOT NULL,
+					reason            TEXT NOT NULL DEFAULT '',
+					-- Whether this ATTEMPT has already consumed its one
+					-- restart grace. Extending every live deadline on every
+					-- construction would give a crash loop unlimited time,
+					-- so the grace is bounded per attempt and reset only when
+					-- a new attempt begins.
+					grace_used        INTEGER NOT NULL DEFAULT 0,
+					-- Automatic crash-recovery sends used WITHIN the current
+					-- attempt. Separate from the attempt column, which is
+					-- the operator's: bounding operator retries by the same
+					-- counter made Resume permanently inert once automatic
+					-- recovery had exhausted it.
+					resend_count      INTEGER NOT NULL DEFAULT 0,
+					PRIMARY KEY (platform, generation, machine_id)
+				)`,
+				// The capacity query counts unvalidated slots for one
+				// (platform, generation); it runs inside the reservation's
+				// write transaction, so it is on the hot path of every send.
+				`CREATE INDEX IF NOT EXISTS idx_agent_rollout_slot_state
+					ON agent_rollout_slot (platform, generation, state)`,
+			} {
+				if _, err := tx.Exec(statement); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	},
 }
 
 // isDuplicateColumnErr returns true when SQLite rejects an ALTER TABLE ADD
