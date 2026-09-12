@@ -431,7 +431,7 @@ export function FleetPowerPane({ period, onPeriodChange }: FleetPowerPaneProps) 
               const notes = [
                 diag.staleMachines > 0 ? `${diag.staleMachines} stale` : null,
                 diag.skewedMachines > 0 ? `${diag.skewedMachines} clock-skewed` : null,
-                diag.unknownMachines > 0 ? `${diag.unknownMachines} unrecognised backend` : null,
+                diag.unknownMachines > 0 ? `${diag.unknownMachines} source or scope unverified` : null,
                 diag.unreadableMachines > 0 ? `${diag.unreadableMachines} unreadable` : null,
               ].filter(Boolean);
               if (notes.length === 0) return null;
@@ -519,10 +519,10 @@ export function FleetPowerPane({ period, onPeriodChange }: FleetPowerPaneProps) 
               return (
                 <p
                   className="mf-table-meta mt-1"
-                  title="The hub could not identify the backend behind these readings, so they are excluded from both the measured and the modelled series rather than being guessed into one."
+                  title="Either the hub does not recognise the backend, or it recognises it and cannot vouch for what the sensor is wired across — a battery pack that may be supplying only part of the load, or a shunt whose rail its chip name does not identify. Excluded from both the measured and the modelled series rather than guessed into one. The stored readings are unchanged."
                 >
-                  {unknownMachines} machine{unknownMachines === 1 ? "" : "s"} reporting an
-                  unrecognised backend — excluded from both series
+                  {unknownMachines} machine{unknownMachines === 1 ? "" : "s"} whose power source or
+                  scope is unverified — excluded from both series
                 </p>
               );
             })()}

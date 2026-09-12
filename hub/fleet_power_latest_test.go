@@ -201,6 +201,80 @@ func TestFleetPowerCurrentCountsUnknownProvenanceWithoutSummingIt(t *testing.T) 
 	}
 }
 
+// The "now" endpoint has to apply the same scope rule as the history, or the
+// headline number and the chart disagree about what the fleet is drawing.
+//
+// These rows keep arriving: agents older than the change still send them, and
+// journal replay delivers backlogs written before it.
+func TestFleetPowerCurrentExcludesSystemReadingsOfUnverifiedScope(t *testing.T) {
+	for _, source := range []string{
+		powerhistory.SourceHwmonPrefix + "ina226",
+		powerhistory.SourceHwmonPrefix + "power_meter",
+		powerhistory.SourceBattery,
+	} {
+		t.Run(source, func(t *testing.T) {
+			e, s := setupTestServer(t)
+			s.markCredentialsRotated(t)
+			token := loginAndGetToken(t, e)
+			s.seedTestMachine(t, "m1")
+
+			now := time.Now().UnixMilli()
+			insertFleetPowerRow(t, s, "m1", 1, now-30_000, now, fpSystem(77, source))
+
+			current := fpCurrent(t, e, token)
+			system := fpCurrentDomain(t, current, powerhistory.DomainSystem)
+			if system.Measured.Watts != nil {
+				t.Fatalf("%s was summed into the current system total: %v W", source, *system.Measured.Watts)
+			}
+			if system.UnknownMachines != 1 {
+				t.Fatalf("%s must be counted as excluded, got %d", source, system.UnknownMachines)
+			}
+			// It contributed nothing, so it is not a reporting machine.
+			if current.MachinesReporting != 0 {
+				t.Fatalf("MachinesReporting = %d; a machine excluded from every domain reports nothing",
+					current.MachinesReporting)
+			}
+		})
+	}
+
+	// CONTROL: DCMI in the same position is summed, so the exclusions above
+	// are about scope rather than about the endpoint refusing system power.
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
+	token := loginAndGetToken(t, e)
+	s.seedTestMachine(t, "m1")
+	now := time.Now().UnixMilli()
+	insertFleetPowerRow(t, s, "m1", 1, now-30_000, now, fpSystem(77, powerhistory.SourceIPMIDCMI))
+	system := fpCurrentDomain(t, fpCurrent(t, e, token), powerhistory.DomainSystem)
+	if system.Measured.Watts == nil || *system.Measured.Watts != 77 {
+		t.Fatalf("control: a DCMI reading must still be the current system total: %v", system.Measured.Watts)
+	}
+}
+
+// A frozen RAPL window is not 0 W of CPU. The agent no longer produces one;
+// the stored rows and older agents still do.
+func TestFleetPowerCurrentFrozenRAPLWindowIsNotAValidZero(t *testing.T) {
+	e, s := setupTestServer(t)
+	s.markCredentialsRotated(t)
+	token := loginAndGetToken(t, e)
+	s.seedTestMachine(t, "m1")
+
+	now := time.Now().UnixMilli()
+	bk := powerhistory.Bucket{CPU: fpStats(0, 0, 30)}
+	bk.Sources = []powerhistory.DomainSource{
+		{Domain: powerhistory.DomainCPU, Source: powerhistory.SourceRAPLPackage},
+	}
+	insertFleetPowerRow(t, s, "m1", 1, now-30_000, now, bk)
+
+	cpu := fpCurrentDomain(t, fpCurrent(t, e, token), powerhistory.DomainCPU)
+	if cpu.Measured.Watts != nil {
+		t.Fatalf("a frozen counter window became %v W of current CPU power", *cpu.Measured.Watts)
+	}
+	if cpu.UnknownMachines != 1 {
+		t.Fatalf("UnknownMachines = %d, want 1", cpu.UnknownMachines)
+	}
+}
+
 // The sum is only as current as its OLDEST contributor, and says so.
 func TestFleetPowerCurrentReportsOldestContributor(t *testing.T) {
 	e, s := setupTestServer(t)

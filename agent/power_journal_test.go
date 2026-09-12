@@ -609,3 +609,48 @@ func TestJournalFutureStampedBucketIsDroppedNotReplayed(t *testing.T) {
 		t.Fatalf("a bucket within the allowed skew must remain replayable: %+v", got)
 	}
 }
+
+// A MODELLED row that was already written still replays as modelled.
+//
+// This agent no longer generates estimates — power_estimate.go is gone — but
+// removing generation must not break the compatibility promise. Rows written
+// by an older build sit in journals on real machines right now, and when they
+// replay after an upgrade the hub has to receive them with their label intact.
+// A modelled reading that arrived unlabelled would be presented as a counter
+// reading, which is the one outcome the source label exists to prevent.
+func TestALegacyModelledRowStillReplaysLabelled(t *testing.T) {
+	dir := t.TempDir()
+	c := &jclock{t: time.Unix(1_700_000_000, 0)}
+	j := openTestJournal(t, dir, c)
+
+	// Exactly what a pre-removal agent wrote: a system reading labelled with
+	// the modelled source.
+	mean, peak := 18.5, 22.0
+	bk := bucketEnding(c.now().UnixMilli())
+	bk.System = &powerhistory.Stats{MeanWatts: &mean, PeakWatts: &peak, Samples: 30}
+	bk.Sources = []powerhistory.DomainSource{
+		{Domain: powerhistory.DomainSystem, Source: powerhistory.SourceEstimateUtil},
+	}
+	if err := j.append(bk); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	j.close()
+
+	// Reopened by THIS build, which has no estimator in it at all.
+	j2 := openTestJournal(t, dir, c)
+	batch, ok := j2.snapshot().pendingBatch(32, 1<<20)
+	if !ok || len(batch.Buckets) != 1 {
+		t.Fatalf("the stored row did not replay: ok=%v %+v", ok, batch)
+	}
+	replayed := batch.Buckets[0]
+	if replayed.SourceFor(powerhistory.DomainSystem) != powerhistory.SourceEstimateUtil {
+		t.Fatalf("the modelled label did not survive replay: %q",
+			replayed.SourceFor(powerhistory.DomainSystem))
+	}
+	if !powerhistory.IsEstimatedSource(replayed.SourceFor(powerhistory.DomainSystem)) {
+		t.Fatal("a replayed modelled row must still be recognised as modelled")
+	}
+	if replayed.System == nil || replayed.System.MeanWatts == nil || *replayed.System.MeanWatts != mean {
+		t.Fatalf("the reading itself did not survive: %+v", replayed.System)
+	}
+}

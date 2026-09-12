@@ -296,9 +296,11 @@ func TestFleetPowerEmptyBucketIsNilNotZero(t *testing.T) {
 			t.Fatalf("bucket %d claims %d machines", idx, system.Buckets[idx].MeasuredMachines)
 		}
 	}
-	// A genuine zero-watt reading is preserved as zero.
+	// A genuine zero-watt reading is preserved as zero. DCMI is the backend
+	// that can actually report one: the BMC says the reading is active, so
+	// zero is its answer rather than the absence of one.
 	zero := aggregateFleetPower(
-		[]fleetPowerRecord{fpRecord("m1", start+30_000, fpSystem(0, powerhistory.SourceBattery))},
+		[]fleetPowerRecord{fpRecord("m1", start+30_000, fpSystem(0, powerhistory.SourceIPMIDCMI))},
 		fpInputs([]string{"m1"}, start, 1),
 	)
 	fpWatts(t, fpDomain(t, zero, powerhistory.DomainSystem).Buckets[0].MeasuredWatts, 0)
@@ -381,17 +383,116 @@ func TestFleetPowerUnlabelledLegacyReadingStaysMeasured(t *testing.T) {
 	fpWatts(t, system.Buckets[0].MeasuredWatts, 100)
 }
 
-// hwmon backends name the chip they found, so the identifier is open-ended and
-// cannot be enumerated. They are measurements.
-func TestFleetPowerHwmonPrefixIsMeasured(t *testing.T) {
+// An hwmon chip reading IS a measurement. What it is not is a measurement of
+// this machine: a shunt reports whatever rail it is wired across, and the chip
+// name says nothing about which. The agent no longer makes that inference, but
+// the rows it already wrote still arrive, and journal replay still delivers
+// them — so the exclusion has to happen here, at read time.
+//
+// A battery is the same claim in a different costume: its discharge is the
+// machine's draw only while the machine runs on that pack alone.
+func TestFleetPowerLegacySystemSourcesWithUnverifiedScopeAreExcluded(t *testing.T) {
 	start := int64(1_700_000_000_000)
-	records := []fleetPowerRecord{
-		fpRecord("m1", start+30_000, fpSystem(100, powerhistory.SourceHwmonPrefix+"ina226")),
+	for _, source := range []string{
+		powerhistory.SourceHwmonPrefix + "ina226",
+		powerhistory.SourceHwmonPrefix + "power_meter",
+		powerhistory.SourceBattery,
+	} {
+		t.Run(source, func(t *testing.T) {
+			records := []fleetPowerRecord{fpRecord("m1", start+30_000, fpSystem(100, source))}
+			hist := aggregateFleetPower(records, fpInputs([]string{"m1"}, start, 1))
+			system := fpDomain(t, hist, powerhistory.DomainSystem)
+			if system.Buckets[0].MeasuredWatts != nil {
+				t.Fatalf("%s was summed into the system total: %v W", source, *system.Buckets[0].MeasuredWatts)
+			}
+			if system.Buckets[0].EstimatedWatts != nil {
+				t.Fatalf("%s was summed as modelled", source)
+			}
+			// Counted, not silently dropped.
+			if system.Buckets[0].UnknownMachines != 1 || system.Unknown.Machines != 1 {
+				t.Fatalf("%s must be visible in the excluded count, got bucket=%d total=%d",
+					source, system.Buckets[0].UnknownMachines, system.Unknown.Machines)
+			}
+		})
 	}
+
+	// CONTROL: a backend whose scope IS defensible still totals normally, so
+	// the exclusion above is about scope and not about system power generally.
+	for _, source := range []string{powerhistory.SourceRAPLPsys, powerhistory.SourceIPMIDCMI} {
+		t.Run("control/"+source, func(t *testing.T) {
+			records := []fleetPowerRecord{fpRecord("m1", start+30_000, fpSystem(100, source))}
+			hist := aggregateFleetPower(records, fpInputs([]string{"m1"}, start, 1))
+			system := fpDomain(t, hist, powerhistory.DomainSystem)
+			if system.Buckets[0].MeasuredWatts == nil {
+				t.Fatalf("%s must remain a measured system total", source)
+			}
+			fpWatts(t, system.Buckets[0].MeasuredWatts, 100)
+		})
+	}
+}
+
+// An hwmon reading outside the system domain keeps its old classification:
+// the exclusion is about a whole-machine CLAIM, not about hwmon.
+func TestFleetPowerHwmonOutsideTheSystemDomainIsStillMeasured(t *testing.T) {
+	if got := fleetPowerClassify(powerhistory.DomainCPU, powerhistory.SourceHwmonPrefix+"k10temp"); got != fleetPowerKindMeasured {
+		t.Fatalf("cpu-domain hwmon classified as %q", got)
+	}
+}
+
+// A RAPL group whose counters never moved used to be reported as a valid
+// 0.0 W reading — a running CPU that appeared to draw nothing. The agent now
+// refuses it, but the rows are stored and older agents still send them.
+func TestFleetPowerFrozenRAPLWindowIsNotAValidZero(t *testing.T) {
+	start := int64(1_700_000_000_000)
+	zero := func(source string) powerhistory.Bucket {
+		bk := powerhistory.Bucket{CPU: fpStats(0, 0, 30)}
+		if source != "" {
+			bk.Sources = []powerhistory.DomainSource{{Domain: powerhistory.DomainCPU, Source: source}}
+		}
+		return bk
+	}
+	for _, source := range []string{powerhistory.SourceRAPLPackage, ""} {
+		name := source
+		if name == "" {
+			name = "unlabelled-legacy"
+		}
+		t.Run(name, func(t *testing.T) {
+			records := []fleetPowerRecord{fpRecord("m1", start+30_000, zero(source))}
+			hist := aggregateFleetPower(records, fpInputs([]string{"m1"}, start, 1))
+			cpu := fpDomain(t, hist, powerhistory.DomainCPU)
+			if cpu.Buckets[0].MeasuredWatts != nil {
+				t.Fatalf("a frozen counter window was reported as %v W of measured CPU power",
+					*cpu.Buckets[0].MeasuredWatts)
+			}
+			if cpu.Buckets[0].UnknownMachines != 1 {
+				t.Fatal("the excluded window must be visible in the count")
+			}
+		})
+	}
+
+	// CONTROL, and the reason this is not a blanket "greater than zero"
+	// filter: a real zero from a source that can genuinely report one must
+	// survive. A GPU parked at 0 W is a measurement.
+	records := []fleetPowerRecord{fpRecord("m1", start+30_000,
+		powerhistory.Bucket{GPUTotal: fpStats(0, 0, 30)})}
 	hist := aggregateFleetPower(records, fpInputs([]string{"m1"}, start, 1))
-	system := fpDomain(t, hist, powerhistory.DomainSystem)
-	if system.Buckets[0].MeasuredWatts == nil {
-		t.Fatal("an hwmon chip reading is a measurement")
+	gpu := fpDomain(t, hist, fleetPowerDomainGPU)
+	if gpu.Buckets[0].MeasuredWatts == nil {
+		t.Fatal("a GPU idling at 0 W is a real reading and must survive")
+	}
+	fpWatts(t, gpu.Buckets[0].MeasuredWatts, 0)
+
+	// And a nonzero peak means the counter DID move, even if the mean rounds
+	// to zero — that window is a measurement.
+	records = []fleetPowerRecord{fpRecord("m1", start+30_000, func() powerhistory.Bucket {
+		bk := powerhistory.Bucket{CPU: fpStats(0, 0.4, 30)}
+		bk.Sources = []powerhistory.DomainSource{{Domain: powerhistory.DomainCPU, Source: powerhistory.SourceRAPLPackage}}
+		return bk
+	}())}
+	hist = aggregateFleetPower(records, fpInputs([]string{"m1"}, start, 1))
+	cpu := fpDomain(t, hist, powerhistory.DomainCPU)
+	if cpu.Buckets[0].MeasuredWatts == nil {
+		t.Fatal("a window whose peak moved is a measurement, however small its mean")
 	}
 }
 

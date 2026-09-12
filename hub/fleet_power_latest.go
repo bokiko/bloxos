@@ -82,8 +82,11 @@ type fleetPowerCurrentDomain struct {
 	Domain    string                  `json:"domain"`
 	Measured  fleetPowerCurrentSeries `json:"measured"`
 	Estimated fleetPowerCurrentSeries `json:"estimated"`
-	// UnknownMachines had a reading whose backend could not be classified. Their
-	// watts are excluded from both series; the count keeps that visible.
+	// UnknownMachines had a reading this hub will not add up: an unrecognised
+	// backend, or a recognised one whose SCOPE it cannot vouch for — a battery
+	// that may be carrying only part of the load, a shunt whose rail its chip
+	// name does not identify, or a RAPL window whose counters never moved.
+	// Their watts are excluded from both series; the count keeps that visible.
 	UnknownMachines int `json:"unknown_machines"`
 	// StaleMachines reported this domain, but not recently enough to count.
 	// Their last value is deliberately NOT carried forward.
@@ -262,7 +265,7 @@ func (s *Server) handleFleetPowerCurrent(c echo.Context) error {
 			}
 
 			label := fleetPowerSourceLabel(domain, source)
-			switch fleetPowerClassify(domain, source) {
+			switch fleetPowerKindFor(domain, source, stats) {
 			case fleetPowerKindMeasured:
 				measured.add(*stats.MeanWatts, label, rec.endMS)
 				contributing[id] = true
