@@ -311,6 +311,9 @@ func (s *Server) registerRoutes(e *echo.Echo) {
 	api.GET("/api/machines/:id/power/history", s.handlePowerHistory)
 	// Fleet-scoped power aggregation over the same rows (hub/fleet_power.go).
 	api.GET("/api/fleet/power/history", s.handleFleetPowerHistory)
+	// Current fleet draw, from a fixed lookback independent of any chart
+	// period (hub/fleet_power_latest.go).
+	api.GET("/api/fleet/power/current", s.handleFleetPowerCurrent)
 	api.DELETE("/api/machines/:id/credential", s.handleRevokeAgentCredential)
 	api.POST("/api/machines/:id/windows-re-enrollment", s.handleWindowsReenrollment)
 	api.DELETE("/api/machines/:id", s.handleDeleteMachine)

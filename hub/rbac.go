@@ -155,6 +155,8 @@ var routeScopeRequirements = map[string]string{
 	// fleet.read already means every machine, and rolling up rows a reader
 	// may already fetch one machine at a time discloses nothing new.
 	routeScopeKey(http.MethodGet, "/api/fleet/power/history"): scopeFleetRead,
+	// Same telemetry, current instant rather than history: same scope.
+	routeScopeKey(http.MethodGet, "/api/fleet/power/current"): scopeFleetRead,
 }
 
 func (s *Server) permissionMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
