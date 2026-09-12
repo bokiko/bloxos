@@ -19,8 +19,8 @@ type rolloutFixture struct {
 	t   *testing.T
 
 	// registry mirrors the hub's: which connection currently owns a machine.
-	// Tests drive it explicitly rather than passing a nil Server, because the
-	// ownership boundary IS the behaviour under test in several of them.
+	// Tests drive it explicitly, because the ownership boundary IS the
+	// behaviour under test in several of them.
 	registryMu sync.Mutex
 	registry   map[string]*ConnectedAgent
 }
@@ -34,14 +34,13 @@ func (f *rolloutFixture) register(machineID string, c *ConnectedAgent) {
 	f.registry[machineID] = c
 }
 
-func (f *rolloutFixture) owns(machineID string, c *ConnectedAgent) bool {
+// currentConn answers "who owns this machine now". A machine with no recorded
+// registration defaults to whatever connection was last seen writing evidence,
+// which keeps the simpler unit tests from having to model the registry.
+func (f *rolloutFixture) currentConn(machineID string) *ConnectedAgent {
 	f.registryMu.Lock()
 	defer f.registryMu.Unlock()
-	current, ok := f.registry[machineID]
-	if !ok {
-		return true // no registration recorded: unit tests that do not model it
-	}
-	return current == c
+	return f.registry[machineID]
 }
 
 // newRolloutDB is an in-memory database with migrations applied. MaxOpenConns
@@ -69,7 +68,7 @@ func newRolloutFixture(t *testing.T) *rolloutFixture {
 	if err != nil {
 		t.Fatalf("controller: %v", err)
 	}
-	c.attachRegistry(f.owns)
+	c.attachRegistry(f.currentConn)
 	f.c = c
 	return f
 }
@@ -84,7 +83,7 @@ func (f *rolloutFixture) restart() {
 	if err != nil {
 		f.t.Fatalf("restart: %v", err)
 	}
-	c.attachRegistry(f.owns)
+	c.attachRegistry(f.currentConn)
 	f.c = c
 }
 
@@ -172,7 +171,7 @@ func TestTwoDistinctMachinesRaceForTheFinalSlot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("controller: %v", err)
 	}
-	controller.attachRegistry(f.owns)
+	controller.attachRegistry(f.currentConn)
 	f.c = controller
 	// Take the canary and validate it so the stage advances to a batch of two.
 	canary, _, _ := f.c.reserve(testPlatform, "canary", candidateA, 8)
@@ -181,7 +180,7 @@ func TestTwoDistinctMachinesRaceForTheFinalSlot(t *testing.T) {
 	}
 	c0 := conn("canary")
 	f.prove(testPlatform, "canary", candidateA, c0)
-	if err := f.c.tick(nil, testPlatform); err != nil {
+	if err := f.c.tick(testPlatform); err != nil {
 		t.Fatalf("tick: %v", err)
 	}
 
@@ -377,13 +376,14 @@ func TestDwellRequiresContinuousTelemetryOnOneConnection(t *testing.T) {
 	}
 	st, _ := f.c.platformState(testPlatform)
 	c1 := conn("m1")
+	f.register("m1", c1)
 
 	f.c.observeCandidateReport(testPlatform, "m1", c1, st.Generation, candidateA, candidateA)
 	// One report, then silence past the allowed gap, then a frame at the far
 	// end of the dwell. The endpoints look right; the middle proves nothing.
 	f.advance(rolloutDwell + time.Second)
 	f.c.observeTelemetry(testPlatform, "m1", c1)
-	if ok, why := f.c.dwellSatisfied(nil, testPlatform, "m1", st.Generation, candidateA); ok {
+	if ok, why := f.c.dwellSatisfied(testPlatform, "m1", st.Generation, candidateA); ok {
 		t.Fatal("a gap in the middle of the dwell must restart it, not be ignored")
 	} else if why == "" {
 		t.Fatal("a refusal must say why")
@@ -391,48 +391,8 @@ func TestDwellRequiresContinuousTelemetryOnOneConnection(t *testing.T) {
 
 	// Continuous frames do satisfy it.
 	f.prove(testPlatform, "m1", candidateA, c1)
-	if ok, why := f.c.dwellSatisfied(nil, testPlatform, "m1", st.Generation, candidateA); !ok {
+	if ok, why := f.c.dwellSatisfied(testPlatform, "m1", st.Generation, candidateA); !ok {
 		t.Fatalf("continuous telemetry across the dwell must satisfy it: %s", why)
-	}
-}
-
-// agentRunningVersions is keyed by machine and survives a socket replacement.
-// A new connection must not inherit the previous one's proof.
-func TestAReplacedConnectionInheritsNoEvidence(t *testing.T) {
-	f := newRolloutFixture(t)
-	if r, _, _ := f.c.reserve(testPlatform, "m1", candidateA, 8); r == nil {
-		t.Fatal("reserve")
-	}
-	st, _ := f.c.platformState(testPlatform)
-
-	old := conn("m1")
-	f.prove(testPlatform, "m1", candidateA, old)
-	if ok, _ := f.c.dwellSatisfied(nil, testPlatform, "m1", st.Generation, candidateA); !ok {
-		t.Fatal("control: the first connection must satisfy the dwell")
-	}
-
-	// The socket is replaced, and the REGISTRY is what says so.
-	fresh := conn("m1")
-	f.register("m1", fresh)
-	f.c.observeTelemetry(testPlatform, "m1", fresh)
-	if ok, why := f.c.dwellSatisfied(nil, testPlatform, "m1", st.Generation, candidateA); ok {
-		t.Fatal("a replaced connection inherited the previous connection's dwell")
-	} else if why == "" {
-		t.Fatal("a refusal must say why")
-	}
-
-	// The displaced socket may still be readable. Its late frames must neither
-	// sustain its own dead dwell nor destroy the new connection's evidence.
-	f.c.observeCandidateReport(testPlatform, "m1", old, st.Generation, candidateA, candidateA)
-	f.c.observeTelemetry(testPlatform, "m1", old)
-	if ok, _ := f.c.dwellSatisfied(nil, testPlatform, "m1", st.Generation, candidateA); ok {
-		t.Fatal("a displaced socket vouched for the machine it no longer owns")
-	}
-
-	// The new connection can then prove itself normally.
-	f.prove(testPlatform, "m1", candidateA, fresh)
-	if ok, why := f.c.dwellSatisfied(nil, testPlatform, "m1", st.Generation, candidateA); !ok {
-		t.Fatalf("the current connection must be able to prove itself: %s", why)
 	}
 }
 
@@ -451,7 +411,7 @@ func TestVersionReportsAloneNeverValidate(t *testing.T) {
 		f.c.observeCandidateReport(testPlatform, "m1", c1, st.Generation, candidateA, candidateA)
 		f.advance(20 * time.Second)
 	}
-	if ok, why := f.c.dwellSatisfied(nil, testPlatform, "m1", st.Generation, candidateA); ok {
+	if ok, why := f.c.dwellSatisfied(testPlatform, "m1", st.Generation, candidateA); ok {
 		t.Fatal("repeated version reports with no metrics satisfied the dwell")
 	} else if why == "" {
 		t.Fatal("a refusal must say why")
@@ -474,7 +434,7 @@ func TestTheDwellEndpointMustBeARealMetricsFrame(t *testing.T) {
 
 	// The clock passes the dwell, but no further frame has arrived.
 	f.advance(rolloutDwell + time.Second)
-	if ok, _ := f.c.dwellSatisfied(nil, testPlatform, "m1", st.Generation, candidateA); ok {
+	if ok, _ := f.c.dwellSatisfied(testPlatform, "m1", st.Generation, candidateA); ok {
 		t.Fatal("the dwell completed on a timer, with no metrics at its endpoint")
 	}
 }
@@ -487,8 +447,9 @@ func TestEvidenceForOneCandidateDoesNotValidateAnother(t *testing.T) {
 	}
 	st, _ := f.c.platformState(testPlatform)
 	c1 := conn("m1")
+	f.register("m1", c1)
 	f.prove(testPlatform, "m1", candidateA, c1)
-	if ok, _ := f.c.dwellSatisfied(nil, testPlatform, "m1", st.Generation, candidateA); !ok {
+	if ok, _ := f.c.dwellSatisfied(testPlatform, "m1", st.Generation, candidateA); !ok {
 		t.Fatal("control: A must be satisfied")
 	}
 
@@ -501,7 +462,7 @@ func TestEvidenceForOneCandidateDoesNotValidateAnother(t *testing.T) {
 	if stB.Generation == st.Generation {
 		t.Fatal("a changed candidate must start a new generation")
 	}
-	if ok, _ := f.c.dwellSatisfied(nil, testPlatform, "m1", stB.Generation, candidateB); ok {
+	if ok, _ := f.c.dwellSatisfied(testPlatform, "m1", stB.Generation, candidateB); ok {
 		t.Fatal("A's dwell was accepted as proof for B")
 	}
 }
@@ -513,8 +474,9 @@ func TestRestartClearsInFlightEvidenceButKeepsValidatedProgress(t *testing.T) {
 	}
 	st, _ := f.c.platformState(testPlatform)
 	c1 := conn("m1")
+	f.register("m1", c1)
 	f.prove(testPlatform, "m1", candidateA, c1)
-	if err := f.c.tick(nil, testPlatform); err != nil {
+	if err := f.c.tick(testPlatform); err != nil {
 		t.Fatalf("tick: %v", err)
 	}
 	if state, _, _ := f.slot(testPlatform, "m1"); state != rolloutHealthy {
@@ -526,6 +488,7 @@ func TestRestartClearsInFlightEvidenceButKeepsValidatedProgress(t *testing.T) {
 		t.Fatal("the batch stage must admit m2")
 	}
 	c2 := conn("m2")
+	f.register("m2", c2)
 	f.c.observeCandidateReport(testPlatform, "m2", c2, st.Generation, candidateA, candidateA)
 	f.advance(30 * time.Second)
 	f.c.observeTelemetry(testPlatform, "m2", c2)
@@ -538,7 +501,7 @@ func TestRestartClearsInFlightEvidenceButKeepsValidatedProgress(t *testing.T) {
 	}
 	// ...and in-flight health evidence is not: downtime cannot accrue as dwell.
 	f.advance(rolloutDwell)
-	if ok, _ := f.c.dwellSatisfied(nil, testPlatform, "m2", st.Generation, candidateA); ok {
+	if ok, _ := f.c.dwellSatisfied(testPlatform, "m2", st.Generation, candidateA); ok {
 		t.Fatal("a dwell in progress at restart was allowed to complete across the gap")
 	}
 }
@@ -558,7 +521,7 @@ func TestAnEmptyPlatformNeverAdvancesPastTheCanary(t *testing.T) {
 		t.Fatalf("clear: %v", err)
 	}
 	for i := 0; i < 10; i++ {
-		if err := f.c.tick(nil, testPlatform); err != nil {
+		if err := f.c.tick(testPlatform); err != nil {
 			t.Fatalf("tick: %v", err)
 		}
 		f.advance(time.Minute)
@@ -588,7 +551,7 @@ func TestAReservationArrivingDuringATickIsNotStrandedByAnAdvance(t *testing.T) {
 		t.Fatal("canary")
 	}
 	f.prove(testPlatform, "canary", candidateA, conn("canary"))
-	if err := f.c.tick(nil, testPlatform); err != nil {
+	if err := f.c.tick(testPlatform); err != nil {
 		t.Fatalf("tick: %v", err)
 	}
 	before, _ := f.c.platformState(testPlatform)
@@ -603,7 +566,7 @@ func TestAReservationArrivingDuringATickIsNotStrandedByAnAdvance(t *testing.T) {
 		t.Fatalf("a reservation must not itself move the stage: %d -> %d", before.Stage, during.Stage)
 	}
 
-	if err := f.c.tick(nil, testPlatform); err != nil {
+	if err := f.c.tick(testPlatform); err != nil {
 		t.Fatalf("tick: %v", err)
 	}
 	after, _ := f.c.platformState(testPlatform)
@@ -621,7 +584,7 @@ func TestAStageOfWithheldMachinesDoesNotAdvance(t *testing.T) {
 		t.Fatalf("withhold: %v", err)
 	}
 	for i := 0; i < 5; i++ {
-		if err := f.c.tick(nil, testPlatform); err != nil {
+		if err := f.c.tick(testPlatform); err != nil {
 			t.Fatalf("tick: %v", err)
 		}
 		f.advance(time.Minute)
@@ -632,10 +595,17 @@ func TestAStageOfWithheldMachinesDoesNotAdvance(t *testing.T) {
 	}
 }
 
-// The ownership check happens outside the evidence lock, so a registration can
-// change in between. A frame from the losing socket must not discard the
-// winner's proof on its way past.
-func TestALateFrameFromADisplacedSocketCannotDiscardCurrentProof(t *testing.T) {
+// The interleaving that the old design could not survive: a report from a
+// socket that was STILL the owner when its ownership was checked, and had lost
+// the machine by the time it wrote.
+//
+// The previous code checked ownership outside the evidence lock and then
+// replaced the machine's single record under it, so that report destroyed the
+// winner's proof — and the check could not prevent it, because the check had
+// already passed. A test that simply sends a late frame after the registry
+// changed does not reach this: the early check rejects it. This one holds the
+// old writer between its check and its write.
+func TestAReportInFlightAcrossAReplacementCannotDiscardFreshProof(t *testing.T) {
 	f := newRolloutFixture(t)
 	if r, _, _ := f.c.reserve(testPlatform, "m1", candidateA, 8); r == nil {
 		t.Fatal("reserve")
@@ -644,21 +614,58 @@ func TestALateFrameFromADisplacedSocketCannotDiscardCurrentProof(t *testing.T) {
 
 	old := conn("m1")
 	fresh := conn("m1")
+	f.register("m1", old)
 
-	// The new connection wins the machine and proves itself.
+	// The old connection begins reporting; hold it before it writes.
+	released := make(chan struct{})
+	wrote := make(chan struct{})
+	go func() {
+		<-released
+		// Both ingestion paths, because both are writers.
+		f.c.observeCandidateReport(testPlatform, "m1", old, st.Generation, candidateA, candidateA)
+		f.c.observeTelemetry(testPlatform, "m1", old)
+		close(wrote)
+	}()
+
+	// While it is held, the machine is taken over and the new connection
+	// completes a full dwell.
 	f.register("m1", fresh)
 	f.prove(testPlatform, "m1", candidateA, fresh)
-	if ok, why := f.c.dwellSatisfied(nil, testPlatform, "m1", st.Generation, candidateA); !ok {
-		t.Fatalf("control: the current connection must be validated: %s", why)
+	if ok, why := f.c.dwellSatisfied(testPlatform, "m1", st.Generation, candidateA); !ok {
+		t.Fatalf("control: the current connection must be validated first: %s", why)
 	}
 
-	// A frame from the displaced socket arrives afterwards. Letting it replace
-	// the record would reset a completed dwell and stall the rollout.
-	f.c.observeTelemetry(testPlatform, "m1", old)
-	f.c.observeCandidateReport(testPlatform, "m1", old, st.Generation, candidateA, candidateA)
+	close(released)
+	<-wrote
 
-	if ok, why := f.c.dwellSatisfied(nil, testPlatform, "m1", st.Generation, candidateA); !ok {
-		t.Fatalf("a displaced socket's late frame destroyed valid proof: %s", why)
+	if ok, why := f.c.dwellSatisfied(testPlatform, "m1", st.Generation, candidateA); !ok {
+		t.Fatalf("a report in flight across the replacement destroyed valid proof: %s", why)
+	}
+}
+
+// The displaced socket's own record must also never be READ as the machine's
+// health once the registry has moved on.
+func TestADisplacedSocketsProofIsNeverRead(t *testing.T) {
+	f := newRolloutFixture(t)
+	if r, _, _ := f.c.reserve(testPlatform, "m1", candidateA, 8); r == nil {
+		t.Fatal("reserve")
+	}
+	st, _ := f.c.platformState(testPlatform)
+
+	old := conn("m1")
+	f.register("m1", old)
+	f.prove(testPlatform, "m1", candidateA, old)
+	if ok, _ := f.c.dwellSatisfied(testPlatform, "m1", st.Generation, candidateA); !ok {
+		t.Fatal("control: the first connection must be validated")
+	}
+
+	// The machine is taken over by a socket that has proven nothing.
+	fresh := conn("m1")
+	f.register("m1", fresh)
+	if ok, why := f.c.dwellSatisfied(testPlatform, "m1", st.Generation, candidateA); ok {
+		t.Fatal("the displaced socket's completed dwell was read as the machine's health")
+	} else if why == "" {
+		t.Fatal("a refusal must say why")
 	}
 }
 
@@ -693,7 +700,7 @@ func TestProgressionNeedsNoOperatorAction(t *testing.T) {
 				f.prove(testPlatform, id, candidateA, conn(id))
 			}
 		}
-		if err := f.c.tick(nil, testPlatform); err != nil {
+		if err := f.c.tick(testPlatform); err != nil {
 			t.Fatalf("tick: %v", err)
 		}
 		for _, id := range machines {
@@ -726,7 +733,7 @@ func TestALateMachineReopensACompletedPlatform(t *testing.T) {
 		t.Fatal("reserve")
 	}
 	f.prove(testPlatform, "m1", candidateA, conn("m1"))
-	if err := f.c.tick(nil, testPlatform); err != nil {
+	if err := f.c.tick(testPlatform); err != nil {
 		t.Fatalf("tick: %v", err)
 	}
 	if err := f.c.markComplete(testPlatform); err != nil {
@@ -791,7 +798,7 @@ func TestResumeRetriesFailedAttempts(t *testing.T) {
 		t.Fatal("reserve")
 	}
 	f.advance(rolloutAttemptTimeout + rolloutRestartGrace + time.Minute)
-	if err := f.c.tick(nil, testPlatform); err != nil {
+	if err := f.c.tick(testPlatform); err != nil {
 		t.Fatalf("tick: %v", err)
 	}
 	if state, _, _ := f.slot(testPlatform, "m1"); state != rolloutFailed {
@@ -854,7 +861,7 @@ func TestPlatformsProgressIndependently(t *testing.T) {
 
 	// Fail amd64 outright.
 	f.advance(rolloutAttemptTimeout + rolloutRestartGrace + time.Minute)
-	if err := f.c.tick(nil, testPlatform); err != nil {
+	if err := f.c.tick(testPlatform); err != nil {
 		t.Fatalf("tick: %v", err)
 	}
 	amd, _ := f.c.platformState(testPlatform)

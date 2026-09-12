@@ -119,6 +119,9 @@ type rolloutEvidence struct {
 	// metrics frame. Hub receipt time throughout: an agent's own timestamp is
 	// its claim about itself, and a stalled one keeps asserting freshness.
 	lastMetrics time.Time
+	// touched is the last time this record was written, used only to bound how
+	// many records one machine may accumulate.
+	touched time.Time
 }
 
 type rolloutController struct {
@@ -126,50 +129,41 @@ type rolloutController struct {
 	now func() time.Time
 
 	mu sync.Mutex
-	// evidence is keyed platform + "\x00" + machineID. Empty at construction.
-	evidence map[string]*rolloutEvidence
+	// evidence is keyed platform + "\x00" + machineID, then by the CONNECTION
+	// that produced it. Per-connection keys are what make writes safe without
+	// an ownership check: a socket can only write into its own record, so no
+	// interleaving lets one clobber another's. Empty at construction.
+	evidence map[string]map[*ConnectedAgent]*rolloutEvidence
 	// sending claims a (platform, generation, machine, attempt) for one
 	// goroutine, so concurrent recovery triggers cannot both resend.
 	sending map[string]bool
 
-	// owns reports whether a connection is the one the registry currently
-	// holds for a machine. This is THE ownership boundary for evidence.
-	//
-	// Pointer inequality alone is not it. A displaced old socket can still be
-	// readable for a while, and letting any different pointer replace the
-	// record would let those late frames wipe out the current connection's
-	// valid proof — a denial of progress driven by the very socket that lost
-	// the machine. The registry is the authority on who owns it now.
-	owns func(machineID string, conn *ConnectedAgent) bool
+	// current returns the connection the registry currently holds for a
+	// machine. It is called ONLY from dwellSatisfied, and never while c.mu is
+	// held, so the evidence lock and the registry lock have exactly one
+	// ordering and cannot deadlock against each other.
+	current func(machineID string) *ConnectedAgent
+	// currentMu guards `current` alone, so reading it does not require c.mu
+	// and cannot be part of any ordering with the registry.
+	currentMu sync.RWMutex
 }
 
 // attachRegistry points the controller at the live agent registry.
-func (c *rolloutController) attachRegistry(owns func(string, *ConnectedAgent) bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.owns = owns
+func (c *rolloutController) attachRegistry(current func(string) *ConnectedAgent) {
+	c.currentMu.Lock()
+	defer c.currentMu.Unlock()
+	c.current = current
 }
 
-// ownsConnection defaults to true only when no registry is attached, which is
-// the case in unit tests that drive the controller directly.
-func (c *rolloutController) ownsConnection(machineID string, conn *ConnectedAgent) bool {
-	c.mu.Lock()
-	owns := c.owns
-	c.mu.Unlock()
-	if owns == nil {
-		return true
+// currentConnection asks the registry who owns a machine right now.
+func (c *rolloutController) currentConnection(machineID string) *ConnectedAgent {
+	c.currentMu.RLock()
+	lookup := c.current
+	c.currentMu.RUnlock()
+	if lookup == nil {
+		return nil
 	}
-	return owns(machineID, conn)
-}
-
-// ownsLocked is ownsConnection for a caller that already holds c.mu. The
-// registry callback takes the agent registry's own lock, never this one, so
-// calling it here does not invert a lock order.
-func (c *rolloutController) ownsLocked(machineID string, conn *ConnectedAgent) bool {
-	if c.owns == nil {
-		return true
-	}
-	return c.owns(machineID, conn)
+	return lookup(machineID)
 }
 
 func rolloutKey(platform, machineID string) string {
@@ -194,7 +188,8 @@ func newRolloutController(db *sql.DB, now func() time.Time) (*rolloutController,
 	if now == nil {
 		now = time.Now
 	}
-	c := &rolloutController{db: db, now: now, evidence: map[string]*rolloutEvidence{}}
+	c := &rolloutController{db: db, now: now,
+		evidence: map[string]map[*ConnectedAgent]*rolloutEvidence{}}
 	if err := c.reconcileAfterRestart(); err != nil {
 		return nil, err
 	}
@@ -540,29 +535,37 @@ func (c *rolloutController) failSlotTx(tx *sql.Tx, st rolloutPlatformState, mach
  * machine it no longer owns.
  * -------------------------------------------------------------------------- */
 
-// observeCandidateReport records that a machine reported the candidate SHA ON
-// THIS CONNECTION. Dwell starts here, at hub receipt time.
+// observeCandidateReport records that a machine reported a SHA on THIS
+// connection.
+//
+// No ownership check, and none is needed: evidence is filed under the
+// connection that produced it, so a socket can only ever write into its own
+// record. A displaced one writes into a record nobody reads.
+//
+// The previous shape checked ownership OUTSIDE the lock and then replaced the
+// machine's single record under it. A report from a socket that was still the
+// owner when it was checked, and had lost the machine by the time it took the
+// lock, would overwrite the winner's proof — and nothing about the check
+// prevented it, because the check had already passed.
 func (c *rolloutController) observeCandidateReport(platform, machineID string, conn *ConnectedAgent,
 	generation int64, running, candidate string) {
 	if conn == nil || candidate == "" {
 		return
 	}
-	if !c.ownsConnection(machineID, conn) {
-		return // a displaced socket cannot report on the machine's behalf
-	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	key := rolloutKey(platform, machineID)
-	ev := c.evidence[key]
-	if ev == nil || ev.conn != conn || ev.generation != generation || !strings.EqualFold(ev.candidate, candidate) {
-		// A different socket, a different generation, or different bytes:
-		// start from nothing rather than inherit somebody else's dwell.
-		ev = &rolloutEvidence{conn: conn, generation: generation, candidate: strings.ToLower(candidate)}
-		c.evidence[key] = ev
+	ev := c.evidenceFor(platform, machineID, conn)
+	if ev.generation != generation || !strings.EqualFold(ev.candidate, candidate) {
+		// Different bytes or a different generation: this connection has
+		// proven nothing about them yet.
+		ev.generation = generation
+		ev.candidate = strings.ToLower(candidate)
+		ev.sawCandidate = false
+		ev.dwellStart = time.Time{}
 	}
 	if !strings.EqualFold(running, candidate) {
-		// Reporting something else on this connection ends any dwell: the
-		// machine is not on the candidate now, whatever it said before.
+		// Reporting something else ends this connection's dwell: the machine
+		// is not on the candidate now, whatever it said before.
 		ev.sawCandidate = false
 		ev.dwellStart = time.Time{}
 		return
@@ -571,6 +574,7 @@ func (c *rolloutController) observeCandidateReport(platform, machineID string, c
 	// It does not advance the dwell, because being told a version is not the
 	// same as observing a machine work.
 	ev.sawCandidate = true
+	ev.touched = c.now()
 }
 
 // noteMetrics records a metrics frame and restarts the dwell if the connection
@@ -596,79 +600,111 @@ func (e *rolloutEvidence) noteMetrics(now time.Time) {
 	e.lastMetrics = now
 }
 
-// observeTelemetry records a hub-received frame on this connection.
+// observeTelemetry records a hub-received metrics frame on this connection.
 //
 // Hub receipt time, never an agent timestamp: a stalled agent can keep
-// asserting its own freshness, and a clock that is wrong makes the claim
-// meaningless either way.
+// asserting its own freshness, and a wrong clock makes the claim meaningless
+// either way.
 func (c *rolloutController) observeTelemetry(platform, machineID string, conn *ConnectedAgent) {
 	if conn == nil {
 		return
 	}
-	key := rolloutKey(platform, machineID)
-	if !c.ownsConnection(machineID, conn) {
-		// A displaced socket's frames are dropped outright. They must neither
-		// sustain a dwell nor destroy the current connection's evidence.
-		return
-	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	ev := c.evidence[key]
-	if ev == nil || ev.conn != conn {
-		// The ownership check above happened OUTSIDE this lock, so a
-		// registration could have changed in between and this frame could be
-		// the displaced one by the time it arrives here. Re-check under the
-		// lock before discarding: an existing record that belongs to the
-		// current owner is never replaced by a different connection, so a late
-		// frame from a losing socket cannot wipe out valid proof.
-		if ev != nil && c.ownsLocked(machineID, ev.conn) {
-			return
-		}
-		ev = &rolloutEvidence{conn: conn}
-		c.evidence[key] = ev
-	}
-	ev.noteMetrics(c.now())
+	c.evidenceFor(platform, machineID, conn).noteMetrics(c.now())
 }
 
-// forgetConnection drops evidence when a socket goes away.
+// evidenceFor returns this connection's own record, creating it if needed.
+// Caller holds c.mu.
+func (c *rolloutController) evidenceFor(platform, machineID string, conn *ConnectedAgent) *rolloutEvidence {
+	key := rolloutKey(platform, machineID)
+	byConn := c.evidence[key]
+	if byConn == nil {
+		byConn = map[*ConnectedAgent]*rolloutEvidence{}
+		c.evidence[key] = byConn
+	}
+	ev := byConn[conn]
+	if ev == nil {
+		ev = &rolloutEvidence{conn: conn, touched: c.now()}
+		byConn[conn] = ev
+		c.pruneLocked(key, byConn)
+	}
+	return ev
+}
+
+// rolloutMaxEvidencePerMachine bounds records kept for one machine. A machine
+// that reconnects repeatedly would otherwise accumulate one per socket; a
+// disconnect normally removes its own, and this covers the case where it does
+// not.
+const rolloutMaxEvidencePerMachine = 4
+
+func (c *rolloutController) pruneLocked(key string, byConn map[*ConnectedAgent]*rolloutEvidence) {
+	for len(byConn) > rolloutMaxEvidencePerMachine {
+		var oldest *ConnectedAgent
+		var oldestAt time.Time
+		for conn, ev := range byConn {
+			if oldest == nil || ev.touched.Before(oldestAt) {
+				oldest, oldestAt = conn, ev.touched
+			}
+		}
+		delete(byConn, oldest)
+	}
+}
+
+// forgetConnection drops a connection's evidence when its socket goes away.
 func (c *rolloutController) forgetConnection(platform, machineID string, conn *ConnectedAgent) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	key := rolloutKey(platform, machineID)
-	if ev := c.evidence[key]; ev != nil && (conn == nil || ev.conn == conn) {
+	byConn := c.evidence[key]
+	if byConn == nil {
+		return
+	}
+	if conn == nil {
+		delete(c.evidence, key)
+		return
+	}
+	delete(byConn, conn)
+	if len(byConn) == 0 {
 		delete(c.evidence, key)
 	}
 }
 
-// dwellSatisfied reports whether this machine has proven itself on the
+// dwellSatisfied reports whether the machine has proven itself on the
 // connection the registry currently owns for it.
-func (c *rolloutController) dwellSatisfied(s *Server, platform, machineID string,
+//
+// The registry is consulted ONCE, here, and outside c.mu — so no path ever
+// holds the evidence lock while reaching into the agent registry, and the lock
+// order between them cannot invert. Reads select the current owner's record;
+// writes only ever touch their own. Neither can clobber the other.
+func (c *rolloutController) dwellSatisfied(platform, machineID string,
 	generation int64, candidate string) (bool, string) {
+	current := c.currentConnection(machineID)
+	if current == nil {
+		return false, "machine is not connected"
+	}
+
 	c.mu.Lock()
-	ev := c.evidence[rolloutKey(platform, machineID)]
-	var conn *ConnectedAgent
+	var ev *rolloutEvidence
+	if byConn := c.evidence[rolloutKey(platform, machineID)]; byConn != nil {
+		ev = byConn[current]
+	}
 	var sawCandidate bool
 	var evGeneration int64
 	var evCandidate string
 	var dwellStart, lastMetrics time.Time
 	if ev != nil {
-		conn, sawCandidate, dwellStart, lastMetrics = ev.conn, ev.sawCandidate, ev.dwellStart, ev.lastMetrics
+		sawCandidate, dwellStart, lastMetrics = ev.sawCandidate, ev.dwellStart, ev.lastMetrics
 		evGeneration, evCandidate = ev.generation, ev.candidate
 	}
 	c.mu.Unlock()
 
-	if ev == nil || conn == nil {
-		return false, "no live connection evidence"
+	if ev == nil {
+		return false, "no evidence from the current connection"
 	}
 	if evGeneration != generation || !strings.EqualFold(evCandidate, candidate) {
 		return false, "evidence is for a different candidate"
 	}
-	// The registry decides who owns the machine right now. A displaced socket
-	// may still be readable and must not vouch for anything.
-	if !c.ownsConnection(machineID, conn) {
-		return false, "evidence belongs to a replaced connection"
-	}
-	_ = s
 	if !sawCandidate {
 		return false, "candidate not reported on this connection"
 	}
@@ -728,7 +764,7 @@ func (c *rolloutController) releaseSend(r *rolloutReservation) {
 
 // tick promotes validated slots, advances stages and expires attempts for one
 // platform. It takes no lock across socket I/O and performs none.
-func (c *rolloutController) tick(s *Server, platform string) error {
+func (c *rolloutController) tick(platform string) error {
 	st, err := c.platformState(platform)
 	if err != nil || st == nil || st.Status != rolloutActive {
 		return err
@@ -763,7 +799,7 @@ func (c *rolloutController) tick(s *Server, platform string) error {
 
 	now := c.now()
 	for _, l := range outstanding {
-		if ok, _ := c.dwellSatisfied(s, platform, l.machineID, st.Generation, st.Candidate); ok {
+		if ok, _ := c.dwellSatisfied(platform, l.machineID, st.Generation, st.Candidate); ok {
 			if _, err := c.db.Exec(`UPDATE agent_rollout_slot SET state = ?, reason = ''
 				WHERE platform = ? AND generation = ? AND machine_id = ?`,
 				rolloutHealthy, platform, st.Generation, l.machineID); err != nil {
