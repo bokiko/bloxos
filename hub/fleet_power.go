@@ -571,11 +571,11 @@ func aggregateFleetPower(records []fleetPowerRecord, in fleetPowerInputs) FleetP
 		}
 
 		domains = append(domains, FleetPowerDomain{
-			Domain:  domain,
-			Buckets: buckets,
-			Measured:  buildKind(measuredKey),
-			Estimated: buildKind(estimatedKey),
-			Unknown:   buildKind(unknownKey),
+			Domain:            domain,
+			Buckets:           buckets,
+			Measured:          buildKind(measuredKey),
+			Estimated:         buildKind(estimatedKey),
+			Unknown:           buildKind(unknownKey),
 			ReportingMachines: len(union),
 			// Complete is reported FALSE unconditionally, and that is a
 			// deliberate, conservative choice rather than an oversight.
