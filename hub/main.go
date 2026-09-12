@@ -181,6 +181,13 @@ func main() {
 	}
 	log.Println("database initialized")
 
+	// After migrations, because the controller reads its own tables. Before
+	// anything can announce, because a nil controller withholds updates.
+	if err := s.initRollout(); err != nil {
+		log.Fatalf("failed to init agent rollout: %v", err)
+	}
+	s.startRolloutScheduler()
+
 	// Seed default alert rules.
 	s.seedAlertRules()
 

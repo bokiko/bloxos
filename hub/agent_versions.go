@@ -339,11 +339,53 @@ func (s *Server) announceVersionToAgent(machineID string, agent *ConnectedAgent)
 	if hadVersion {
 		report = &v
 	}
+	platform := rolloutPlatformKey(osName, v.Arch)
+	release := currentAgentBinaryStateFor(osName, v.Arch).Release
+
+	// A missing or broken controller WITHHOLDS. Falling through to the
+	// unrestricted legacy announce would send a build to the entire fleet at
+	// exactly the moment the mechanism that bounds exposure is unavailable.
+	if s.rollout == nil {
+		reason := "agent rollout controller unavailable"
+		if s.rolloutErr != nil {
+			reason = s.rolloutErr.Error()
+		}
+		log.Printf("rollout: withholding update for %s — %s", machineID, reason)
+		return
+	}
+
 	sig, blocked := announceDecision(report, osName, sha)
 	if blocked != "" {
+		// Ineligible is not a rollout FAILURE. Recording it as one would halt
+		// the platform over a machine with no pinned key or an unusable
+		// transport, which says nothing about the build. It is withheld
+		// visibly instead, and re-evaluated as soon as it becomes eligible.
+		if err := s.rollout.withhold(platform, machineID, sha, release, blocked); err != nil {
+			log.Printf("rollout: could not record withheld machine %s: %v", machineID, err)
+		}
 		log.Printf("rollout: not announcing to %s — %s", machineID, blocked)
 		return
 	}
+
+	// Take a durable slot BEFORE anything is written to a socket. Racing
+	// triggers — a connect, a version report and a resume fan-out can all fire
+	// at once — collapse to one reservation, so repeats cannot reset a
+	// deadline or push a batch past its size.
+	reservation, why, err := s.rollout.reserve(platform, machineID, sha, release)
+	if err != nil {
+		log.Printf("rollout: could not reserve a slot for %s: %v", machineID, err)
+		return
+	}
+	if reservation == nil {
+		if why != "" {
+			log.Printf("rollout: holding %s — %s", machineID, why)
+		}
+		return
+	}
+	if !s.rollout.claimSend(reservation) {
+		return // another goroutine already owns this attempt
+	}
+	defer s.rollout.releaseSend(reservation)
 
 	msg := map[string]interface{}{
 		"type":      "agent_version",
@@ -360,24 +402,87 @@ func (s *Server) announceVersionToAgent(machineID string, agent *ConnectedAgent)
 	// Do not hold the operator gate while waiting behind unrelated socket
 	// writes. Recheck durable intent after acquiring the agent's write lock.
 	s.operatorRolloutMu.RLock()
-	if paused, _ := s.operatorRolloutPause(); paused || announcedSHAForArch(osName, v.Arch) != sha {
+	// The registry check belongs HERE, at the actual send boundary, not only
+	// where the announcement was decided. This goroutine can queue behind
+	// unrelated socket writes, and in that window the machine may be deleted
+	// or taken over by a new connection — a stale connect callback must not
+	// announce down a displaced socket, nor record an outcome that resurrects
+	// rows for a machine that no longer exists.
+	if paused, _ := s.operatorRolloutPause(); paused || announcedSHAForArch(osName, v.Arch) != sha ||
+		!s.isRegisteredConnection(machineID, agent) ||
+		!s.rolloutGenerationUnchanged(platform, reservation) {
 		s.operatorRolloutMu.RUnlock()
 		agent.WriteMu.Unlock()
+		// Give the slot back rather than leaving capacity held by something
+		// that was never offered, and so the machine stays eligible once the
+		// operator resumes. Conditioned on our own generation and attempt, so
+		// it can only remove the row this call created.
+		if err := s.rollout.releaseBeforeSend(reservation); err != nil {
+			log.Printf("rollout: could not release the slot for %s: %v", machineID, err)
+		}
 		return
 	}
 	// Bound the only network I/O inside the pause barrier, matching the
 	// existing power-history ACK writer's deadline discipline.
 	_ = agent.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	err := agent.Conn.WriteMessage(websocket.TextMessage, data)
+	writeErr := agent.Conn.WriteMessage(websocket.TextMessage, data)
 	_ = agent.Conn.SetWriteDeadline(time.Time{})
 	s.operatorRolloutMu.RUnlock()
 	agent.WriteMu.Unlock()
-	if err != nil {
-		log.Printf("rollout: failed to announce version to %s: %v", machineID, err)
+	if writeErr != nil {
+		log.Printf("rollout: failed to announce version to %s: %v", machineID, writeErr)
+		// The write failed, but it may have been partially delivered. The slot
+		// stays RESERVED rather than offered, which is the ambiguous state
+		// recovery is built to resolve: on reconnect the machine's reported
+		// SHA decides whether this landed.
 		return
 	}
 
-	s.armReconnectIfRegistered(machineID, agent)
+	if err := s.rollout.markOffered(reservation); err != nil {
+		log.Printf("rollout: could not mark the offer to %s: %v", machineID, err)
+	}
+}
+
+// noteRolloutMetrics feeds a metrics frame to the rollout controller as dwell
+// evidence for the connection it arrived on.
+func (s *Server) noteRolloutMetrics(machineID string, conn *ConnectedAgent) {
+	if s.rollout == nil || conn == nil || machineID == "" {
+		return
+	}
+	osName := s.lookupAgentOS(machineID)
+	if osName == "" {
+		return
+	}
+	agentRunningVersionsMu.RLock()
+	arch := agentRunningVersions[machineID].Arch
+	agentRunningVersionsMu.RUnlock()
+	s.rollout.observeTelemetry(rolloutPlatformKey(osName, arch), machineID, conn)
+}
+
+// rolloutPlatformKey names a rollout target. Empty arch means the default,
+// matching what an arch-less download serves.
+func rolloutPlatformKey(osName, arch string) string {
+	if arch == "" {
+		arch = defaultAgentArch
+	}
+	return normalizeAgentOS(osName) + "/" + arch
+}
+
+// rolloutGenerationUnchanged reports whether the candidate is still the one
+// this reservation was taken for.
+//
+// Checked INSIDE the pause barrier, immediately before the write. A candidate
+// that changed while this goroutine queued behind unrelated socket writes
+// would otherwise announce bytes the rollout has already moved on from.
+func (s *Server) rolloutGenerationUnchanged(platform string, reservation *rolloutReservation) bool {
+	if s.rollout == nil || reservation == nil {
+		return true
+	}
+	st, err := s.rollout.platformState(platform)
+	if err != nil || st == nil {
+		return false
+	}
+	return st.Generation == reservation.Generation && st.Status == rolloutActive
 }
 
 // armReconnectIfRegistered arms the reconnect expectation for an announced
@@ -662,6 +767,17 @@ func clearReconnectExpectation(machineID string) {
 // The report carries the agent's capability level and its own answer on
 // whether its transport permits self-update. See announceDecision.
 func (s *Server) recordAgentRunningVersion(machineID string, report agentVersionReport) {
+	s.recordAgentRunningVersionOn(machineID, nil, report)
+}
+
+// recordAgentRunningVersionOn is recordAgentRunningVersion with the connection
+// the report arrived on.
+//
+// The connection matters and the machine-keyed map cannot supply it:
+// agentRunningVersions survives a socket replacement, so a fresh connection
+// would inherit the previous one's matching SHA as if it had reported it. The
+// map stays for the UI; health is established per connection.
+func (s *Server) recordAgentRunningVersionOn(machineID string, conn *ConnectedAgent, report agentVersionReport) {
 	runningSHA, osName := report.RunningSHA, report.OS
 	// Resolve the per-OS expected SHA. If we don't yet know the agent's
 	// OS, lookupAgentOS will check the DB metrics for it. New-on-this-hub
@@ -682,6 +798,17 @@ func (s *Server) recordAgentRunningVersion(machineID string, report agentVersion
 		arch = s.lookupAgentArch(machineID)
 	}
 	expectedSHA := announcedSHAForArch(osName, arch)
+
+	// Health evidence is per connection. This is what stops a fresh socket
+	// inheriting the previous one's matching SHA from the machine-keyed map
+	// below, which survives a replacement and cannot establish health alone.
+	if s.rollout != nil && conn != nil && expectedSHA != "" {
+		platform := rolloutPlatformKey(osName, arch)
+		if st, err := s.rollout.platformState(platform); err == nil && st != nil {
+			s.rollout.observeCandidateReport(platform, machineID, conn,
+				st.Generation, runningSHA, expectedSHA)
+		}
+	}
 
 	hostname := s.lookupVersionHostname(machineID)
 

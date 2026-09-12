@@ -1284,6 +1284,12 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 
 				s.upsertMachine(m)
 				s.storeMetrics(m)
+				// A metrics frame is the hub OBSERVING the machine work, which
+				// is what a rollout dwell is made of. Bound to this connection
+				// and stamped with hub receipt time: an agent's own timestamp
+				// is its claim about itself, and a stalled one keeps asserting
+				// freshness.
+				s.noteRolloutMetrics(machineID, agent)
 
 				// Enrich the metrics broadcast with latency.
 				machineLatencyMu.RLock()
@@ -1441,7 +1447,7 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 					continue
 				}
 				if !s.ingestFrame(machineID, agent, registered, func() {
-					s.recordAgentRunningVersion(machineID, report)
+					s.recordAgentRunningVersionOn(machineID, agent, report)
 				}) {
 					return nil
 				}
@@ -1550,7 +1556,7 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 				if pendingVersionReport != nil {
 					held := *pendingVersionReport
 					pendingVersionReport = nil
-					if !s.ingestFrame(machineID, agent, registered, func() { s.recordAgentRunningVersion(machineID, held) }) {
+					if !s.ingestFrame(machineID, agent, registered, func() { s.recordAgentRunningVersionOn(machineID, agent, held) }) {
 						return nil
 					}
 				}

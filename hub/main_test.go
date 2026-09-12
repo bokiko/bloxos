@@ -154,6 +154,14 @@ func setupTestServer(t *testing.T) (*echo.Echo, *Server) {
 	}
 
 	s := newServer(db)
+	// Migrations have run, so the rollout controller can be built — the same
+	// explicit step main() performs after initDB. Tests set it up rather than
+	// the production path tolerating a missing controller: without one, every
+	// announcement is WITHHELD, which is the fail-closed behaviour and must
+	// not be softened to keep a test green.
+	if err := s.initRollout(); err != nil {
+		t.Fatalf("init rollout controller: %v", err)
+	}
 	// Isolate bootstrap-CA discovery from the host's real Caddy roots. Without
 	// this, a developer or CI machine that happens to have a local Caddy CA at
 	// ~/.local/share/caddy (or /var/lib/caddy, /root) leaks that cert into the

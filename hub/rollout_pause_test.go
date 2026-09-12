@@ -235,7 +235,20 @@ func TestOperatorPauseSurvivesSHAChangeAndSuppressesAnnouncements(t *testing.T) 
 	defer client.Close()
 	conn := <-connections
 	defer conn.Close()
-	agent := &ConnectedAgent{Conn: conn}
+	agent := &ConnectedAgent{MachineID: "pause-regression", Conn: conn}
+	// Register it, as a real connection is. The send boundary now verifies
+	// the registry still owns the machine before writing, so an announcement
+	// that queued behind unrelated socket writes cannot go down a socket that
+	// has since been displaced or deleted. An unregistered connection is
+	// correctly refused, which production never produces.
+	s.agentsMu.Lock()
+	s.agents["pause-regression"] = agent
+	s.agentsMu.Unlock()
+	t.Cleanup(func() {
+		s.agentsMu.Lock()
+		delete(s.agents, "pause-regression")
+		s.agentsMu.Unlock()
+	})
 	frames := make(chan []byte, 1)
 	go func() {
 		_, data, err := client.ReadMessage()

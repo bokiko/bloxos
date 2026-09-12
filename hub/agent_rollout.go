@@ -63,6 +63,10 @@ const (
 	// rolloutRestartGrace is added once to every live deadline when the
 	// controller is built, so hub downtime is not charged to an attempt.
 	rolloutRestartGrace = 5 * time.Minute
+	// rolloutTickInterval is how often the single scheduler evaluates dwell
+	// and advancement. Short relative to the dwell, so a validated machine
+	// does not wait long to be promoted.
+	rolloutTickInterval = 10 * time.Second
 )
 
 // Slot states.
