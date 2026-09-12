@@ -82,6 +82,9 @@ type agentBinaryResolver struct {
 	// getenv is injectable so precedence can be tested without touching the
 	// process environment.
 	getenv func(string) string
+	// initErr is a delivery-configuration failure detected when this resolver
+	// was built. Every resolution fails closed while it is set.
+	initErr error
 }
 
 func (r agentBinaryResolver) env(name string) string {
@@ -154,59 +157,46 @@ func productionAgentBinaryResolver() agentBinaryResolver {
 		archMatch:      verifyELFArch,
 		deliveryMode:   agentDeliveryAuto,
 	}
-	if mode, err := resolveAgentDeliveryMode(os.Getenv); err == nil {
-		r.deliveryMode = mode
-	}
-	if dir, err := r.hubExecutableDir(); err == nil {
-		if bundle, err := loadAgentBundle(dir, validateTrustedAgentBinary); err == nil {
-			r.bundle = bundle
-		}
-	}
-	return r
-}
-
-// checkManagedAgentBundle is the STARTUP gate for a packaged hub.
-//
-// Runs before anything is announced, and fails closed. A packaged build
-// that declares a required bundle but cannot produce a valid one must not start
-// serving: if it did, it would fall through to the frozen system defaults and
-// report perfect health while handing out whatever binaries happened to be
-// sitting on disk. Failing here is what lets the existing updater's build-info
-// readiness check reject the candidate and roll back.
-//
-// A source or development build (no build-time marker) is unaffected: a missing
-// bundle is normal there and legacy discovery still applies. What is NOT
-// tolerated in either case is a bundle that exists and is broken.
-func checkManagedAgentBundle() error {
+	// Errors here are RETAINED, not swallowed. Resolution is captured once at
+	// package init, so a constructor that quietly dropped a bad delivery mode or
+	// a corrupt bundle would fall through to the frozen system defaults for the
+	// life of the process — the failure this whole mechanism replaces.
 	mode, err := resolveAgentDeliveryMode(os.Getenv)
 	if err != nil {
-		return err // an unreadable delivery mode is visible, never guessed
+		r.initErr = err
+		return r
 	}
+	r.deliveryMode = mode
 
-	r := agentBinaryResolver{executablePath: os.Executable}
 	dir, err := r.hubExecutableDir()
 	if err != nil {
 		if agentBundleIsRequired() {
-			return fmt.Errorf("packaged build cannot locate its own directory: %w", err)
+			r.initErr = fmt.Errorf("packaged build cannot locate its own directory: %w", err)
 		}
-		return nil
+		return r
 	}
-
 	bundle, err := loadAgentBundle(dir, validateTrustedAgentBinary)
 	if err != nil {
-		// Present but invalid is fatal regardless of build kind and regardless
-		// of delivery mode: a corrupt bundle is evidence something is wrong
-		// with this install, not a reason to quietly use older binaries.
-		return fmt.Errorf("managed agent bundle is unusable: %w", err)
+		r.initErr = fmt.Errorf("managed agent bundle is unusable: %w", err)
+		return r
 	}
 	if bundle == nil && agentBundleIsRequired() && mode != agentDeliveryExternal {
-		// The whole directory is missing from a build that must carry one.
-		// Without the build-time marker this case is indistinguishable from a
-		// legitimate source build, which is exactly why the marker exists.
-		return fmt.Errorf("packaged build requires a managed agent bundle at %s, and none is present",
+		r.initErr = fmt.Errorf("packaged build requires a managed agent bundle at %s, and none is present",
 			filepath.Join(dir, agentBundleDirName))
+		return r
 	}
-	return nil
+	r.bundle = bundle
+	return r
+}
+
+// checkManagedAgentBundle is the startup gate for a packaged hub.
+//
+// It reports the same delivery-configuration failure the resolver retains, so a
+// packaged build that cannot produce a valid bundle refuses to start rather than
+// serving whatever binaries happen to be on disk. Failing here lets the
+// updater's readiness check reject the candidate and roll back.
+func checkManagedAgentBundle() error {
+	return productionAgentBinaryResolver().initErr
 }
 
 // elfMachineByArch maps a GOARCH to the ELF e_machine value its binaries
@@ -433,6 +423,9 @@ func (r agentBinaryResolver) hubExecutableDir() (string, error) {
 }
 
 func (r agentBinaryResolver) resolve(osName, arch string) (agentBinaryResolution, error) {
+	if r.initErr != nil {
+		return agentBinaryResolution{}, r.initErr
+	}
 	platform, err := agentPlatformFor(osName, arch)
 	if err != nil {
 		return agentBinaryResolution{}, err

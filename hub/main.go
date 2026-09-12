@@ -241,6 +241,13 @@ func main() {
 		log.Fatalf("RBAC route audit failed: %v", err)
 	}
 
+	// Refuse to start on a broken agent-delivery configuration. Serving anyway
+	// would fall back to whatever agent binaries are on disk while reporting
+	// healthy, which is the stale-agent failure this replaces.
+	if err := checkManagedAgentBundle(); err != nil {
+		log.Fatalf("agent delivery: %v", err)
+	}
+
 	listenAddr := os.Getenv("HUB_LISTEN")
 	if listenAddr == "" {
 		listenAddr = "127.0.0.1:4000"

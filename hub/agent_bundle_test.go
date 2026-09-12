@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -325,5 +326,20 @@ func TestAlteredManagedPayloadIsRejectedAtResolution(t *testing.T) {
 	}
 	if _, err := r.resolve("linux", archAMD64); err == nil {
 		t.Fatal("a payload altered after load must not be served")
+	}
+}
+
+// A delivery-configuration failure must fail every resolution, not just startup.
+func TestRetainedInitErrorFailsEveryResolution(t *testing.T) {
+	root := fullFixture(t)
+	r := resolverWithBundle(t, root, map[string]string{}, agentDeliveryAuto)
+	r.archMatch = nil
+	if _, err := r.resolve("linux", archAMD64); err != nil {
+		t.Fatalf("baseline: %v", err)
+	}
+
+	r.initErr = errors.New("bundle went bad")
+	if _, err := r.resolve("linux", archAMD64); err == nil {
+		t.Fatal("a retained delivery error must fail closed on every resolution")
 	}
 }
