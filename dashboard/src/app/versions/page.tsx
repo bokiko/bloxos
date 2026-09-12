@@ -17,9 +17,37 @@ import {
   CheckCircle2,
   Clock,
   KeyRound,
+  Package,
   ShieldCheck,
 } from "lucide-react";
 import { AgentBinaryInfo, useVersions } from "@/contexts/VersionsContext";
+
+/**
+ * The resolution POLICY in force — not a claim about any particular platform.
+ *
+ * "auto" means a managed bundle is available to the resolver. It does not mean
+ * every platform uses it: an explicit per-architecture override still wins, so
+ * an install can be on this policy and still serve an operator-pinned binary
+ * for one architecture. Labelling that "Managed" and promising that upgrading
+ * the hub upgrades the fleet would be plainly wrong on such a hub.
+ *
+ * Each binary's own `source`, shown per platform below, stays the
+ * authoritative answer to where it actually came from.
+ */
+const DELIVERY_LABEL: Record<string, string> = {
+  auto: "Managed bundle available",
+  legacy: "System paths",
+  external: "Operator-managed",
+  unusable: "Broken",
+};
+
+const DELIVERY_NOTE: Record<string, string> = {
+  auto: "Platforms resolving to the managed bundle follow this hub release; explicit overrides remain operator-managed. See each platform's source below.",
+  legacy:
+    "No bundle shipped with this hub, so agents resolve from fixed system paths. Those paths are not refreshed by a hub upgrade.",
+  external:
+    "BLOXOS_AGENT_DELIVERY=external: you manage agent binaries yourself. A hub upgrade will not change what is offered.",
+};
 import {
   agentProtocolNote,
   agentStatusLabel,
@@ -152,6 +180,27 @@ function VersionsContent() {
                   tone={data.signing_enabled ? "ok" : "critical"}
                   label={data.signing_enabled ? "Enabled" : "Disabled"}
                   Icon={data.signing_enabled ? ShieldCheck : AlertTriangle}
+                />
+              ) : (
+                <span className="text-[13px] text-text-tertiary">—</span>
+              )}
+            </dd>
+          </div>
+          <div className="flex items-baseline gap-2">
+            <dt className="mf-kicker">Delivery</dt>
+            <dd>
+              {data?.agent_delivery ? (
+                <StatusMark
+                  tone={
+                    data.agent_delivery === "unusable"
+                      ? "critical"
+                      : data.agent_delivery === "auto"
+                        ? "ok"
+                        : "warning"
+                  }
+                  label={DELIVERY_LABEL[data.agent_delivery] ?? data.agent_delivery}
+                  Icon={data.agent_delivery === "unusable" ? AlertTriangle : Package}
+                  title={data.agent_delivery_error || DELIVERY_NOTE[data.agent_delivery] || undefined}
                 />
               ) : (
                 <span className="text-[13px] text-text-tertiary">—</span>

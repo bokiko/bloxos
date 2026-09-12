@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
 	"io"
 	"log"
@@ -74,6 +75,64 @@ type agentBinaryResolver struct {
 	// it to verifyELFArch so a binary is only ever served for the
 	// architecture it actually is.
 	archMatch func(path, arch string) error
+	// bundle is the validated managed bundle shipped beside the hub, or nil on
+	// a source build with none. See hub/agent_bundle.go.
+	bundle *agentBundle
+	// deliveryMode is agentDeliveryAuto or agentDeliveryExternal.
+	deliveryMode string
+	// getenv is injectable so precedence can be tested without touching the
+	// process environment.
+	getenv func(string) string
+	// initErr is a delivery-configuration failure detected when this resolver
+	// was built. Every resolution fails closed while it is set.
+	initErr error
+}
+
+func (r agentBinaryResolver) env(name string) string {
+	if r.getenv != nil {
+		return r.getenv(name)
+	}
+	return os.Getenv(name)
+}
+
+// managedWins reports whether the managed bundle outranks the project's own
+// shipped default for this platform.
+//
+// The exception. scripts/systemd/bloxos-hub.service ships
+// BLOXOS_AGENT_BINARY=/usr/local/lib/bloxos/linux/bloxos-agent. That value is
+// the PROJECT'S OWN DEFAULT, not an operator's choice — but the resolver cannot
+// tell the two apart by inspection, and as the authoritative first candidate it
+// pins every standard native install to a path no release ever refreshes.
+//
+// So a value EXACTLY equal to that shipped default is treated as legacy default
+// configuration and the managed bundle wins. Any other value is a genuine
+// operator pin and stays authoritative and fail-closed. Nothing on disk is
+// rewritten: no unit file is edited, no environment is mutated.
+//
+// An operator who deliberately manages binaries at that exact path sets
+// BLOXOS_AGENT_DELIVERY=external, which restores the full legacy resolver.
+func (r agentBinaryResolver) managedWins(platform agentPlatform) (string, bool) {
+	if r.bundle == nil || r.deliveryMode == agentDeliveryExternal {
+		return "", false
+	}
+	path, ok := r.bundle.pathFor(platform)
+	if !ok {
+		return "", false
+	}
+	envName := agentBinaryEnvName(platform)
+	value := strings.TrimSpace(r.env(envName))
+	if value == "" {
+		return path, true // no override at all
+	}
+	// Exact string comparison, deliberately. filepath.Clean would also exempt
+	// an operator path that merely normalises to the default — something like
+	// /usr/local/lib/bloxos/linux/../linux/bloxos-agent — and that is somebody's
+	// deliberate configuration, not the project's shipped line. Only the literal
+	// value this project ships yields to the bundle.
+	if envName == "BLOXOS_AGENT_BINARY" && value == linuxAgentBinaryDefault {
+		return path, true
+	}
+	return "", false
 }
 
 var (
@@ -92,12 +151,89 @@ func newAgentBinaryStates() map[string]agentBinaryState {
 	return states
 }
 
+// The production resolver is built ONCE and retained.
+//
+// It used to be constructed afresh on every call, which was wrong in two ways
+// that compound. It re-read and re-hashed every agent payload each time — tens
+// of megabytes of sha256 on a route the Versions page polls. Worse, each call
+// produced an INDEPENDENT resolver: the one serving downloads is captured at
+// package init, so a later caller could load a different catalog, or a
+// different delivery mode, and report state the serving path does not use.
+// The startup gate had the same split — it validated a second load, not the
+// one that would actually serve.
+//
+// One instance means the gate, every resolution and the reported status all
+// describe the same catalog. Per-resolution payload identity is still
+// re-verified against that retained catalog, so a payload altered on disk
+// afterwards is still caught.
+// memoizedResolver builds its resolver at most once and returns that same
+// instance thereafter. A struct rather than package globals so a test can own
+// one, with its own constructor, and prove the behaviour without touching
+// anything another test is using.
+type memoizedResolver struct {
+	once  sync.Once
+	value agentBinaryResolver
+	build func() agentBinaryResolver
+}
+
+func (m *memoizedResolver) get() agentBinaryResolver {
+	m.once.Do(func() { m.value = m.build() })
+	return m.value
+}
+
+var productionResolverCache = &memoizedResolver{build: newProductionAgentBinaryResolver}
+
 func productionAgentBinaryResolver() agentBinaryResolver {
-	return agentBinaryResolver{
+	return productionResolverCache.get()
+}
+
+func newProductionAgentBinaryResolver() agentBinaryResolver {
+	r := agentBinaryResolver{
 		executablePath: os.Executable,
 		validate:       validateTrustedAgentBinary,
 		archMatch:      verifyELFArch,
+		deliveryMode:   agentDeliveryAuto,
 	}
+	// Errors here are RETAINED, not swallowed. Resolution is captured once at
+	// package init, so a constructor that quietly dropped a bad delivery mode or
+	// a corrupt bundle would fall through to the frozen system defaults for the
+	// life of the process — the failure this whole mechanism replaces.
+	mode, err := resolveAgentDeliveryMode(os.Getenv)
+	if err != nil {
+		r.initErr = err
+		return r
+	}
+	r.deliveryMode = mode
+
+	dir, err := r.hubExecutableDir()
+	if err != nil {
+		if agentBundleIsRequired() {
+			r.initErr = fmt.Errorf("packaged build cannot locate its own directory: %w", err)
+		}
+		return r
+	}
+	bundle, err := loadAgentBundle(dir, validateTrustedAgentBinary)
+	if err != nil {
+		r.initErr = fmt.Errorf("managed agent bundle is unusable: %w", err)
+		return r
+	}
+	if bundle == nil && agentBundleIsRequired() && mode != agentDeliveryExternal {
+		r.initErr = fmt.Errorf("packaged build requires a managed agent bundle at %s, and none is present",
+			filepath.Join(dir, agentBundleDirName))
+		return r
+	}
+	r.bundle = bundle
+	return r
+}
+
+// checkManagedAgentBundle is the startup gate for a packaged hub.
+//
+// It reports the same delivery-configuration failure the resolver retains, so a
+// packaged build that cannot produce a valid bundle refuses to start rather than
+// serving whatever binaries happen to be on disk. Failing here lets the
+// updater's readiness check reject the candidate and roll back.
+func checkManagedAgentBundle() error {
+	return productionAgentBinaryResolver().initErr
 }
 
 // elfMachineByArch maps a GOARCH to the ELF e_machine value its binaries
@@ -246,7 +382,10 @@ type agentBinaryCandidate struct {
 // different architecture.
 func (r agentBinaryResolver) candidatesFor(platform agentPlatform) ([]agentBinaryCandidate, error) {
 	if platform.OS == "windows" {
-		if v := strings.TrimSpace(os.Getenv("BLOXOS_AGENT_BINARY_WINDOWS")); v != "" {
+		if managed, ok := r.managedWins(platform); ok {
+			return []agentBinaryCandidate{{Path: managed, Source: "managed-bundle"}}, nil
+		}
+		if v := strings.TrimSpace(r.env("BLOXOS_AGENT_BINARY_WINDOWS")); v != "" {
 			return []agentBinaryCandidate{{Path: v, Source: "environment:BLOXOS_AGENT_BINARY_WINDOWS", Env: "BLOXOS_AGENT_BINARY_WINDOWS"}}, nil
 		}
 		executable, err := r.hubExecutableDir()
@@ -259,8 +398,25 @@ func (r agentBinaryResolver) candidatesFor(platform agentPlatform) ([]agentBinar
 		}, nil
 	}
 
+	// An operator may point a native source build at the generic
+	// BLOXOS_AGENT_BINARY even though BLOXOS_AGENT_BINARY_ARM64 exists. That is
+	// a real custom choice and keeps outranking the bundle, but only when no
+	// explicit per-arch override is set — that one is handled below and wins
+	// outright. Non-authoritative and ELF-gated, so a wrong-architecture path
+	// falls through rather than failing the platform closed.
+	var preManaged []agentBinaryCandidate
+	if platform.Arch != defaultAgentArch {
+		if v := strings.TrimSpace(r.env("BLOXOS_AGENT_BINARY")); v != "" && v != linuxAgentBinaryDefault {
+			preManaged = append(preManaged, agentBinaryCandidate{
+				Path: v, Source: "environment:BLOXOS_AGENT_BINARY (arch-verified)"})
+		}
+	}
+	if managed, ok := r.managedWins(platform); ok {
+		return append(preManaged, agentBinaryCandidate{Path: managed, Source: "managed-bundle"}), nil
+	}
+
 	perArchEnv := agentBinaryEnvName(platform)
-	if v := strings.TrimSpace(os.Getenv(perArchEnv)); v != "" {
+	if v := strings.TrimSpace(r.env(perArchEnv)); v != "" {
 		return []agentBinaryCandidate{{Path: v, Source: "environment:" + perArchEnv, Env: perArchEnv}}, nil
 	}
 
@@ -272,7 +428,7 @@ func (r agentBinaryResolver) candidatesFor(platform agentPlatform) ([]agentBinar
 		// systemd unit). Honor it ahead of the packaged per-arch default so an
 		// explicit operator choice wins. Non-authoritative and ELF-gated: a
 		// wrong architecture just skips to the next candidate.
-		if v := strings.TrimSpace(os.Getenv("BLOXOS_AGENT_BINARY")); v != "" {
+		if v := strings.TrimSpace(r.env("BLOXOS_AGENT_BINARY")); v != "" {
 			candidates = append(candidates, agentBinaryCandidate{Path: v, Source: "environment:BLOXOS_AGENT_BINARY (arch-verified)"})
 		}
 	}
@@ -304,6 +460,9 @@ func (r agentBinaryResolver) hubExecutableDir() (string, error) {
 }
 
 func (r agentBinaryResolver) resolve(osName, arch string) (agentBinaryResolution, error) {
+	if r.initErr != nil {
+		return agentBinaryResolution{}, r.initErr
+	}
 	platform, err := agentPlatformFor(osName, arch)
 	if err != nil {
 		return agentBinaryResolution{}, err
@@ -325,6 +484,15 @@ func (r agentBinaryResolver) resolve(osName, arch string) (agentBinaryResolution
 		path, err := r.validate(candidate.Path)
 		if err == nil && r.archMatch != nil && platform.OS == "linux" {
 			err = r.archMatch(path, platform.Arch)
+		}
+		if err == nil && candidate.Source == "managed-bundle" {
+			// Resolution is captured once at init, so re-bind the payload to the
+			// catalog here rather than trusting whatever is on disk now.
+			err = r.bundle.verifyPayloadIdentity(platform, path)
+			if err != nil {
+				return agentBinaryResolution{Path: path, Source: candidate.Source},
+					fmt.Errorf("managed agent bundle no longer matches its catalog: %w", err)
+			}
 		}
 		if err == nil {
 			return agentBinaryResolution{
@@ -438,5 +606,102 @@ func failAgentBinaryState(platform agentPlatform, resolution agentBinaryResoluti
 	previous := replaceAgentBinaryState(platform, state)
 	if previous.Error != state.Error || previous.SHA != "" {
 		log.Printf("version: %s agent binary unavailable: %v", platform, err)
+	}
+}
+
+// peMachineByArch maps a GOARCH to the COFF IMAGE_FILE_MACHINE value a
+// Windows PE built for it carries: AMD64 = 0x8664, ARM64 = 0xaa64.
+var peMachineByArch = map[string]uint16{archAMD64: 0x8664, archARM64: 0xaa64}
+
+func peMachineName(m uint16) string {
+	for arch, want := range peMachineByArch {
+		if want == m {
+			return arch
+		}
+	}
+	return fmt.Sprintf("machine=0x%04x", m)
+}
+
+// peMaxHeaderOffset bounds e_lfanew before it is used as a seek target. The
+// value is read OUT OF THE FILE being checked, so an unbounded one would let a
+// crafted or corrupt payload steer the read arbitrarily far into a large file.
+// Real Go PE images put their header within the first few hundred bytes; a
+// megabyte is generous and still finite.
+const peMaxHeaderOffset = 1 << 20
+
+// verifyPEArch reports whether the binary at path is a 64-bit Windows PE built
+// for arch.
+//
+// The Windows counterpart to verifyELFArch, and it exists for the same reason:
+// without it, the only thing standing between a bundle and serving amd64 bytes
+// to an arm64 machine is the manifest's own label — a claim made by the same
+// document the bundle supplies. A sha256 proves the payload is the file the
+// catalog names; it proves nothing about what the file IS. Architecture has to
+// be read from the image itself.
+//
+// Checked: the MZ stub, a bounded e_lfanew, the PE signature, the COFF machine
+// field, and the optional-header magic (PE32+). Go only emits 64-bit Windows
+// binaries, so a PE32 image here is a packaging mistake, not a supported build.
+func verifyPEArch(path, arch string) error {
+	want, ok := peMachineByArch[arch]
+	if !ok {
+		return fmt.Errorf("unsupported architecture %q", arch)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	var dos [0x40]byte
+	if _, err := io.ReadFull(f, dos[:]); err != nil {
+		return fmt.Errorf("read DOS header of %s: %w", path, err)
+	}
+	if dos[0] != 'M' || dos[1] != 'Z' {
+		return fmt.Errorf("%s is not a PE binary", path)
+	}
+	offset := int64(binary.LittleEndian.Uint32(dos[0x3c:0x40]))
+	// Below the DOS header the offset would point back into the stub; above the
+	// bound it is not a header this hub will chase.
+	if offset < 0x40 || offset > peMaxHeaderOffset {
+		return fmt.Errorf("%s declares an implausible PE header offset %d", path, offset)
+	}
+
+	// Signature (4) + COFF header (20) + optional-header magic (2).
+	var hdr [26]byte
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return fmt.Errorf("seek PE header of %s: %w", path, err)
+	}
+	if _, err := io.ReadFull(f, hdr[:]); err != nil {
+		return fmt.Errorf("read PE header of %s: %w", path, err)
+	}
+	if hdr[0] != 'P' || hdr[1] != 'E' || hdr[2] != 0 || hdr[3] != 0 {
+		return fmt.Errorf("%s has no PE signature at offset %d", path, offset)
+	}
+	machine := binary.LittleEndian.Uint16(hdr[4:6])
+	if machine != want {
+		return fmt.Errorf("%s is a %s binary, not %s", path, peMachineName(machine), arch)
+	}
+	// IMAGE_NT_OPTIONAL_HDR64_MAGIC. A PE32 image would run, and would be the
+	// wrong build entirely.
+	if magic := binary.LittleEndian.Uint16(hdr[24:26]); magic != 0x020b {
+		return fmt.Errorf("%s is not a 64-bit PE binary (optional header magic 0x%04x)", path, magic)
+	}
+	return nil
+}
+
+// verifyAgentPayloadArch dispatches the architecture check by target OS.
+//
+// Every platform a bundle declares gets checked. An unrecognised OS is an
+// error rather than a skip: "we could not check this one" must never read as
+// "this one passed".
+func verifyAgentPayloadArch(osName, arch, path string) error {
+	switch osName {
+	case "linux":
+		return verifyELFArch(path, arch)
+	case "windows":
+		return verifyPEArch(path, arch)
+	default:
+		return fmt.Errorf("no architecture check for os %q", osName)
 	}
 }

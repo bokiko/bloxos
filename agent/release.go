@@ -30,10 +30,10 @@ import (
  * ============================================================================ */
 
 // agentRelease is the release sequence compiled into this binary.
-const agentRelease uint64 = 7
+const agentRelease uint64 = 8
 
 // agentReleaseMarker is agentRelease as the scannable literal.
-const agentReleaseMarker = "BLOXOS-AGENT-RELEASE:0000000007:"
+const agentReleaseMarker = "BLOXOS-AGENT-RELEASE:0000000008:"
 
 var (
 	embeddedReleaseOnce sync.Once

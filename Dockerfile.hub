@@ -29,11 +29,33 @@ COPY hub/ hub/
 COPY agent/ agent/
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    mkdir -p /out/linux/amd64 /out/linux/arm64 /out/windows \
- && (cd hub   && GOOS=linux   GOARCH="$TARGETARCH" go build -ldflags="-s -w -X main.buildVersion=$BLOXOS_BUILD_VERSION -X main.buildRevision=$BLOXOS_BUILD_REVISION" -o /out/bloxos-hub .) \
- && (cd agent && GOOS=linux   GOARCH=amd64        go build -ldflags='-s -w' -o /out/linux/amd64/bloxos-agent .) \
- && (cd agent && GOOS=linux   GOARCH=arm64        go build -ldflags='-s -w' -o /out/linux/arm64/bloxos-agent .) \
- && (cd agent && GOOS=windows GOARCH=amd64        go build -ldflags='-s -w' -o /out/windows/bloxos-agent.exe .)
+    mkdir -p /out/agents \
+ && (cd hub   && GOOS=linux   GOARCH="$TARGETARCH" go build -ldflags="-s -w -X main.buildVersion=$BLOXOS_BUILD_VERSION -X main.buildRevision=$BLOXOS_BUILD_REVISION -X main.agentBundleRequired=packaged" -o /out/bloxos-hub .) \
+ && (cd agent && GOOS=linux   GOARCH=amd64        go build -ldflags='-s -w' -o /out/agents/bloxos-agent-linux-amd64 .) \
+ && (cd agent && GOOS=linux   GOARCH=arm64        go build -ldflags='-s -w' -o /out/agents/bloxos-agent-linux-arm64 .) \
+ && (cd agent && GOOS=windows GOARCH=amd64        go build -ldflags='-s -w' -o /out/agents/bloxos-agent-windows-amd64.exe .)
+
+# The catalog that the hub reads at startup, built from the bytes just
+# produced. It runs in its own stage so the runtime image never gains a Python
+# interpreter, and it uses the SAME generator and format as the release
+# catalog — one artifact identity, not a parallel in-image format.
+#
+# It omits the image digest, because the image it would name does not exist
+# yet; a plain local `docker build` also has no release tag or commit SHA. Those
+# fields are left out rather than filled with a placeholder, so nothing
+# downstream can mistake a stand-in for provenance. The artifact checks —
+# sha256, size, architecture and one consistent release marker across all three
+# platforms — are enforced here exactly as they are for a release.
+FROM alpine:3.22 AS catalog
+RUN apk add --no-cache python3
+COPY scripts/agent_bundle.py /tmp/agent_bundle.py
+COPY --from=build /out/agents/ /out/agents/
+ARG BLOXOS_BUILD_VERSION=development
+ARG BLOXOS_BUILD_REVISION=unknown
+RUN sha=$(python3 /tmp/agent_bundle.py manifest --bundle /out/agents \
+      --source "$BLOXOS_BUILD_REVISION" --version "$BLOXOS_BUILD_VERSION") \
+ && python3 /tmp/agent_bundle.py check --bundle /out/agents --manifest-sha256 "$sha" \
+      --allow-missing-provenance >/dev/null
 
 FROM alpine:3.22
 RUN apk add --no-cache ca-certificates \
@@ -45,16 +67,40 @@ RUN apk add --no-cache ca-certificates \
 # agents sit at the resolver's per-architecture defaults,
 # /usr/local/lib/bloxos/linux/<arch>/bloxos-agent.
 COPY --from=build --chown=root:root --chmod=0755 /out/bloxos-hub /usr/local/bin/bloxos-hub
-COPY --from=build --chown=root:root --chmod=0755 /out/linux/amd64/bloxos-agent /usr/local/lib/bloxos/linux/amd64/bloxos-agent
-COPY --from=build --chown=root:root --chmod=0755 /out/linux/arm64/bloxos-agent /usr/local/lib/bloxos/linux/arm64/bloxos-agent
-# Backward compatibility: the pre-per-architecture image populated this path,
-# and an existing BLOXOS_AGENT_BINARY may still point at it explicitly. Keep it
-# as a root-owned regular copy of the amd64 build — a separate COPY, not a
-# symlink, because the trusted-binary resolver rejects a symlinked final path.
-# amd64 requests resolve it; the resolver's ELF arch check keeps it away from
-# arm64 requests.
-COPY --from=build --chown=root:root --chmod=0755 /out/linux/amd64/bloxos-agent /usr/local/lib/bloxos/linux/bloxos-agent
-COPY --from=build --chown=root:root --chmod=0755 /out/windows/bloxos-agent.exe /usr/local/lib/bloxos/windows/bloxos-agent.exe
+# The managed bundle and the backward-compatible per-architecture paths, all
+# created inside ONE layer.
+#
+# agents/ sits beside the hub executable, the SAME hub-relative layout the
+# native server archive uses (<release>/hub/agents), so both deploy modes
+# resolve agents the same way and the one production hub build can require a
+# bundle in either.
+#
+# The compatibility paths are HARD LINKS, not symlinks: the trusted-binary
+# resolver rejects a symlinked final path but accepts a regular file. Sharing an
+# inode also means those paths cannot drift from the managed payloads the way a
+# second copy of the same bytes silently could.
+#
+# The single RUN is what makes the links survive. Copying the payloads in one
+# layer and linking them in another put the file and its links on opposite
+# sides of a layer boundary; the copy-up and diff then materialised them as
+# separate files, and CI measured a link count of 1 — the duplication this was
+# meant to avoid, silently. A bind mount supplies the bytes read-only without
+# committing a second copy of them to any layer.
+RUN --mount=type=bind,from=catalog,source=/out/agents,target=/tmp/agent-input,ro \
+    set -eu \
+ && mkdir -p /usr/local/bin/agents /usr/local/lib/bloxos/linux/amd64 \
+             /usr/local/lib/bloxos/linux/arm64 /usr/local/lib/bloxos/windows \
+ && cp /tmp/agent-input/bloxos-agent-linux-amd64 /tmp/agent-input/bloxos-agent-linux-arm64 \
+       /tmp/agent-input/bloxos-agent-windows-amd64.exe /tmp/agent-input/agent-manifest.json \
+       /usr/local/bin/agents/ \
+ && ln /usr/local/bin/agents/bloxos-agent-linux-amd64       /usr/local/lib/bloxos/linux/amd64/bloxos-agent \
+ && ln /usr/local/bin/agents/bloxos-agent-linux-arm64       /usr/local/lib/bloxos/linux/arm64/bloxos-agent \
+ && ln /usr/local/bin/agents/bloxos-agent-linux-amd64       /usr/local/lib/bloxos/linux/bloxos-agent \
+ && ln /usr/local/bin/agents/bloxos-agent-windows-amd64.exe /usr/local/lib/bloxos/windows/bloxos-agent.exe \
+ && chown -R root:root /usr/local/bin/agents /usr/local/lib/bloxos \
+ && chmod 0755 /usr/local/bin/agents/bloxos-agent-* \
+ && chmod 0644 /usr/local/bin/agents/agent-manifest.json \
+ && chmod -R go-w /usr/local/bin/agents /usr/local/lib/bloxos
 # State lives in one volume: bloxos.db in the working directory, secrets,
 # setup token and signing key under $HOME/.bloxos.
 ENV HOME=/data \

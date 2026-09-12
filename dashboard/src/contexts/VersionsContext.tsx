@@ -42,6 +42,18 @@ export interface AgentBinaryInfo {
 }
 
 export interface VersionsResponse {
+  /**
+   * Which resolution policy produced the served binaries:
+   *  - "auto"     a managed bundle shipped with the hub is in use
+   *  - "legacy"   no bundle present (a source build); system paths apply
+   *  - "external" the operator manages agent binaries themselves
+   *  - "unusable" the delivery configuration itself is broken
+   * Older hubs omit it. Each binary's own `source` says where it actually
+   * resolved from; this says which policy was in force, and the two are
+   * deliberately not derived from one another.
+   */
+  agent_delivery?: string;
+  agent_delivery_error?: string;
   signing_enabled: boolean;
   signing_disabled_reason: string;
   hub_sha: string;

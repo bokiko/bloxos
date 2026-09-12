@@ -151,6 +151,15 @@ var (
 )
 
 func main() {
+	// A filesystem and configuration prerequisite, checked before anything
+	// mutates installation state. Rejecting invalid packaging here means a bad
+	// candidate never reaches migrations, signing-key setup or background loops;
+	// serving anyway would fall back to whatever agent binaries are on disk
+	// while reporting healthy, which is the stale-agent failure this replaces.
+	if err := checkManagedAgentBundle(); err != nil {
+		log.Fatalf("agent delivery: %v", err)
+	}
+
 	var err error
 	// Phase 11 — `foreign_keys=on` is load-bearing: ON DELETE CASCADE on
 	// user_pinned_machines / user_saved_filters relies on it being set per
