@@ -77,6 +77,28 @@ jobs:
           tags: ${{ env.DASHBOARD_IMAGE }}:latest
           cache-from: type=gha,scope=dashboard
           cache-to: type=gha,scope=dashboard,mode=max
+      # The only form that verifies the RELEASE build flags. Hardcoding -X in
+      # the source-built smoke cannot detect a Dockerfile that dropped the
+      # marker; this runs the same cases against the hub binary from the image
+      # that was just built, so a lost -ldflags entry fails here.
+      - name: Hub delivery boot gate (image build)
+        env:
+          HUB_TAG: ${{ env.HUB_IMAGE }}:latest
+        run: |
+          set -euo pipefail
+          container=$(docker create "$HUB_TAG")
+          trap 'docker rm -v "$container" >/dev/null' EXIT
+          docker cp "$container:/usr/local/bin/bloxos-hub" "$RUNNER_TEMP/bloxos-hub"
+          # Prove the image carries its managed bundle where the hub looks.
+          docker run --rm --entrypoint /bin/sh "$HUB_TAG" -c \
+            'ls -l /usr/local/bin/agents/ && test -f /usr/local/bin/agents/agent-manifest.json'
+          # The legacy paths must be hard links to the managed payloads: same
+          # inode, so they cannot drift from the bytes the catalog describes.
+          docker run --rm --entrypoint /bin/sh "$HUB_TAG" -c \
+            'test "$(stat -c %i /usr/local/bin/agents/bloxos-agent-linux-amd64)" = "$(stat -c %i /usr/local/lib/bloxos/linux/amd64/bloxos-agent)"'
+          sudo -E env "PATH=$PATH" BLOXOS_BOOT_SMOKE_REQUIRE_ROOT=1 \
+            python3 scripts/test_hub_bundle_boot.py --hub-binary "$RUNNER_TEMP/bloxos-hub"
+
       - name: Enroll the runner through the stack
         env:
           SMOKE_CONFIRM_DISPOSABLE: "1"

@@ -79,6 +79,19 @@ jobs:
       - name: Test agent payload packaging and old-worker transport
         run: python3 ../scripts/test_server_bundle_agents.py
 
+      # Runs the real hub PROCESS. A loader unit test cannot catch the gate
+      # being moved after the database opens, and the fixtures need root-owned
+      # paths because the trusted-binary rule demands root ownership of every
+      # ancestor. REQUIRE_ROOT makes a missing prerequisite fail rather than
+      # skip: a skip reads exactly like a pass in the checks summary, and this
+      # file exists to catch a check that has quietly stopped running.
+      #
+      # This form proves the gate is wired and reachable. It does NOT verify
+      # the release build sets the marker — the flag is supplied here. The
+      # image-built hub is covered by the Compose smoke job.
+      - name: Hub delivery boot gate (source build)
+        run: sudo -E env "PATH=$PATH" BLOXOS_BOOT_SMOKE_REQUIRE_ROOT=1 python3 ../scripts/test_hub_bundle_boot.py
+
   # A real gate as of issue #60: the hub's DB handle and agent registry now live
   # on a Server instance, so tests build isolated servers instead of reassigning
   # package globals under leaked agent-WS goroutines. Verified stable across four
