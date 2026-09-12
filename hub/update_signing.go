@@ -391,8 +391,23 @@ func announcedSignatureForArch(osName, arch, sha string) string {
 	if sha == "" {
 		return ""
 	}
+	// Order is deliberate and strictly additive. The adjacent .sig stays
+	// FIRST, so an operator already managing signatures that way sees no
+	// change; the content-addressed store is consulted only when that finds
+	// nothing; the hub-held key remains last and untouched, so a hub-held-key
+	// install never reaches the store and needs no new key or manual step.
 	if sig := detachedSignatureFor(agentBinaryPathForArch(osName, arch), osName, sha); sig != "" {
 		return sig
 	}
-	return signAgentRelease(osName, sha)
+	if sig := contentAddressedSignatureFor(osName, arch, sha); sig != "" {
+		return sig
+	}
+	if sig := signAgentRelease(osName, sha); sig != "" {
+		return sig
+	}
+	// Nothing can authorise these bytes. Say so, with the path that would fix
+	// it: the symptom otherwise is silence — the fleet simply never gets
+	// offered the build, and nothing in the log explains why.
+	reportMissingAgentAuthorization(osName, arch, sha)
+	return ""
 }
