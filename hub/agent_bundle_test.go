@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/bokiko/bloxos/proto/updatesigning"
 )
 
 // bundleFixture writes a bundle whose manifest matches its payloads.
@@ -37,15 +39,23 @@ func bundleFixture(t *testing.T, platforms map[string]string) string {
 		} else if platform == "windows/amd64" {
 			name = "bloxos-agent-windows-amd64.exe"
 		}
+		marker, err := updatesigning.ReleaseMarker(8)
+		if err != nil {
+			t.Fatalf("marker: %v", err)
+		}
 		path := filepath.Join(dir, name)
-		if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+		if err := os.WriteFile(path, []byte(body+marker), 0o755); err != nil {
 			t.Fatalf("write payload: %v", err)
 		}
 		sum, err := fileSHA256(path)
 		if err != nil {
 			t.Fatalf("sha: %v", err)
 		}
-		artifacts[platform] = agentBundleArtifact{File: name, Size: int64(len(body)), SHA256: sum}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat: %v", err)
+		}
+		artifacts[platform] = agentBundleArtifact{File: name, Size: info.Size(), SHA256: sum}
 	}
 	manifest := agentBundleManifest{Schema: 1, Version: "v9.9.9", Source: "abc", AgentRelease: 8, Artifacts: artifacts}
 	raw, err := json.Marshal(manifest)
@@ -341,5 +351,36 @@ func TestRetainedInitErrorFailsEveryResolution(t *testing.T) {
 	r.initErr = errors.New("bundle went bad")
 	if _, err := r.resolve("linux", archAMD64); err == nil {
 		t.Fatal("a retained delivery error must fail closed on every resolution")
+	}
+}
+
+// A bundle must not advertise a release its bytes do not carry: that mismatch
+// is how a fleet ends up running agents months behind the hub while every
+// check reports agreement.
+func TestBundleRejectsPayloadWhoseReleaseMarkerDisagreesWithTheCatalog(t *testing.T) {
+	root := fullFixture(t)
+	stale, err := updatesigning.ReleaseMarker(7) // catalog says 8
+	if err != nil {
+		t.Fatalf("marker: %v", err)
+	}
+	payload := filepath.Join(root, agentBundleDirName, "bloxos-agent-linux-amd64")
+	body := []byte("amd64-agent" + stale)
+	if err := os.WriteFile(payload, body, 0o755); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	// Keep the catalog self-consistent so ONLY the marker disagrees.
+	manifestPath := filepath.Join(root, agentBundleDirName, agentBundleManifestName)
+	raw, _ := os.ReadFile(manifestPath)
+	var m map[string]any
+	_ = json.Unmarshal(raw, &m)
+	sum, _ := fileSHA256(payload)
+	entry := m["artifacts"].(map[string]any)["linux/amd64"].(map[string]any)
+	entry["sha256"] = sum
+	entry["size"] = float64(len(body))
+	out, _ := json.Marshal(m)
+	_ = os.WriteFile(manifestPath, out, 0o644)
+
+	if _, err := loadAgentBundle(root, permissive); err == nil {
+		t.Fatal("a payload whose release marker disagrees with the catalog must be rejected")
 	}
 }

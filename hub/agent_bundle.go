@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/bokiko/bloxos/proto/updatesigning"
 )
 
 // Managed agent bundle: agent payloads that travel with the hub release, so
@@ -284,6 +286,19 @@ func loadAgentBundle(executableDir string, validate func(string) (string, error)
 				platform, sum, artifact.SHA256)
 		}
 
+		// The payload must actually BE the release the catalog claims. Without
+		// this, a bundle could advertise a new release number while carrying
+		// older bytes — which is precisely how the fleet came to run agents
+		// months behind the hub while every check reported agreement.
+		embedded, err := agentPayloadRelease(verified)
+		if err != nil {
+			return nil, fmt.Errorf("agent bundle artifact %q: %w", platform, err)
+		}
+		if embedded != manifest.AgentRelease {
+			return nil, fmt.Errorf("agent bundle artifact %q carries release %d, catalog says %d",
+				platform, embedded, manifest.AgentRelease)
+		}
+
 		bundle.paths[osName+"/"+arch] = verified
 		bundle.expected[osName+"/"+arch] = strings.ToLower(artifact.SHA256)
 	}
@@ -302,4 +317,23 @@ func fileSHA256(path string) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// agentPayloadRelease reads the release sequence compiled into a payload.
+// A payload with no marker is rejected: unnumbered builds cannot be reasoned
+// about by the release floor, so they must not be served as a managed bundle.
+func agentPayloadRelease(path string) (uint64, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	seq, err := updatesigning.ExtractReleaseReader(f)
+	if err != nil {
+		return 0, fmt.Errorf("read release marker: %w", err)
+	}
+	if seq == 0 {
+		return 0, fmt.Errorf("payload carries no release marker")
+	}
+	return seq, nil
 }
