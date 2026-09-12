@@ -49,43 +49,49 @@ against the release the catalog claims.
 
 ## Precedence
 
-The override variable for a platform is `BLOXOS_AGENT_BINARY` for Linux amd64,
-`BLOXOS_AGENT_BINARY_ARM64` for Linux arm64, and `BLOXOS_AGENT_BINARY_WINDOWS`
-for Windows. When set, it is **authoritative**: that platform resolves it or
-fails, and never falls back.
+Each platform has one override variable: `BLOXOS_AGENT_BINARY` for Linux
+amd64, `BLOXOS_AGENT_BINARY_ARM64` for Linux arm64, and
+`BLOXOS_AGENT_BINARY_WINDOWS` for Windows. **A platform's own override
+outranks the managed bundle** and is authoritative — that platform resolves it
+or fails, never falling back.
 
-**Linux arm64**, in order:
+**Linux amd64**
 
-1. a generic `BLOXOS_AGENT_BINARY` that is set and is not the shipped default
-   path — non-authoritative and architecture-verified, so a wrong-architecture
-   binary is skipped rather than failing the platform
+1. `BLOXOS_AGENT_BINARY` — authoritative, fails closed. The one exception is
+   below.
 2. the managed bundle
-3. `BLOXOS_AGENT_BINARY_ARM64` — authoritative, fails closed
-4. a generic `BLOXOS_AGENT_BINARY`, architecture-verified
-5. `/usr/local/lib/bloxos/linux/arm64/bloxos-agent`
-6. `/usr/local/lib/bloxos/linux/bloxos-agent` (legacy)
-7. a `bloxos-agent` sibling of the hub executable
-
-**Linux amd64**, in order:
-
-1. the managed bundle
-2. `BLOXOS_AGENT_BINARY` — authoritative, fails closed
 3. `/usr/local/lib/bloxos/linux/amd64/bloxos-agent`
 4. `/usr/local/lib/bloxos/linux/bloxos-agent` (legacy)
 5. a `bloxos-agent` sibling of the hub executable
 
-**Windows**: the managed bundle, then `BLOXOS_AGENT_BINARY_WINDOWS`
-(authoritative), then `/usr/local/lib/bloxos/windows/bloxos-agent.exe`, then a
-`bloxos-agent.exe` sibling of the hub executable.
+**Linux arm64**
+
+1. `BLOXOS_AGENT_BINARY_ARM64` — authoritative, fails closed, and the sole
+   candidate when set
+2. a generic `BLOXOS_AGENT_BINARY` other than the shipped default path —
+   non-authoritative and architecture-verified, so a binary built for another
+   architecture is skipped rather than failing the platform
+3. the managed bundle
+4. `/usr/local/lib/bloxos/linux/arm64/bloxos-agent`
+5. `/usr/local/lib/bloxos/linux/bloxos-agent` (legacy)
+6. a `bloxos-agent` sibling of the hub executable
+
+**Windows**
+
+1. `BLOXOS_AGENT_BINARY_WINDOWS` — authoritative, fails closed
+2. the managed bundle
+3. `/usr/local/lib/bloxos/windows/bloxos-agent.exe`
+4. a `bloxos-agent.exe` sibling of the hub executable
 
 ### The one exception
 
-A `BLOXOS_AGENT_BINARY` whose value is **exactly** the shipped default path is
-treated as legacy configuration, and the bundle takes precedence over it. The
-project's own systemd unit sets that variable, so without this the managed
-bundle would never be reached on a standard native install. Any other value —
-including a path that merely normalises to the default — remains an
-authoritative operator pin.
+A `BLOXOS_AGENT_BINARY` whose value is **exactly** the shipped default path
+(`/usr/local/lib/bloxos/linux/bloxos-agent`) is treated as legacy
+configuration, and the managed bundle takes precedence over it. The project's
+own systemd unit sets that variable, so without this exception the bundle would
+never be reached on a standard native install. Any other value — including a
+path that merely normalises to the default — remains an authoritative operator
+pin.
 
 Set `BLOXOS_AGENT_DELIVERY=external` to restore the full legacy resolver and
 manage agent binaries yourself. The manual procedure below then applies.
