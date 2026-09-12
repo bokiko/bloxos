@@ -62,6 +62,32 @@ def shell_block(body):
     raise AssertionError("step has no run block")
 
 
+def mapping_block(body, key, indent):
+    """A `key:` block of NAME: value pairs, as written, preserving expressions.
+
+    Used for a step's `env:` and a job's `outputs:`. Reading these rather than
+    restating them is the point: a harness that hardcodes the mapping would
+    pass with HUB_REF and DASHBOARD_REF swapped in the workflow.
+    """
+    lines = body.splitlines()
+    found, collecting = {}, False
+    for line in lines:
+        if line.strip() == f"{key}:":
+            collecting = True
+            continue
+        if collecting:
+            if line.strip().startswith("#"):
+                continue
+            if line.strip() and not line.startswith(" " * indent):
+                break
+            if ":" in line:
+                name, _, value = line.strip().partition(":")
+                found[name.strip()] = value.strip()
+    if not found:
+        raise AssertionError(f"no {key!r} block found; the parser or the workflow has moved")
+    return found
+
+
 def substitute(block, values):
     """Replace Actions expressions with fixture values, failing on any unknown one.
 
@@ -116,13 +142,12 @@ class ReleaseWorkflowWiringTests(unittest.TestCase):
         self.assertNotIn("outputs.digest", self.native,
                          "the native bundle job must consume the resolved refs, not build outputs")
         # The job's own outputs block sits before the first step, so the scan
-        # above cannot see it — and it is what native-bundle consumes.
-        declared = self.publish.split("steps:", 1)[0]
-        self.assertIn("outputs:", declared)
-        self.assertNotIn("steps.hub.outputs.digest", declared)
-        self.assertNotIn("steps.dashboard.outputs.digest", declared)
-        self.assertIn("steps.refs.outputs.hub", declared)
-        self.assertIn("steps.refs.outputs.dashboard", declared)
+        # above cannot see it — and it is what native-bundle consumes. The
+        # exact expression is asserted, not its presence: a hub_ref wired to
+        # the dashboard would satisfy any "both strings appear" check.
+        declared = mapping_block(self.publish.split("steps:", 1)[0], "outputs", 6)
+        self.assertEqual(declared.get("hub_ref"), "${{ steps.refs.outputs.hub }}")
+        self.assertEqual(declared.get("dashboard_ref"), "${{ steps.refs.outputs.dashboard }}")
 
     def test_both_builds_are_skipped_when_a_verified_pair_is_reused(self):
         for image in ("Push hub image", "Push dashboard image"):
@@ -200,7 +225,9 @@ class ReleaseRetryExecutionTests(unittest.TestCase):
         publish = steps(jobs(text)["publish"])
         by_name = {name: body for name, body in publish}
         cls.resolve = shell_block(next(b for n, b in by_name.items() if "Resolve the image pair" in n))
-        cls.promote = shell_block(next(b for n, b in by_name.items() if "Promote both images" in n))
+        promote_body = next(b for n, b in by_name.items() if "Promote both images" in n)
+        cls.promote = shell_block(promote_body)
+        cls.promote_env = mapping_block(promote_body, "env", 10)
 
     def setUp(self):
         self.work = Path(tempfile.mkdtemp())
@@ -257,8 +284,16 @@ class ReleaseRetryExecutionTests(unittest.TestCase):
                 "steps.dashboard.outputs.digest": BUILT_DASHBOARD}
 
     def promote_with(self, hub, dashboard, version="v1.2.3", fail_on=None):
-        return self.run_block(self.promote, {}, fail_on=fail_on,
-                              env={"VERSION": version, "HUB_REF": hub, "DASHBOARD_REF": dashboard})
+        # The step's OWN env mapping, read from the workflow and then resolved.
+        # Hardcoding {HUB_REF: hub, DASHBOARD_REF: dashboard} here would let a
+        # swap of the two in docker.yml pass: both strings would still be
+        # present, and both tests would still see two plausible promotions.
+        values = {"github.ref_name": version,
+                  "steps.refs.outputs.hub": hub,
+                  "steps.refs.outputs.dashboard": dashboard}
+        env = {name: substitute(expression, values)
+               for name, expression in self.promote_env.items()}
+        return self.run_block(self.promote, {}, fail_on=fail_on, env=env)
 
     def test_a_fresh_run_resolves_and_promotes_the_freshly_built_pair(self):
         result, emitted = self.run_block(self.resolve, self.resolve_values(reuse=False))
