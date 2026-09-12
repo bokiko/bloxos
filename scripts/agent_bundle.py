@@ -54,14 +54,19 @@ def read_regular(path, limit):
 def identity(data, platform):
     require(len(data) >= 64, f"truncated binary: {platform}")
     if platform.startswith("linux/"):
-        require(data[:6] == b"\x7fELF\x02\x01", f"expected 64-bit little-endian ELF: {platform}")
+        # Byte 6 is EI_VERSION. The hub's loader requires EV_CURRENT, so this
+        # must too: a validator that accepts what the consumer rejects lets a
+        # release pass packaging and then fail at hub startup, which is the
+        # worst possible place to find out.
+        require(data[:7] == b"\x7fELF\x02\x01\x01", f"expected 64-bit little-endian ELF: {platform}")
         machine = struct.unpack_from("<H", data, 18)[0]
         require(machine == {"linux/amd64": 62, "linux/arm64": 183}[platform],
                 f"wrong ELF architecture: {platform}")
     else:
         require(data[:2] == b"MZ", "expected Windows PE executable")
         offset = struct.unpack_from("<I", data, 60)[0]
-        require(offset + 26 <= len(data) and data[offset:offset + 4] == b"PE\0\0",
+        # Below the DOS header the offset points back into the stub.
+        require(64 <= offset and offset + 26 <= len(data) and data[offset:offset + 4] == b"PE\0\0",
                 "invalid PE header")
         require(struct.unpack_from("<H", data, offset + 4)[0] == 0x8664
                 and struct.unpack_from("<H", data, offset + 24)[0] == 0x20B,

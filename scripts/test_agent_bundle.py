@@ -15,7 +15,7 @@ import agent_bundle as bundle
 def fixture(platform, release=7):
     data = bytearray(128)
     if platform.startswith("linux/"):
-        data[:6] = b"\x7fELF\x02\x01"
+        data[:7] = b"\x7fELF\x02\x01\x01"  # EI_VERSION must be EV_CURRENT, as real builds are
         struct.pack_into("<H", data, 18, 62 if platform == "linux/amd64" else 183)
     else:
         data[:2] = b"MZ"

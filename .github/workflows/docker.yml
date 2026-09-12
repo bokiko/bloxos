@@ -194,7 +194,10 @@ jobs:
         run: bash scripts/export-agent-bundle.sh "$HUB_IMAGE@$HUB_DIGEST" "$SOURCE_SHA" "$RELEASE_TAG" "$RUNNER_TEMP/native-agents"
       - name: Extract the exact published server pair
         # Server archives are the exact published image contents, not separate
-        # source rebuilds. The updater installs hub/dashboard, not fleet agents.
+        # source rebuilds. They now also carry the agent payloads, so upgrading
+        # the hub upgrades what the fleet is offered; --agents points at the
+        # SAME directory whose files are attached as standalone assets below,
+        # and the script asserts byte equality rather than rebuilding.
         env:
           HUB_DIGEST: ${{ needs.publish.outputs.hub_digest }}
           DASHBOARD_DIGEST: ${{ needs.publish.outputs.dashboard_digest }}
@@ -203,7 +206,8 @@ jobs:
         run: |
           python3 scripts/export-server-bundle.py \
             --hub "$HUB_IMAGE@$HUB_DIGEST" --dashboard "$DASHBOARD_IMAGE@$DASHBOARD_DIGEST" \
-            --revision "$SOURCE_SHA" --version "$RELEASE_TAG" --output "$RUNNER_TEMP/server-bundle"
+            --revision "$SOURCE_SHA" --version "$RELEASE_TAG" --output "$RUNNER_TEMP/server-bundle" \
+            --agents "$RUNNER_TEMP/native-agents"
       - name: Attach server and agent assets to a draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
