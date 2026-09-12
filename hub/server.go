@@ -32,8 +32,10 @@ type Server struct {
 	// bounds exposure is broken.
 	rollout    *rolloutController
 	rolloutErr error
-	// rolloutStop cancels the single scheduler this server owns.
+	// rolloutStop cancels the single scheduler this server owns; rolloutWake
+	// is how a trigger asks it to look again.
 	rolloutStop chan struct{}
+	rolloutWake chan struct{}
 	rolloutOnce sync.Once
 
 	// Alert evaluations are serialized; pending duration state is bounded by
@@ -89,6 +91,10 @@ func newServer(db *sql.DB) *Server {
 		agents:      make(map[string]*ConnectedAgent),
 		aiSessions:  newAISessionStore(),
 		rolloutStop: make(chan struct{}),
+		// Depth one: a wake is "look again", not a queue of work. Several
+		// triggers firing at once collapse into a single pass, which is the
+		// point — each of them would otherwise race to reserve and send.
+		rolloutWake: make(chan struct{}, 1),
 		// The rollout controller is NOT built here. newServer runs before
 		// initDB, so its tables may not exist yet — see initRollout.
 	}
@@ -129,11 +135,17 @@ func (s *Server) currentAgentConnection(machineID string) *ConnectedAgent {
 
 // startRolloutScheduler runs exactly one advancement loop for this server.
 //
-// The loop owns STAGE ADVANCEMENT and attempt expiry. Reservation itself still
-// happens on the trigger's own goroutine, which is safe because reserve() is a
-// single serialized transaction and claimSend gives one attempt one owner —
-// but it is not yet the "triggers merely wake the scheduler" shape, and this
-// comment does not claim otherwise.
+// THE SCHEDULER IS THE ONLY THING THAT SENDS. Triggers — a WebSocket connect, a
+// changed version report, an operator resume — call wakeRollout and return;
+// none of them reserves or writes. That is what makes progression single-owner:
+// several triggers arriving together collapse into one pass rather than each
+// racing to claim a slot.
+//
+// It also means admission does not depend on a trigger. A machine held back
+// because the batch was full is picked up by a later pass on capacity alone,
+// with no further version change and no reconnect. Requiring a trigger looks
+// identical to working, right up until a fleet stops updating because nothing
+// happened to poke it.
 func (s *Server) startRolloutScheduler() {
 	s.rolloutOnce.Do(func() {
 		if s.rollout == nil {
@@ -146,16 +158,61 @@ func (s *Server) startRolloutScheduler() {
 				select {
 				case <-s.rolloutStop:
 					return
+				case <-s.rolloutWake:
 				case <-ticker.C:
-					for _, platform := range supportedAgentPlatforms {
-						if err := s.rollout.tick(platform.String()); err != nil {
-							log.Printf("rollout: tick for %s: %v", platform, err)
-						}
-					}
 				}
+				s.runRolloutPass()
 			}
 		})
 	})
+}
+
+// wakeRollout asks the scheduler to look again. Never blocks: a pending wake
+// already covers whatever this caller observed.
+func (s *Server) wakeRollout() {
+	if s.rolloutWake == nil {
+		return
+	}
+	select {
+	case s.rolloutWake <- struct{}{}:
+	default:
+	}
+}
+
+// runRolloutPass advances state, then offers a slot to every connected agent.
+func (s *Server) runRolloutPass() {
+	if s.rollout == nil {
+		return
+	}
+	for _, platform := range supportedAgentPlatforms {
+		if err := s.rollout.tick(platform.String()); err != nil {
+			log.Printf("rollout: tick for %s: %v", platform, err)
+		}
+	}
+
+	// Snapshot the registry, then release it: announcing holds an agent's
+	// write lock and performs bounded network I/O, and holding agentsMu across
+	// that would stall every connect and disconnect behind one slow socket.
+	s.agentsMu.RLock()
+	ids := make([]string, 0, len(s.agents))
+	conns := make([]*ConnectedAgent, 0, len(s.agents))
+	for id, agent := range s.agents {
+		ids = append(ids, id)
+		conns = append(conns, agent)
+	}
+	s.agentsMu.RUnlock()
+
+	for i := range ids {
+		select {
+		case <-s.rolloutStop:
+			return
+		default:
+		}
+		// Most of these return immediately: the batch is full, the machine is
+		// already validated, or it holds no slot. Only machines that actually
+		// win capacity reach a socket.
+		s.announceVersionToAgent(ids[i], conns[i])
+	}
 }
 
 // goTracked runs fn in a goroutine registered against this server's WaitGroup.

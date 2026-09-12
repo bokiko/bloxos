@@ -44,25 +44,14 @@ func requestOperatorPause(t *testing.T, s *Server, pause bool) *httptest.Respons
 	return r
 }
 
-func isolateAutomaticPause(t *testing.T) {
-	t.Helper()
-	rolloutPausedMu.Lock()
-	old, reason := rolloutPaused, rolloutPauseReason
-	rolloutPaused, rolloutPauseReason = false, ""
-	rolloutPausedMu.Unlock()
-	rolloutFailuresMu.Lock()
-	failures := append([]rolloutFailure(nil), rolloutFailures...)
-	rolloutFailures = nil
-	rolloutFailuresMu.Unlock()
-	t.Cleanup(func() {
-		rolloutPausedMu.Lock()
-		rolloutPaused, rolloutPauseReason = old, reason
-		rolloutPausedMu.Unlock()
-		rolloutFailuresMu.Lock()
-		rolloutFailures = failures
-		rolloutFailuresMu.Unlock()
-	})
-}
+// isolateAutomaticPause used to save and restore the process-wide automatic
+// breaker. That breaker is gone: a platform halt replaces it, and halts live in
+// the database each Server owns, so there is no shared state to isolate.
+//
+// Kept as a no-op rather than deleted from every call site, so the tests below
+// keep reading as "this one is about the operator pause, not the automatic
+// one" — which is the distinction they exist to police.
+func isolateAutomaticPause(t *testing.T) { t.Helper() }
 
 func TestOperatorPauseSurvivesDatabaseReopen(t *testing.T) {
 	isolateAutomaticPause(t)
@@ -199,22 +188,44 @@ func TestOperatorPauseSurvivesSHAChangeAndSuppressesAnnouncements(t *testing.T) 
 	if r := requestOperatorPause(t, s, true); r.Code != 200 {
 		t.Fatal(r.Code)
 	}
-	rolloutPausedMu.Lock()
-	rolloutPaused, rolloutPauseReason = true, "automatic breaker"
-	rolloutPausedMu.Unlock()
+	// Halt the platform, as a failed attempt would.
+	if err := haltPlatformForTest(t, s, "linux/amd64", before); err != nil {
+		t.Fatalf("halt: %v", err)
+	}
+
 	if err := os.WriteFile(binary, []byte("changed binary fixture"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	recomputeBinaryFor("linux")
-	if currentAgentBinaryState("linux").SHA == before {
+	after := currentAgentBinaryState("linux").SHA
+	if after == before {
 		t.Fatal("test did not change served SHA")
 	}
-	rolloutPausedMu.RLock()
-	autoPaused := rolloutPaused
-	rolloutPausedMu.RUnlock()
-	if autoPaused {
-		t.Fatal("new build did not reset automatic breaker")
+
+	// A new build must clear the halt. It no longer does so by resetting a
+	// global: the changed candidate starts a new GENERATION, so the halt
+	// belongs to a rollout that is over. Asserting the observable outcome
+	// rather than the mechanism is the point — the old test asserted a boolean
+	// that no longer exists, while this behaviour still has to hold.
+	if _, _, err := s.rollout.reserve("linux/amd64", "halt-reset-probe", after, 0); err != nil {
+		t.Fatalf("reserve after the candidate changed: %v", err)
 	}
+	st, err := s.rollout.platformState("linux/amd64")
+	if err != nil || st == nil {
+		t.Fatalf("platform state: %v", err)
+	}
+	if st.Status == rolloutHalted {
+		t.Fatalf("a new build did not clear the halt: %s", st.HaltReason)
+	}
+	// The probe took the canary slot. Release it, and the halted fixture's
+	// slot with it, so the machine this test is actually about can be admitted
+	// — otherwise the assertion below would fail on capacity rather than on
+	// the pause behaviour it exists to check.
+	if _, err := s.db.Exec(`DELETE FROM agent_rollout_slot WHERE machine_id IN (?, ?)`,
+		"halt-reset-probe", "halt-victim"); err != nil {
+		t.Fatalf("clear fixture slots: %v", err)
+	}
+
 	if paused, _ := s.operatorRolloutPause(); !paused {
 		t.Fatal("SHA change cleared operator pause")
 	}
@@ -325,4 +336,28 @@ func TestOperatorPauseSurvivesSHAChangeAndSuppressesAnnouncements(t *testing.T) 
 	if _, data, err := client.ReadMessage(); err == nil {
 		t.Fatalf("queued announcement escaped pause: %s", data)
 	}
+}
+
+// haltPlatformForTest drives a platform into a halt the way a failed attempt
+// does: reserve a slot, let its window lapse, and tick.
+func haltPlatformForTest(t *testing.T, s *Server, platform, candidate string) error {
+	t.Helper()
+	if _, _, err := s.rollout.reserve(platform, "halt-victim", candidate, 0); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`UPDATE agent_rollout_slot SET deadline_unix_ms = 0
+		WHERE platform = ? AND machine_id = ?`, platform, "halt-victim"); err != nil {
+		return err
+	}
+	if err := s.rollout.tick(platform); err != nil {
+		return err
+	}
+	st, err := s.rollout.platformState(platform)
+	if err != nil {
+		return err
+	}
+	if st == nil || st.Status != rolloutHalted {
+		t.Fatalf("fixture did not halt the platform: %+v", st)
+	}
+	return nil
 }

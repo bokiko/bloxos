@@ -764,25 +764,43 @@ func (s *Server) collectAnnounceFrames(t *testing.T, e *echo.Echo, p announcePro
 	return frames
 }
 
-// assertNoReconnectExpectation is the assertion that actually matters when an
-// announce is withheld. An armed reconnect expectation for an update the agent
-// will never take expires into a rollout failure; two of those trip the
-// process-wide circuit breaker and pause updates for the whole fleet, with
-// rolloutPauseReason blaming agent health for a refusal the hub provoked.
-func assertNoReconnectExpectation(t *testing.T, machineID string) {
+// assertNoPendingRolloutAttempt is the assertion that actually matters when an
+// announce is withheld: the refusal must leave NO durable attempt behind.
+//
+// The hazard is unchanged from the reconnect-expectation era it replaces. A
+// slot reserved for an update the agent will never be offered expires into a
+// failure, and a failure halts the platform — blaming agent health for a
+// refusal the hub itself provoked, and stopping updates for every other
+// machine on that platform.
+func assertNoPendingRolloutAttempt(t *testing.T, s *Server, machineID string) {
 	t.Helper()
-	pendingReconnectsMu.Lock()
-	_, armed := pendingReconnects[machineID]
-	pendingReconnectsMu.Unlock()
-	if armed {
-		t.Fatalf("a reconnect expectation was armed for %s despite no announce being sent — "+
-			"it will expire into a false rollout failure and can trip the circuit breaker", machineID)
+	if s.rollout == nil {
+		return
 	}
-	rolloutPausedMu.RLock()
-	paused, reason := rolloutPaused, rolloutPauseReason
-	rolloutPausedMu.RUnlock()
-	if paused {
-		t.Fatalf("rollout is paused: %s", reason)
+	rows, err := s.db.Query(`SELECT platform, state, reason FROM agent_rollout_slot
+		WHERE machine_id = ? AND state IN (?, ?, ?)`,
+		machineID, rolloutReserved, rolloutOffered, rolloutObserved)
+	if err != nil {
+		t.Fatalf("query rollout slots: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var platform, state, reason string
+		if err := rows.Scan(&platform, &state, &reason); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		t.Fatalf("a %s attempt was left pending for %s on %s despite no announce being sent (%s) — "+
+			"it will expire into a false failure and halt the platform", state, machineID, platform, reason)
+	}
+
+	for _, platform := range supportedAgentPlatforms {
+		st, err := s.rollout.platformState(platform.String())
+		if err != nil {
+			t.Fatalf("platform state: %v", err)
+		}
+		if st != nil && st.Status == rolloutHalted {
+			t.Fatalf("rollout halted on %s: %s", platform, st.HaltReason)
+		}
 	}
 }
 
@@ -812,7 +830,7 @@ func TestLegacyAgentGetsNoAnnounceOverPlaintext(t *testing.T) {
 	if len(frames) != 0 {
 		t.Fatalf("hub announced an update to a pre-signature agent over plaintext: %q", frames)
 	}
-	assertNoReconnectExpectation(t, machineID)
+	assertNoPendingRolloutAttempt(t, s, machineID)
 }
 
 // Same agent, TLS deployment: the one migration hop is allowed, because an
@@ -846,7 +864,7 @@ func TestNoAnnounceWhenAgentReportsPlaintextTransport(t *testing.T) {
 	if len(frames) != 0 {
 		t.Fatalf("hub announced an update the agent had already said it would refuse: %q", frames)
 	}
-	assertNoReconnectExpectation(t, machineID)
+	assertNoPendingRolloutAttempt(t, s, machineID)
 }
 
 // And the same agent reporting a usable transport and a pinned key is
@@ -894,7 +912,7 @@ func TestNoAnnounceWhenAgentKeyNotPinned(t *testing.T) {
 	if len(frames) != 0 {
 		t.Fatalf("hub announced an update to an agent with no pinned key: %q", frames)
 	}
-	assertNoReconnectExpectation(t, machineID)
+	assertNoPendingRolloutAttempt(t, s, machineID)
 
 	agentRunningVersionsMu.RLock()
 	info, ok := agentRunningVersions[machineID]
@@ -926,7 +944,7 @@ func TestNoAnnounceWhenAgentOmitsKeyPinnedField(t *testing.T) {
 	if len(frames) != 0 {
 		t.Fatalf("hub announced an update to an agent that never reported update_key_pinned: %q", frames)
 	}
-	assertNoReconnectExpectation(t, machineID)
+	assertNoPendingRolloutAttempt(t, s, machineID)
 }
 
 // TestNoSignatureMeansNoAnnounceOnTheWire is the end-to-end form of the claim
@@ -945,7 +963,7 @@ func TestNoSignatureMeansNoAnnounceOnTheWire(t *testing.T) {
 	if len(frames) != 0 {
 		t.Fatalf("hub announced an update it could not sign: %q", frames)
 	}
-	assertNoReconnectExpectation(t, machineID)
+	assertNoPendingRolloutAttempt(t, s, machineID)
 }
 
 /* ----------------------------------------------------------------------------
@@ -1015,7 +1033,7 @@ func TestArm64AgentOnAmd64OnlyHubGetsNoAnnounce(t *testing.T) {
 	if len(frames) != 0 {
 		t.Fatalf("hub announced to an arm64 agent with no arm64 build: %q", frames)
 	}
-	assertNoReconnectExpectation(t, machineID)
+	assertNoPendingRolloutAttempt(t, s, machineID)
 
 	s.markCredentialsRotated(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/versions", nil)
@@ -1142,7 +1160,7 @@ func TestLegacyAgentOnArm64HostIsWithheld(t *testing.T) {
 	if len(frames) != 0 {
 		t.Fatalf("hub announced to a legacy agent on an arm64 host: %q", frames)
 	}
-	assertNoReconnectExpectation(t, machineID)
+	assertNoPendingRolloutAttempt(t, s, machineID)
 
 	agentRunningVersionsMu.RLock()
 	info := agentRunningVersions[machineID]

@@ -110,7 +110,9 @@ func (s *Server) registerAgentConnection(machineID string, agent *ConnectedAgent
 		log.Printf("agent %s reconnected; closing displaced connection", machineID)
 		_ = displaced.Conn.Close()
 	}
-	s.goTracked(func() { s.announceVersionToAgent(machineID, agent) })
+	// Wake the scheduler rather than announcing here. It is the only sender,
+	// so a connect cannot race a version report or a resume for the same slot.
+	s.wakeRollout()
 	s.goTracked(func() { s.sendAISessionsConfig(machineID, agent) })
 }
 

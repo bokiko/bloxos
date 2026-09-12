@@ -873,3 +873,82 @@ func TestPlatformsProgressIndependently(t *testing.T) {
 		t.Fatalf("one platform halting must not halt another, arm64 status=%s", arm.Status)
 	}
 }
+
+// Admission must not depend on a trigger.
+//
+// A machine held back because the batch was full has no reason to send another
+// version report and no reason to reconnect — it is already reporting the OLD
+// build, happily, forever. If it is only ever considered when something pokes
+// the hub, a rollout stalls after the canary and looks identical to one that
+// is simply taking its time. So: admit the canary, prove it healthy, and then
+// require the waiting machines to be picked up on CAPACITY alone.
+func TestLaterMachinesAreAdmittedWithoutAnyFurtherTrigger(t *testing.T) {
+	f := newRolloutFixture(t)
+	candidate := candidateA
+
+	// The canary is admitted and validated.
+	canary, _, err := f.c.reserve(testPlatform, "canary", candidate, 8)
+	if err != nil || canary == nil {
+		t.Fatalf("canary must be admitted: %v", err)
+	}
+	if err := f.c.markOffered(canary); err != nil {
+		t.Fatalf("markOffered: %v", err)
+	}
+	f.prove(testPlatform, "canary", candidate, conn("canary"))
+	if err := f.c.tick(testPlatform); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if state, _, _ := f.slot(testPlatform, "canary"); state != rolloutHealthy {
+		t.Fatalf("the canary should be validated, got %s", state)
+	}
+
+	// Two machines that were connected the whole time and have reported
+	// nothing new. Exactly one pass of the scheduler's admission step — no
+	// version change, no reconnect, no resume.
+	waiting := []string{"waiter-1", "waiter-2", "waiter-3"}
+	admitted := map[string]bool{}
+	for _, id := range waiting {
+		r, _, err := f.c.reserve(testPlatform, id, candidate, 8)
+		if err != nil {
+			t.Fatalf("reserve %s: %v", id, err)
+		}
+		if r != nil {
+			admitted[id] = true
+			if err := f.c.markOffered(r); err != nil {
+				t.Fatalf("markOffered %s: %v", id, err)
+			}
+		}
+	}
+
+	if len(admitted) != rolloutBatchCapacity {
+		t.Fatalf("the batch after the canary admits %d machines, got %d (%v)",
+			rolloutBatchCapacity, len(admitted), admitted)
+	}
+	// And the third waits, rather than the batch quietly growing.
+	if admitted["waiter-3"] && admitted["waiter-1"] && admitted["waiter-2"] {
+		t.Fatal("all three were admitted; the batch bound did not hold")
+	}
+
+	// Those two prove themselves, and the next pass admits the last one —
+	// again with nothing having happened on any agent's side.
+	for id := range admitted {
+		f.prove(testPlatform, id, candidate, conn(id))
+	}
+	if err := f.c.tick(testPlatform); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	last := ""
+	for _, id := range waiting {
+		if !admitted[id] {
+			last = id
+		}
+	}
+	r, why, err := f.c.reserve(testPlatform, last, candidate, 8)
+	if err != nil {
+		t.Fatalf("reserve %s: %v", last, err)
+	}
+	if r == nil {
+		t.Fatalf("%s was never admitted after the batch ahead of it passed (%q); "+
+			"a rollout that needs a trigger to continue looks exactly like one that is working", last, why)
+	}
+}

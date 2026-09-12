@@ -472,6 +472,38 @@ func (c *rolloutController) releaseBeforeSend(r *rolloutReservation) error {
 	return err
 }
 
+// forgetEvidence drops a machine's in-memory dwell evidence.
+//
+// Durable slots are NOT touched here: they are deleted inside the machine's
+// own delete transaction, so a rollback keeps them.
+func (c *rolloutController) forgetEvidence(machineID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for key := range c.evidence {
+		if strings.HasSuffix(key, "\x00"+machineID) {
+			delete(c.evidence, key)
+		}
+	}
+}
+
+// observeRunningCandidate records that a machine is running the candidate.
+//
+// reserved or offered only. Terminal states are left alone: a healthy slot has
+// already been validated, and a failed one is the operator's to retry — a
+// report arriving afterwards must not quietly reopen either.
+//
+// This is also how the ambiguous crash window resolves. A process that died
+// between the socket write and the mark leaves a slot that says "reserved"
+// whether or not the agent ever received the offer; when the machine comes
+// back running the candidate, that question is answered by the machine rather
+// than by bookkeeping the hub lost.
+func (c *rolloutController) observeRunningCandidate(platform, machineID string, generation int64) error {
+	_, err := c.db.Exec(`UPDATE agent_rollout_slot SET state = ?
+		WHERE platform = ? AND generation = ? AND machine_id = ? AND state IN (?, ?)`,
+		rolloutObserved, platform, generation, machineID, rolloutReserved, rolloutOffered)
+	return err
+}
+
 // markOffered records that the announcement write returned.
 func (c *rolloutController) markOffered(r *rolloutReservation) error {
 	_, err := c.db.Exec(`UPDATE agent_rollout_slot
@@ -971,7 +1003,15 @@ func (c *rolloutController) resume(platform string) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := c.resumeTx(tx, platform); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
 
+// resumeTx is resume inside a caller's transaction, so an operator resume can
+// clear the pause and retry the failed attempts as one atomic change.
+func (c *rolloutController) resumeTx(tx *sql.Tx, platform string) error {
 	// Read the platform row through THIS transaction. Calling platformState
 	// here used c.db while the transaction already held the only pooled
 	// connection, and resume deadlocked outright.
@@ -979,7 +1019,7 @@ func (c *rolloutController) resume(platform string) error {
 	if err := tx.QueryRow(`SELECT generation FROM agent_rollout_platform WHERE platform = ?`,
 		platform).Scan(&generation); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return tx.Commit()
+			return nil // nothing rolled out on this platform yet
 		}
 		return err
 	}
@@ -1001,5 +1041,5 @@ func (c *rolloutController) resume(platform string) error {
 		rolloutActive, now.UnixMilli(), platform, generation); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return nil
 }

@@ -162,6 +162,10 @@ func setupTestServer(t *testing.T) (*echo.Echo, *Server) {
 	if err := s.initRollout(); err != nil {
 		t.Fatalf("init rollout controller: %v", err)
 	}
+	// The scheduler is the only thing that SENDS, so tests that expect an
+	// announcement need it running — the same order main() uses. Shutdown
+	// stops it before waiting, so it cannot outlive the database.
+	s.startRolloutScheduler()
 	// Isolate bootstrap-CA discovery from the host's real Caddy roots. Without
 	// this, a developer or CI machine that happens to have a local Caddy CA at
 	// ~/.local/share/caddy (or /var/lib/caddy, /root) leaks that cert into the
