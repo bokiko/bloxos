@@ -50,11 +50,18 @@ export interface AgentRolloutStatus {
   halt_reason?: string;
   summary: string;
   /** Machines this generation has SEEN running the candidate, whatever
-   * happened to their validation afterwards. */
+   * happened to their validation afterwards. HISTORICAL: the hub latches it,
+   * so a machine counted here may since have failed, rolled back, or gone
+   * offline. It is "observed on this build in this rollout", never "is on
+   * this build now". */
   updated: number;
   /** The subset that completed its dwell. */
   validated: number;
-  /** Reserved or offered: not yet known to be running it. */
+  /** Running the candidate with the dwell still accruing. Neither pending nor
+   * validated — without it a canary mid-dwell showed every count at zero. */
+  validating?: number;
+  /** Reserved or offered. Reservation happens BEFORE the write to the socket,
+   * so this includes attempts never sent: pending offers, not offered. */
   pending: number;
   /** Ineligible, with reasons. Not failures, and they do not halt. */
   withheld: number;
@@ -82,9 +89,13 @@ export interface VersionsResponse {
    *
    * `status` is durable: "active" means the automatic policy is enabled, NOT
    * that something is being sent right now. "halted" needs a person.
-   * `summary` is derived for display — whether a fleet is caught up is a
-   * statement about machines that happen to be connected, so it is never
-   * stored. Older hubs omit the whole field.
+   * `summary` is derived for display — it counts SLOTS, which exist only for
+   * machines this generation reserved one for, so it never claims the
+   * connected fleet is caught up. Older hubs omit the whole field.
+   *
+   * Render this through `@/lib/rollout-status.mjs`, never by casting entries
+   * to objects: the values are heterogeneous by design and an unrecognised
+   * one must read as unavailable rather than as a healthy zero.
    */
   agent_rollout?: Record<string, AgentRolloutStatus | { unavailable?: string; status?: string; reason?: string }>;
   signing_enabled: boolean;

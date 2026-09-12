@@ -77,9 +77,18 @@ func eligibleAgent(t *testing.T, s *Server, machineID, osName, arch string) (*Co
 // machine on it has something to be offered.
 func stagePlatformBinary(t *testing.T, osName, arch string) {
 	t.Helper()
+	stagePlatformBinaryContent(t, osName, arch, "staged "+osName+"/"+arch+" agent binary")
+}
+
+// stagePlatformBinaryContent is stagePlatformBinary with the bytes chosen by
+// the caller, so a test can replace what a platform serves with a DIFFERENT
+// build. The content decides the SHA, and the SHA is the candidate — staging
+// the same bytes twice changes nothing the rollout can see.
+func stagePlatformBinaryContent(t *testing.T, osName, arch, content string) {
+	t.Helper()
 	name := "bloxos-agent-" + osName + "-" + arch
 	path := filepath.Join(t.TempDir(), name)
-	if err := os.WriteFile(path, []byte("staged "+osName+"/"+arch+" agent binary"), 0o755); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
 		t.Fatalf("write %s: %v", name, err)
 	}
 	useTestResolvedBinaryForArch(t, osName, arch, path)
@@ -606,5 +615,326 @@ func TestDisplacedSocketsCannotDisplaceTheWinnersProof(t *testing.T) {
 	f.c.forgetConnection(testPlatform, machineID, winner)
 	if ok, _ := f.c.dwellSatisfied(testPlatform, machineID, st.Generation, candidateA); ok {
 		t.Fatal("evidence survived the connection that produced it")
+	}
+}
+
+// slotRow reads one machine's slot, and says whether it has one at all.
+func slotRow(t *testing.T, s *Server, machineID string) (state string, resends, ranCandidate, rows int) {
+	t.Helper()
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM agent_rollout_slot WHERE machine_id = ?`,
+		machineID).Scan(&rows); err != nil {
+		t.Fatalf("count slots for %s: %v", machineID, err)
+	}
+	if rows == 0 {
+		return "", 0, 0, 0
+	}
+	if err := s.db.QueryRow(`SELECT state, resend_count, ran_candidate FROM agent_rollout_slot
+		WHERE machine_id = ? ORDER BY generation DESC LIMIT 1`, machineID).
+		Scan(&state, &resends, &ranCandidate); err != nil {
+		t.Fatalf("read slot for %s: %v", machineID, err)
+	}
+	return state, resends, ranCandidate, rows
+}
+
+// The candidate can change while a send is queued, and the queued send must
+// not deliver the build it was holding.
+//
+// This is not hypothetical. The announce resolves the SHA and signature, takes
+// a durable reservation, marshals the frame, and only then writes — and one
+// scheduler pass walks the whole registry, each write carrying a ten-second
+// deadline. A `bloxos-update` landing anywhere in that span replaces the
+// served bytes underneath a frame already prepared from the old ones.
+// Delivering it would announce a build the hub no longer serves: the agent
+// fetches the SHA it was given, receives the new binary instead, and the hash
+// fails against the signature it was handed — an update that breaks for a
+// reason nothing logged.
+//
+// The reservation must also go back. A slot held by a send that never happened
+// occupies the canary and the next machine waits behind nothing.
+func TestACandidateChangeAtTheSendBoundaryCancelsTheSend(t *testing.T) {
+	_, s := setupTestServer(t)
+	stagePendingUpdate(t)
+	const machineID = "candidate-switch"
+	agent, client := eligibleAgent(t, s, machineID, "linux", archAMD64)
+
+	// CONTROL: the hook itself does not suppress anything. Without this the
+	// assertions below would hold for a send the hook merely broke.
+	reached := 0
+	announceSendBoundaryHook = func(string) { reached++ }
+	t.Cleanup(func() { announceSendBoundaryHook = nil })
+
+	s.announceVersionToAgent(machineID, agent)
+	if reached != 1 {
+		t.Fatalf("control: the send boundary was reached %d times, want 1", reached)
+	}
+	if !readsAFrame(t, client) {
+		t.Fatal("control: with nothing changing at the boundary, the machine must be sent to")
+	}
+	if state, _, _, _ := slotRow(t, s, machineID); state != rolloutOffered {
+		t.Fatalf("control: the slot should be offered, got %q", state)
+	}
+
+	// Back to nothing reserved, so the next announce takes a FRESH
+	// reservation — the case releaseBeforeSend is written for.
+	if _, err := s.db.Exec(`DELETE FROM agent_rollout_slot WHERE machine_id = ?`, machineID); err != nil {
+		t.Fatalf("clear slot: %v", err)
+	}
+
+	// Now the served binary changes in exactly the window the hook marks:
+	// after the SHA was resolved and the slot reserved, before the write.
+	announceSendBoundaryHook = func(string) {
+		stagePlatformBinaryContent(t, "linux", archAMD64, "a different linux/amd64 agent build")
+	}
+	s.announceVersionToAgent(machineID, agent)
+
+	if _, _, _, rows := slotRow(t, s, machineID); rows != 0 {
+		state, _, _, _ := slotRow(t, s, machineID)
+		t.Fatalf("a reservation that was never sent stayed behind holding capacity (state %q)", state)
+	}
+	// Read last: a timed-out read poisons this connection for anything after
+	// it, and there is nothing after it.
+	if readsAFrame(t, client) {
+		t.Fatal("the hub announced the old candidate after the served binary changed underneath it")
+	}
+}
+
+// The two crash windows are indistinguishable in the hub's own records, and
+// the machine is the only thing that can tell them apart.
+//
+// A process that dies between reserving a slot and marking it offered leaves
+// exactly the same row whether the write never happened or happened and was
+// never recorded. Guessing either way is wrong in one of the two cases: assume
+// it was sent and a machine that received nothing waits out its window and
+// fails; assume it was not and a machine already running the candidate is
+// resent a build it has, while its real progress reads as an outstanding
+// offer.
+//
+// So the hub asks. Both windows are reached by ABORTING the announce inside
+// them — before any socket write, and after a successful one — rather than by
+// rewriting a row afterwards. That distinction is the test: a row rewritten
+// after the fact proves only that reconciliation reads it, and would still
+// pass if the reservation were taken after the write or the offer recorded
+// before it. Here the durable state is whatever the real ordering actually
+// left behind.
+//
+// A panic is the abort. Its defers release the write lock and the in-process
+// send claim, which is what process death does to memory, and recovery over
+// the same database with a fresh controller is what a restart looks like.
+func TestBothCrashWindowsResolveFromWhatTheMachineReports(t *testing.T) {
+	_, s := setupTestServer(t)
+	stagePendingUpdate(t)
+	stagePlatformBinary(t, "linux", archARM64)
+	t.Cleanup(func() { announceSendBoundaryHook = nil; announcePostWriteHook = nil })
+
+	// A distinctive value, so the recover below cannot mistake an unrelated
+	// panic — a nil map, a closed channel — for the injected abort and report
+	// a passing test about a crash that never happened where we meant it to.
+	type injectedAbort struct{ where string }
+	abort := func(t *testing.T, where string, fn func()) {
+		t.Helper()
+		defer func() {
+			r := recover()
+			if r == nil {
+				t.Fatalf("the announce returned normally; the %s abort never fired", where)
+			}
+			got, ok := r.(injectedAbort)
+			if !ok || got.where != where {
+				panic(r) // not ours: let it crash the test properly
+			}
+		}()
+		fn()
+	}
+
+	// A hub restart: a new controller over the SAME database. Durable rows
+	// survive, in-memory evidence and send claims do not.
+	restart := func() {
+		t.Helper()
+		if err := s.initRollout(); err != nil {
+			t.Fatalf("rebuild the controller: %v", err)
+		}
+	}
+
+	// ---- Window one: the process died BEFORE the write. ----------------
+	const missed = "crash-before-write"
+	missedAgent, missedClient := eligibleAgent(t, s, missed, "linux", archAMD64)
+
+	announceSendBoundaryHook = func(string) { panic(injectedAbort{where: "pre-write"}) }
+	abort(t, "pre-write", func() { s.announceVersionToAgent(missed, missedAgent) })
+	announceSendBoundaryHook = nil
+
+	state, resendsAfterCrash, _, rows := slotRow(t, s, missed)
+	if rows == 0 || state != rolloutReserved {
+		t.Fatalf("a crash before the write must leave a reserved slot, got %q (%d rows)", state, rows)
+	}
+	if readsAFrame(t, missedClient) {
+		t.Fatal("control: the pre-write abort let an announcement reach the socket anyway")
+	}
+
+	// It comes back — a new socket, a new controller — still on the OLD
+	// build, because it never received anything.
+	restart()
+	missedAgent, missedClient = eligibleAgent(t, s, missed, "linux", archAMD64)
+	s.announceVersionToAgent(missed, missedAgent)
+
+	state, resendsNow, _, _ := slotRow(t, s, missed)
+	if state != rolloutOffered {
+		t.Fatalf("a machine that never received the offer was not re-offered: state %q", state)
+	}
+	if resendsNow != resendsAfterCrash+1 {
+		t.Fatalf("the resend was not recorded against the attempt: %d -> %d", resendsAfterCrash, resendsNow)
+	}
+	if !readsAFrame(t, missedClient) {
+		t.Fatal("a machine that never received the offer was never sent it again")
+	}
+
+	// ---- Window two: the write landed, the mark did not. ----------------
+	const applied = "crash-after-write"
+	appliedAgent, appliedClient := eligibleAgent(t, s, applied, "linux", archARM64)
+
+	announcePostWriteHook = func(string) { panic(injectedAbort{where: "post-write"}) }
+	abort(t, "post-write", func() { s.announceVersionToAgent(applied, appliedAgent) })
+	announcePostWriteHook = nil
+
+	state, appliedResends, _, rows := slotRow(t, s, applied)
+	if rows == 0 || state != rolloutReserved {
+		t.Fatalf("a crash after the write must still leave a reserved slot, got %q (%d rows)", state, rows)
+	}
+	// CONTROL: the offer really did reach the wire in this window. Without
+	// this the two cases would be indistinguishable in the test as well as in
+	// the database, and the assertions below would prove nothing.
+	if !readsAFrame(t, appliedClient) {
+		t.Fatal("control: the post-write abort fired before the announcement was written")
+	}
+
+	// It comes back running the candidate, on a new socket and a new
+	// controller. That report is the whole answer: nothing the hub kept
+	// distinguishes this slot from the one above.
+	restart()
+	candidate := announcedSHAForArch("linux", archARM64)
+	if candidate == "" {
+		t.Fatal("control: linux/arm64 must have a candidate to report against")
+	}
+	appliedAgent, appliedClient = eligibleAgent(t, s, applied, "linux", archARM64)
+	s.recordAgentRunningVersionOn(applied, appliedAgent, agentVersionReport{
+		RunningSHA: candidate, OS: "linux", Arch: archARM64,
+		UpdateProtocol: 1, TransportOK: true, KeyPinned: true,
+	})
+
+	state, resends, ranCandidate, _ := slotRow(t, s, applied)
+	if state != rolloutObserved {
+		t.Fatalf("a machine reporting the candidate was not recorded as running it: state %q", state)
+	}
+	if ranCandidate != 1 {
+		t.Fatal("the machine ran the candidate but the slot does not say so, so it would read as 0 updated")
+	}
+	if resends != appliedResends {
+		t.Fatalf("resolving the window from the machine's report spent a resend: %d -> %d",
+			appliedResends, resends)
+	}
+
+	// And it is NOT resent: the build it already applied must not be
+	// delivered again, nor its progress restarted.
+	s.runRolloutPass()
+	state, resendsNow, _, _ = slotRow(t, s, applied)
+	if state != rolloutObserved {
+		t.Fatalf("a machine already running the candidate left the observed state: %q", state)
+	}
+	if resendsNow != resends {
+		t.Fatalf("a machine already running the candidate was resent: resends %d -> %d", resends, resendsNow)
+	}
+	// Read last: a timed-out read poisons this connection for anything after.
+	if readsAFrame(t, appliedClient) {
+		t.Fatal("the hub re-announced a build the machine had already reported running")
+	}
+}
+
+// A machine that reconnects must prove itself on the connection it comes back
+// on, even when the socket it displaced had already finished proving itself.
+//
+// This is the trap: a completed dwell is evidence about a SOCKET, and the
+// machine-keyed bookkeeping outlives the socket. A machine that crash-loops —
+// come up, report, hold for a minute, drop, reconnect — would otherwise be
+// validated on the strength of a connection that is already gone, which is
+// exactly the failure staged rollout exists to catch. The displaced handler
+// has not even exited yet when the new socket registers, so the finished
+// dwell is sitting in memory, fresh, under the same machine and platform.
+func TestALateReconnectMustProveItselfOnTheNewConnection(t *testing.T) {
+	_, s := setupTestServer(t)
+	stagePendingUpdate(t)
+	const machineID = "late-reconnect"
+	const platform = "linux/amd64"
+
+	// A controllable clock. The dwell is a minute of continuous telemetry and
+	// the server builds its controller on time.Now; every durable timestamp
+	// below comes from this too, so the attempt window stays consistent.
+	now := time.Unix(1_700_000_000, 0).UTC()
+	s.rollout.now = func() time.Time { return now }
+	advance := func(d time.Duration) { now = now.Add(d) }
+
+	first, firstClient := eligibleAgent(t, s, machineID, "linux", archAMD64)
+	s.runRolloutPass()
+	if !readsAFrame(t, firstClient) {
+		t.Fatal("control: the machine must be offered the update before it can prove it")
+	}
+	st, err := s.rollout.platformState(platform)
+	if err != nil || st == nil {
+		t.Fatalf("platform state: %v", err)
+	}
+
+	// The report goes through the real path, so the slot records that this
+	// machine ran the candidate exactly as a live one would.
+	report := agentVersionReport{
+		RunningSHA: st.Candidate, OS: "linux", Arch: archAMD64,
+		UpdateProtocol: 1, TransportOK: true, KeyPinned: true,
+	}
+	// Metrics every 30s, inside the allowed gap, spanning the whole dwell.
+	// The dwell is measured BETWEEN frames, so the last must be at least a
+	// dwell after the first.
+	proveOn := func(conn *ConnectedAgent) {
+		t.Helper()
+		s.recordAgentRunningVersionOn(machineID, conn, report)
+		advance(30 * time.Second)
+		s.rollout.observeTelemetry(platform, machineID, conn)
+		for span := time.Duration(0); span < rolloutDwell; span += 30 * time.Second {
+			advance(30 * time.Second)
+			s.rollout.observeTelemetry(platform, machineID, conn)
+		}
+	}
+
+	// The first connection finishes its dwell in full.
+	proveOn(first)
+	if ok, why := s.rollout.dwellSatisfied(platform, machineID, st.Generation, st.Candidate); !ok {
+		t.Fatalf("control: the first connection must have completed its dwell: %s", why)
+	}
+
+	// Then it reconnects before that proof was ever spent. The old handler is
+	// still unwinding, so its finished dwell is in memory and is NOT stale —
+	// nothing but the connection identity separates it from a valid one.
+	second, _ := eligibleAgent(t, s, machineID, "linux", archAMD64)
+	if second == first {
+		t.Fatal("control: the reconnect must be a different connection")
+	}
+	s.rollout.mu.Lock()
+	records := len(s.rollout.evidence[rolloutKey(platform, machineID)])
+	s.rollout.mu.Unlock()
+	if records < 1 {
+		t.Fatal("control: the displaced connection's completed dwell must still be in memory")
+	}
+
+	// The live socket has proven nothing, so nothing is validated.
+	s.runRolloutPass()
+	if state, _, _, _ := slotRow(t, s, machineID); state == rolloutHealthy {
+		t.Fatal("a reconnect was validated on the dwell of the connection it displaced")
+	}
+
+	// The displaced handler finally exits, taking only its own record.
+	s.unregisterAgentConnection(machineID, first)
+
+	// Proving itself on the new socket is what validates it.
+	proveOn(second)
+	s.runRolloutPass()
+	if state, _, ranCandidate, _ := slotRow(t, s, machineID); state != rolloutHealthy || ranCandidate != 1 {
+		t.Fatalf("a machine that proved itself on its new connection was not validated: state %q ran_candidate %d",
+			state, ranCandidate)
 	}
 }

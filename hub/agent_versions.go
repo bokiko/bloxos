@@ -25,8 +25,10 @@ import (
  *   1. Compute and cache the SHA-256 of the agent binary we serve at
  *      /download/agent (recomputed when mtime changes).
  *   2. Track each connected agent's running version (per-machine).
- *   3. Circuit breaker — pauses the rollout after consecutive failed
- *      reconnects so a bad build doesn't take out the whole fleet.
+ *   3. Route announcements through the staged rollout controller, so a bad
+ *      build reaches a canary rather than the whole fleet. There is no
+ *      automatic fleet-wide breaker any more: a failed attempt halts ONE
+ *      platform, durably, until an operator retries.
  *
  * Public surface:
  *   - initAgentVersionTracking()      — start the recompute + reconnect loops
@@ -289,11 +291,11 @@ func (s *Server) announceVersionToAgent(machineID string, agent *ConnectedAgent)
 	}
 
 	// If we already know the agent's running SHA matches what we'd
-	// announce, skip both the message AND the reconnect-expectation
-	// timer. The agent's handleAgentVersion would silently no-op the
-	// announce (matching SHAs), so arming a 90s reconnect timer for a
-	// reconnect that will never come just trips the rollout circuit
-	// breaker on healthy fleets every time the hub restarts.
+	// announce, send nothing. The agent's handleAgentVersion compares SHAs
+	// and returns, so the frame is pure noise — and reserving a slot for it
+	// would spend a stage's capacity on a machine that is already there,
+	// leaving the machines that actually need the build waiting behind an
+	// attempt that can never produce anything to validate.
 	if hadVersion && v.RunningSHA == sha {
 		return
 	}
@@ -427,6 +429,14 @@ func (s *Server) announceVersionToAgent(machineID string, agent *ConnectedAgent)
 		return
 	}
 
+	// announcePostWriteHook lets a test stop a goroutine in the OTHER crash
+	// window: the offer is on the wire, and the record of it is not yet
+	// durable. That window cannot be reached by rewriting a row afterwards —
+	// the whole point is that the process does not survive to write one.
+	if announcePostWriteHook != nil {
+		announcePostWriteHook(machineID)
+	}
+
 	if err := s.rollout.markOffered(reservation); err != nil {
 		log.Printf("rollout: could not mark the offer to %s: %v", machineID, err)
 	}
@@ -467,6 +477,10 @@ func (s *Server) noteRolloutMetrics(machineID string, conn *ConnectedAgent) {
 // announceSendBoundaryHook, when set by a test, runs after a reservation is
 // held and immediately before the pause/generation/ownership recheck.
 var announceSendBoundaryHook func(machineID string)
+
+// announcePostWriteHook, when set by a test, runs after the announcement has
+// been written to the socket and before the offer is recorded.
+var announcePostWriteHook func(machineID string)
 
 // rolloutPlatformKey names a rollout target. Empty arch means the default,
 // matching what an arch-less download serves.
@@ -573,12 +587,11 @@ func announceDecision(report *agentVersionInfo, osName, sha string) (sig string,
 	//
 	// A signature-capable agent computed the answer itself at connect time
 	// from its actual BLOXOS_HUB and reported it. Announcing to one that
-	// says no achieves nothing except arming a reconnect expectation for a
-	// reconnect that never comes — which expires into a rollout failure and,
-	// at two machines, pauses the whole fleet, with rolloutPauseReason
+	// says no achieves nothing: it will decline the download, so the slot
+	// runs out its attempt window and FAILS — halting the platform and
 	// blaming agent health for a refusal the hub provoked. The rule is
-	// already stated twenty lines up for the matching-SHA case: never arm
-	// the timer for an update you can predict won't produce a reconnect.
+	// already stated twenty lines up for the matching-SHA case: never spend
+	// an attempt on an update you can predict will not be taken.
 	//
 	// A pre-signature agent has no transport gate and cannot verify what we
 	// send it either, so the reason there is security rather than futility:
@@ -596,8 +609,10 @@ func announceDecision(report *agentVersionInfo, osName, sha string) (sig string,
 		// has ever pinned a key — so on every fleet that existed before this
 		// gate, this is the *default* state immediately after the hub picks
 		// up a signature-capable build, not an edge case. Announcing to it
-		// anyway arms the same 90s reconnect expectation for the same
-		// reconnect that will never come. agent_key_not_pinned is a
+		// anyway spends a stage's capacity on a download it will decline. It
+		// is WITHHELD instead — visible, with a reason, re-evaluated the
+		// moment it becomes eligible, and never a halt.
+		// agent_key_not_pinned is a
 		// distinct reason (not folded into the plaintext-transport message
 		// above) so an operator watching the rollout can tell "waiting on
 		// an installer re-run" apart from "agent is unhealthy" — the two
@@ -613,9 +628,9 @@ func announceDecision(report *agentVersionInfo, osName, sha string) (sig string,
 
 	// The agent refuses any announcement it cannot authenticate against the
 	// key its installer pinned. If we cannot produce a signature there is no
-	// update to be had — announcing anyway would only arm the 90s
-	// reconnect-expectation timer for a reconnect that never comes, and trip
-	// the rollout circuit breaker on a healthy fleet.
+	// update to be had — announcing anyway would spend a stage's capacity on
+	// an attempt that can only expire, and halt the platform over a hub-side
+	// signing problem that says nothing about the build or the fleet.
 	sig = announcedSignatureForArch(osName, arch, sha)
 	if sig == "" {
 		if enabled, reason := updateSigningStatus(); !enabled {
@@ -847,11 +862,12 @@ func (s *Server) recordAgentRunningVersionOn(machineID string, conn *ConnectedAg
 	// was suppressed because OS was unknown at WS-upgrade time. Trigger
 	// one now — but only when there's an actual pending update. Announcing
 	// to an already-up-to-date agent makes it silently no-op (the agent's
-	// handleAgentVersion compares SHAs and returns when they match), but
-	// announceVersionToAgent unconditionally arms a 90s reconnect-expectation
-	// timer that then fires a false-positive "rollout failure" log and
-	// counts toward the circuit breaker. Skip the announce when the agent
-	// is already on the announced SHA.
+	// handleAgentVersion compares SHAs and returns when they match), while
+	// the announce path would reserve a rollout slot for it — spending a
+	// stage's capacity on a machine that is already on the build, and
+	// leaving the machines that need it waiting behind an attempt with
+	// nothing to validate. Skip the announce when the agent is already on
+	// the announced SHA.
 	//
 	// The capability, transport, and key-pinned fields are part of the same
 	// story: at WS-upgrade time this frame had not arrived, so

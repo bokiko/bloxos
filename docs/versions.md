@@ -50,9 +50,67 @@ stops new update announcements fleet-wide; it cannot cancel an update already
 announced or in progress. Failed pause/resume writes return an error instead of
 claiming success, and unreadable saved state withholds announcements.
 
-The automatic circuit breaker can also pause after repeated rollout failures;
-it is separate from the saved operator pause. v1.2.0 and earlier do not enforce
-the durable pause, including after a downgrade. See
-[update recovery](agent-update-recovery.md) for the failure/rollback paths and
-[offline update signing](offline-update-signing.md) for detached-signature
-operation.
+v1.2.0 and earlier do not enforce the durable pause, including after a
+downgrade. See [update recovery](agent-update-recovery.md) for the
+failure/rollback paths and [offline update signing](offline-update-signing.md)
+for detached-signature operation.
+
+## Automatic staged rollout
+
+When the hub begins serving a new agent binary, it rolls the fleet forward on
+its own, per platform (`linux/amd64`, `linux/arm64`, `windows/amd64`). Each
+platform progresses independently: one platform halting does not stop another.
+
+**Stages.** One machine first — the canary. Only after it validates does the
+next stage open, at two machines at a time. A stage advances only when nothing
+is still outstanding in it *and* at least one machine in it actually validated,
+so a stage in which every candidate was held back cannot advance on having
+proven nothing.
+
+**What validation means.** A machine is validated when it reports running the
+new build and then keeps sending telemetry on that same connection,
+continuously, for 60 seconds — no gap longer than 45 seconds, and the dwell is
+measured between telemetry frames rather than against the clock, so silence
+cannot complete it. Reconnecting restarts it: the proof belongs to a
+connection, not to a machine.
+
+This is a **liveness** check and nothing more. It says the new agent starts,
+stays up, and keeps reporting. It does **not** prove any particular feature
+still works. Verify behaviour you care about yourself.
+
+**Pause versus halt.** These are different and the Versions page names them
+separately:
+
+| | Operator pause | Platform halt |
+|---|---|---|
+| Set by | a person, via **Pause rollout** | the hub, when an attempt fails |
+| Scope | the whole fleet | one platform |
+| Survives restart | yes | yes |
+| Cleared by | **Resume** | **Retry halted rollouts** (the same action) |
+
+A halt does **not** set the operator pause. A halted platform with the pause
+off is not "paused" — it is stopped and waiting for a person.
+
+**Retrying.** One action covers both: it clears the operator pause and gives
+every halted platform a fresh attempt, in one transaction — all of it or none.
+It is fleet-wide; there is no per-platform retry. A failed attempt is otherwise
+terminal, so nothing moves until you use it.
+
+**Machines that were offline.** A machine that was not connected during a
+stage is not skipped. It has no slot, is not counted, and is picked up by a
+later pass on capacity alone — no reconnect, version change, or operator action
+needed. This is also why the counts on the Versions page describe the machines
+this rollout reserved a slot for, not the fleet: a machine already on the build
+never needed one.
+
+**Which build the counts describe.** Each platform row names the candidate SHA
+it is tracking. That is not always what the hub serves right now — a new
+candidate is only picked up when the rollout next reserves a slot, so while the
+pause is on the hub can serve one build while the rollout still describes the
+previous one. Compare the row's build against **Served binaries** before
+reading the counts.
+
+**A hub update is not a fleet update.** `bloxos-update` finishing successfully
+means the server is on the new release. The agents are not: they roll out
+afterwards, over stages, and a halted or paused platform may never get there.
+The Versions page is where that is answered.

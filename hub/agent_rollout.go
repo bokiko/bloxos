@@ -301,6 +301,16 @@ type rolloutReservation struct {
 	Resend bool
 }
 
+// rolloutUnconfirmedReason is what an expired RESERVED slot is told to say.
+//
+// Not "never accepted the update offer". Reserved is the explicitly AMBIGUOUS
+// state: the socket write may have landed and the process died before the
+// record of it, so the hub does not know whether the machine ever saw the
+// offer. Blaming the machine for refusing something it may have received —
+// and may be running — is a claim the hub cannot support, and it is the first
+// thing an operator reads when a platform halts.
+const rolloutUnconfirmedReason = "update was not confirmed within the attempt window"
+
 // reserve takes one slot for a machine, or reports why it did not.
 //
 // The capacity check, the stage read and the insert are ONE transaction, and
@@ -376,7 +386,7 @@ func (c *rolloutController) reserve(platform, machineID, candidate string, relea
 			// Expiry first: resending into an attempt that has already run
 			// out of time would restart the clock by the back door.
 			if now.UnixMilli() > deadline {
-				if err := c.failSlotTx(tx, st, machineID, "never accepted the update offer"); err != nil {
+				if err := c.failSlotTx(tx, st, machineID, rolloutUnconfirmedReason); err != nil {
 					return nil, "", err
 				}
 				return stop("attempt window expired")
@@ -823,7 +833,7 @@ func (c *rolloutController) tick(platform string) error {
 		if now.UnixMilli() > l.deadline {
 			reason := "did not prove a healthy connection within the attempt window"
 			if l.state == rolloutReserved {
-				reason = "never accepted the update offer"
+				reason = rolloutUnconfirmedReason
 			}
 			tx, err := c.db.Begin()
 			if err != nil {
@@ -915,13 +925,31 @@ type rolloutStatus struct {
 	// counted as updated the moment it failed — leaving "0 updated, 1 failed"
 	// for a machine demonstrably on the new build.
 	//
-	// It is a count for THIS generation's slots only. Machines that were
-	// already current, and so never needed one, are not represented here at
-	// all; MachinesTotal on the fleet endpoints is the denominator, not this.
+	// It is HISTORICAL and scoped to THIS generation's slots: ran_candidate is
+	// a latch, so a machine counted here may since have been rolled back,
+	// disconnected, or failed. It says "observed on this build in this
+	// rollout", never "is on this build now". Machines that were already
+	// current, and so never needed a slot, are not represented here at all;
+	// MachinesTotal on the fleet endpoints is the denominator, not this.
 	Updated int `json:"updated"`
 	// Validated is the subset that has completed its dwell.
 	Validated int `json:"validated"`
-	// Pending is reserved or offered: not yet known to be running it.
+	// Validating is running the candidate with its dwell still accruing.
+	//
+	// It has to be reported separately, because it is neither pending nor
+	// validated: without it a canary mid-dwell left every count at zero and
+	// the summary read "waiting for an eligible machine" while a machine was
+	// in fact actively proving the build.
+	Validating int `json:"validating"`
+	// Pending is reserved or offered: an attempt exists and has not resolved.
+	//
+	// It is shown as "pending attempts", not "offered" and not "pending
+	// offers". A reservation is taken before the write to the socket, so it
+	// includes attempts never sent — and resume can open a fresh validation
+	// attempt for a machine ALREADY running the candidate, which correctly
+	// receives no announcement at all. Either word would assert a send, or a
+	// rejection, that the hub cannot know about. The JSON field name stays
+	// `pending` for compatibility; only the wording changed.
 	Pending int `json:"pending"`
 	// Withheld machines are ineligible, with reasons. Not failures.
 	Withheld       int               `json:"withheld"`
@@ -959,6 +987,7 @@ func (c *rolloutController) status(platform string) (*rolloutStatus, error) {
 			out.Validated++
 		case rolloutObserved:
 			// Running the candidate, dwell still accruing.
+			out.Validating++
 		case rolloutReserved, rolloutOffered:
 			out.Pending++
 		case rolloutWithheld:
@@ -981,8 +1010,12 @@ func rolloutSummary(st *rolloutStatus) string {
 	switch {
 	case st.Status == rolloutHalted:
 		return "halted — needs an operator: " + st.HaltReason
-	case st.Pending > 0:
-		return fmt.Sprintf("updating: %d in flight, %d validated", st.Pending, st.Validated)
+	case st.Pending > 0 || st.Validating > 0:
+		// Validating machines are in flight too. Omitting them read as
+		// "waiting for an eligible machine" for the whole of a canary dwell,
+		// which is the one window where the rollout is most busy.
+		return fmt.Sprintf("updating: %d pending attempts, %d validating, %d validated",
+			st.Pending, st.Validating, st.Validated)
 	case st.Validated == 0 && st.Withheld > 0:
 		return fmt.Sprintf("waiting for an eligible machine: %d withheld", st.Withheld)
 	case st.Validated == 0:
@@ -990,9 +1023,12 @@ func rolloutSummary(st *rolloutStatus) string {
 	case st.Failed > 0:
 		return fmt.Sprintf("%d validated, %d failed", st.Validated, st.Failed)
 	default:
-		// Only about machines currently connected: an offline one is not
-		// evidence of anything, which is why this is never written down.
-		return fmt.Sprintf("caught up among eligible connected machines: %d validated", st.Validated)
+		// This counts SLOTS, and slots exist only for machines this
+		// generation reserved one for. A machine that never connected, or was
+		// already current, has no slot at all — so this cannot say the
+		// connected fleet is caught up, and it must not try. It says only
+		// that nothing tracked is still outstanding.
+		return fmt.Sprintf("no outstanding tracked attempts: %d validated", st.Validated)
 	}
 }
 

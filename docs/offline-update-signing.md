@@ -37,8 +37,9 @@ the hub. The private Ed25519 key stays on the offline build host.
   On hubs with the durable operator-pause fix, a manual pause is saved in
   `hub_settings` and survives both served-SHA changes and hub restarts. Only
   an explicit Resume clears it. A database error must not be mistaken for a
-  successful pause/resume. The automatic failure breaker is separate and may
-  reset when a served binary changes.
+  successful pause/resume. A platform halt is separate from the operator pause
+  and is cleared by the same Resume/retry action; see
+  [versions](versions.md#automatic-staged-rollout).
 - **v1.2.0 and earlier do not have durable pause.** Upgrade the hub first, or
   keep the hub stopped and agent connectivity controlled during activation.
   Never rely on racing to re-pause after replacing an artifact.
