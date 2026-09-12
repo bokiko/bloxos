@@ -59,7 +59,7 @@ import {
   currentReading,
   currentDomainOf,
   domainOf,
-  domainSeries,
+  combinedSeries,
   resolveDomainChoice,
   availableDomains,
   POWER_DOMAINS,
@@ -293,9 +293,11 @@ export function FleetPowerPane({ period, onPeriodChange }: FleetPowerPaneProps) 
     writeStoredDomain(next);
   };
 
+  // Series come from BOTH sources: a capped or empty history must not hide a
+  // domain that is reporting right now.
   const series = useMemo(
-    () => (domainSeries(data, selected) as Series[]) ?? [],
-    [data, selected],
+    () => (combinedSeries(data, state.current, selected) as Series[]) ?? [],
+    [data, state.current, selected],
   );
   const rows = useMemo(() => fleetPowerChartRows(data, series), [data, series]);
   const warnings = useMemo(() => (fleetPowerWarnings(data) as string[]) ?? [], [data]);

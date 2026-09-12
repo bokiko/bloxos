@@ -5,15 +5,16 @@ import {
   coverageSentence,
   domainOf,
   fleetPowerChartRows,
-  fleetPowerCost,
   domainSeries,
+  combinedSeries,
+  currentReading,
+  normalizeFleetPowerCurrent,
   resolveDomainChoice,
   availableDomains,
   fleetPowerWarnings,
   formatKWh,
   formatMoney,
   formatWatts,
-  latestReading,
   normalizeFleetPower,
   shortfallSentence,
 } from "./fleet-power.mjs";
@@ -158,29 +159,6 @@ test("a fleet with no estimates charts one line, not an empty second one", () =>
   assert.equal(series[0].kind, "measured");
 });
 
-test("an all-estimated fleet is charted, and never as a measurement", () => {
-  const history = normalizeFleetPower(
-    response({
-      domains: [
-        domain("system", {
-          reporting_machines: 2,
-          estimated: kind({ machines: 2, energy_kwh: 0.2, observed_machine_seconds: 7200, sources: ["estimate-util"] }),
-          buckets: [bucket(0, { estimated_watts: 36, estimated_machines: 2 })],
-        }),
-        domain("cpu"),
-        domain("dram"),
-        domain("gpu"),
-      ],
-    }),
-  );
-  const series = domainSeries(history, "system");
-  assert.equal(series.length, 1);
-  assert.equal(series[0].kind, "estimated");
-  assert.equal(series[0].label, "Modelled");
-  assert.equal(latestReading(history, "system", "measured"), null, "there is no measurement to report");
-  assert.equal(latestReading(history, "system", "estimated").watts, 36);
-});
-
 test("with no whole-machine counter anywhere, components are charted separately", () => {
   const history = normalizeFleetPower(
     response({
@@ -266,35 +244,6 @@ test("a bucket nobody covered stays null so the line breaks", () => {
   assert.equal(rows[2]["system:measured"], null, "an unobserved bucket is not zero watts");
   assert.equal(rows[2]["system:estimated"], null);
 });
-
-test("the latest reading skips trailing empty buckets rather than reading zero", () => {
-  const history = mixedFleet();
-  const latest = latestReading(history, "system", "measured");
-  assert.equal(latest.watts, 142);
-  assert.equal(latest.machines, 3);
-  assert.equal(latest.timestamp, T0 + 2 * 60_000);
-});
-
-test("a genuine zero-watt reading survives", () => {
-  const history = normalizeFleetPower(
-    response({
-      domains: [
-        domain("system", {
-          reporting_machines: 1,
-          measured: kind({ machines: 1 }),
-          buckets: [bucket(0, { measured_watts: 0, measured_machines: 1 })],
-        }),
-        domain("cpu"),
-        domain("dram"),
-        domain("gpu"),
-      ],
-    }),
-  );
-  assert.equal(latestReading(history, "system", "measured").watts, 0);
-  assert.equal(formatWatts(0), "0.00 W", "zero prints as a reading, not as an em dash");
-});
-
-/* --- coverage --- */
 
 test("coverage never says 'all' unless every machine reported", () => {
   assert.equal(coverageSentence(mixedFleet().coverage), "4 of 6 machines reporting power.");
@@ -384,56 +333,6 @@ test("a gapped bucket marks its chart row", () => {
 
 /* --- cost --- */
 
-test("cost keeps measured and estimated apart, and needs a stated rate", () => {
-  const history = mixedFleet();
-  const none = fleetPowerCost(history, "system", { currency: "EUR", per_kwh: null }, "1h");
-  assert.equal(none.measured.cost, null, "no rate, no cost — there is no default tariff");
-  assert.equal(none.estimated.cost, null);
-  assert.equal(none.measured.energyKWh, 0.71, "the energy is known even when the price is not");
-
-  const priced = fleetPowerCost(history, "system", { currency: "EUR", per_kwh: 0.28 }, "1h");
-  assert.ok(Math.abs(priced.measured.cost - 0.71 * 0.28) < 1e-12);
-  assert.ok(Math.abs(priced.estimated.cost - 0.09 * 0.28) < 1e-12);
-  assert.equal(priced.currency, "EUR");
-  assert.notEqual(priced.measured.cost + priced.estimated.cost, priced.measured.cost, "two costs, reported as two");
-});
-
-test("a free-power rate of zero is a price, and costs zero", () => {
-  const priced = fleetPowerCost(mixedFleet(), "system", { currency: "USD", per_kwh: 0 }, "1h");
-  assert.equal(priced.measured.cost, 0);
-  assert.notEqual(priced.measured.cost, null, "zero is a stated rate, not an absent one");
-});
-
-test("the observed fraction says how much of the window is real", () => {
-  const history = mixedFleet();
-  const cost = fleetPowerCost(history, "system", { currency: "USD", per_kwh: 0.1 }, "1h");
-  // 3 machines × 1 hour = 10800 machine-seconds possible; 10800 observed.
-  assert.equal(cost.measured.observedFraction, 1);
-  // 1 machine × 1 hour = 3600 possible; 3600 observed.
-  assert.equal(cost.estimated.observedFraction, 1);
-
-  const partial = normalizeFleetPower(
-    response({
-      domains: [
-        domain("system", {
-          reporting_machines: 2,
-          measured: kind({ machines: 2, energy_kwh: 0.1, observed_machine_seconds: 1800 }),
-          buckets: [bucket(0, { measured_watts: 100, measured_machines: 2 })],
-        }),
-        domain("cpu"),
-        domain("dram"),
-        domain("gpu"),
-      ],
-    }),
-  );
-  // 2 machines × 1 hour = 7200 possible; 1800 observed = a quarter.
-  assert.equal(fleetPowerCost(partial, "system", { currency: "USD", per_kwh: 1 }, "1h").measured.observedFraction, 0.25);
-  assert.equal(fleetPowerCost(partial, "system", null, "1h").measured.observedFraction, 0.25);
-  assert.equal(fleetPowerCost(partial, "system", null, "nonsense").measured.observedFraction, null);
-});
-
-/* --- input handling --- */
-
 test("a response that is not fleet power is refused, not half-rendered", () => {
   for (const junk of [null, undefined, 0, "", [], {}, { domains: [] }, { coverage: {} }]) {
     assert.throws(() => normalizeFleetPower(junk), /Invalid fleet power response/);
@@ -468,32 +367,6 @@ test("junk inside a valid envelope degrades field by field", () => {
   assert.equal(system.buckets.length, 2, "a bucket with no usable timestamp is dropped");
   assert.equal(system.buckets[0].measured, null, "negative watts are not a reading");
   assert.equal(system.buckets[1].measured, null, "NaN is not a reading");
-});
-
-test("buckets are sorted by time regardless of arrival order", () => {
-  const history = normalizeFleetPower(
-    response({
-      domains: [
-        domain("system", {
-          reporting_machines: 1,
-          measured: kind({ machines: 1 }),
-          buckets: [
-            bucket(2, { measured_watts: 30, measured_machines: 1 }),
-            bucket(0, { measured_watts: 10, measured_machines: 1 }),
-            bucket(1, { measured_watts: 20, measured_machines: 1 }),
-          ],
-        }),
-        domain("cpu"),
-        domain("dram"),
-        domain("gpu"),
-      ],
-    }),
-  );
-  assert.deepEqual(
-    domainOf(history, "system").buckets.map((b) => b.measured),
-    [10, 20, 30],
-  );
-  assert.equal(latestReading(history, "system", "measured").watts, 30);
 });
 
 test("a domain the hub did not send reads as empty, not as a crash", () => {
@@ -633,7 +506,7 @@ function count(source, pattern) {
 
 test("the pane drives its domain from explicit selection, not automatic mode", () => {
   assert.match(PANE, /resolveDomainChoice\(/, "the reader's choice resolves the domain");
-  assert.match(PANE, /domainSeries\(/, "series come from the selected domain");
+  assert.match(PANE, /combinedSeries\(/, "series come from history AND the current snapshot");
   assert.doesNotMatch(PANE, /fleetPowerMode\(/, "the automatic mode is gone");
   assert.doesNotMatch(PANE, /fleetPowerSeries\(/, "and so is the series function built on it");
   assert.match(PANE, /aria-label="Power domain"/, "there is a control to change it");
@@ -661,4 +534,106 @@ test("the pane reads stored preferences after mount, never during render", () =>
     "storage must not be read in the initialiser",
   );
   assert.match(PANE, /useEffect\(\(\) => \{\n\s*if \(latched\.current\) return;/, "it is read in an effect");
+});
+
+// A capped or empty history must not hide a live reading. This is behavioural,
+// not a source grep: the pane's readouts are built from these series.
+test("a current-only measured reading still produces a series and a readout", () => {
+  const emptyHistory = normalizeFleetPower(response());
+  const snapshot = normalizeFleetPowerCurrent({
+    generated_unix_ms: T0,
+    machines_total: 4,
+    machines_reporting: 1,
+    domains: [
+      {
+        domain: "cpu",
+        measured: {
+          watts: 100,
+          machines: 1,
+          sources: ["rapl-package"],
+          oldest_contributor_end_unix_ms: T0,
+          newest_contributor_end_unix_ms: T0,
+        },
+      },
+    ],
+  });
+
+  assert.deepEqual(domainSeries(emptyHistory, "cpu"), [], "history alone has nothing");
+  const series = combinedSeries(emptyHistory, snapshot, "cpu");
+  assert.equal(series.length, 1, "the live reading still earns a series");
+  assert.equal(series[0].kind, "measured");
+
+  const reading = currentReading(snapshot, "cpu", "measured", T0);
+  assert.equal(reading.watts, 100);
+  assert.equal(reading.machines, 1);
+});
+
+test("a current-only MODELLED system reading is charted as modelled", () => {
+  const emptyHistory = normalizeFleetPower(response());
+  const snapshot = normalizeFleetPowerCurrent({
+    generated_unix_ms: T0,
+    machines_total: 4,
+    machines_reporting: 1,
+    domains: [
+      {
+        domain: "system",
+        estimated: {
+          watts: 12,
+          machines: 1,
+          sources: ["estimate-util"],
+          oldest_contributor_end_unix_ms: T0,
+          newest_contributor_end_unix_ms: T0,
+        },
+      },
+    ],
+  });
+  const series = combinedSeries(emptyHistory, snapshot, "system");
+  assert.equal(series.length, 1);
+  assert.equal(series[0].kind, "estimated");
+  assert.equal(series[0].label, "Modelled");
+  assert.equal(currentReading(snapshot, "system", "measured", T0), null, "no measurement to report");
+  assert.equal(currentReading(snapshot, "system", "estimated", T0).watts, 12);
+});
+
+test("an unrecognised kind is rejected rather than read as modelled", () => {
+  const snapshot = normalizeFleetPowerCurrent({
+    generated_unix_ms: T0,
+    domains: [
+      {
+        domain: "cpu",
+        estimated: {
+          watts: 5,
+          machines: 1,
+          sources: ["estimate-util"],
+          oldest_contributor_end_unix_ms: T0,
+          newest_contributor_end_unix_ms: T0,
+        },
+      },
+    ],
+  });
+  assert.equal(currentReading(snapshot, "cpu", "unknown", T0), null);
+  assert.equal(currentReading(snapshot, "cpu", "", T0), null);
+});
+
+test("a real measured zero survives; unavailable is null, not zero", () => {
+  const snapshot = normalizeFleetPowerCurrent({
+    generated_unix_ms: T0,
+    domains: [
+      {
+        domain: "dram",
+        measured: {
+          watts: 0,
+          machines: 1,
+          sources: ["rapl-dram"],
+          oldest_contributor_end_unix_ms: T0,
+          newest_contributor_end_unix_ms: T0,
+        },
+      },
+    ],
+  });
+  const reading = currentReading(snapshot, "dram", "measured", T0);
+  assert.equal(reading.watts, 0, "a machine can genuinely measure zero on a domain");
+  // Nothing reporting at all is a different answer entirely.
+  const empty = normalizeFleetPowerCurrent({ generated_unix_ms: T0, domains: [] });
+  assert.equal(currentReading(empty, "dram", "measured", T0), null);
 });

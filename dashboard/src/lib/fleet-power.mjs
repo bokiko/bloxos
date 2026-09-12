@@ -344,6 +344,32 @@ export function domainSeries(history, domain) {
 }
 
 /**
+ * The series to render for a domain, from BOTH the history and the current
+ * snapshot.
+ *
+ * Deriving them from history alone loses live data. The history request is
+ * capped (the oldest rows are dropped first) and a machine that only just
+ * started reporting has almost none — so a fleet could be drawing 100 W on CPU
+ * right now, offer a CPU button, and render no readout at all behind it.
+ *
+ * A kind appears if EITHER source has it. The chart simply draws null rows for
+ * a kind with no history yet, which is the honest picture: a current value and
+ * no past to plot.
+ */
+export function combinedSeries(history, snapshot, domain) {
+  const h = domainOf(history, domain);
+  const c = currentDomainOf(snapshot, domain);
+  const series = [];
+  if (h.measured.machines > 0 || c.measured.machines > 0) {
+    series.push({ key: `${domain}:measured`, domain, kind: "measured", label: "Measured" });
+  }
+  if (h.estimated.machines > 0 || c.estimated.machines > 0) {
+    series.push({ key: `${domain}:estimated`, domain, kind: "estimated", label: "Modelled" });
+  }
+  return series;
+}
+
+/**
  * Resolve which domain to show.
  *
  * An EXPLICIT stored choice always wins, even when that domain currently has no
@@ -391,47 +417,6 @@ export function fleetPowerChartRows(history, series) {
  * simply because the current bucket has not closed.
  */
 /**
- * The most recent reading for one domain and kind, WITH its freshness.
- *
- * This used to walk back through the whole window and return the last non-null
- * bucket with no age attached, so a fleet that went dark at 02:00 still
- * headlined "142 W measured" at noon. Worse, the value it found depended on the
- * selected chart period: widening the history changed what "current" meant.
- *
- * Two things fix that, and callers must respect both:
- *
- *   - Age comes from `latestObservationEndMS`, the newest AGENT window end
- *     behind this domain, NOT from the bucket's timestamp. A bucket edge is an
- *     axis coordinate and the last one can sit in the future.
- *   - `freshness.state` decides whether the number may be presented as current.
- *     Anything but `fresh` must be shown with its age, or withheld.
- *
- * DEPRECATED for current readings. Its value still comes from the CHARTED
- * buckets, so it varies with the selected period; only the freshness attached
- * to it is honest. Current readouts must use currentReading() against the
- * snapshot endpoint instead.
- */
-export function latestReading(history, domain, kind, nowMS = Date.now()) {
-  const d = domainOf(history, domain);
-  const buckets = d.buckets;
-  const kindStats = kind === "measured" ? d.measured : d.estimated;
-
-  for (let i = buckets.length - 1; i >= 0; i -= 1) {
-    const value = kind === "measured" ? buckets[i].measured : buckets[i].estimated;
-    if (value === null) continue;
-    return {
-      watts: value,
-      machines: kind === "measured" ? buckets[i].measuredMachines : buckets[i].estimatedMachines,
-      // Retained for the axis only. Never age this.
-      timestamp: buckets[i].timestamp,
-      observedEndMS: kindStats.latestObservationEndMS,
-      freshness: freshnessOf(kindStats.latestObservationEndMS, nowMS),
-    };
-  }
-  return null;
-}
-
-/**
  * WITHHELD IN THIS RELEASE. Energy and cost are not presented at all.
  *
  * They used to be shown as "At least X kWh / $Y", i.e. a guaranteed lower
@@ -464,39 +449,6 @@ export function fleetPowerEnergyAvailability() {
     reason:
       "Energy and cost accounting is unavailable: sampled power cannot be " +
       "extrapolated into measured energy without per-observation durations.",
-  };
-}
-
-/**
- * Deprecated. See fleetPowerEnergyAvailability. Retained for callers that have
- * not yet been updated; its figures must not be displayed.
- */
-export function fleetPowerCost(history, domain, rate, period) {
-  const d = domainOf(history, domain);
-  const perKwh = rate && isFiniteNumber(rate.per_kwh) && rate.per_kwh >= 0 ? rate.per_kwh : null;
-  const hours = Object.hasOwn(PERIOD_HOURS, period) ? PERIOD_HOURS[period] : null;
-
-  const observedFraction = (kind) => {
-    if (!hours || kind.machines === 0) return null;
-    const possible = kind.machines * hours * 3600;
-    return possible > 0 ? Math.min(1, kind.observedMachineSeconds / possible) : null;
-  };
-
-  return {
-    currency: rate?.currency ?? "USD",
-    perKwh,
-    measured: {
-      energyKWh: d.measured.energyKWh,
-      cost: perKwh === null ? null : d.measured.energyKWh * perKwh,
-      machines: d.measured.machines,
-      observedFraction: observedFraction(d.measured),
-    },
-    estimated: {
-      energyKWh: d.estimated.energyKWh,
-      cost: perKwh === null ? null : d.estimated.energyKWh * perKwh,
-      machines: d.estimated.machines,
-      observedFraction: observedFraction(d.estimated),
-    },
   };
 }
 
