@@ -94,7 +94,7 @@ func (r agentBinaryResolver) env(name string) string {
 // managedWins reports whether the managed bundle outranks the project's own
 // shipped default for this platform.
 //
-// THE EXCEPTION, stated precisely. scripts/systemd/bloxos-hub.service ships
+// The exception. scripts/systemd/bloxos-hub.service ships
 // BLOXOS_AGENT_BINARY=/usr/local/lib/bloxos/linux/bloxos-agent. That value is
 // the PROJECT'S OWN DEFAULT, not an operator's choice — but the resolver cannot
 // tell the two apart by inspection, and as the authoritative first candidate it
@@ -120,7 +120,7 @@ func (r agentBinaryResolver) managedWins(platform agentPlatform) (string, bool) 
 	if value == "" {
 		return path, true // no override at all
 	}
-	// EXACT string comparison, deliberately. filepath.Clean would also exempt
+	// Exact string comparison, deliberately. filepath.Clean would also exempt
 	// an operator path that merely normalises to the default — something like
 	// /usr/local/lib/bloxos/linux/../linux/bloxos-agent — and that is somebody's
 	// deliberate configuration, not the project's shipped line. Only the literal
@@ -167,7 +167,7 @@ func productionAgentBinaryResolver() agentBinaryResolver {
 
 // checkManagedAgentBundle is the STARTUP gate for a packaged hub.
 //
-// It runs before anything is announced, and it fails closed. A packaged build
+// Runs before anything is announced, and fails closed. A packaged build
 // that declares a required bundle but cannot produce a valid one must not start
 // serving: if it did, it would fall through to the frozen system defaults and
 // report perfect health while handing out whatever binaries happened to be
@@ -371,11 +371,12 @@ func (r agentBinaryResolver) candidatesFor(platform agentPlatform) ([]agentBinar
 		}, nil
 	}
 
-	// A non-default arch has no dedicated override variable, so an operator
-	// points a native source build at the generic BLOXOS_AGENT_BINARY. That is a
-	// real custom choice and must keep outranking the managed bundle. It stays
-	// non-authoritative and ELF-gated, so a wrong-architecture path simply falls
-	// through to the bundle rather than failing the platform closed.
+	// An operator may point a native source build at the generic
+	// BLOXOS_AGENT_BINARY even though BLOXOS_AGENT_BINARY_ARM64 exists. That is
+	// a real custom choice and keeps outranking the bundle, but only when no
+	// explicit per-arch override is set — that one is handled below and wins
+	// outright. Non-authoritative and ELF-gated, so a wrong-architecture path
+	// falls through rather than failing the platform closed.
 	var preManaged []agentBinaryCandidate
 	if platform.Arch != defaultAgentArch {
 		if v := strings.TrimSpace(r.env("BLOXOS_AGENT_BINARY")); v != "" && v != linuxAgentBinaryDefault {
@@ -453,6 +454,15 @@ func (r agentBinaryResolver) resolve(osName, arch string) (agentBinaryResolution
 		path, err := r.validate(candidate.Path)
 		if err == nil && r.archMatch != nil && platform.OS == "linux" {
 			err = r.archMatch(path, platform.Arch)
+		}
+		if err == nil && candidate.Source == "managed-bundle" {
+			// Resolution is captured once at init, so re-bind the payload to the
+			// catalog here rather than trusting whatever is on disk now.
+			err = r.bundle.verifyPayloadIdentity(platform, path)
+			if err != nil {
+				return agentBinaryResolution{Path: path, Source: candidate.Source},
+					fmt.Errorf("managed agent bundle no longer matches its catalog: %w", err)
+			}
 		}
 		if err == nil {
 			return agentBinaryResolution{

@@ -286,3 +286,44 @@ func TestUnknownDeliveryModeFailsClosed(t *testing.T) {
 		t.Fatalf("empty mode = %q, %v; want auto", mode, err)
 	}
 }
+
+// An explicit per-arch override wins outright, even alongside a generic one.
+func TestExplicitArm64OverrideBeatsBothGenericAndBundle(t *testing.T) {
+	root := fullFixture(t)
+	r := resolverWithBundle(t, root, map[string]string{
+		"BLOXOS_AGENT_BINARY":       "/opt/generic/bloxos-agent",
+		"BLOXOS_AGENT_BINARY_ARM64": "/opt/explicit/bloxos-agent",
+	}, agentDeliveryAuto)
+
+	got := firstCandidate(t, r, agentPlatform{OS: "linux", Arch: archARM64})
+	if got.Source != "environment:BLOXOS_AGENT_BINARY_ARM64" {
+		t.Fatalf("source = %q, want the explicit per-arch override first", got.Source)
+	}
+	if got.Env == "" {
+		t.Fatal("an explicit per-arch override must stay authoritative")
+	}
+	cands, _ := r.candidatesFor(agentPlatform{OS: "linux", Arch: archARM64})
+	if len(cands) != 1 {
+		t.Fatalf("explicit override must be the only candidate, got %d", len(cands))
+	}
+}
+
+// Resolution is captured once at init, so a payload swapped afterwards must be
+// rejected against the catalog rather than served on its recomputed hash.
+func TestAlteredManagedPayloadIsRejectedAtResolution(t *testing.T) {
+	root := fullFixture(t)
+	r := resolverWithBundle(t, root, map[string]string{}, agentDeliveryAuto)
+	r.archMatch = nil
+
+	if _, err := r.resolve("linux", archAMD64); err != nil {
+		t.Fatalf("baseline resolve failed: %v", err)
+	}
+
+	payload := filepath.Join(root, agentBundleDirName, "bloxos-agent-linux-amd64")
+	if err := os.WriteFile(payload, []byte("swapped-after-load"), 0o755); err != nil {
+		t.Fatalf("swap: %v", err)
+	}
+	if _, err := r.resolve("linux", archAMD64); err == nil {
+		t.Fatal("a payload altered after load must not be served")
+	}
+}

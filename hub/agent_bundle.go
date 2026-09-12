@@ -11,10 +11,10 @@ import (
 	"strings"
 )
 
-// The MANAGED AGENT BUNDLE: agent payloads that travel with the hub release, so
+// Managed agent bundle: agent payloads that travel with the hub release, so
 // upgrading the hub upgrades what the fleet is offered.
 //
-// WHY THIS EXISTS. Agent binaries were served from fixed system paths that
+// Agent binaries were served from fixed system paths that
 // nothing in the release ever refreshed. `bloxos-update` replaces the hub and
 // the dashboard and deliberately does not touch agent files, so a hub could run
 // v1.7.1 while handing out agents built weeks earlier. Every machine then
@@ -22,7 +22,7 @@ import (
 // offered. The offer was simply stale, and that single fact accounted for
 // missing power on ARM boards, absent source labels, and wrong CPU inventory.
 //
-// WHY PLACEMENT ALONE WOULD NOT HAVE FIXED IT. The resolver already had a
+// Placement alone is not enough: the resolver already had a
 // `hub-executable-directory` candidate — and it sits LAST, behind the system
 // defaults. Worse, the project's own systemd unit sets BLOXOS_AGENT_BINARY,
 // which for amd64 is the authoritative, fail-closed first candidate. Dropping
@@ -30,7 +30,7 @@ import (
 // native install: a fix that looks right and is inert. The precedence contract
 // below is the actual mechanism; the packaging is only its transport.
 //
-// WHAT IS DELIBERATELY NOT HERE. No new manifest schema for the updater to
+// Deliberately absent: no new manifest schema for the updater to
 // understand, no updater install logic, no self-refresh. The existing archive
 // checksum, safe extraction and copy already carry arbitrary files; the NEW hub
 // consumes and verifies its own bundle. That keeps delivery logic in one
@@ -59,7 +59,7 @@ const (
 
 // agentBundleRequired is set at build time (-ldflags) on packaged hub builds.
 //
-// It is a plain marker and NOT a content hash on purpose. The obvious
+// A plain marker, not a content hash. The obvious
 // alternative — embedding the manifest's SHA — cannot work: that manifest
 // includes the hub image digest, so the hub binary would have to contain a hash
 // of a document that contains a hash of the hub binary. A build-time flag
@@ -127,6 +127,36 @@ type agentBundle struct {
 	Manifest agentBundleManifest
 	// paths maps "<os>/<arch>" to the verified absolute payload path.
 	paths map[string]string
+	// expected maps the same key to the sha256 the catalog declares. Resolution
+	// is captured once at package init, so a payload altered afterwards would
+	// otherwise be served on its recomputed hash. The catalog's identity is the
+	// authority, and it is re-checked on every resolution.
+	expected map[string]string
+}
+
+// expectedSHA returns the catalog's declared hash for a platform.
+func (b *agentBundle) expectedSHA(platform agentPlatform) (string, bool) {
+	if b == nil {
+		return "", false
+	}
+	sum, ok := b.expected[platform.OS+"/"+platform.Arch]
+	return sum, ok
+}
+
+// verifyPayloadIdentity re-checks a managed payload against the catalog.
+func (b *agentBundle) verifyPayloadIdentity(platform agentPlatform, path string) error {
+	want, ok := b.expectedSHA(platform)
+	if !ok {
+		return fmt.Errorf("no catalog entry for %s", platform)
+	}
+	got, err := fileSHA256(path)
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(got, want) {
+		return fmt.Errorf("payload sha256 %s no longer matches the catalog entry %s", got, want)
+	}
+	return nil
 }
 
 // pathFor returns the verified payload for a platform, if the bundle declares
@@ -142,7 +172,7 @@ func (b *agentBundle) pathFor(platform agentPlatform) (string, bool) {
 
 // loadAgentBundle reads and fully validates the bundle beside the hub executable.
 //
-// Validation is all-or-nothing by design. A bundle that is PRESENT BUT INVALID
+// Validation is all-or-nothing. A bundle that is present but invalid
 // must fail closed rather than fall through to the frozen system defaults:
 // falling through is precisely how a hub ends up quietly serving months-old
 // agents while reporting success. The caller decides what a missing bundle
@@ -151,10 +181,9 @@ func loadAgentBundle(executableDir string, validate func(string) (string, error)
 	dir := filepath.Join(executableDir, agentBundleDirName)
 	manifestPath := filepath.Join(dir, agentBundleManifestName)
 
-	// "No bundle at all" and "a bundle with its manifest missing" are different
-	// answers. The first is a source build; the second is a broken install, and
-	// treating it as absent would fall through to the frozen system defaults —
-	// the exact silent staleness this whole mechanism exists to end.
+	// A missing directory is a source build; a directory without a manifest is a
+	// broken install. Treating the second as absent would fall through to the
+	// frozen system defaults, which is the staleness this replaces.
 	if _, err := os.Stat(dir); err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -169,8 +198,8 @@ func loadAgentBundle(executableDir string, validate func(string) (string, error)
 		}
 		return nil, fmt.Errorf("stat agent bundle manifest: %w", err)
 	}
-	// Bound the manifest before reading it: it is attacker-shaped input in the
-	// sense that a corrupt install should not be able to exhaust memory here.
+	// Bound the manifest before reading: a corrupt install must not be able to
+	// exhaust memory here.
 	if info.Size() > agentBundleManifestMaxBytes {
 		return nil, fmt.Errorf("agent bundle manifest is %d bytes, over the %d limit",
 			info.Size(), agentBundleManifestMaxBytes)
@@ -200,7 +229,7 @@ func loadAgentBundle(executableDir string, validate func(string) (string, error)
 		}
 	}
 
-	bundle := &agentBundle{Dir: dir, Manifest: manifest, paths: map[string]string{}}
+	bundle := &agentBundle{Dir: dir, Manifest: manifest, paths: map[string]string{}, expected: map[string]string{}}
 
 	for platform, artifact := range manifest.Artifacts {
 		osName, arch, ok := strings.Cut(platform, "/")
@@ -256,6 +285,7 @@ func loadAgentBundle(executableDir string, validate func(string) (string, error)
 		}
 
 		bundle.paths[osName+"/"+arch] = verified
+		bundle.expected[osName+"/"+arch] = strings.ToLower(artifact.SHA256)
 	}
 
 	return bundle, nil
