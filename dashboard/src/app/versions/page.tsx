@@ -21,6 +21,19 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { AgentBinaryInfo, useVersions } from "@/contexts/VersionsContext";
+// The rollout render lives in a pure, separately tested module: the hub sends
+// the controller-wide sentinel as a STRING and this page used to cast every
+// value to an object, so a hub with no controller displayed a green
+// "Automatic · 0 updated · 0 validated · 0 pending".
+import {
+  rolloutEntries,
+  rolloutBadge,
+  rolloutCountsLabel,
+  rolloutReasonLines,
+  rolloutCandidateLabel,
+  rolloutRecoveryAction,
+  operatorPauseLabel,
+} from "@/lib/rollout-status.mjs";
 
 /**
  * The resolution POLICY in force — not a claim about any particular platform.
@@ -56,7 +69,7 @@ import {
   buildBinaryCards,
 } from "@/lib/versions-honesty.mjs";
 import { useAuth } from "@/contexts/AuthContext";
-import { StatusCell, StatusMark } from "@/components/MonoformStatus";
+import { StatusCell, StatusMark, type MonoformTone } from "@/components/MonoformStatus";
 import {
   MF_BUTTON,
   MF_PANEL_HEAD,
@@ -158,6 +171,11 @@ function VersionsContent() {
   // card — its error names the missing build.
   const binaryCards = buildBinaryCards(data);
 
+  // One normalisation, shared by the per-platform rows and the fleet controls,
+  // so the two can never disagree about which platforms are halted.
+  const rollout = rolloutEntries(data?.agent_rollout);
+  const recovery = rolloutRecoveryAction(rollout, data?.rollout_paused ?? false);
+
   useEffect(() => {
     refresh();
   }, [refresh]);
@@ -207,14 +225,21 @@ function VersionsContent() {
               )}
             </dd>
           </div>
+          {/* The operator pause, named as itself.
+              This was "Rollout: Active/Paused", which was already loose and
+              became wrong once the automatic failure breaker was removed: the
+              flag now means only that nobody has pressed pause. A halted
+              platform, or a hub with no controller at all, still showed
+              "Active". Health is a per-platform claim and is made below. */}
           <div className="flex items-baseline gap-2">
-            <dt className="mf-kicker">Rollout</dt>
+            <dt className="mf-kicker">Operator pause</dt>
             <dd>
               {data ? (
                 <StatusMark
                   tone={data.rollout_paused ? "warning" : "ok"}
-                  label={data.rollout_paused ? "Paused" : "Active"}
+                  label={operatorPauseLabel(data.rollout_paused)}
                   Icon={data.rollout_paused ? Pause : Play}
+                  detail={data.rollout_paused ? data.pause_reason || undefined : undefined}
                 />
               ) : (
                 <span className="text-[13px] text-text-tertiary">—</span>
@@ -222,6 +247,61 @@ function VersionsContent() {
             </dd>
           </div>
         </dl>
+
+        {/* Staged rollout, per platform. Without this a held or halted rollout
+            is visible only in the hub log, and the page shows update_pending on
+            every agent indefinitely — a rollout that stopped looks exactly like
+            one still in progress. */}
+        {rollout.length > 0 && (
+          <dl className="mt-4 flex flex-col gap-2 border-t border-border-subtle pt-3">
+            {rollout.map((entry) => {
+              const badge = rolloutBadge(entry);
+              const counts = rolloutCountsLabel(entry);
+              const reasons = rolloutReasonLines(entry);
+              // Which build these counts are about. The hub only picks up a
+              // new candidate when a reservation runs, so with the pause on it
+              // can serve one build while the rollout still describes the
+              // previous one — and "observed on this build" would quietly
+              // attach the old counts to the new binary.
+              const candidate = rolloutCandidateLabel(entry);
+              // Narrowed here rather than asserted: the helper is plain JS, so
+              // this is the boundary where an unexpected tone would otherwise
+              // reach the renderer untyped. Anything that is not "ok" renders
+              // as critical, which is the safe direction for a status mark.
+              const tone: MonoformTone = badge.tone === "ok" ? "ok" : "critical";
+              return (
+                <div key={entry.key} className="flex items-baseline gap-2">
+                  <dt className="mf-kicker">{entry.platform}</dt>
+                  <dd className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                    <StatusMark
+                      tone={tone}
+                      label={badge.label}
+                      Icon={tone === "ok" ? Play : AlertTriangle}
+                      detail={badge.detail || undefined}
+                      title={badge.detail || undefined}
+                    />
+                    {candidate && (
+                      <span
+                        className="text-[12px] text-text-tertiary font-mono"
+                        title={`Tracking candidate ${candidate.full}`}
+                      >
+                        build {candidate.short}
+                      </span>
+                    )}
+                    {counts && <span className="text-[12px] text-text-tertiary">{counts}</span>}
+                    {/* Named machines, because a withheld or failed count with
+                        no names cannot be acted on. */}
+                    {reasons.map((line) => (
+                      <span key={line} className="text-[12px] text-text-tertiary">
+                        {line}
+                      </span>
+                    ))}
+                  </dd>
+                </div>
+              );
+            })}
+          </dl>
+        )}
         <div className="mf-intro-actions">
           <button type="button" onClick={refresh} disabled={loading} className={MF_BUTTON}>
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} aria-hidden />
@@ -266,36 +346,62 @@ function VersionsContent() {
               </p>
             </section>
 
+            {/* The operator pause and platform halts are DIFFERENT things.
+                This card headlined "Active" whenever nobody had pressed pause,
+                which since the automatic breaker's removal says nothing about
+                whether anything is rolling out. Worse, the only recovery
+                control appeared when the pause was on — so a halted platform
+                with the pause off offered the operator a Pause button and
+                nothing else. Per-platform health is stated above; this card is
+                the fleet-wide controls and says which one it is. */}
             <section className="mf-panel">
               <div className={MF_PANEL_HEAD}>
                 <h2 className={MF_PANEL_TITLE}>Fleet rollout</h2>
                 <StatusCell
                   tone={data.rollout_paused ? "warning" : "ok"}
-                  label={data.rollout_paused ? "Paused" : "Active"}
+                  label={`Operator pause: ${operatorPauseLabel(data.rollout_paused)}`}
                   Icon={data.rollout_paused ? Pause : CheckCircle2}
                 />
               </div>
               <div className="flex flex-wrap items-center justify-between gap-4 px-6 py-4">
                 <div className="min-w-0">
                   <p className="text-[13px] text-text-secondary">
-                    Controls update announcements for every platform.
+                    {data.rollout_paused
+                      ? "Update announcements are held for every platform until an operator resumes."
+                      : "No operator hold. Each platform's own state is shown above."}
                   </p>
                   {data.rollout_paused && data.pause_reason && (
                     <p className="mt-1.5 text-xs text-text-tertiary">Reason: {data.pause_reason}</p>
                   )}
+                  {recovery.retryAvailable && (
+                    <p className="mt-1.5 text-xs text-text-tertiary">{recovery.detail}</p>
+                  )}
                 </div>
-                {canManageRollout &&
-                  (data.rollout_paused ? (
-                    <button type="button" onClick={resumeRollout} className="mf-action inline-flex items-center gap-2">
-                      <Play className="w-3.5 h-3.5" aria-hidden />
-                      Resume rollout
-                    </button>
-                  ) : (
-                    <button type="button" onClick={pauseRollout} className={MF_BUTTON}>
-                      <Pause className="w-3.5 h-3.5" aria-hidden />
-                      Pause rollout
-                    </button>
-                  ))}
+                {canManageRollout && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    {/* One endpoint serves both: it clears the pause AND gives
+                        every halted platform a new attempt, in one
+                        transaction. Hence a single button when the pause is on
+                        and something is halted — two would imply the operator
+                        could do one without the other. */}
+                    {(data.rollout_paused || recovery.retryAvailable) && (
+                      <button
+                        type="button"
+                        onClick={resumeRollout}
+                        className="mf-action inline-flex items-center gap-2"
+                      >
+                        <Play className="w-3.5 h-3.5" aria-hidden />
+                        {recovery.label}
+                      </button>
+                    )}
+                    {!data.rollout_paused && (
+                      <button type="button" onClick={pauseRollout} className={MF_BUTTON}>
+                        <Pause className="w-3.5 h-3.5" aria-hidden />
+                        Pause rollout
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
             </section>
 

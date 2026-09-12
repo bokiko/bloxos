@@ -248,9 +248,17 @@ updates until the agent's key is pinned through a trusted provisioning path.
 
 `announceDecision` is shared by the announcement path and versions API. It
 fails closed for protocol-v1 agents when no valid signature is available, the
-transport is plaintext, or the update key is unpinned. Withheld agents do not
-create reconnect expectations. A circuit breaker pauses rollout after repeated
-genuine failures.
+transport is plaintext, or the update key is unpinned. Withheld agents are recorded as
+held, with a reason, and re-evaluated as soon as they become eligible; a
+refusal to announce is not a rollout failure.
+
+Announcements are made by one scheduler, in stages: a single canary per
+platform, then batches of two, each machine validated by 60 seconds of
+continuous telemetry on the connection that reported the new build. Slots are
+durable, so a hub restart resumes rather than restarts. A failed attempt halts
+that platform only, and stays halted until an operator retries — there is no
+automatic fleet-wide breaker. See [versions](versions.md) for the operator
+view.
 
 Linux verifies the update, replaces its executable atomically, and relies on
 systemd plus an `OnFailure` recovery unit to restore `.prev` after repeated

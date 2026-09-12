@@ -25,8 +25,10 @@ import (
  *   1. Compute and cache the SHA-256 of the agent binary we serve at
  *      /download/agent (recomputed when mtime changes).
  *   2. Track each connected agent's running version (per-machine).
- *   3. Circuit breaker — pauses the rollout after consecutive failed
- *      reconnects so a bad build doesn't take out the whole fleet.
+ *   3. Route announcements through the staged rollout controller, so a bad
+ *      build reaches a canary rather than the whole fleet. There is no
+ *      automatic fleet-wide breaker any more: a failed attempt halts ONE
+ *      platform, durably, until an operator retries.
  *
  * Public surface:
  *   - initAgentVersionTracking()      — start the recompute + reconnect loops
@@ -127,23 +129,9 @@ type agentVersionReport struct {
 	ReleaseFloorOK  bool
 }
 
-type rolloutFailure struct {
-	machineID string
-	at        time.Time
-}
-
 var (
 	agentRunningVersions   = make(map[string]agentVersionInfo)
 	agentRunningVersionsMu sync.RWMutex
-
-	rolloutFailures    []rolloutFailure
-	rolloutFailuresMu  sync.Mutex
-	rolloutPaused      bool
-	rolloutPauseReason string
-	rolloutPausedMu    sync.RWMutex
-
-	pendingReconnects   = make(map[string]time.Time)
-	pendingReconnectsMu sync.Mutex
 )
 
 // initAgentVersionTracking is called from main() at hub startup.
@@ -152,38 +140,12 @@ func initAgentVersionTracking() {
 	// download, API read, or agent connection sees the same resolved paths.
 	recomputeAgentBinarySHA()
 	goSafelyForever("versionRefreshLoop", versionRefreshLoop)
-	goSafelyForever("reconnectMonitorLoop", reconnectMonitorLoop)
 }
 
 func versionRefreshLoop() {
 	for {
 		recomputeAgentBinarySHA()
 		time.Sleep(10 * time.Second)
-	}
-}
-
-func reconnectMonitorLoop() {
-	for {
-		time.Sleep(15 * time.Second)
-		now := time.Now()
-
-		pendingReconnectsMu.Lock()
-		expired := []string{}
-		for machineID, deadline := range pendingReconnects {
-			if now.After(deadline) {
-				expired = append(expired, machineID)
-			}
-		}
-		for _, mid := range expired {
-			log.Printf("rollout: %s did not reconnect within %s, marking as failure",
-				mid, reconnectExpectation)
-			delete(pendingReconnects, mid)
-		}
-		pendingReconnectsMu.Unlock()
-
-		for _, mid := range expired {
-			recordRolloutFailure(mid)
-		}
 	}
 }
 
@@ -261,15 +223,11 @@ func recomputeBinaryForPlatform(platform agentPlatform) {
 	if previous.SHA != "" && previous.SHA != sha {
 		log.Printf("version: %s agent binary changed (%s -> %s), update will propagate",
 			platform, versionShortSHA(previous.SHA), versionShortSHA(sha))
-		// Reset only the automatic failure breaker. The operator's durable
-		// pause lives in hub_settings and must survive a served-SHA change.
-		rolloutFailuresMu.Lock()
-		rolloutFailures = nil
-		rolloutFailuresMu.Unlock()
-		rolloutPausedMu.Lock()
-		rolloutPaused = false
-		rolloutPauseReason = ""
-		rolloutPausedMu.Unlock()
+		// A changed SHA is a new candidate, and reserve() starts a new
+		// generation for it — which is what clears prior progress and any
+		// halt. The old in-memory breaker had to be reset by hand here; the
+		// durable state does it as a consequence of the candidate changing.
+		// The operator's pause lives in hub_settings and is untouched.
 	}
 }
 
@@ -303,13 +261,20 @@ func (s *Server) announceVersionToAgent(machineID string, agent *ConnectedAgent)
 		log.Printf("rollout: not announcing version to %s: %s", machineID, reason)
 		return
 	}
-	rolloutPausedMu.RLock()
-	paused := rolloutPaused
-	rolloutPausedMu.RUnlock()
-	if paused {
-		log.Printf("rollout: paused, not announcing version to %s", machineID)
+	// TryLock BEFORE anything touches a slot. This runs on the ONE scheduler
+	// goroutine and writeLockedTo has no deadline, so waiting here would
+	// freeze admission and expiry for every platform behind one stuck socket.
+	//
+	// It has to come first, not merely before the write: reserving and then
+	// discovering the socket is busy spends a recovered reservation's
+	// automatic resend budget without sending anything, so a permanently
+	// busy writer would exhaust recovery and halt the platform having never
+	// transmitted a byte. A busy socket is skipped with no slot, no counter
+	// and no deadline touched.
+	if agent == nil || !agent.WriteMu.TryLock() {
 		return
 	}
+	defer agent.WriteMu.Unlock()
 
 	// One read of the map, reused for the arch, the already-up-to-date
 	// check and the policy below. announceDecision takes no locks by
@@ -326,11 +291,11 @@ func (s *Server) announceVersionToAgent(machineID string, agent *ConnectedAgent)
 	}
 
 	// If we already know the agent's running SHA matches what we'd
-	// announce, skip both the message AND the reconnect-expectation
-	// timer. The agent's handleAgentVersion would silently no-op the
-	// announce (matching SHAs), so arming a 90s reconnect timer for a
-	// reconnect that will never come just trips the rollout circuit
-	// breaker on healthy fleets every time the hub restarts.
+	// announce, send nothing. The agent's handleAgentVersion compares SHAs
+	// and returns, so the frame is pure noise — and reserving a slot for it
+	// would spend a stage's capacity on a machine that is already there,
+	// leaving the machines that actually need the build waiting behind an
+	// attempt that can never produce anything to validate.
 	if hadVersion && v.RunningSHA == sha {
 		return
 	}
@@ -339,11 +304,69 @@ func (s *Server) announceVersionToAgent(machineID string, agent *ConnectedAgent)
 	if hadVersion {
 		report = &v
 	}
+	platform := rolloutPlatformKey(osName, v.Arch)
+	release := currentAgentBinaryStateFor(osName, v.Arch).Release
+
+	// A missing or broken controller WITHHOLDS. Falling through to the
+	// unrestricted legacy announce would send a build to the entire fleet at
+	// exactly the moment the mechanism that bounds exposure is unavailable.
+	if s.rollout == nil {
+		reason := "agent rollout controller unavailable"
+		if s.rolloutErr != nil {
+			reason = s.rolloutErr.Error()
+		}
+		log.Printf("rollout: withholding update for %s — %s", machineID, reason)
+		return
+	}
+
 	sig, blocked := announceDecision(report, osName, sha)
 	if blocked != "" {
+		// Ineligible is not a rollout FAILURE. Recording it as one would halt
+		// the platform over a machine with no pinned key or an unusable
+		// transport, which says nothing about the build. It is withheld
+		// visibly instead, and re-evaluated as soon as it becomes eligible.
+		// Inside the ingestion barrier, which rechecks registry ownership and
+		// holds its read side across the commit. Machine deletion takes the
+		// write side around its own delete transaction, so a pass queued
+		// behind a delete cannot insert a row for a machine that is gone —
+		// a final pre-send check would only help if the process survived to
+		// reach it.
+		s.ingestFrame(machineID, agent, true, func() {
+			if err := s.rollout.withhold(platform, machineID, sha, release, blocked); err != nil {
+				log.Printf("rollout: could not record withheld machine %s: %v", machineID, err)
+			}
+		})
 		log.Printf("rollout: not announcing to %s — %s", machineID, blocked)
 		return
 	}
+
+	// Take a durable slot BEFORE anything is written to a socket. Racing
+	// triggers — a connect, a version report and a resume fan-out can all fire
+	// at once — collapse to one reservation, so repeats cannot reset a
+	// deadline or push a batch past its size.
+	var reservation *rolloutReservation
+	var why string
+	var reserveErr error
+	// Same barrier: the reservation INSERT must not outlive a deletion.
+	if !s.ingestFrame(machineID, agent, true, func() {
+		reservation, why, reserveErr = s.rollout.reserve(platform, machineID, sha, release)
+	}) {
+		return // the registry no longer holds this machine for this connection
+	}
+	if reserveErr != nil {
+		log.Printf("rollout: could not reserve a slot for %s: %v", machineID, reserveErr)
+		return
+	}
+	if reservation == nil {
+		if why != "" {
+			log.Printf("rollout: holding %s — %s", machineID, why)
+		}
+		return
+	}
+	if !s.rollout.claimSend(reservation) {
+		return // another goroutine already owns this attempt
+	}
+	defer s.rollout.releaseSend(reservation)
 
 	msg := map[string]interface{}{
 		"type":      "agent_version",
@@ -356,37 +379,133 @@ func (s *Server) announceVersionToAgent(machineID string, agent *ConnectedAgent)
 	}
 	data, _ := json.Marshal(msg)
 
-	agent.WriteMu.Lock()
-	// Do not hold the operator gate while waiting behind unrelated socket
-	// writes. Recheck durable intent after acquiring the agent's write lock.
+	// announceSendBoundaryHook lets a test stop a goroutine exactly here — a
+	// reservation taken, the write lock held, nothing sent — so the recheck
+	// below can be exercised against a pause that arrives in that window. A
+	// sleep cannot do this: with TryLock a busy socket is skipped instantly,
+	// so there is no queue to race and the test would pass without ever
+	// reaching the boundary it names.
+	if announceSendBoundaryHook != nil {
+		announceSendBoundaryHook(machineID)
+	}
+
+	// The write lock is already held (taken before any slot state was
+	// touched). Recheck durable intent now, immediately before the write.
 	s.operatorRolloutMu.RLock()
-	if paused, _ := s.operatorRolloutPause(); paused || announcedSHAForArch(osName, v.Arch) != sha {
+	// The registry check belongs HERE, at the actual send boundary, not only
+	// where the announcement was decided. This goroutine can queue behind
+	// unrelated socket writes, and in that window the machine may be deleted
+	// or taken over by a new connection — a stale connect callback must not
+	// announce down a displaced socket, nor record an outcome that resurrects
+	// rows for a machine that no longer exists.
+	if paused, _ := s.operatorRolloutPause(); paused || announcedSHAForArch(osName, v.Arch) != sha ||
+		!s.isRegisteredConnection(machineID, agent) ||
+		!s.rolloutGenerationUnchanged(platform, reservation) {
 		s.operatorRolloutMu.RUnlock()
-		agent.WriteMu.Unlock()
+		// A FRESH reservation is given back, so capacity is not held by
+		// something never offered and the machine stays eligible once the
+		// operator resumes. A RESEND is left alone: its slot is the ambiguous
+		// crash state, and discarding it to skip a send would throw away the
+		// record recovery depends on.
+		if !reservation.Resend {
+			if err := s.rollout.releaseBeforeSend(reservation); err != nil {
+				log.Printf("rollout: could not release the slot for %s: %v", machineID, err)
+			}
+		}
 		return
 	}
 	// Bound the only network I/O inside the pause barrier, matching the
 	// existing power-history ACK writer's deadline discipline.
 	_ = agent.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	err := agent.Conn.WriteMessage(websocket.TextMessage, data)
+	writeErr := agent.Conn.WriteMessage(websocket.TextMessage, data)
 	_ = agent.Conn.SetWriteDeadline(time.Time{})
 	s.operatorRolloutMu.RUnlock()
-	agent.WriteMu.Unlock()
-	if err != nil {
-		log.Printf("rollout: failed to announce version to %s: %v", machineID, err)
+	if writeErr != nil {
+		log.Printf("rollout: failed to announce version to %s: %v", machineID, writeErr)
+		// The write failed, but it may have been partially delivered. The slot
+		// stays RESERVED rather than offered, which is the ambiguous state
+		// recovery is built to resolve: on reconnect the machine's reported
+		// SHA decides whether this landed.
 		return
 	}
 
-	s.armReconnectIfRegistered(machineID, agent)
+	// announcePostWriteHook lets a test stop a goroutine in the OTHER crash
+	// window: the offer is on the wire, and the record of it is not yet
+	// durable. That window cannot be reached by rewriting a row afterwards —
+	// the whole point is that the process does not survive to write one.
+	if announcePostWriteHook != nil {
+		announcePostWriteHook(machineID)
+	}
+
+	if err := s.rollout.markOffered(reservation); err != nil {
+		log.Printf("rollout: could not mark the offer to %s: %v", machineID, err)
+	}
 }
 
-// armReconnectIfRegistered arms the reconnect expectation for an announced
-// update only while agent still owns the registry entry, under the ingestion
-// barrier. The announce runs on its own goroutine, so without this a delete
-// that already cleared the expectation could be followed by a late arm and a
-// phantom rollout failure for a machine that no longer exists.
-func (s *Server) armReconnectIfRegistered(machineID string, agent *ConnectedAgent) bool {
-	return s.ingestFrame(machineID, agent, true, func() { expectReconnect(machineID) })
+// forgetRolloutMachine drops a deleted machine's in-memory dwell evidence and
+// wakes the scheduler.
+//
+// Call it AFTER the delete commits. The durable slots go inside that
+// transaction, with every other table, so a delete that fails and rolls back
+// leaves the machine's rollout state exactly as it was rather than having
+// freed capacity for a machine that still exists.
+func (s *Server) forgetRolloutMachine(machineID string) {
+	if s.rollout == nil || machineID == "" {
+		return
+	}
+	s.rollout.forgetEvidence(machineID)
+	// Freeing capacity is a reason to look again.
+	s.wakeRollout()
+}
+
+// noteRolloutMetrics feeds a metrics frame to the rollout controller as dwell
+// evidence for the connection it arrived on.
+func (s *Server) noteRolloutMetrics(machineID string, conn *ConnectedAgent) {
+	if s.rollout == nil || conn == nil || machineID == "" {
+		return
+	}
+	osName := s.lookupAgentOS(machineID)
+	if osName == "" {
+		return
+	}
+	agentRunningVersionsMu.RLock()
+	arch := agentRunningVersions[machineID].Arch
+	agentRunningVersionsMu.RUnlock()
+	s.rollout.observeTelemetry(rolloutPlatformKey(osName, arch), machineID, conn)
+}
+
+// announceSendBoundaryHook, when set by a test, runs after a reservation is
+// held and immediately before the pause/generation/ownership recheck.
+var announceSendBoundaryHook func(machineID string)
+
+// announcePostWriteHook, when set by a test, runs after the announcement has
+// been written to the socket and before the offer is recorded.
+var announcePostWriteHook func(machineID string)
+
+// rolloutPlatformKey names a rollout target. Empty arch means the default,
+// matching what an arch-less download serves.
+func rolloutPlatformKey(osName, arch string) string {
+	if arch == "" {
+		arch = defaultAgentArch
+	}
+	return normalizeAgentOS(osName) + "/" + arch
+}
+
+// rolloutGenerationUnchanged reports whether the candidate is still the one
+// this reservation was taken for.
+//
+// Checked INSIDE the pause barrier, immediately before the write. A candidate
+// that changed while this goroutine queued behind unrelated socket writes
+// would otherwise announce bytes the rollout has already moved on from.
+func (s *Server) rolloutGenerationUnchanged(platform string, reservation *rolloutReservation) bool {
+	if s.rollout == nil || reservation == nil {
+		return true
+	}
+	st, err := s.rollout.platformState(platform)
+	if err != nil || st == nil {
+		return false
+	}
+	return st.Generation == reservation.Generation && st.Status == rolloutActive
 }
 
 // announceDecision is the single place that decides whether an update may be
@@ -468,12 +587,11 @@ func announceDecision(report *agentVersionInfo, osName, sha string) (sig string,
 	//
 	// A signature-capable agent computed the answer itself at connect time
 	// from its actual BLOXOS_HUB and reported it. Announcing to one that
-	// says no achieves nothing except arming a reconnect expectation for a
-	// reconnect that never comes — which expires into a rollout failure and,
-	// at two machines, pauses the whole fleet, with rolloutPauseReason
+	// says no achieves nothing: it will decline the download, so the slot
+	// runs out its attempt window and FAILS — halting the platform and
 	// blaming agent health for a refusal the hub provoked. The rule is
-	// already stated twenty lines up for the matching-SHA case: never arm
-	// the timer for an update you can predict won't produce a reconnect.
+	// already stated twenty lines up for the matching-SHA case: never spend
+	// an attempt on an update you can predict will not be taken.
 	//
 	// A pre-signature agent has no transport gate and cannot verify what we
 	// send it either, so the reason there is security rather than futility:
@@ -491,8 +609,10 @@ func announceDecision(report *agentVersionInfo, osName, sha string) (sig string,
 		// has ever pinned a key — so on every fleet that existed before this
 		// gate, this is the *default* state immediately after the hub picks
 		// up a signature-capable build, not an edge case. Announcing to it
-		// anyway arms the same 90s reconnect expectation for the same
-		// reconnect that will never come. agent_key_not_pinned is a
+		// anyway spends a stage's capacity on a download it will decline. It
+		// is WITHHELD instead — visible, with a reason, re-evaluated the
+		// moment it becomes eligible, and never a halt.
+		// agent_key_not_pinned is a
 		// distinct reason (not folded into the plaintext-transport message
 		// above) so an operator watching the rollout can tell "waiting on
 		// an installer re-run" apart from "agent is unhealthy" — the two
@@ -508,9 +628,9 @@ func announceDecision(report *agentVersionInfo, osName, sha string) (sig string,
 
 	// The agent refuses any announcement it cannot authenticate against the
 	// key its installer pinned. If we cannot produce a signature there is no
-	// update to be had — announcing anyway would only arm the 90s
-	// reconnect-expectation timer for a reconnect that never comes, and trip
-	// the rollout circuit breaker on a healthy fleet.
+	// update to be had — announcing anyway would spend a stage's capacity on
+	// an attempt that can only expire, and halt the platform over a hub-side
+	// signing problem that says nothing about the build or the fleet.
 	sig = announcedSignatureForArch(osName, arch, sha)
 	if sig == "" {
 		if enabled, reason := updateSigningStatus(); !enabled {
@@ -633,12 +753,6 @@ func (s *Server) lookupMetricsOS(machineID string) string {
 	return osStr
 }
 
-func expectReconnect(machineID string) {
-	pendingReconnectsMu.Lock()
-	defer pendingReconnectsMu.Unlock()
-	pendingReconnects[machineID] = time.Now().Add(reconnectExpectation)
-}
-
 // forgetAgentVersion drops the last-reported version for a machine that no
 // longer exists, so /api/versions stops listing it and no later reconnect
 // expectation can record a phantom rollout failure for it.
@@ -646,12 +760,6 @@ func forgetAgentVersion(machineID string) {
 	agentRunningVersionsMu.Lock()
 	delete(agentRunningVersions, machineID)
 	agentRunningVersionsMu.Unlock()
-}
-
-func clearReconnectExpectation(machineID string) {
-	pendingReconnectsMu.Lock()
-	defer pendingReconnectsMu.Unlock()
-	delete(pendingReconnects, machineID)
 }
 
 // recordAgentRunningVersion is called when the agent sends its SHA on connect.
@@ -662,6 +770,17 @@ func clearReconnectExpectation(machineID string) {
 // The report carries the agent's capability level and its own answer on
 // whether its transport permits self-update. See announceDecision.
 func (s *Server) recordAgentRunningVersion(machineID string, report agentVersionReport) {
+	s.recordAgentRunningVersionOn(machineID, nil, report)
+}
+
+// recordAgentRunningVersionOn is recordAgentRunningVersion with the connection
+// the report arrived on.
+//
+// The connection matters and the machine-keyed map cannot supply it:
+// agentRunningVersions survives a socket replacement, so a fresh connection
+// would inherit the previous one's matching SHA as if it had reported it. The
+// map stays for the UI; health is established per connection.
+func (s *Server) recordAgentRunningVersionOn(machineID string, conn *ConnectedAgent, report agentVersionReport) {
 	runningSHA, osName := report.RunningSHA, report.OS
 	// Resolve the per-OS expected SHA. If we don't yet know the agent's
 	// OS, lookupAgentOS will check the DB metrics for it. New-on-this-hub
@@ -682,6 +801,17 @@ func (s *Server) recordAgentRunningVersion(machineID string, report agentVersion
 		arch = s.lookupAgentArch(machineID)
 	}
 	expectedSHA := announcedSHAForArch(osName, arch)
+
+	// Health evidence is per connection. This is what stops a fresh socket
+	// inheriting the previous one's matching SHA from the machine-keyed map
+	// below, which survives a replacement and cannot establish health alone.
+	if s.rollout != nil && conn != nil && expectedSHA != "" {
+		platform := rolloutPlatformKey(osName, arch)
+		if st, err := s.rollout.platformState(platform); err == nil && st != nil {
+			s.rollout.observeCandidateReport(platform, machineID, conn,
+				st.Generation, runningSHA, expectedSHA)
+		}
+	}
 
 	hostname := s.lookupVersionHostname(machineID)
 
@@ -709,20 +839,35 @@ func (s *Server) recordAgentRunningVersion(machineID string, report agentVersion
 		versionShortSHA(runningSHA), versionShortSHA(expectedSHA), osName, arch, report.UpdateProtocol,
 		expectedSHA != "" && runningSHA != expectedSHA, machineID)
 
-	if expectedSHA != "" && runningSHA == expectedSHA {
-		clearReconnectExpectation(machineID)
-		recordRolloutSuccess(machineID)
+	// The machine is RUNNING the candidate. Record that durably, so an
+	// operator sees it as updated while its dwell is still accruing rather
+	// than as nothing having happened — and so a crash between the socket
+	// write and the mark resolves explicitly on reconnect instead of looking
+	// like an offer that never left.
+	if s.rollout != nil && conn != nil && expectedSHA != "" && runningSHA == expectedSHA {
+		platform := rolloutPlatformKey(osName, arch)
+		if st, err := s.rollout.platformState(platform); err == nil && st != nil &&
+			strings.EqualFold(st.Candidate, expectedSHA) {
+			// The platform's candidate must BE the SHA this report matched.
+			// Read independently, a report that arrives just after the served
+			// binary changed would mark the NEW generation's slot observed on
+			// the strength of the machine running the OLD bytes.
+			if err := s.rollout.observeRunningCandidate(platform, machineID, st.Generation); err != nil {
+				log.Printf("rollout: could not record %s as running the candidate: %v", machineID, err)
+			}
+		}
 	}
 
 	// If we just learned (or relearned) the OS, the first-connect announce
 	// was suppressed because OS was unknown at WS-upgrade time. Trigger
 	// one now — but only when there's an actual pending update. Announcing
 	// to an already-up-to-date agent makes it silently no-op (the agent's
-	// handleAgentVersion compares SHAs and returns when they match), but
-	// announceVersionToAgent unconditionally arms a 90s reconnect-expectation
-	// timer that then fires a false-positive "rollout failure" log and
-	// counts toward the circuit breaker. Skip the announce when the agent
-	// is already on the announced SHA.
+	// handleAgentVersion compares SHAs and returns when they match), while
+	// the announce path would reserve a rollout slot for it — spending a
+	// stage's capacity on a machine that is already on the build, and
+	// leaving the machines that need it waiting behind an attempt with
+	// nothing to validate. Skip the announce when the agent is already on
+	// the announced SHA.
 	//
 	// The capability, transport, and key-pinned fields are part of the same
 	// story: at WS-upgrade time this frame had not arrived, so
@@ -738,56 +883,10 @@ func (s *Server) recordAgentRunningVersion(machineID string, report agentVersion
 		!strings.EqualFold(prev.ReleaseFloorSHA, report.ReleaseFloorSHA) ||
 		prev.ReleaseFloorOK != report.ReleaseFloorOK) &&
 		expectedSHA != "" && runningSHA != expectedSHA {
-		s.agentsMu.RLock()
-		agent, online := s.agents[machineID]
-		s.agentsMu.RUnlock()
-		if online {
-			s.goTracked(func() { s.announceVersionToAgent(machineID, agent) })
-		}
+		// A changed report is a reason to LOOK, not a licence to send. The
+		// scheduler decides whether this machine gets capacity.
+		s.wakeRollout()
 	}
-}
-
-func recordRolloutFailure(machineID string) {
-	rolloutFailuresMu.Lock()
-	now := time.Now()
-	cutoff := now.Add(-rolloutFailureWindow)
-
-	fresh := rolloutFailures[:0]
-	for _, f := range rolloutFailures {
-		if f.at.After(cutoff) {
-			fresh = append(fresh, f)
-		}
-	}
-	fresh = append(fresh, rolloutFailure{machineID: machineID, at: now})
-	rolloutFailures = fresh
-	failureCount := len(fresh)
-	rolloutFailuresMu.Unlock()
-
-	log.Printf("rollout: failure recorded for %s (%d in window)", machineID, failureCount)
-
-	if failureCount >= rolloutFailureThreshold {
-		rolloutPausedMu.Lock()
-		if !rolloutPaused {
-			rolloutPaused = true
-			rolloutPauseReason = fmt.Sprintf(
-				"circuit breaker: %d agents failed to reconnect within %s",
-				failureCount, rolloutFailureWindow)
-			log.Printf("rollout: PAUSED — %s", rolloutPauseReason)
-		}
-		rolloutPausedMu.Unlock()
-	}
-}
-
-func recordRolloutSuccess(machineID string) {
-	rolloutFailuresMu.Lock()
-	defer rolloutFailuresMu.Unlock()
-	fresh := rolloutFailures[:0]
-	for _, f := range rolloutFailures {
-		if f.machineID != machineID {
-			fresh = append(fresh, f)
-		}
-	}
-	rolloutFailures = fresh
 }
 
 func (s *Server) lookupVersionHostname(machineID string) string {
@@ -840,10 +939,10 @@ func (s *Server) handleListVersions(c echo.Context) error {
 		}
 	}
 
-	rolloutPausedMu.RLock()
-	paused := rolloutPaused
-	pauseReason := rolloutPauseReason
-	rolloutPausedMu.RUnlock()
+	// The automatic breaker is gone: a platform halt replaces it, and is
+	// reported per platform in agent_rollout below rather than as a fleet-wide
+	// boolean that said nothing about which platform stopped or why.
+	paused, pauseReason := false, ""
 	if operatorPaused, reason := s.operatorRolloutPause(); operatorPaused {
 		paused, pauseReason = true, reason
 	}
@@ -869,7 +968,40 @@ func (s *Server) handleListVersions(c echo.Context) error {
 	// policy is in force.
 	delivery, deliveryErr := agentDeliveryStatus()
 
+	// Rollout state per platform, so a held or halted rollout is VISIBLE
+	// rather than only logged. Without this the dashboard shows update_pending
+	// on every agent indefinitely and an operator cannot tell a rollout in
+	// progress from one that stopped — which is the same failure the
+	// update_blocked_reason field exists to prevent, one level up.
+	rollout := map[string]interface{}{}
+	if s.rollout == nil {
+		reason := "agent rollout controller unavailable; updates are withheld"
+		if s.rolloutErr != nil {
+			reason = s.rolloutErr.Error()
+		}
+		rollout["unavailable"] = reason
+	} else {
+		for _, platform := range supportedAgentPlatforms {
+			status, err := s.rollout.status(platform.String())
+			if err != nil {
+				// Omitting the platform would read as "nothing is rolling out
+				// here", which is the one thing we do not know.
+				log.Printf("rollout: could not read status for %s: %v", platform, err)
+				rollout[platform.String()] = map[string]string{
+					"status": "unavailable",
+					"reason": err.Error(),
+				}
+				continue
+			}
+			if status == nil {
+				continue // nothing has been rolled out for this platform yet
+			}
+			rollout[platform.String()] = status
+		}
+	}
+
 	return c.JSON(http.StatusOK, map[string]interface{}{
+		"agent_rollout":           rollout,
 		"agent_delivery":          delivery,
 		"agent_delivery_error":    deliveryErr,
 		"signing_enabled":         signingEnabled,
@@ -904,39 +1036,52 @@ func (s *Server) handlePauseRollout(c echo.Context) error {
 
 func (s *Server) handleResumeRollout(c echo.Context) error {
 	s.operatorRolloutMu.Lock()
-	if err := s.setOperatorRolloutPause(false); err != nil {
-		s.operatorRolloutMu.Unlock()
-		log.Printf("rollout: could not persist operator resume: %v", err)
+	// Clearing the pause and retrying the failed attempts are ONE transaction.
+	// Split, a failure halfway leaves the pause cleared and every failed slot
+	// still terminal — the operator is told "resumed", the halt looks gone,
+	// and nothing moves. Reporting partial success as success is worse than
+	// reporting failure.
+	err := s.resumeRolloutAtomically()
+	s.operatorRolloutMu.Unlock()
+	if err != nil {
+		log.Printf("rollout: could not resume: %v", err)
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "Could not save rollout resume. Rollout state was not changed; check hub database health and retry."})
 	}
-	rolloutPausedMu.Lock()
-	rolloutPaused = false
-	rolloutPauseReason = ""
-	rolloutPausedMu.Unlock()
-
-	rolloutFailuresMu.Lock()
-	rolloutFailures = nil
-	rolloutFailuresMu.Unlock()
-	s.operatorRolloutMu.Unlock()
 
 	log.Printf("rollout: RESUMED by operator")
-
-	// Re-announce to all currently connected agents.
-	s.agentsMu.RLock()
-	conns := make([]*ConnectedAgent, 0, len(s.agents))
-	ids := make([]string, 0, len(s.agents))
-	for id, a := range s.agents {
-		ids = append(ids, id)
-		conns = append(conns, a)
-	}
-	s.agentsMu.RUnlock()
-
-	for i := range conns {
-		mid, conn := ids[i], conns[i]
-		s.goTracked(func() { s.announceVersionToAgent(mid, conn) })
-	}
+	s.wakeRollout()
 
 	return c.JSON(http.StatusOK, map[string]string{"status": "resumed"})
+}
+
+// resumeRolloutAtomically clears the operator pause and gives every failed slot
+// a new attempt, in one transaction. All of it, or none.
+func (s *Server) resumeRolloutAtomically() error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Without a controller there is nothing to retry, and clearing the pause
+	// would tell an operator updates resumed while every failed attempt stayed
+	// terminal and nothing could ever be announced anyway.
+	if s.rollout == nil {
+		reason := "agent rollout controller unavailable"
+		if s.rolloutErr != nil {
+			reason = s.rolloutErr.Error()
+		}
+		return fmt.Errorf("cannot resume: %s", reason)
+	}
+	if err := setOperatorRolloutPauseTx(tx, false); err != nil {
+		return err
+	}
+	for _, platform := range supportedAgentPlatforms {
+		if err := s.rollout.resumeTx(tx, platform.String()); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func versionShortSHA(sha string) string {

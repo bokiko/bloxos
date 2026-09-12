@@ -103,11 +103,10 @@ func TestReleaseWithholdingDoesNotArmReconnectAndIsVisible(t *testing.T) {
 		agentRunningVersionsMu.Lock()
 		delete(agentRunningVersions, id)
 		agentRunningVersionsMu.Unlock()
-		clearReconnectExpectation(id)
 	})
 	// A nil connection is deliberate: the policy must return before any write.
 	s.announceVersionToAgent(id, &ConnectedAgent{})
-	assertNoReconnectExpectation(t, id)
+	assertNoPendingRolloutAttempt(t, s, id)
 	rec := httptest.NewRecorder()
 	if err := s.handleListVersions(e.NewContext(httptest.NewRequest(http.MethodGet, "/api/versions", nil), rec)); err != nil {
 		t.Fatal(err)
@@ -151,7 +150,7 @@ func TestReleaseReportOverWebSocket(t *testing.T) {
 				if len(frames) != 0 {
 					t.Fatalf("refused update announced: %v", frames)
 				}
-				assertNoReconnectExpectation(t, id)
+				assertNoPendingRolloutAttempt(t, s, id)
 				return
 			}
 			if len(frames) != 1 {

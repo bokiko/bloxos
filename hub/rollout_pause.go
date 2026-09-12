@@ -39,6 +39,21 @@ func (s *Server) operatorRolloutPause() (bool, string) {
 // automatic-breaker reset. Announcements hold its read side through enqueue,
 // so a successful pause response is a barrier for new announcements. It cannot
 // cancel an update frame already queued or an agent update already in flight.
+// setOperatorRolloutPauseTx is setOperatorRolloutPause inside a caller's
+// transaction, so clearing the pause can be committed together with the slot
+// resets that make a resume mean anything.
+func setOperatorRolloutPauseTx(tx *sql.Tx, paused bool) error {
+	value := "0"
+	if paused {
+		value = "1"
+	}
+	_, err := tx.Exec(`INSERT INTO hub_settings (key, value, updated_at)
+		VALUES (?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`,
+		operatorRolloutPauseKey, value)
+	return err
+}
+
 func (s *Server) setOperatorRolloutPause(paused bool) error {
 	value := "0"
 	if paused {

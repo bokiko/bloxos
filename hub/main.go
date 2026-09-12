@@ -181,6 +181,13 @@ func main() {
 	}
 	log.Println("database initialized")
 
+	// After migrations, because the controller reads its own tables. Before
+	// anything can announce, because a nil controller withholds updates.
+	if err := s.initRollout(); err != nil {
+		log.Fatalf("failed to init agent rollout: %v", err)
+	}
+	s.startRolloutScheduler()
+
 	// Seed default alert rules.
 	s.seedAlertRules()
 
@@ -859,11 +866,6 @@ func (s *Server) handleDeleteMachine(c echo.Context) error {
 	if live != nil && live.Conn != nil {
 		_ = live.Conn.Close()
 	}
-	// Rollout bookkeeping is keyed by machine id and never expires on its own:
-	// an armed reconnect expectation would record a phantom rollout failure
-	// for a machine that no longer exists, and the version list would show
-	// it forever.
-	clearReconnectExpectation(id)
 	forgetAgentVersion(id)
 
 	// Delete all related data in a transaction
@@ -873,7 +875,14 @@ func (s *Server) handleDeleteMachine(c echo.Context) error {
 	}
 	defer tx.Rollback()
 
-	tables := []string{"metrics", "gpu_metrics", "services", "containers", "alerts", "terminal_sessions", "agent_credentials", "power_history_records", "power_history_stream_state", "power_history_gaps"}
+	// agent_rollout_slot is deleted INSIDE this transaction, with everything
+	// else. Rollout state is keyed by machine id and nothing expires it: a
+	// reserved or offered slot holds batch capacity that nothing would ever
+	// release for a machine that no longer exists, so the platform stalls
+	// behind a ghost. Deleting it before the transaction would be worse than
+	// leaving it — a delete that then failed and rolled back would have freed
+	// the slot for a machine that still exists.
+	tables := []string{"metrics", "gpu_metrics", "services", "containers", "alerts", "terminal_sessions", "agent_credentials", "power_history_records", "power_history_stream_state", "power_history_gaps", "agent_rollout_slot"}
 	for _, table := range tables {
 		if _, err := tx.Exec("DELETE FROM "+table+" WHERE machine_id = ?", id); err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to delete " + table})
@@ -885,6 +894,10 @@ func (s *Server) handleDeleteMachine(c echo.Context) error {
 	if err := tx.Commit(); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to commit"})
 	}
+
+	// Only after the commit: the durable rows are gone, so the in-memory dwell
+	// evidence should follow, and the freed capacity is a reason to look again.
+	s.forgetRolloutMachine(id)
 
 	machineLatencyMu.Lock()
 	delete(machineLatency, id)

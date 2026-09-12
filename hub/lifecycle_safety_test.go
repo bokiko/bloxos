@@ -94,9 +94,12 @@ func TestDeleteConnectedMachineClosesSocketAndDoesNotResurrect(t *testing.T) {
 	agentRunningVersionsMu.Lock()
 	agentRunningVersions["machine-A"] = agentVersionInfo{MachineID: "machine-A", RunningSHA: "deadbeef", OS: "linux", ReportedAt: time.Now()}
 	agentRunningVersionsMu.Unlock()
-	pendingReconnectsMu.Lock()
-	pendingReconnects["machine-A"] = time.Now()
-	pendingReconnectsMu.Unlock()
+	// A rollout slot, which is what now holds batch capacity. The old
+	// pendingReconnects map it replaces had the same hazard: state keyed by
+	// machine id that nothing expires on its own.
+	if _, _, err := s.rollout.reserve("linux/amd64", "machine-A", "deadbeef", 0); err != nil {
+		t.Fatalf("reserve a slot for the machine under test: %v", err)
+	}
 
 	events, unsubscribe := subscribeBroadcast(t)
 	defer unsubscribe()
@@ -119,11 +122,16 @@ func TestDeleteConnectedMachineClosesSocketAndDoesNotResurrect(t *testing.T) {
 	agentRunningVersionsMu.RLock()
 	_, versionKept := agentRunningVersions["machine-A"]
 	agentRunningVersionsMu.RUnlock()
-	pendingReconnectsMu.Lock()
-	_, reconnectKept := pendingReconnects["machine-A"]
-	pendingReconnectsMu.Unlock()
-	if versionKept || reconnectKept {
-		t.Fatalf("rollout state leaked: version=%v reconnect=%v", versionKept, reconnectKept)
+	var slotsKept int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM agent_rollout_slot WHERE machine_id = ?`,
+		"machine-A").Scan(&slotsKept); err != nil {
+		t.Fatalf("count slots: %v", err)
+	}
+	if versionKept || slotsKept != 0 {
+		// A leaked slot is worse than untidy: reserved and offered slots hold
+		// batch capacity, and nothing would ever release it for a machine that
+		// no longer exists, so the platform stalls behind a ghost.
+		t.Fatalf("rollout state leaked: version=%v slots=%d", versionKept, slotsKept)
 	}
 
 	// A late frame on the dead socket must not bring the machine back.
@@ -786,46 +794,43 @@ collect:
 	}
 }
 
-// TestAnnounceCannotRearmReconnectAfterDelete: the update announce runs on
-// its own goroutine; its reconnect expectation must arm only while the
-// agent still owns the registry entry, so a delete cannot be followed by a
-// late arm and a phantom rollout failure.
-func TestAnnounceCannotRearmReconnectAfterDelete(t *testing.T) {
+// TestAnnounceCannotActOnADeletedMachine: the announce runs on its own
+// goroutine, so a delete can land while it is queued. The ownership check that
+// used to guard arming a reconnect expectation now guards the SEND itself,
+// which is strictly stronger — the old code still wrote to the socket and only
+// declined to arm afterwards.
+func TestAnnounceCannotActOnADeletedMachine(t *testing.T) {
 	_, s := setupTestServer(t)
 	agent := &ConnectedAgent{MachineID: "machine-A"}
 	s.agentsMu.Lock()
 	s.agents["machine-A"] = agent
 	s.agentsMu.Unlock()
-	defer func() {
-		pendingReconnectsMu.Lock()
-		delete(pendingReconnects, "machine-A")
-		pendingReconnectsMu.Unlock()
-	}()
 
-	if !s.armReconnectIfRegistered("machine-A", agent) {
-		t.Fatal("registered agent must be able to arm its reconnect expectation")
-	}
-	pendingReconnectsMu.Lock()
-	_, armed := pendingReconnects["machine-A"]
-	pendingReconnectsMu.Unlock()
-	if !armed {
-		t.Fatal("expectation not armed for registered agent")
+	if !s.isRegisteredConnection("machine-A", agent) {
+		t.Fatal("control: a registered agent must be recognised as the owner")
 	}
 
-	// What delete does: take the entry, clear the expectation.
+	// What delete does: take the registry entry and drop the rollout state.
 	s.agentsMu.Lock()
 	delete(s.agents, "machine-A")
 	s.agentsMu.Unlock()
-	clearReconnectExpectation("machine-A")
+	s.forgetRolloutMachine("machine-A")
 
-	if s.armReconnectIfRegistered("machine-A", agent) {
-		t.Fatal("late announce armed a reconnect expectation for a deleted machine")
+	if s.isRegisteredConnection("machine-A", agent) {
+		t.Fatal("a deleted machine's connection is still treated as its owner")
 	}
-	pendingReconnectsMu.Lock()
-	_, armed = pendingReconnects["machine-A"]
-	pendingReconnectsMu.Unlock()
-	if armed {
-		t.Fatal("reconnect expectation re-armed after delete")
+
+	// A late announce must neither write nor leave durable state behind. It is
+	// safe to call with a nil Conn precisely because it must never reach one.
+	s.announceVersionToAgent("machine-A", agent)
+
+	var slots int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM agent_rollout_slot WHERE machine_id = ?`,
+		"machine-A").Scan(&slots); err != nil {
+		t.Fatalf("count slots: %v", err)
+	}
+	if slots != 0 {
+		t.Fatalf("a late announce resurrected %d slot(s) for a deleted machine", slots)
 	}
 }
 

@@ -110,7 +110,9 @@ func (s *Server) registerAgentConnection(machineID string, agent *ConnectedAgent
 		log.Printf("agent %s reconnected; closing displaced connection", machineID)
 		_ = displaced.Conn.Close()
 	}
-	s.goTracked(func() { s.announceVersionToAgent(machineID, agent) })
+	// Wake the scheduler rather than announcing here. It is the only sender,
+	// so a connect cannot race a version report or a resume for the same slot.
+	s.wakeRollout()
 	s.goTracked(func() { s.sendAISessionsConfig(machineID, agent) })
 }
 
@@ -132,6 +134,19 @@ func (s *Server) unregisterAgentConnection(machineID string, agent *ConnectedAge
 		delete(s.agents, machineID)
 	}
 	s.agentsMu.Unlock()
+
+	// Drop THIS connection's rollout evidence, after the registry lock is
+	// released. Every exiting connection, including a displaced one: each owns
+	// only its own record, so this can never take the winner's proof. Without
+	// it a disconnect left dwell evidence behind for a socket that no longer
+	// exists, and the only thing bounding growth was a prune that could evict
+	// the wrong record.
+	if s.rollout != nil {
+		for _, platform := range supportedAgentPlatforms {
+			s.rollout.forgetConnection(platform.String(), machineID, agent)
+		}
+	}
+
 	if stillOurs {
 		s.markOffline(machineID)
 		// Live sessions only: a machine that is no longer connected has no
@@ -1284,6 +1299,12 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 
 				s.upsertMachine(m)
 				s.storeMetrics(m)
+				// A metrics frame is the hub OBSERVING the machine work, which
+				// is what a rollout dwell is made of. Bound to this connection
+				// and stamped with hub receipt time: an agent's own timestamp
+				// is its claim about itself, and a stalled one keeps asserting
+				// freshness.
+				s.noteRolloutMetrics(machineID, agent)
 
 				// Enrich the metrics broadcast with latency.
 				machineLatencyMu.RLock()
@@ -1441,7 +1462,7 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 					continue
 				}
 				if !s.ingestFrame(machineID, agent, registered, func() {
-					s.recordAgentRunningVersion(machineID, report)
+					s.recordAgentRunningVersionOn(machineID, agent, report)
 				}) {
 					return nil
 				}
@@ -1550,7 +1571,7 @@ func (s *Server) handleAgentWS(c echo.Context) error {
 				if pendingVersionReport != nil {
 					held := *pendingVersionReport
 					pendingVersionReport = nil
-					if !s.ingestFrame(machineID, agent, registered, func() { s.recordAgentRunningVersion(machineID, held) }) {
+					if !s.ingestFrame(machineID, agent, registered, func() { s.recordAgentRunningVersionOn(machineID, agent, held) }) {
 						return nil
 					}
 				}

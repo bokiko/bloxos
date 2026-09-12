@@ -25,7 +25,14 @@ func openPauseTestServer(t *testing.T, path string) *Server {
 	if err := runMigrations(db); err != nil {
 		t.Fatal(err)
 	}
-	return newServer(db)
+	s := newServer(db)
+	// Migrations have run, so build the controller — the explicit step main()
+	// performs after initDB. Without it a resume correctly refuses: there is
+	// no controller to retry the failed attempts with.
+	if err := s.initRollout(); err != nil {
+		t.Fatalf("init rollout controller: %v", err)
+	}
+	return s
 }
 
 func requestOperatorPause(t *testing.T, s *Server, pause bool) *httptest.ResponseRecorder {
@@ -44,25 +51,14 @@ func requestOperatorPause(t *testing.T, s *Server, pause bool) *httptest.Respons
 	return r
 }
 
-func isolateAutomaticPause(t *testing.T) {
-	t.Helper()
-	rolloutPausedMu.Lock()
-	old, reason := rolloutPaused, rolloutPauseReason
-	rolloutPaused, rolloutPauseReason = false, ""
-	rolloutPausedMu.Unlock()
-	rolloutFailuresMu.Lock()
-	failures := append([]rolloutFailure(nil), rolloutFailures...)
-	rolloutFailures = nil
-	rolloutFailuresMu.Unlock()
-	t.Cleanup(func() {
-		rolloutPausedMu.Lock()
-		rolloutPaused, rolloutPauseReason = old, reason
-		rolloutPausedMu.Unlock()
-		rolloutFailuresMu.Lock()
-		rolloutFailures = failures
-		rolloutFailuresMu.Unlock()
-	})
-}
+// isolateAutomaticPause used to save and restore the process-wide automatic
+// breaker. That breaker is gone: a platform halt replaces it, and halts live in
+// the database each Server owns, so there is no shared state to isolate.
+//
+// Kept as a no-op rather than deleted from every call site, so the tests below
+// keep reading as "this one is about the operator pause, not the automatic
+// one" — which is the distinction they exist to police.
+func isolateAutomaticPause(t *testing.T) { t.Helper() }
 
 func TestOperatorPauseSurvivesDatabaseReopen(t *testing.T) {
 	isolateAutomaticPause(t)
@@ -199,22 +195,44 @@ func TestOperatorPauseSurvivesSHAChangeAndSuppressesAnnouncements(t *testing.T) 
 	if r := requestOperatorPause(t, s, true); r.Code != 200 {
 		t.Fatal(r.Code)
 	}
-	rolloutPausedMu.Lock()
-	rolloutPaused, rolloutPauseReason = true, "automatic breaker"
-	rolloutPausedMu.Unlock()
+	// Halt the platform, as a failed attempt would.
+	if err := haltPlatformForTest(t, s, "linux/amd64", before); err != nil {
+		t.Fatalf("halt: %v", err)
+	}
+
 	if err := os.WriteFile(binary, []byte("changed binary fixture"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	recomputeBinaryFor("linux")
-	if currentAgentBinaryState("linux").SHA == before {
+	after := currentAgentBinaryState("linux").SHA
+	if after == before {
 		t.Fatal("test did not change served SHA")
 	}
-	rolloutPausedMu.RLock()
-	autoPaused := rolloutPaused
-	rolloutPausedMu.RUnlock()
-	if autoPaused {
-		t.Fatal("new build did not reset automatic breaker")
+
+	// A new build must clear the halt. It no longer does so by resetting a
+	// global: the changed candidate starts a new GENERATION, so the halt
+	// belongs to a rollout that is over. Asserting the observable outcome
+	// rather than the mechanism is the point — the old test asserted a boolean
+	// that no longer exists, while this behaviour still has to hold.
+	if _, _, err := s.rollout.reserve("linux/amd64", "halt-reset-probe", after, 0); err != nil {
+		t.Fatalf("reserve after the candidate changed: %v", err)
 	}
+	st, err := s.rollout.platformState("linux/amd64")
+	if err != nil || st == nil {
+		t.Fatalf("platform state: %v", err)
+	}
+	if st.Status == rolloutHalted {
+		t.Fatalf("a new build did not clear the halt: %s", st.HaltReason)
+	}
+	// The probe took the canary slot. Release it, and the halted fixture's
+	// slot with it, so the machine this test is actually about can be admitted
+	// — otherwise the assertion below would fail on capacity rather than on
+	// the pause behaviour it exists to check.
+	if _, err := s.db.Exec(`DELETE FROM agent_rollout_slot WHERE machine_id IN (?, ?)`,
+		"halt-reset-probe", "halt-victim"); err != nil {
+		t.Fatalf("clear fixture slots: %v", err)
+	}
+
 	if paused, _ := s.operatorRolloutPause(); !paused {
 		t.Fatal("SHA change cleared operator pause")
 	}
@@ -235,7 +253,20 @@ func TestOperatorPauseSurvivesSHAChangeAndSuppressesAnnouncements(t *testing.T) 
 	defer client.Close()
 	conn := <-connections
 	defer conn.Close()
-	agent := &ConnectedAgent{Conn: conn}
+	agent := &ConnectedAgent{MachineID: "pause-regression", Conn: conn}
+	// Register it, as a real connection is. The send boundary now verifies
+	// the registry still owns the machine before writing, so an announcement
+	// that queued behind unrelated socket writes cannot go down a socket that
+	// has since been displaced or deleted. An unregistered connection is
+	// correctly refused, which production never produces.
+	s.agentsMu.Lock()
+	s.agents["pause-regression"] = agent
+	s.agentsMu.Unlock()
+	t.Cleanup(func() {
+		s.agentsMu.Lock()
+		delete(s.agents, "pause-regression")
+		s.agentsMu.Unlock()
+	})
 	frames := make(chan []byte, 1)
 	go func() {
 		_, data, err := client.ReadMessage()
@@ -276,12 +307,44 @@ func TestOperatorPauseSurvivesSHAChangeAndSuppressesAnnouncements(t *testing.T) 
 		t.Fatal("explicit resume did not allow announcement")
 	}
 
-	// A different socket writer must not hold Pause hostage. The announcement
-	// waiting behind it must recheck the pause before sending anything.
-	agent.WriteMu.Lock()
+	// An unrelated socket writer must not hold Pause hostage, and a pause that
+	// is ACKNOWLEDGED must stop an announcement that has already reserved its
+	// slot but not yet written.
+	//
+	// The old version slept 50ms and relied on the announcement queueing
+	// behind a held WriteMu. That is no longer what happens: the scheduler
+	// TryLocks, so a busy socket is skipped instantly and there is nothing
+	// queued to race. The test would have passed while exercising none of the
+	// boundary it names. This one stops the goroutine AT the boundary instead.
+	atBoundary := make(chan struct{})
+	release := make(chan struct{})
+	announceSendBoundaryHook = func(id string) {
+		if id != "pause-regression" {
+			return
+		}
+		close(atBoundary)
+		<-release
+	}
+	t.Cleanup(func() { announceSendBoundaryHook = nil })
+
+	// Clear the slot so this announcement is a fresh admission rather than a
+	// duplicate trigger, which would return before reaching the boundary.
+	if _, err := s.db.Exec(`DELETE FROM agent_rollout_slot WHERE machine_id = ?`,
+		"pause-regression"); err != nil {
+		t.Fatalf("clear slot: %v", err)
+	}
+
 	announceDone := make(chan struct{})
 	go func() { s.announceVersionToAgent("pause-regression", agent); close(announceDone) }()
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-atBoundary:
+	case <-time.After(2 * time.Second):
+		close(release)
+		t.Fatal("the announcement never reached its send boundary")
+	}
+
+	// Pause must not wait behind the in-flight announcement, which is holding
+	// this agent's write lock.
 	pauseDone := make(chan int, 1)
 	go func() {
 		r := httptest.NewRecorder()
@@ -295,21 +358,48 @@ func TestOperatorPauseSurvivesSHAChangeAndSuppressesAnnouncements(t *testing.T) 
 	select {
 	case status := <-pauseDone:
 		if status != 200 {
-			agent.WriteMu.Unlock()
-			t.Fatal(status)
+			close(release)
+			t.Fatalf("pause returned %d", status)
 		}
-	case <-time.After(time.Second):
-		agent.WriteMu.Unlock()
-		t.Fatal("Pause waited behind an unrelated agent socket writer")
+	case <-time.After(2 * time.Second):
+		close(release)
+		t.Fatal("Pause waited behind an in-flight announcement")
 	}
-	agent.WriteMu.Unlock()
+
+	// The pause is acknowledged. Only now is the announcement allowed to
+	// continue, and nothing may escape.
+	close(release)
 	select {
 	case <-announceDone:
-	case <-time.After(time.Second):
-		t.Fatal("queued announcement did not drain")
+	case <-time.After(2 * time.Second):
+		t.Fatal("the announcement did not drain")
 	}
-	_ = client.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+	_ = client.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
 	if _, data, err := client.ReadMessage(); err == nil {
-		t.Fatalf("queued announcement escaped pause: %s", data)
+		t.Fatalf("an announcement escaped an acknowledged pause: %s", data)
 	}
+}
+
+// haltPlatformForTest drives a platform into a halt the way a failed attempt
+// does: reserve a slot, let its window lapse, and tick.
+func haltPlatformForTest(t *testing.T, s *Server, platform, candidate string) error {
+	t.Helper()
+	if _, _, err := s.rollout.reserve(platform, "halt-victim", candidate, 0); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`UPDATE agent_rollout_slot SET deadline_unix_ms = 0
+		WHERE platform = ? AND machine_id = ?`, platform, "halt-victim"); err != nil {
+		return err
+	}
+	if err := s.rollout.tick(platform); err != nil {
+		return err
+	}
+	st, err := s.rollout.platformState(platform)
+	if err != nil {
+		return err
+	}
+	if st == nil || st.Status != rolloutHalted {
+		t.Fatalf("fixture did not halt the platform: %+v", st)
+	}
+	return nil
 }
