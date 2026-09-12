@@ -377,6 +377,16 @@ func (s *Server) announceVersionToAgent(machineID string, agent *ConnectedAgent)
 	}
 	data, _ := json.Marshal(msg)
 
+	// announceSendBoundaryHook lets a test stop a goroutine exactly here — a
+	// reservation taken, the write lock held, nothing sent — so the recheck
+	// below can be exercised against a pause that arrives in that window. A
+	// sleep cannot do this: with TryLock a busy socket is skipped instantly,
+	// so there is no queue to race and the test would pass without ever
+	// reaching the boundary it names.
+	if announceSendBoundaryHook != nil {
+		announceSendBoundaryHook(machineID)
+	}
+
 	// The write lock is already held (taken before any slot state was
 	// touched). Recheck durable intent now, immediately before the write.
 	s.operatorRolloutMu.RLock()
@@ -453,6 +463,10 @@ func (s *Server) noteRolloutMetrics(machineID string, conn *ConnectedAgent) {
 	agentRunningVersionsMu.RUnlock()
 	s.rollout.observeTelemetry(rolloutPlatformKey(osName, arch), machineID, conn)
 }
+
+// announceSendBoundaryHook, when set by a test, runs after a reservation is
+// held and immediately before the pause/generation/ownership recheck.
+var announceSendBoundaryHook func(machineID string)
 
 // rolloutPlatformKey names a rollout target. Empty arch means the default,
 // matching what an arch-less download serves.
@@ -817,7 +831,12 @@ func (s *Server) recordAgentRunningVersionOn(machineID string, conn *ConnectedAg
 	// like an offer that never left.
 	if s.rollout != nil && conn != nil && expectedSHA != "" && runningSHA == expectedSHA {
 		platform := rolloutPlatformKey(osName, arch)
-		if st, err := s.rollout.platformState(platform); err == nil && st != nil {
+		if st, err := s.rollout.platformState(platform); err == nil && st != nil &&
+			strings.EqualFold(st.Candidate, expectedSHA) {
+			// The platform's candidate must BE the SHA this report matched.
+			// Read independently, a report that arrives just after the served
+			// binary changed would mark the NEW generation's slot observed on
+			// the strength of the machine running the OLD bytes.
 			if err := s.rollout.observeRunningCandidate(platform, machineID, st.Generation); err != nil {
 				log.Printf("rollout: could not record %s as running the candidate: %v", machineID, err)
 			}
@@ -949,7 +968,13 @@ func (s *Server) handleListVersions(c echo.Context) error {
 		for _, platform := range supportedAgentPlatforms {
 			status, err := s.rollout.status(platform.String())
 			if err != nil {
+				// Omitting the platform would read as "nothing is rolling out
+				// here", which is the one thing we do not know.
 				log.Printf("rollout: could not read status for %s: %v", platform, err)
+				rollout[platform.String()] = map[string]string{
+					"status": "unavailable",
+					"reason": err.Error(),
+				}
 				continue
 			}
 			if status == nil {
@@ -1022,14 +1047,22 @@ func (s *Server) resumeRolloutAtomically() error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// Without a controller there is nothing to retry, and clearing the pause
+	// would tell an operator updates resumed while every failed attempt stayed
+	// terminal and nothing could ever be announced anyway.
+	if s.rollout == nil {
+		reason := "agent rollout controller unavailable"
+		if s.rolloutErr != nil {
+			reason = s.rolloutErr.Error()
+		}
+		return fmt.Errorf("cannot resume: %s", reason)
+	}
 	if err := setOperatorRolloutPauseTx(tx, false); err != nil {
 		return err
 	}
-	if s.rollout != nil {
-		for _, platform := range supportedAgentPlatforms {
-			if err := s.rollout.resumeTx(tx, platform.String()); err != nil {
-				return err
-			}
+	for _, platform := range supportedAgentPlatforms {
+		if err := s.rollout.resumeTx(tx, platform.String()); err != nil {
+			return err
 		}
 	}
 	return tx.Commit()

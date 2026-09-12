@@ -89,10 +89,24 @@ const (
 )
 
 // Platform statuses.
+// Platform statuses. Only two are persisted, deliberately.
+//
+// There is no durable "complete". Whether the fleet is caught up is a
+// statement about machines that happen to be connected right now, so writing
+// it down created a state that had to be UNWOUND when a late machine appeared
+// — and that reopen transition was a hole: a first stage in which every
+// machine was withheld had nothing outstanding, completed having proven
+// nothing, and then reopened at batch size, putting two machines on an
+// untested build with no canary ever having passed.
+//
+// The stage is the only authority on canary-versus-batch. A late machine
+// enters whatever stage the platform is actually in: stage 0 until a canary
+// validates, the batch stage afterwards. Nothing can bypass that, because
+// there is no transition to bypass it with. "Caught up" is derived for display
+// and never stored.
 const (
-	rolloutActive   = "active"
-	rolloutComplete = "complete"
-	rolloutHalted   = "halted"
+	rolloutActive = "active"
+	rolloutHalted = "halted"
 )
 
 // rolloutEvidence is dwell evidence for one machine. Memory only.
@@ -123,9 +137,6 @@ type rolloutEvidence struct {
 	// metrics frame. Hub receipt time throughout: an agent's own timestamp is
 	// its claim about itself, and a stalled one keeps asserting freshness.
 	lastMetrics time.Time
-	// touched is the last time this record was written, used only to bound how
-	// many records one machine may accumulate.
-	touched time.Time
 }
 
 type rolloutController struct {
@@ -329,36 +340,6 @@ func (c *rolloutController) reserve(platform, machineID, candidate string, relea
 	}
 	now := c.now()
 
-	// "Complete" means the fleet was caught up at the time, NOT that the
-	// rollout is closed forever. A machine that was offline through the whole
-	// rollout, or was enrolled afterwards, still needs the candidate — so its
-	// arrival reopens the batch stage. Validated history is preserved: the
-	// stage is not rewound and healthy slots stay healthy, so reopening costs
-	// no re-validation of machines that already passed.
-	if st.Status == rolloutComplete {
-		var existing int
-		if err := tx.QueryRow(`SELECT COUNT(*) FROM agent_rollout_slot
-			WHERE platform = ? AND generation = ? AND machine_id = ? AND state = ?`,
-			platform, st.Generation, machineID, rolloutHealthy).Scan(&existing); err != nil {
-			return nil, "", err
-		}
-		if existing > 0 {
-			return stop("") // this machine is already validated
-		}
-		reopened := st.Stage
-		if reopened < 1 {
-			reopened = 1 // never send a late arrival through the canary again
-		}
-		st.Stage = reopened
-		st.Status = rolloutActive
-		if _, err := tx.Exec(`UPDATE agent_rollout_platform
-			SET status = ?, stage = ?, updated_unix_ms = ?
-			WHERE platform = ? AND generation = ?`,
-			rolloutActive, reopened, now.UnixMilli(), platform, st.Generation); err != nil {
-			return nil, "", err
-		}
-	}
-
 	// An existing slot for this machine in this generation decides the answer.
 	var state string
 	var attempt, resends int
@@ -498,7 +479,7 @@ func (c *rolloutController) forgetEvidence(machineID string) {
 // back running the candidate, that question is answered by the machine rather
 // than by bookkeeping the hub lost.
 func (c *rolloutController) observeRunningCandidate(platform, machineID string, generation int64) error {
-	_, err := c.db.Exec(`UPDATE agent_rollout_slot SET state = ?
+	_, err := c.db.Exec(`UPDATE agent_rollout_slot SET state = ?, ran_candidate = 1
 		WHERE platform = ? AND generation = ? AND machine_id = ? AND state IN (?, ?)`,
 		rolloutObserved, platform, generation, machineID, rolloutReserved, rolloutOffered)
 	return err
@@ -515,6 +496,14 @@ func (c *rolloutController) markOffered(r *rolloutReservation) error {
 }
 
 // withhold records an eligibility refusal, visibly and without halting.
+//
+// It will NOT convert an existing reserved, offered or observed slot. Freshly
+// ineligible machines are checked before they ever reserve, so a row in one of
+// those states is an attempt already under way — quite possibly one whose
+// write landed and whose mark was lost. Turning it into a withheld row would
+// release capacity for an offer that may be live, and let another machine
+// become canary alongside it. Those attempts are resolved by evidence or by
+// their own timeout, never by a later refusal.
 func (c *rolloutController) withhold(platform, machineID, candidate string, release uint64, reason string) error {
 	tx, err := c.db.Begin()
 	if err != nil {
@@ -531,9 +520,9 @@ func (c *rolloutController) withhold(platform, machineID, candidate string, rele
 		VALUES (?, ?, ?, ?, 0, ?, ?, NULL, ?, ?)
 		ON CONFLICT (platform, generation, machine_id) DO UPDATE SET
 			state = excluded.state, reason = excluded.reason
-		WHERE agent_rollout_slot.state IN (?, ?)`,
+		WHERE agent_rollout_slot.state = ?`,
 		platform, st.Generation, machineID, st.Stage, rolloutWithheld, now, now, reason,
-		rolloutWithheld, rolloutReserved); err != nil {
+		rolloutWithheld); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -610,7 +599,6 @@ func (c *rolloutController) observeCandidateReport(platform, machineID string, c
 	// It does not advance the dwell, because being told a version is not the
 	// same as observing a machine work.
 	ev.sawCandidate = true
-	ev.touched = c.now()
 }
 
 // noteMetrics records a metrics frame and restarts the dwell if the connection
@@ -652,6 +640,15 @@ func (c *rolloutController) observeTelemetry(platform, machineID string, conn *C
 
 // evidenceFor returns this connection's own record, creating it if needed.
 // Caller holds c.mu.
+//
+// Records are NOT pruned. They live exactly as long as their handler:
+// unregisterAgentConnection drops each connection's record as it exits, and a
+// displaced socket is closed, so it exits too. A size backstop was worse than
+// nothing here — its eviction order used a timestamp that only advances on a
+// write, while an agent reports its version once on connect, so the record
+// holding a hard-won sawCandidate looked stale precisely because nothing had
+// needed to touch it. Churn on other sockets would then discard the live
+// connection's proof and the dwell could never complete until it reconnected.
 func (c *rolloutController) evidenceFor(platform, machineID string, conn *ConnectedAgent) *rolloutEvidence {
 	key := rolloutKey(platform, machineID)
 	byConn := c.evidence[key]
@@ -661,30 +658,10 @@ func (c *rolloutController) evidenceFor(platform, machineID string, conn *Connec
 	}
 	ev := byConn[conn]
 	if ev == nil {
-		ev = &rolloutEvidence{conn: conn, touched: c.now()}
+		ev = &rolloutEvidence{conn: conn}
 		byConn[conn] = ev
-		c.pruneLocked(key, byConn)
 	}
 	return ev
-}
-
-// rolloutMaxEvidencePerMachine bounds records kept for one machine. A machine
-// that reconnects repeatedly would otherwise accumulate one per socket; a
-// disconnect normally removes its own, and this covers the case where it does
-// not.
-const rolloutMaxEvidencePerMachine = 4
-
-func (c *rolloutController) pruneLocked(key string, byConn map[*ConnectedAgent]*rolloutEvidence) {
-	for len(byConn) > rolloutMaxEvidencePerMachine {
-		var oldest *ConnectedAgent
-		var oldestAt time.Time
-		for conn, ev := range byConn {
-			if oldest == nil || ev.touched.Before(oldestAt) {
-				oldest, oldestAt = conn, ev.touched
-			}
-		}
-		delete(byConn, oldest)
-	}
 }
 
 // forgetConnection drops a connection's evidence when its socket goes away.
@@ -902,16 +879,6 @@ func (c *rolloutController) tick(platform string) error {
 	return nil
 }
 
-// markComplete records that every eligible machine the hub can currently see
-// is validated. Reversible by definition — see reserve().
-func (c *rolloutController) markComplete(platform string) error {
-	_, err := c.db.Exec(`UPDATE agent_rollout_platform
-		SET status = ?, updated_unix_ms = ?
-		WHERE platform = ? AND status = ?`,
-		rolloutComplete, c.now().UnixMilli(), platform, rolloutActive)
-	return err
-}
-
 func (c *rolloutController) platformState(platform string) (*rolloutPlatformState, error) {
 	var st rolloutPlatformState
 	st.Platform = platform
@@ -933,12 +900,24 @@ type rolloutStatus struct {
 	Generation int64  `json:"generation"`
 	Candidate  string `json:"candidate_sha"`
 	Stage      int    `json:"stage"`
+	// Status is the DURABLE state: active or halted. Active means the
+	// automatic policy is enabled, not that something is being sent right now.
 	Status     string `json:"status"`
 	HaltReason string `json:"halt_reason,omitempty"`
-	// Updated counts machines RUNNING the candidate — validated ones and
-	// those still proving themselves. Counting only validated slots would
-	// report a machine that has already taken the update as not updated,
-	// which reads as a stalled rollout when it is a working one.
+	// Summary is derived for display and never stored. Whether a fleet is
+	// caught up is a statement about machines that happen to be connected, so
+	// persisting it created a state that had to be unwound when a late machine
+	// appeared — and that reopen path could skip the canary entirely.
+	Summary string `json:"summary"`
+	// Updated counts machines this generation has SEEN running the candidate,
+	// whatever happened to their validation afterwards. Deriving it from the
+	// current state instead meant a machine whose dwell failed stopped being
+	// counted as updated the moment it failed — leaving "0 updated, 1 failed"
+	// for a machine demonstrably on the new build.
+	//
+	// It is a count for THIS generation's slots only. Machines that were
+	// already current, and so never needed one, are not represented here at
+	// all; MachinesTotal on the fleet endpoints is the denominator, not this.
 	Updated int `json:"updated"`
 	// Validated is the subset that has completed its dwell.
 	Validated int `json:"validated"`
@@ -960,7 +939,7 @@ func (c *rolloutController) status(platform string) (*rolloutStatus, error) {
 		Stage: st.Stage, Status: st.Status, HaltReason: st.HaltReason,
 		WithheldReason: map[string]string{}, FailedReason: map[string]string{}}
 
-	rows, err := c.db.Query(`SELECT machine_id, state, reason FROM agent_rollout_slot
+	rows, err := c.db.Query(`SELECT machine_id, state, reason, ran_candidate FROM agent_rollout_slot
 		WHERE platform = ? AND generation = ?`, platform, st.Generation)
 	if err != nil {
 		return nil, err
@@ -968,16 +947,18 @@ func (c *rolloutController) status(platform string) (*rolloutStatus, error) {
 	defer rows.Close()
 	for rows.Next() {
 		var machineID, state, reason string
-		if err := rows.Scan(&machineID, &state, &reason); err != nil {
+		var ranCandidate int
+		if err := rows.Scan(&machineID, &state, &reason, &ranCandidate); err != nil {
 			return nil, err
+		}
+		if ranCandidate == 1 || state == rolloutHealthy {
+			out.Updated++
 		}
 		switch state {
 		case rolloutHealthy:
 			out.Validated++
-			out.Updated++
 		case rolloutObserved:
 			// Running the candidate, dwell still accruing.
-			out.Updated++
 		case rolloutReserved, rolloutOffered:
 			out.Pending++
 		case rolloutWithheld:
@@ -988,7 +969,31 @@ func (c *rolloutController) status(platform string) (*rolloutStatus, error) {
 			out.FailedReason[machineID] = reason
 		}
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out.Summary = rolloutSummary(out)
+	return out, nil
+}
+
+// rolloutSummary describes a platform in words an operator can act on.
+func rolloutSummary(st *rolloutStatus) string {
+	switch {
+	case st.Status == rolloutHalted:
+		return "halted — needs an operator: " + st.HaltReason
+	case st.Pending > 0:
+		return fmt.Sprintf("updating: %d in flight, %d validated", st.Pending, st.Validated)
+	case st.Validated == 0 && st.Withheld > 0:
+		return fmt.Sprintf("waiting for an eligible machine: %d withheld", st.Withheld)
+	case st.Validated == 0:
+		return "waiting for an eligible machine"
+	case st.Failed > 0:
+		return fmt.Sprintf("%d validated, %d failed", st.Validated, st.Failed)
+	default:
+		// Only about machines currently connected: an offline one is not
+		// evidence of anything, which is why this is never written down.
+		return fmt.Sprintf("caught up among eligible connected machines: %d validated", st.Validated)
+	}
 }
 
 // resume clears a halt and gives every failed slot a NEW attempt.

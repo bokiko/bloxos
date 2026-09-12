@@ -597,6 +597,13 @@ var migrations = []migration{
 					-- counter made Resume permanently inert once automatic
 					-- recovery had exhausted it.
 					resend_count      INTEGER NOT NULL DEFAULT 0,
+					-- Whether this machine was ever OBSERVED running the
+					-- candidate, independent of whether its dwell then
+					-- succeeded. Without it, a machine whose validation later
+					-- failed stops being counted as updated even though it is
+					-- demonstrably on the new build, and an operator reading
+					-- "0 updated, 1 failed" concludes nothing shipped.
+					ran_candidate     INTEGER NOT NULL DEFAULT 0,
 					PRIMARY KEY (platform, generation, machine_id)
 				)`,
 				// The capacity query counts unvalidated slots for one

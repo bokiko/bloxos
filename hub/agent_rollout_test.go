@@ -725,19 +725,60 @@ func TestProgressionNeedsNoOperatorAction(t *testing.T) {
 	}
 }
 
-// "Complete" means caught up now, not closed forever.
-func TestALateMachineReopensACompletedPlatform(t *testing.T) {
+// A machine that was offline for the whole rollout must still be offered the
+// update when it appears — and must NOT skip the canary if none ever passed.
+//
+// There is no durable "complete" state to reopen. The stage is the only
+// authority: a late machine enters whatever stage the platform is actually in.
+// That is what closes the hole the completion state created, where an
+// all-withheld first stage finished having proven nothing and the next
+// arrivals were treated as post-canary work.
+func TestALateMachineEntersTheStageThePlatformIsActuallyIn(t *testing.T) {
 	f := newRolloutFixture(t)
-	r, _, _ := f.c.reserve(testPlatform, "m1", candidateA, 8)
-	if r == nil {
-		t.Fatal("reserve")
+
+	// Nobody eligible yet: every machine is withheld.
+	for _, id := range []string{"w1", "w2"} {
+		if err := f.c.withhold(testPlatform, id, candidateA, 8, "no pinned update key"); err != nil {
+			t.Fatalf("withhold: %v", err)
+		}
 	}
-	f.prove(testPlatform, "m1", candidateA, conn("m1"))
+	for i := 0; i < 3; i++ {
+		if err := f.c.tick(testPlatform); err != nil {
+			t.Fatalf("tick: %v", err)
+		}
+	}
+
+	// Two machines become eligible at once. Exactly ONE may be admitted,
+	// because no canary has ever passed on this platform.
+	admitted := 0
+	for _, id := range []string{"late-1", "late-2"} {
+		r, _, err := f.c.reserve(testPlatform, id, candidateA, 8)
+		if err != nil {
+			t.Fatalf("reserve %s: %v", id, err)
+		}
+		if r != nil {
+			admitted++
+			if r.Stage != 0 {
+				t.Fatalf("%s was admitted at stage %d without a validated canary", id, r.Stage)
+			}
+		}
+	}
+	if admitted != 1 {
+		t.Fatalf("%d machines were admitted with no canary ever validated; exactly one may be", admitted)
+	}
+}
+
+// And once a canary HAS passed, a late arrival joins the batch stage rather
+// than being run through the canary again.
+func TestALateMachineJoinsTheBatchOnceACanaryPassed(t *testing.T) {
+	f := newRolloutFixture(t)
+	canary, _, _ := f.c.reserve(testPlatform, "canary", candidateA, 8)
+	if canary == nil {
+		t.Fatal("canary")
+	}
+	f.prove(testPlatform, "canary", candidateA, conn("canary"))
 	if err := f.c.tick(testPlatform); err != nil {
 		t.Fatalf("tick: %v", err)
-	}
-	if err := f.c.markComplete(testPlatform); err != nil {
-		t.Fatalf("markComplete: %v", err)
 	}
 
 	late, _, err := f.c.reserve(testPlatform, "late", candidateA, 8)
@@ -745,17 +786,13 @@ func TestALateMachineReopensACompletedPlatform(t *testing.T) {
 		t.Fatalf("reserve: %v", err)
 	}
 	if late == nil {
-		t.Fatal("a machine that was offline for the whole rollout must still be offered the update")
+		t.Fatal("a machine that appeared after the canary must still be offered the update")
 	}
 	if late.Stage == 0 {
-		t.Fatal("a late arrival must not be run through the canary again")
+		t.Fatal("a late arrival was run through the canary again despite one having passed")
 	}
-	st, _ := f.c.platformState(testPlatform)
-	if st.Status != rolloutActive {
-		t.Fatalf("the platform should have reopened, status=%s", st.Status)
-	}
-	// The machine that already passed is not re-validated.
-	if again, _, _ := f.c.reserve(testPlatform, "m1", candidateA, 8); again != nil {
+	// The already-validated machine is not re-admitted.
+	if again, _, _ := f.c.reserve(testPlatform, "canary", candidateA, 8); again != nil {
 		t.Fatal("a validated machine must not be reserved again")
 	}
 }
@@ -831,8 +868,11 @@ func TestStatusCountsRunningCandidatesNotOnlyValidatedOnes(t *testing.T) {
 	if r == nil {
 		t.Fatal("reserve")
 	}
-	if _, err := f.db.Exec(`UPDATE agent_rollout_slot SET state = ? WHERE machine_id = ?`,
-		rolloutObserved, "m1"); err != nil {
+	// Through the real transition rather than direct SQL: the durable
+	// ran_candidate marker is what makes "updated" survive a later failure,
+	// and hand-writing the state would skip it.
+	st, _ := f.c.platformState(testPlatform)
+	if err := f.c.observeRunningCandidate(testPlatform, "m1", st.Generation); err != nil {
 		t.Fatalf("observe: %v", err)
 	}
 	status, err := f.c.status(testPlatform)
@@ -950,5 +990,53 @@ func TestLaterMachinesAreAdmittedWithoutAnyFurtherTrigger(t *testing.T) {
 	if r == nil {
 		t.Fatalf("%s was never admitted after the batch ahead of it passed (%q); "+
 			"a rollout that needs a trigger to continue looks exactly like one that is working", last, why)
+	}
+}
+
+// A later eligibility refusal must not release an attempt already under way.
+//
+// Fresh ineligibility is caught before a machine ever reserves, so a reserved
+// or offered row means an attempt is in flight — quite possibly one whose
+// write landed and whose mark was lost. Converting it to withheld would free
+// capacity for an offer that may be live, and let a second machine become
+// canary alongside it.
+func TestALaterRefusalCannotReleaseAnAttemptInFlight(t *testing.T) {
+	f := newRolloutFixture(t)
+	r, _, err := f.c.reserve(testPlatform, "m1", candidateA, 8)
+	if err != nil || r == nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	// Simulate the write-before-mark window: the slot still says reserved.
+	if state, _, _ := f.slot(testPlatform, "m1"); state != rolloutReserved {
+		t.Fatalf("expected reserved, got %s", state)
+	}
+
+	// Its signature material disappears and the hub now refuses it.
+	if err := f.c.withhold(testPlatform, "m1", candidateA, 8, "no pinned update key"); err != nil {
+		t.Fatalf("withhold: %v", err)
+	}
+	state, _, _ := f.slot(testPlatform, "m1")
+	if state != rolloutReserved {
+		t.Fatalf("an in-flight attempt was converted to %s; its offer may already have landed", state)
+	}
+
+	// And the canary slot is still occupied, so nobody else takes it.
+	if other, _, _ := f.c.reserve(testPlatform, "m2", candidateA, 8); other != nil {
+		t.Fatal("a second machine became canary while an ambiguous attempt was still outstanding")
+	}
+}
+
+// A machine with no slot at all is withheld normally.
+func TestAnIneligibleMachineWithNoSlotIsStillWithheld(t *testing.T) {
+	f := newRolloutFixture(t)
+	if err := f.c.withhold(testPlatform, "fresh", candidateA, 8, "no usable transport"); err != nil {
+		t.Fatalf("withhold: %v", err)
+	}
+	status, err := f.c.status(testPlatform)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if status.Withheld != 1 || status.WithheldReason["fresh"] == "" {
+		t.Fatalf("a fresh ineligible machine must be withheld with its reason: %+v", status)
 	}
 }

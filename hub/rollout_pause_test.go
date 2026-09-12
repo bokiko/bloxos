@@ -25,7 +25,14 @@ func openPauseTestServer(t *testing.T, path string) *Server {
 	if err := runMigrations(db); err != nil {
 		t.Fatal(err)
 	}
-	return newServer(db)
+	s := newServer(db)
+	// Migrations have run, so build the controller — the explicit step main()
+	// performs after initDB. Without it a resume correctly refuses: there is
+	// no controller to retry the failed attempts with.
+	if err := s.initRollout(); err != nil {
+		t.Fatalf("init rollout controller: %v", err)
+	}
+	return s
 }
 
 func requestOperatorPause(t *testing.T, s *Server, pause bool) *httptest.ResponseRecorder {
@@ -300,12 +307,44 @@ func TestOperatorPauseSurvivesSHAChangeAndSuppressesAnnouncements(t *testing.T) 
 		t.Fatal("explicit resume did not allow announcement")
 	}
 
-	// A different socket writer must not hold Pause hostage. The announcement
-	// waiting behind it must recheck the pause before sending anything.
-	agent.WriteMu.Lock()
+	// An unrelated socket writer must not hold Pause hostage, and a pause that
+	// is ACKNOWLEDGED must stop an announcement that has already reserved its
+	// slot but not yet written.
+	//
+	// The old version slept 50ms and relied on the announcement queueing
+	// behind a held WriteMu. That is no longer what happens: the scheduler
+	// TryLocks, so a busy socket is skipped instantly and there is nothing
+	// queued to race. The test would have passed while exercising none of the
+	// boundary it names. This one stops the goroutine AT the boundary instead.
+	atBoundary := make(chan struct{})
+	release := make(chan struct{})
+	announceSendBoundaryHook = func(id string) {
+		if id != "pause-regression" {
+			return
+		}
+		close(atBoundary)
+		<-release
+	}
+	t.Cleanup(func() { announceSendBoundaryHook = nil })
+
+	// Clear the slot so this announcement is a fresh admission rather than a
+	// duplicate trigger, which would return before reaching the boundary.
+	if _, err := s.db.Exec(`DELETE FROM agent_rollout_slot WHERE machine_id = ?`,
+		"pause-regression"); err != nil {
+		t.Fatalf("clear slot: %v", err)
+	}
+
 	announceDone := make(chan struct{})
 	go func() { s.announceVersionToAgent("pause-regression", agent); close(announceDone) }()
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-atBoundary:
+	case <-time.After(2 * time.Second):
+		close(release)
+		t.Fatal("the announcement never reached its send boundary")
+	}
+
+	// Pause must not wait behind the in-flight announcement, which is holding
+	// this agent's write lock.
 	pauseDone := make(chan int, 1)
 	go func() {
 		r := httptest.NewRecorder()
@@ -319,22 +358,25 @@ func TestOperatorPauseSurvivesSHAChangeAndSuppressesAnnouncements(t *testing.T) 
 	select {
 	case status := <-pauseDone:
 		if status != 200 {
-			agent.WriteMu.Unlock()
-			t.Fatal(status)
+			close(release)
+			t.Fatalf("pause returned %d", status)
 		}
-	case <-time.After(time.Second):
-		agent.WriteMu.Unlock()
-		t.Fatal("Pause waited behind an unrelated agent socket writer")
+	case <-time.After(2 * time.Second):
+		close(release)
+		t.Fatal("Pause waited behind an in-flight announcement")
 	}
-	agent.WriteMu.Unlock()
+
+	// The pause is acknowledged. Only now is the announcement allowed to
+	// continue, and nothing may escape.
+	close(release)
 	select {
 	case <-announceDone:
-	case <-time.After(time.Second):
-		t.Fatal("queued announcement did not drain")
+	case <-time.After(2 * time.Second):
+		t.Fatal("the announcement did not drain")
 	}
-	_ = client.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+	_ = client.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
 	if _, data, err := client.ReadMessage(); err == nil {
-		t.Fatalf("queued announcement escaped pause: %s", data)
+		t.Fatalf("an announcement escaped an acknowledged pause: %s", data)
 	}
 }
 

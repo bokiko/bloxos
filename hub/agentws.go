@@ -134,6 +134,19 @@ func (s *Server) unregisterAgentConnection(machineID string, agent *ConnectedAge
 		delete(s.agents, machineID)
 	}
 	s.agentsMu.Unlock()
+
+	// Drop THIS connection's rollout evidence, after the registry lock is
+	// released. Every exiting connection, including a displaced one: each owns
+	// only its own record, so this can never take the winner's proof. Without
+	// it a disconnect left dwell evidence behind for a socket that no longer
+	// exists, and the only thing bounding growth was a prune that could evict
+	// the wrong record.
+	if s.rollout != nil {
+		for _, platform := range supportedAgentPlatforms {
+			s.rollout.forgetConnection(platform.String(), machineID, agent)
+		}
+	}
+
 	if stillOurs {
 		s.markOffline(machineID)
 		// Live sessions only: a machine that is no longer connected has no

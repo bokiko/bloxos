@@ -20,7 +20,7 @@ import {
   Package,
   ShieldCheck,
 } from "lucide-react";
-import { AgentBinaryInfo, useVersions } from "@/contexts/VersionsContext";
+import { AgentBinaryInfo, AgentRolloutStatus, useVersions } from "@/contexts/VersionsContext";
 
 /**
  * The resolution POLICY in force — not a claim about any particular platform.
@@ -222,6 +222,53 @@ function VersionsContent() {
             </dd>
           </div>
         </dl>
+
+        {/* Staged rollout, per platform. Without this a held or halted rollout
+            is visible only in the hub log, and the page shows update_pending on
+            every agent indefinitely — a rollout that stopped looks exactly like
+            one still in progress. */}
+        {data?.agent_rollout && Object.keys(data.agent_rollout).length > 0 && (
+          <dl className="mt-4 flex flex-col gap-2 border-t border-border-subtle pt-3">
+            {Object.entries(data.agent_rollout).map(([platform, raw]) => {
+              const entry = raw as Partial<AgentRolloutStatus> & {
+                unavailable?: string;
+                reason?: string;
+              };
+              const unavailable = entry.unavailable ?? (entry.status === "unavailable" ? entry.reason : undefined);
+              if (unavailable) {
+                return (
+                  <div key={platform} className="flex items-baseline gap-2">
+                    <dt className="mf-kicker">{platform === "unavailable" ? "Rollout" : platform}</dt>
+                    <dd>
+                      <StatusMark tone="critical" label="Unavailable" Icon={AlertTriangle} detail={unavailable} />
+                    </dd>
+                  </div>
+                );
+              }
+              const halted = entry.status === "halted";
+              return (
+                <div key={platform} className="flex items-baseline gap-2">
+                  <dt className="mf-kicker">{platform}</dt>
+                  <dd className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                    <StatusMark
+                      tone={halted ? "critical" : "ok"}
+                      label={halted ? "Halted" : "Automatic"}
+                      Icon={halted ? AlertTriangle : Play}
+                      detail={entry.summary}
+                      title={halted ? entry.halt_reason : undefined}
+                    />
+                    <span className="text-[12px] text-text-tertiary">
+                      {entry.updated ?? 0} updated · {entry.validated ?? 0} validated ·{" "}
+                      {entry.pending ?? 0} pending
+                      {(entry.withheld ?? 0) > 0 ? ` · ${entry.withheld} withheld` : ""}
+                      {(entry.failed ?? 0) > 0 ? ` · ${entry.failed} failed` : ""}
+                    </span>
+                  </dd>
+                </div>
+              );
+            })}
+          </dl>
+        )}
         <div className="mf-intro-actions">
           <button type="button" onClick={refresh} disabled={loading} className={MF_BUTTON}>
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} aria-hidden />
