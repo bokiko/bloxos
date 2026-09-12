@@ -25,13 +25,16 @@ scripts/test_hub_bundle_boot.py, which runs the real hub process.
 """
 import hashlib
 import importlib.util
+import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -166,6 +169,51 @@ class ServerBundleAgentTests(unittest.TestCase):
         self.assertIn("--- PASS: TestPackagedTreeLoadsAndFailsClosed",
                       result.stdout, result.stdout + result.stderr)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    # The pack helper above builds ONE archive and calls the internals directly,
+    # so it would still pass if main() packed agents for amd64 and silently
+    # skipped arm64. Both server architectures must carry all three agent
+    # platforms — an arm64 hub that cannot serve a Windows machine is exactly
+    # the kind of gap that only shows up on the one board nobody tested.
+    def test_main_packs_every_agent_into_both_server_archives(self):
+        output = self.root / "release-assets"
+        hub_image = HUB_IMAGE
+        dashboard_image = "ghcr.io/bokiko/bloxos-dashboard@sha256:" + "c" * 64
+
+        def fake_export(image, platform, source, destination, revision):
+            """Stand in for Docker; everything after extraction stays real."""
+            self.assertEqual(revision, SOURCE_SHA)
+            arch = platform.split("/")[1]
+            if source.endswith("bloxos-hub"):
+                Path(destination).write_bytes(native_harness.fake_elf(arch))
+            else:
+                shutil.copytree(self.tree / "dashboard", destination, dirs_exist_ok=True)
+
+        argv = ["export-server-bundle.py", "--hub", hub_image, "--dashboard", dashboard_image,
+                "--revision", SOURCE_SHA, "--version", VERSION,
+                "--output", str(output), "--agents", str(self.agents)]
+        with mock.patch.object(export_server_bundle, "export", fake_export), \
+                mock.patch.object(export_server_bundle.subprocess, "run"), \
+                mock.patch.object(export_server_bundle.zipapp, "create_archive"), \
+                mock.patch.object(sys, "argv", argv):
+            export_server_bundle.main()
+
+        published = json.loads((output / "update-manifest.json").read_text())
+        self.assertEqual(sorted(published["native"]), ["amd64", "arm64"])
+        for arch in ("amd64", "arm64"):
+            archive = output / f"bloxos-server-linux-{arch}.tar.gz"
+            self.assertEqual(
+                hashlib.sha256(archive.read_bytes()).hexdigest(),
+                published["native"][arch]["sha256"],
+                f"{arch} manifest checksum does not describe the archive it names")
+            with tarfile.open(archive, "r:gz") as target:
+                packed = {m.name: target.extractfile(m).read()
+                          for m in target.getmembers()
+                          if m.isfile() and m.name.startswith("hub/agents/")}
+            for name in [bundle.MANIFEST, *bundle.FILES.values()]:
+                self.assertEqual(packed.get("hub/agents/" + name),
+                                 (self.agents / name).read_bytes(),
+                                 f"{arch} server archive is missing or altering {name}")
 
     def test_a_server_archive_without_agents_is_refused(self):
         """The failure this whole change exists to prevent."""

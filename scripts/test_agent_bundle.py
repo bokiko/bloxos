@@ -229,9 +229,9 @@ case "$1" in
           test "$4" = --network; test "$5" = none; printf '%064d' 0 ;;
   cp) [[ "$FAIL_EXPORT" != copy ]] || exit 9
       case "$2" in
-        *:/usr/local/lib/bloxos/linux/amd64/bloxos-agent) name=bloxos-agent-linux-amd64 ;;
-        *:/usr/local/lib/bloxos/linux/arm64/bloxos-agent) name=bloxos-agent-linux-arm64 ;;
-        *:/usr/local/lib/bloxos/windows/bloxos-agent.exe) name=bloxos-agent-windows-amd64.exe ;;
+        *:/usr/local/bin/agents/bloxos-agent-linux-amd64) name=bloxos-agent-linux-amd64 ;;
+        *:/usr/local/bin/agents/bloxos-agent-linux-arm64) name=bloxos-agent-linux-arm64 ;;
+        *:/usr/local/bin/agents/bloxos-agent-windows-amd64.exe) name=bloxos-agent-windows-amd64.exe ;;
         *) exit 10 ;;
       esac
       cp "$FIXTURES/$name" "$3" ;;
@@ -290,6 +290,51 @@ esac
         self.assertFalse((output / bundle.MANIFEST).exists())
         self.assertTrue(log.splitlines()[-1].startswith("rm -v "))
         self.assertEqual((self.active / "bloxos-agent").read_bytes(), b"existing agent")
+
+
+class InImageCatalogTests(unittest.TestCase):
+    """The catalog built inside the hub image cannot name the image it lives in."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.bundle = Path(self.temp.name) / "agents"
+        self.bundle.mkdir()
+        for platform, name in bundle.FILES.items():
+            (self.bundle / name).write_bytes(fixture(platform, release=11))
+
+    def test_unknown_provenance_is_omitted_never_faked(self):
+        # Exactly what a plain local `docker build` supplies.
+        digest = bundle.create_manifest(self.bundle, "unknown", "development", None)
+        recorded = json.loads((self.bundle / bundle.MANIFEST).read_text())
+        for field in ("source", "version", "image_digest"):
+            self.assertNotIn(field, recorded,
+                             f"{field} was recorded from a placeholder; it must be omitted instead")
+
+        # The artifact checks stay mandatory: this is what decides which bytes
+        # the fleet is offered.
+        checked = bundle.check(self.bundle, digest, require_provenance=False)
+        self.assertEqual(checked["agent_release"], 11)
+        self.assertEqual(sorted(checked["artifacts"]), sorted(bundle.FILES))
+
+    def test_a_release_catalog_must_still_carry_full_provenance(self):
+        digest = bundle.create_manifest(self.bundle, "unknown", "development", None)
+        with self.assertRaises(ValueError) as caught:
+            bundle.check(self.bundle, digest)
+        self.assertIn("missing", str(caught.exception))
+
+    def test_present_provenance_is_validated_strictly_either_way(self):
+        with self.assertRaises(ValueError):
+            bundle.create_manifest(self.bundle, "not-a-sha", None, None)
+        with self.assertRaises(ValueError):
+            bundle.create_manifest(self.bundle, None, "1.2.3", None)
+        with self.assertRaises(ValueError):
+            bundle.create_manifest(self.bundle, None, None, "sha256:xyz")
+
+    def test_a_missing_platform_is_refused_with_or_without_provenance(self):
+        (self.bundle / bundle.FILES["windows/amd64"]).unlink()
+        with self.assertRaises((ValueError, OSError)):
+            bundle.create_manifest(self.bundle, None, None, None)
 
 
 if __name__ == "__main__":

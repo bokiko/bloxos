@@ -125,6 +125,12 @@ def verify_packed_agents(archive, manifest):
     present. The archive is the artifact that actually ships, so the bytes
     inside it are what has to be hashed — a truncated, substituted or aliased
     entry passes a name check and fails the fleet.
+
+    The PAYLOADS are compared byte for byte, via sha256 and size against the
+    catalog. The CATALOG itself is compared as parsed JSON, so re-serialisation
+    whitespace is tolerated: the manifest's own integrity is already pinned by
+    its sidecar SHA in stage_agents, and there is no security value in failing
+    a release over a reformatted but semantically identical document.
     """
     prefix = "hub/" + AGENT_DIR + "/"
     required = {agent_bundle.MANIFEST, *agent_bundle.FILES.values()}
@@ -153,8 +159,8 @@ def verify_packed_agents(archive, manifest):
     if missing:
         raise ValueError("Server archive is missing agent payloads: " + ", ".join(missing))
 
-    # The archived catalog must be the same document that was verified, byte
-    # for byte — not merely a parseable manifest.
+    # The archived catalog must be the same catalog that was verified — not
+    # merely a parseable manifest that happens to be present.
     if json.loads(found[agent_bundle.MANIFEST]) != manifest:
         raise ValueError("Archived agent catalog differs from the verified catalog")
 

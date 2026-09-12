@@ -89,13 +89,40 @@ def inspect_payloads(directory):
     return next(iter(releases)), artifacts
 
 
+# Provenance fields and how each is spelled when it IS present. The catalog
+# built inside the hub image cannot carry all of them — the image digest does
+# not exist until the image it would describe has been built, and a plain local
+# `docker build` has no release tag or git SHA either.
+#
+# Unavailable provenance is OMITTED, never faked. A placeholder all-zero SHA or
+# a self-referential digest would be a field that looks like evidence and is
+# not, and every later check against it would pass while proving nothing.
+PROVENANCE = {
+    "source": (lambda v: re.fullmatch(r"[0-9a-f]{40}", v), "expected full source commit SHA"),
+    "version": (lambda v: VERSION.fullmatch(v) and len(v) <= 129, "expected vX.Y.Z or vX.Y.Z-prerelease"),
+    "image_digest": (lambda v: re.fullmatch(r"sha256:[0-9a-f]{64}", v), "expected image digest"),
+}
+# Placeholders the Dockerfile defaults to. They mean "not known", so they are
+# treated as absent rather than recorded as fact.
+UNKNOWN = {"unknown", "development", "", None}
+
+
+def provenance_of(values):
+    """Validate every provenance value that is present; drop the unknown ones."""
+    present = {}
+    for field, value in values.items():
+        if value in UNKNOWN:
+            continue
+        check_value, message = PROVENANCE[field]
+        require(isinstance(value, str) and check_value(value), f"{message}: {field}")
+        present[field] = value
+    return present
+
+
 def create_manifest(directory, source, version, image_digest):
-    require(re.fullmatch(r"[0-9a-f]{40}", source), "expected full source commit SHA")
-    validate_tag(version)
-    require(re.fullmatch(r"sha256:[0-9a-f]{64}", image_digest), "expected image digest")
     release, artifacts = inspect_payloads(directory)
-    manifest = {"schema": 1, "version": version, "source": source,
-                "image_digest": image_digest, "agent_release": release, "artifacts": artifacts}
+    manifest = {"schema": 1, "agent_release": release, "artifacts": artifacts,
+                **provenance_of({"source": source, "version": version, "image_digest": image_digest})}
     data = (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode()
     # The release builder refuses to overwrite a previous manifest.
     with (directory / MANIFEST).open("xb") as stream:
@@ -103,15 +130,28 @@ def create_manifest(directory, source, version, image_digest):
     return hashlib.sha256(data).hexdigest()
 
 
-def check(directory, manifest_sha):
+def check(directory, manifest_sha, require_provenance=True):
+    """Verify a catalog and its payloads.
+
+    require_provenance=False is for the catalog built INSIDE the hub image,
+    which legitimately cannot name the image it lives in. It relaxes exactly
+    one thing: whether a provenance field must be PRESENT. Any field that IS
+    present is still validated strictly, and the artifact checks — sha256,
+    size, architecture, a single consistent release marker, all three platforms
+    — are mandatory either way. Those are what decide which bytes the fleet is
+    offered; provenance only says where they came from.
+    """
     require(HEX.fullmatch(manifest_sha), "supply the trusted 64-character manifest SHA256")
     data = read_regular(directory / MANIFEST, 64 * 1024)
     require(hashlib.sha256(data).hexdigest() == manifest_sha, "manifest SHA256 mismatch")
     manifest = json.loads(data)
     require(isinstance(manifest, dict) and manifest.get("schema") == 1, "unsupported manifest")
-    validate_tag(manifest.get("version"))
-    require(re.fullmatch(r"[0-9a-f]{40}", str(manifest.get("source", ""))), "invalid source SHA")
-    require(re.fullmatch(r"sha256:[0-9a-f]{64}", str(manifest.get("image_digest", ""))), "invalid image digest")
+    for field, (check_value, message) in PROVENANCE.items():
+        value = manifest.get(field)
+        if value is None:
+            require(not require_provenance, f"release catalog is missing {field}")
+            continue
+        require(isinstance(value, str) and check_value(value), f"invalid {field}: {message}")
     release, artifacts = inspect_payloads(directory)
     require(type(manifest.get("agent_release")) is int and manifest["agent_release"] == release,
             "manifest/binary release mismatch")
@@ -187,11 +227,14 @@ def main():
         p = commands.add_parser(name)
         p.add_argument("--bundle", required=True, type=Path)
         if name == "manifest":
-            p.add_argument("--source", required=True)
-            p.add_argument("--version", required=True)
-            p.add_argument("--image-digest", required=True)
+            # Not required: an in-image build catalog omits what it cannot know.
+            p.add_argument("--source", default=None)
+            p.add_argument("--version", default=None)
+            p.add_argument("--image-digest", default=None)
         else:
             p.add_argument("--manifest-sha256", required=True)
+            p.add_argument("--allow-missing-provenance", action="store_true",
+                           help="for the catalog built inside the hub image")
         if name == "stage":
             p.add_argument("--staging-root", required=True, type=Path)
     args = parser.parse_args()
@@ -201,7 +244,8 @@ def main():
         elif args.command == "manifest":
             print(create_manifest(args.bundle, args.source, args.version, args.image_digest))
         elif args.command == "check":
-            print(json.dumps(check(args.bundle, args.manifest_sha256), indent=2))
+            print(json.dumps(check(args.bundle, args.manifest_sha256,
+                                   require_provenance=not args.allow_missing_provenance), indent=2))
             print("Payloads match the supplied manifest. Fleet signatures must be verified separately. No changes made.")
         else:
             print(f"Staged at {stage(args.bundle, args.manifest_sha256, args.staging_root)}")

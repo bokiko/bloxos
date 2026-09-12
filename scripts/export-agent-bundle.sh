@@ -21,9 +21,14 @@ container_id=$(docker create --platform linux/amd64 --network none "$image_ref")
 [[ "$container_id" =~ ^[0-9a-f]{64}$ ]] || { echo "invalid export container ID" >&2; exit 1; }
 trap 'docker rm -v "$container_id" >/dev/null' EXIT
 mkdir -m 0700 -- "$output_dir"
-docker cp "$container_id:/usr/local/lib/bloxos/linux/amd64/bloxos-agent" "$output_dir/bloxos-agent-linux-amd64"
-docker cp "$container_id:/usr/local/lib/bloxos/linux/arm64/bloxos-agent" "$output_dir/bloxos-agent-linux-arm64"
-docker cp "$container_id:/usr/local/lib/bloxos/windows/bloxos-agent.exe" "$output_dir/bloxos-agent-windows-amd64.exe"
+# Copy from the image's own managed bundle, under the canonical names. The
+# legacy /usr/local/lib/bloxos paths are hard links to these same inodes, so
+# either source yields identical bytes; taking them from here means the release
+# catalog describes the very files the containerised hub serves, under the very
+# names it serves them by.
+docker cp "$container_id:/usr/local/bin/agents/bloxos-agent-linux-amd64" "$output_dir/bloxos-agent-linux-amd64"
+docker cp "$container_id:/usr/local/bin/agents/bloxos-agent-linux-arm64" "$output_dir/bloxos-agent-linux-arm64"
+docker cp "$container_id:/usr/local/bin/agents/bloxos-agent-windows-amd64.exe" "$output_dir/bloxos-agent-windows-amd64.exe"
 manifest_sha=$(python3 "$script_dir/agent_bundle.py" manifest --bundle "$output_dir" \
   --source "$source_sha" --version "$release_tag" --image-digest "${image_ref##*@}")
 printf '%s  agent-manifest.json\n' "$manifest_sha" > "$output_dir/agent-manifest.sha256"
