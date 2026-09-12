@@ -637,3 +637,21 @@ test("a real measured zero survives; unavailable is null, not zero", () => {
   const empty = normalizeFleetPowerCurrent({ generated_unix_ms: T0, domains: [] });
   assert.equal(currentReading(empty, "dram", "measured", T0), null);
 });
+
+test("a domain whose only contributors are unclassified is still selectable", () => {
+  const history = normalizeFleetPower(
+    response({
+      domains: [
+        domain("system"),
+        domain("cpu"),
+        domain("dram", { unknown: kind({ machines: 1, sources: ["some-future-backend"] }) }),
+        domain("gpu"),
+      ],
+    }),
+  );
+  // It charts nothing, by design — but a reader must be able to open it and
+  // find out WHY it is empty.
+  assert.ok(availableDomains(history).includes("dram"));
+  assert.deepEqual(domainSeries(history, "dram"), []);
+  assert.equal(domainOf(history, "dram").unknown.machines, 1);
+});

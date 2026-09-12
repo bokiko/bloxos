@@ -23,7 +23,7 @@ import { POWER_PERIODS } from "./workspace-prefs.mjs";
 
 export { POWER_PERIODS };
 
-import { freshnessOf, aggregateFreshness } from "./power-freshness.mjs";
+import { aggregateFreshness } from "./power-freshness.mjs";
 
 /** Period → what the pane calls the window in prose. */
 export const PERIOD_LABELS = {
@@ -176,7 +176,13 @@ export function domainOf(history, domain) {
 }
 
 function domainHasData(history, domain) {
-  return domainOf(history, domain).reportingMachines > 0;
+  const d = domainOf(history, domain);
+  // Unknown-provenance contributors count as DATA even though they are charted
+  // in neither series. Excluding them here would make the domain unselectable,
+  // and the explanation for why it is empty — that the hub refused to classify
+  // those readings rather than guessing — would be unreachable. An empty domain
+  // a reader can open and understand beats one that silently does not exist.
+  return d.reportingMachines > 0 || (d.unknown?.machines ?? 0) > 0;
 }
 
 /**
