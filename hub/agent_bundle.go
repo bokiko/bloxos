@@ -193,21 +193,32 @@ func loadAgentBundle(executableDir string, validate func(string) (string, error)
 		return nil, fmt.Errorf("stat agent bundle directory: %w", err)
 	}
 
-	info, err := os.Stat(manifestPath)
-	if err != nil {
+	// Distinguish "no manifest" from "unreadable manifest" BEFORE the trust
+	// check, so the error can say which of the two an operator is looking at.
+	if _, err := os.Lstat(manifestPath); err != nil {
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf("agent bundle directory %s has no %s", dir, agentBundleManifestName)
 		}
 		return nil, fmt.Errorf("stat agent bundle manifest: %w", err)
 	}
-	// Bound the manifest before reading: a corrupt install must not be able to
-	// exhaust memory here.
-	if info.Size() > agentBundleManifestMaxBytes {
-		return nil, fmt.Errorf("agent bundle manifest is %d bytes, over the %d limit",
-			info.Size(), agentBundleManifestMaxBytes)
+
+	// The manifest is the document that decides which bytes this hub will hand
+	// the entire fleet, so it goes through the SAME trust check as the payloads
+	// it describes: a regular file, not a symlink, root-owned with no
+	// group/other write anywhere on its path.
+	//
+	// Stat-then-ReadFile was not enough, and the gap is not theoretical. Stat
+	// follows symlinks, so a link planted in the bundle directory would have
+	// been read from wherever it pointed. A FIFO stats as zero bytes, sails
+	// under the size limit, and then blocks or streams without end. And even
+	// for an ordinary file the size read by Stat is a different observation
+	// from the bytes read afterwards — a file being written grows between them.
+	manifestFile, err := validate(manifestPath)
+	if err != nil {
+		return nil, fmt.Errorf("agent bundle manifest is not trusted: %w", err)
 	}
 
-	raw, err := os.ReadFile(manifestPath)
+	raw, err := readBoundedFile(manifestFile, agentBundleManifestMaxBytes)
 	if err != nil {
 		return nil, fmt.Errorf("read agent bundle manifest: %w", err)
 	}
@@ -286,6 +297,19 @@ func loadAgentBundle(executableDir string, validate func(string) (string, error)
 				platform, sum, artifact.SHA256)
 		}
 
+		// The payload must be built for the architecture it is filed under.
+		// A sha256 proves the bytes are the file the catalog names; it says
+		// nothing about what those bytes ARE. Without reading the image
+		// header, the only thing keeping amd64 bytes from being handed to an
+		// arm64 machine is the manifest's own label — a claim made by the same
+		// document the bundle ships. The resolver already gated Linux at
+		// resolution time; a bundle is checked for every platform it declares,
+		// Windows included, and at load, so a mislabelled payload stops the
+		// hub instead of reaching one unlucky architecture later.
+		if err := verifyAgentPayloadArch(osName, arch, verified); err != nil {
+			return nil, fmt.Errorf("agent bundle artifact %q: %w", platform, err)
+		}
+
 		// The payload must actually BE the release the catalog claims. Without
 		// this, a bundle could advertise a new release number while carrying
 		// older bytes — which is precisely how the fleet came to run agents
@@ -304,6 +328,28 @@ func loadAgentBundle(executableDir string, validate func(string) (string, error)
 	}
 
 	return bundle, nil
+}
+
+// readBoundedFile reads at most max bytes and fails if the file has more.
+//
+// The bound is enforced by the READ, not by a prior Stat. That ordering is the
+// whole point: a size observed before the read is a claim about a different
+// moment, and it is not a claim a FIFO or a growing file honours.
+func readBoundedFile(path string, max int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	// max+1 so hitting the limit exactly is distinguishable from overrunning it.
+	raw, err := io.ReadAll(io.LimitReader(f, max+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(raw)) > max {
+		return nil, fmt.Errorf("file is larger than the %d byte limit", max)
+	}
+	return raw, nil
 }
 
 func fileSHA256(path string) (string, error) {

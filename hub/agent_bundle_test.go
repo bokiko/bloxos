@@ -1,14 +1,52 @@
 package main
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/bokiko/bloxos/proto/updatesigning"
 )
+
+// agentImageHeader builds a minimal but genuine executable header for a
+// platform, so fixtures exercise the real architecture check rather than
+// skipping past it. A fixture made of plain text would have forced the check to
+// be optional in tests, and an optional check is one nothing proves runs.
+func agentImageHeader(t *testing.T, osName, arch string) []byte {
+	t.Helper()
+	if osName == "windows" {
+		machine, ok := peMachineByArch[arch]
+		if !ok {
+			t.Fatalf("no PE machine for arch %q", arch)
+		}
+		// MZ stub, e_lfanew at 0x3c, PE signature + COFF header + the
+		// optional-header magic the verifier reads.
+		const peOffset = 0x80
+		img := make([]byte, peOffset+26)
+		img[0], img[1] = 'M', 'Z'
+		binary.LittleEndian.PutUint32(img[0x3c:], peOffset)
+		copy(img[peOffset:], []byte{'P', 'E', 0, 0})
+		binary.LittleEndian.PutUint16(img[peOffset+4:], machine)
+		binary.LittleEndian.PutUint16(img[peOffset+24:], 0x020b) // PE32+
+		return img
+	}
+	machine, ok := elfMachineByArch[arch]
+	if !ok {
+		t.Fatalf("no ELF machine for arch %q", arch)
+	}
+	img := make([]byte, 64)
+	copy(img, []byte{0x7f, 'E', 'L', 'F', 2, 1, 1, 0})
+	binary.LittleEndian.PutUint16(img[16:], 2) // ET_EXEC
+	binary.LittleEndian.PutUint16(img[18:], machine)
+	binary.LittleEndian.PutUint32(img[20:], 1) // EV_CURRENT
+	return img
+}
 
 // bundleFixture writes a bundle whose manifest matches its payloads.
 // fullFixture builds a complete bundle. Every packaged bundle carries all three
@@ -43,8 +81,9 @@ func bundleFixture(t *testing.T, platforms map[string]string) string {
 		if err != nil {
 			t.Fatalf("marker: %v", err)
 		}
+		osName, arch, _ := strings.Cut(platform, "/")
 		path := filepath.Join(dir, name)
-		if err := os.WriteFile(path, []byte(body+marker), 0o755); err != nil {
+		if err := os.WriteFile(path, append(agentImageHeader(t, osName, arch), (body+marker)...), 0o755); err != nil {
 			t.Fatalf("write payload: %v", err)
 		}
 		sum, err := fileSHA256(path)
@@ -68,11 +107,22 @@ func bundleFixture(t *testing.T, platforms map[string]string) string {
 	return root
 }
 
-// permissive stands in for validateTrustedAgentBinary in tests: the real one
-// demands root ownership, which a test temp dir does not have.
+// permissive stands in for validateTrustedAgentBinary in tests. It relaxes
+// EXACTLY ONE of the real check's rules — root ownership, which a test temp dir
+// can never satisfy — and keeps the rest. The regular-file and symlink rules
+// stay, because tests below depend on them holding: a stub that waved through
+// anything os.Stat could see would make those tests pass without the behaviour
+// they name existing.
 func permissive(path string) (string, error) {
-	if _, err := os.Stat(path); err != nil {
+	info, err := os.Lstat(path)
+	if err != nil {
 		return "", err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", errors.New("path is a symlink")
+	}
+	if !info.Mode().IsRegular() {
+		return "", errors.New("path is not a regular file")
 	}
 	return path, nil
 }
@@ -382,5 +432,209 @@ func TestBundleRejectsPayloadWhoseReleaseMarkerDisagreesWithTheCatalog(t *testin
 
 	if _, err := loadAgentBundle(root, permissive); err == nil {
 		t.Fatal("a payload whose release marker disagrees with the catalog must be rejected")
+	}
+}
+
+// A sha256 proves a payload is the file the catalog names. It proves nothing
+// about what that file IS, so the architecture has to come from the image.
+func TestBundleRejectsAPayloadBuiltForAnotherArchitecture(t *testing.T) {
+	root := bundleFixture(t, map[string]string{
+		"linux/amd64":   "amd64-agent",
+		"linux/arm64":   "arm64-agent",
+		"windows/amd64": "windows-agent",
+	})
+	dir := filepath.Join(root, agentBundleDirName)
+	// Rebuild the arm64 slot around an amd64 image, then make the manifest
+	// agree with it: size and sha256 both check out, and only reading the ELF
+	// header can tell that the bytes are for the wrong machine.
+	restamp(t, dir, "linux/arm64", "bloxos-agent-linux-arm64",
+		append(agentImageHeader(t, "linux", "amd64"), mustMarker(t, 8)...))
+
+	if _, err := loadAgentBundle(root, permissive); err == nil {
+		t.Fatal("an arm64 slot carrying an amd64 image must be rejected")
+	} else if !strings.Contains(err.Error(), "arm64") {
+		t.Fatalf("the error should name the mismatched architecture, got: %v", err)
+	}
+}
+
+// Windows is carried, not excluded, so it is checked like everything else.
+func TestBundleRejectsAWindowsPayloadThatIsNotAPEImage(t *testing.T) {
+	root := fullFixture(t)
+	dir := filepath.Join(root, agentBundleDirName)
+	restamp(t, dir, "windows/amd64", "bloxos-agent-windows-amd64.exe",
+		append(agentImageHeader(t, "linux", "amd64"), mustMarker(t, 8)...))
+
+	if _, err := loadAgentBundle(root, permissive); err == nil {
+		t.Fatal("a windows slot carrying an ELF image must be rejected")
+	}
+}
+
+func TestBundleRejectsAWindowsPayloadBuiltForAnotherArchitecture(t *testing.T) {
+	root := fullFixture(t)
+	dir := filepath.Join(root, agentBundleDirName)
+	restamp(t, dir, "windows/amd64", "bloxos-agent-windows-amd64.exe",
+		append(agentImageHeader(t, "windows", "arm64"), mustMarker(t, 8)...))
+
+	if _, err := loadAgentBundle(root, permissive); err == nil {
+		t.Fatal("a windows/amd64 slot carrying an arm64 PE must be rejected")
+	}
+}
+
+// The control for the three tests above: the same fixture machinery, unaltered,
+// must LOAD. Without this, a bundle rejected for some unrelated reason would
+// make all of them pass while the architecture check did nothing.
+func TestTheArchitectureFixturesThemselvesLoad(t *testing.T) {
+	if _, err := loadAgentBundle(fullFixture(t), permissive); err != nil {
+		t.Fatalf("the unaltered fixture must load, else the rejection tests prove nothing: %v", err)
+	}
+}
+
+// The manifest decides which bytes the whole fleet is offered, so it gets the
+// same trust check as the payloads it describes. os.Stat follows symlinks; a
+// link planted here would have been read from wherever it pointed.
+func TestBundleRejectsASymlinkedManifest(t *testing.T) {
+	root := fullFixture(t)
+	dir := filepath.Join(root, agentBundleDirName)
+	manifest := filepath.Join(dir, agentBundleManifestName)
+	elsewhere := filepath.Join(t.TempDir(), "planted.json")
+	raw, err := os.ReadFile(manifest)
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	if err := os.WriteFile(elsewhere, raw, 0o644); err != nil {
+		t.Fatalf("write planted manifest: %v", err)
+	}
+	if err := os.Remove(manifest); err != nil {
+		t.Fatalf("remove manifest: %v", err)
+	}
+	if err := os.Symlink(elsewhere, manifest); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	// Note the content is BYTE-IDENTICAL to the manifest that just loaded, so
+	// the only thing under test is that the link itself is refused.
+	if _, err := loadAgentBundle(root, permissive); err == nil {
+		t.Fatal("a symlinked manifest must be rejected even when its content is valid")
+	}
+}
+
+// A FIFO stats as zero bytes, so a size limit taken from Stat waves it through
+// — and the read that follows blocks or streams without end. The bound has to
+// be enforced by the read.
+func TestBundleRejectsAManifestThatIsNotARegularFile(t *testing.T) {
+	root := fullFixture(t)
+	manifest := filepath.Join(root, agentBundleDirName, agentBundleManifestName)
+	if err := os.Remove(manifest); err != nil {
+		t.Fatalf("remove manifest: %v", err)
+	}
+	if err := syscall.Mkfifo(manifest, 0o644); err != nil {
+		t.Skipf("cannot create a FIFO here: %v", err)
+	}
+	// If this ever hangs instead of failing, the bound is being read from Stat
+	// again. A FIFO with no writer blocks forever on open.
+	done := make(chan error, 1)
+	go func() {
+		_, err := loadAgentBundle(root, permissive)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a manifest that is not a regular file must be rejected")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("loading blocked on a FIFO manifest; the size bound is not being enforced by the read")
+	}
+}
+
+func TestBundleRejectsAnOversizedManifest(t *testing.T) {
+	root := fullFixture(t)
+	manifest := filepath.Join(root, agentBundleDirName, agentBundleManifestName)
+	if err := os.WriteFile(manifest, make([]byte, agentBundleManifestMaxBytes+1), 0o644); err != nil {
+		t.Fatalf("write oversized manifest: %v", err)
+	}
+	if _, err := loadAgentBundle(root, permissive); err == nil {
+		t.Fatal("a manifest over the size limit must be rejected")
+	}
+}
+
+func mustMarker(t *testing.T, seq uint64) []byte {
+	t.Helper()
+	marker, err := updatesigning.ReleaseMarker(seq)
+	if err != nil {
+		t.Fatalf("marker: %v", err)
+	}
+	return []byte(marker)
+}
+
+// restamp replaces one platform's payload and updates the manifest to match, so
+// the size and sha256 checks pass and the test isolates what it means to.
+func restamp(t *testing.T, dir, platform, name string, body []byte) {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, body, 0o755); err != nil {
+		t.Fatalf("write payload: %v", err)
+	}
+	sum, err := fileSHA256(path)
+	if err != nil {
+		t.Fatalf("sha: %v", err)
+	}
+	manifestPath := filepath.Join(dir, agentBundleManifestName)
+	raw, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	var manifest agentBundleManifest
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		t.Fatalf("unmarshal manifest: %v", err)
+	}
+	manifest.Artifacts[platform] = agentBundleArtifact{File: name, Size: int64(len(body)), SHA256: sum}
+	out, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("marshal manifest: %v", err)
+	}
+	if err := os.WriteFile(manifestPath, out, 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+}
+
+// The offset the verifier seeks to is read OUT OF the file it is checking, so
+// it is attacker- and corruption-controlled and has to be bounded before use.
+func TestVerifyPEArchRejectsMalformedImages(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name string, body []byte) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, body, 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		return path
+	}
+
+	good := agentImageHeader(t, "windows", archAMD64)
+	if err := verifyPEArch(write("good.exe", good), archAMD64); err != nil {
+		t.Fatalf("a well-formed amd64 PE must pass, else the rejections below prove nothing: %v", err)
+	}
+
+	wild := append([]byte(nil), good...)
+	binary.LittleEndian.PutUint32(wild[0x3c:], 1<<30)
+	if err := verifyPEArch(write("wild.exe", wild), archAMD64); err == nil {
+		t.Fatal("an out-of-range PE header offset must be refused, not seeked to")
+	}
+
+	backIntoStub := append([]byte(nil), good...)
+	binary.LittleEndian.PutUint32(backIntoStub[0x3c:], 0x10)
+	if err := verifyPEArch(write("stub.exe", backIntoStub), archAMD64); err == nil {
+		t.Fatal("a PE header offset pointing back into the DOS stub must be refused")
+	}
+
+	// Go emits only 64-bit Windows binaries; a PE32 image is a packaging error.
+	pe32 := append([]byte(nil), good...)
+	binary.LittleEndian.PutUint16(pe32[0x80+24:], 0x010b)
+	if err := verifyPEArch(write("pe32.exe", pe32), archAMD64); err == nil {
+		t.Fatal("a 32-bit PE must be refused")
+	}
+
+	if err := verifyPEArch(write("short.exe", []byte("MZ")), archAMD64); err == nil {
+		t.Fatal("a truncated image must be refused, not read past its end")
 	}
 }

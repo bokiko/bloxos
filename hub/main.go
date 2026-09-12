@@ -250,7 +250,6 @@ func main() {
 		log.Fatalf("RBAC route audit failed: %v", err)
 	}
 
-
 	listenAddr := os.Getenv("HUB_LISTEN")
 	if listenAddr == "" {
 		listenAddr = "127.0.0.1:4000"

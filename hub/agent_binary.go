@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
 	"io"
 	"log"
@@ -569,5 +570,102 @@ func failAgentBinaryState(platform agentPlatform, resolution agentBinaryResoluti
 	previous := replaceAgentBinaryState(platform, state)
 	if previous.Error != state.Error || previous.SHA != "" {
 		log.Printf("version: %s agent binary unavailable: %v", platform, err)
+	}
+}
+
+// peMachineByArch maps a GOARCH to the COFF IMAGE_FILE_MACHINE value a
+// Windows PE built for it carries: AMD64 = 0x8664, ARM64 = 0xaa64.
+var peMachineByArch = map[string]uint16{archAMD64: 0x8664, archARM64: 0xaa64}
+
+func peMachineName(m uint16) string {
+	for arch, want := range peMachineByArch {
+		if want == m {
+			return arch
+		}
+	}
+	return fmt.Sprintf("machine=0x%04x", m)
+}
+
+// peMaxHeaderOffset bounds e_lfanew before it is used as a seek target. The
+// value is read OUT OF THE FILE being checked, so an unbounded one would let a
+// crafted or corrupt payload steer the read arbitrarily far into a large file.
+// Real Go PE images put their header within the first few hundred bytes; a
+// megabyte is generous and still finite.
+const peMaxHeaderOffset = 1 << 20
+
+// verifyPEArch reports whether the binary at path is a 64-bit Windows PE built
+// for arch.
+//
+// The Windows counterpart to verifyELFArch, and it exists for the same reason:
+// without it, the only thing standing between a bundle and serving amd64 bytes
+// to an arm64 machine is the manifest's own label — a claim made by the same
+// document the bundle supplies. A sha256 proves the payload is the file the
+// catalog names; it proves nothing about what the file IS. Architecture has to
+// be read from the image itself.
+//
+// Checked: the MZ stub, a bounded e_lfanew, the PE signature, the COFF machine
+// field, and the optional-header magic (PE32+). Go only emits 64-bit Windows
+// binaries, so a PE32 image here is a packaging mistake, not a supported build.
+func verifyPEArch(path, arch string) error {
+	want, ok := peMachineByArch[arch]
+	if !ok {
+		return fmt.Errorf("unsupported architecture %q", arch)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	var dos [0x40]byte
+	if _, err := io.ReadFull(f, dos[:]); err != nil {
+		return fmt.Errorf("read DOS header of %s: %w", path, err)
+	}
+	if dos[0] != 'M' || dos[1] != 'Z' {
+		return fmt.Errorf("%s is not a PE binary", path)
+	}
+	offset := int64(binary.LittleEndian.Uint32(dos[0x3c:0x40]))
+	// Below the DOS header the offset would point back into the stub; above the
+	// bound it is not a header this hub will chase.
+	if offset < 0x40 || offset > peMaxHeaderOffset {
+		return fmt.Errorf("%s declares an implausible PE header offset %d", path, offset)
+	}
+
+	// Signature (4) + COFF header (20) + optional-header magic (2).
+	var hdr [26]byte
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return fmt.Errorf("seek PE header of %s: %w", path, err)
+	}
+	if _, err := io.ReadFull(f, hdr[:]); err != nil {
+		return fmt.Errorf("read PE header of %s: %w", path, err)
+	}
+	if hdr[0] != 'P' || hdr[1] != 'E' || hdr[2] != 0 || hdr[3] != 0 {
+		return fmt.Errorf("%s has no PE signature at offset %d", path, offset)
+	}
+	machine := binary.LittleEndian.Uint16(hdr[4:6])
+	if machine != want {
+		return fmt.Errorf("%s is a %s binary, not %s", path, peMachineName(machine), arch)
+	}
+	// IMAGE_NT_OPTIONAL_HDR64_MAGIC. A PE32 image would run, and would be the
+	// wrong build entirely.
+	if magic := binary.LittleEndian.Uint16(hdr[24:26]); magic != 0x020b {
+		return fmt.Errorf("%s is not a 64-bit PE binary (optional header magic 0x%04x)", path, magic)
+	}
+	return nil
+}
+
+// verifyAgentPayloadArch dispatches the architecture check by target OS.
+//
+// Every platform a bundle declares gets checked. An unrecognised OS is an
+// error rather than a skip: "we could not check this one" must never read as
+// "this one passed".
+func verifyAgentPayloadArch(osName, arch, path string) error {
+	switch osName {
+	case "linux":
+		return verifyELFArch(path, arch)
+	case "windows":
+		return verifyPEArch(path, arch)
+	default:
+		return fmt.Errorf("no architecture check for os %q", osName)
 	}
 }
