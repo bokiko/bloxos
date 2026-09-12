@@ -85,6 +85,21 @@ func discoverRAPL(root string, read func(string) ([]byte, error)) (psys, pkg, dr
 
 	var psysZones, pkgZones, dramZones []*raplZone
 	haveP, haveK, haveD := false, false, false
+	// A zone whose NAME cannot be read is not a zone that is absent. It
+	// matched the powercap naming, so it exists — the only thing missing is
+	// which domain it belongs to.
+	//
+	// Skipping it was how a partial sum became a domain total: on a two-socket
+	// board where package-1's name is unreadable, haveK was set from
+	// package-0 and the CPU domain reported one socket as if it were the
+	// machine. The affected domains are withheld instead.
+	//
+	// A top-level entry cannot be assigned to package or psys, so it
+	// compromises BOTH. A sub-zone cannot be assigned to dram, so it
+	// compromises dram only — and note this counts unreadable NAMES, not
+	// named core/uncore sub-zones, which are legitimately not dram
+	// contributors and must not be treated as missing ones.
+	unnamedTop, unnamedSub := 0, 0
 	for _, entry := range names {
 		top := raplTopLevel.MatchString(entry)
 		sub := raplSubZone.MatchString(entry)
@@ -94,6 +109,11 @@ func discoverRAPL(root string, read func(string) ([]byte, error)) (psys, pkg, dr
 		dir := filepath.Join(root, entry)
 		raw, err := read(filepath.Join(dir, "name"))
 		if err != nil {
+			if top {
+				unnamedTop++
+			} else {
+				unnamedSub++
+			}
 			continue
 		}
 		name := strings.TrimSpace(string(raw))
@@ -114,17 +134,31 @@ func discoverRAPL(root string, read func(string) ([]byte, error)) (psys, pkg, dr
 		}
 	}
 
-	return buildRAPL(powerhistory.SourceRAPLPsys, psysZones, haveP, powerSystemMinWatts, read),
-		buildRAPL(powerhistory.SourceRAPLPackage, pkgZones, haveK, 0, read),
-		buildRAPL(powerhistory.SourceRAPLDRAM, dramZones, haveD, 0, read)
+	if unnamedTop > 0 {
+		log.Printf("power-history: %d powercap top-level zone(s) have an unreadable name; "+
+			"withholding the RAPL cpu and system backends rather than reporting a partial total",
+			unnamedTop)
+	}
+	if unnamedSub > 0 {
+		log.Printf("power-history: %d powercap sub-zone(s) have an unreadable name; "+
+			"withholding the RAPL dram backend", unnamedSub)
+	}
+	return buildRAPL(powerhistory.SourceRAPLPsys, psysZones, haveP, unnamedTop == 0, powerSystemMinWatts, read),
+		buildRAPL(powerhistory.SourceRAPLPackage, pkgZones, haveK, unnamedTop == 0, 0, read),
+		buildRAPL(powerhistory.SourceRAPLDRAM, dramZones, haveD, unnamedSub == 0, 0, read)
 }
 
 // buildRAPL refuses a group in which any zone was unreadable: a partial sum
 // presented as a domain total is exactly the kind of number this project
 // does not report. present distinguishes "no such zones here" from "zones
 // exist but cannot be read", which is worth a log line.
-func buildRAPL(id string, zones []*raplZone, present bool, minWatts float64, read func(string) ([]byte, error)) *raplSampler {
+func buildRAPL(id string, zones []*raplZone, present, complete bool, minWatts float64, read func(string) ([]byte, error)) *raplSampler {
 	if len(zones) == 0 {
+		return nil
+	}
+	// Zones were found, but the scan could not account for everything the
+	// powercap tree contains, so this group may not be the whole domain.
+	if !complete {
 		return nil
 	}
 	for _, z := range zones {
@@ -183,25 +217,48 @@ func (s *raplSampler) sample(now time.Time) (float64, bool) {
 		s.prime(vals, now)
 		return 0, false
 	}
+
+	// EVERY participating counter has to advance, and it has to advance on its
+	// own account.
+	//
+	// Summing first and judging the total let one busy socket certify a frozen
+	// sibling: the sum stayed plausible and was reported as the whole domain,
+	// which is an undercount wearing a measurement's label. A group-level
+	// floor cannot catch it either — and with minWatts 0, as package and dram
+	// have, an ENTIRELY frozen group produced 0.0 W and passed, reporting a
+	// running CPU as drawing nothing.
+	//
+	// A backward step is unavailable, full stop. A wrap and a counter reset
+	// (suspend/resume, a driver reload, a module unload) are indistinguishable
+	// from two reads, and guessing wrap means inventing up to a full
+	// max_energy_range_uj of energy that may never have been consumed —
+	// plausibly, at a rate the aggregate ceiling would not reject. One missed
+	// sample at rollover is the cheaper error, and the next interval recovers
+	// on its own.
 	var deltaUJ float64
 	for i, z := range s.zones {
 		v := vals[i]
-		var d uint64
-		switch {
-		case v >= z.last:
-			d = v - z.last
-		case z.maxRange > 0:
-			d = z.maxRange - z.last + v
-		default:
+		// Validate against the declared range BEFORE subtracting, so no
+		// arithmetic happens on values the counter says are impossible.
+		if z.maxRange > 0 && (v > z.maxRange || z.last > z.maxRange) {
 			s.prime(vals, now)
 			return 0, false
 		}
-		deltaUJ += float64(d)
+		if v < z.last {
+			s.prime(vals, now)
+			return 0, false
+		}
+		if v == z.last {
+			// This counter did not move. No sibling gets to speak for it.
+			s.prime(vals, now)
+			return 0, false
+		}
+		deltaUJ += float64(v - z.last)
 	}
 	s.prime(vals, now)
 	w := deltaUJ / 1e6 / dt
-	// minWatts is how a psys zone that a vendor exposes but never advances
-	// gets caught: a running board does not draw nothing.
+	// minWatts remains the domain's own plausibility floor; it is no longer
+	// load-bearing for liveness, which is now per counter.
 	if w < s.minWatts || w > powerRateMaxWatts {
 		return 0, false
 	}

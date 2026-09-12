@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/bokiko/bloxos/proto/powerhistory"
+	"github.com/shirou/gopsutil/v4/host"
 )
 
 // Software power backends on Linux.
@@ -29,16 +30,15 @@ import (
 //	cpu    — CPU package power (RAPL package sum), with dram reported
 //	         separately when the RAPL dram sub-zones exist.
 //
-// NOTHING here estimates. Every backend in this file reads a counter, and a
-// machine whose counters are all unavailable reports nothing from here.
+// NOTHING here estimates, and nothing anywhere else does either. Every backend
+// in this file reads a counter.
 //
-// A machine that measures NOTHING AT ALL — no RAPL, no battery, no BMC, no
-// shunt, no GPU counter, which is the ordinary state of an RK3588-class ARM
-// SoC (regulator voltages, no current sense) or a guest with no host MSRs —
-// may additionally have its `system` domain MODELLED from CPU utilisation.
-// That backend lives in power_estimate.go, is appended strictly after every
-// backend here has declined, carries its own source label, and is withheld
-// the moment any real counter works. See attachPowerEstimate.
+// A machine that measures NOTHING AT ALL — no RAPL, no BMC, no GPU counter,
+// the ordinary state of an RK3588-class ARM SoC (regulator voltages, no
+// current sense) — REPORTS NOTHING. There is no modelled fallback to reach and
+// no code left to reach it: a machine with no counter reports nothing, and a
+// number derived from a utilisation curve is not a measurement no matter how
+// carefully it is labelled.
 //
 // Nothing here is ever summed across domains either. Where psys exists it
 // already contains the packages, so it is PREFERRED OVER the package sum for
@@ -50,9 +50,6 @@ const (
 	powerHwmonRoot  = "/sys/class/hwmon"
 	powerDRMRoot    = "/sys/class/drm"
 
-	// powerBatteryMaxWatts bounds a battery discharge reading. No laptop
-	// pack sustains a kilowatt; above it the units or sign are wrong.
-	powerBatteryMaxWatts = 1000.0
 	// powerIPMIInterval paces BMC round trips. A DCMI read costs hundreds of
 	// milliseconds, so it runs well below the sample cadence and simply
 	// contributes fewer samples to the window.
@@ -70,20 +67,20 @@ var (
 	powerIDUnsafeRe = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 )
 
-// powerHwmonWholeSystem is the deliberately short list of hwmon chips whose
-// power1 channel is credibly the WHOLE BOARD rather than one component.
-// Anything not listed is left alone: reporting a component sensor as system
-// power would be exactly the kind of misattribution this feature exists to
-// avoid. Extending the list is a one-line change backed by a datasheet.
-var powerHwmonWholeSystem = map[string]bool{
-	"power_meter": true, // ACPI 4.0 power meter: platform input power
-	"ina219":      true, // shunt monitors, wired on the input rail of many
-	"ina226":      true, // SBCs and instrumented carrier boards
-	"ina230":      true,
-	"ina231":      true,
-	"ina238":      true,
-	"ina260":      true,
-}
+// There is no hwmon whole-system list any more, and adding one back needs a
+// scope contract, not a longer table of chip names.
+//
+// A chip name is evidence that something MEASURES. It is not evidence of WHAT
+// it measures. A shunt monitor reports whatever rail it is wired across — a
+// 5V rail, a GPU rail, a fan rail — and nothing in `name` distinguishes a
+// board's input rail from a component's. ACPI's power_meter is no better: the
+// kernel's own documentation gives `power*_is_battery` for battery supplies
+// and the `measures/` symlinks for the devices a meter covers, which is
+// exactly the admission that the chip alone does not say.
+//
+// So generic hwmon is no longer selected as a SYSTEM backend at all. The
+// device-scoped DRM GPU hwmon path is untouched: there the scope comes from
+// the device the sensor hangs off, not from its name.
 
 // powerIPMIDevices are the character devices a working BMC interface
 // creates. Their absence means no ipmitool is spawned at all.
@@ -103,8 +100,30 @@ type powerEnv struct {
 	statDev    func(string) bool
 	lookPath   func(string) (string, error)
 	ipmiRead   func(tool string) (float64, bool)
-	sleep      func(time.Duration)
-	now        func() time.Time
+	// inGuest reports whether this kernel is running inside a VM guest.
+	// Injectable so both answers are testable without a hypervisor.
+	inGuest func() bool
+	sleep   func(time.Duration)
+	now     func() time.Time
+}
+
+// runningInVMGuest reports whether this is a GUEST, which is not the same
+// question as whether virtualization is present.
+//
+// A KVM host runs virtual machines and has real RAPL counters measuring real
+// silicon; gopsutil reports its role as "host". A guest may see RAPL that is
+// absent, emulated, or passed through from a package it shares with other
+// tenants — in none of those cases does the counter describe that VM. Only the
+// guest role withholds.
+//
+// gopsutil's own detection is the source, deliberately: no systemd-detect-virt
+// invocation, no CPUID or DMI heuristic of our own to keep correct.
+func runningInVMGuest() bool {
+	hi, err := host.Info()
+	if err != nil || hi == nil {
+		return false // unknown is not a guest; the counters stand or fall on their own
+	}
+	return strings.EqualFold(hi.VirtualizationRole, "guest") && hi.VirtualizationSystem != ""
 }
 
 func defaultPowerEnv() powerEnv {
@@ -121,6 +140,7 @@ func defaultPowerEnv() powerEnv {
 		},
 		lookPath: exec.LookPath,
 		ipmiRead: readIPMIDCMIWatts,
+		inGuest:  runningInVMGuest,
 		sleep:    time.Sleep,
 		now:      time.Now,
 	}
@@ -129,11 +149,24 @@ func defaultPowerEnv() powerEnv {
 // newPowerSources detects this host's power backends. It is the single
 // platform entry point; the non-Linux build returns an empty set.
 func newPowerSources() powerSourceSet {
-	return attachPowerEstimate(detectPowerSources(defaultPowerEnv()), defaultPowerEstimateEnv())
+	return detectPowerSources(defaultPowerEnv())
 }
 
 func detectPowerSources(env powerEnv) powerSourceSet {
 	psys, pkg, dram := discoverRAPL(env.raplRoot, env.read)
+	// Inside a guest, EVERY RAPL domain is withheld — cpu and dram as well as
+	// system. A package counter measures physical silicon that the VM shares
+	// with tenants it cannot see, so "this VM's CPU power" is not a quantity
+	// those counters answer, whether they are emulated, passed through, or
+	// simply inherited. GPU reporting is unaffected: a passed-through device
+	// is measured at the device.
+	if env.inGuest != nil && env.inGuest() {
+		if psys != nil || pkg != nil || dram != nil {
+			log.Printf("power-history: running in a VM guest; withholding all RAPL backends — " +
+				"package counters measure the host's silicon, not this guest")
+		}
+		psys, pkg, dram = nil, nil, nil
+	}
 	set := powerSourceSet{gpu: discoverDRMGPUs(env)}
 	if pkg != nil {
 		set.cpu = pkg
@@ -154,10 +187,22 @@ func detectPowerSources(env powerEnv) powerSourceSet {
 	return set
 }
 
-// pickSystemSource applies the whole-platform preference order. Each
-// candidate is only accepted once it has demonstrated it can produce a
-// reading on this host, so a zone a vendor exposes but never populates does
-// not shadow a backend that works.
+// pickSystemSource applies the whole-platform preference order.
+//
+// Exactly two backends measure whole-platform power with a scope this code can
+// defend: RAPL psys, which is the platform domain by definition, and an
+// in-band DCMI reading the BMC says it is actually taking.
+//
+// Everything else that used to be here has gone, and for one reason: none of
+// it established SCOPE. A battery's discharge is the machine's draw only while
+// the machine runs on that battery alone — on AC, or with one pack charging
+// while another discharges, the packs account for part of the load and the
+// inputs available here cannot say which part. Generic hwmon named a chip and
+// inferred a board. Both produced numbers; neither produced whole-system
+// numbers, and a number labelled with the wrong scope is worse than silence
+// because nothing downstream can correct it.
+//
+// A host with neither counter reports no system power. That is the rule.
 func pickSystemSource(env powerEnv, psys *raplSampler) powerSource {
 	if psys != nil {
 		if probeCounterLive(psys, env) {
@@ -165,24 +210,11 @@ func pickSystemSource(env powerEnv, psys *raplSampler) powerSource {
 		}
 		log.Printf("power-history: %s present but not advancing; trying the next system backend", psys.source())
 	}
-	// A battery is judged by whether the device and its files exist, never
-	// by whether it happens to be discharging right now: on AC it correctly
-	// reports nothing and starts reporting again the moment it is unplugged.
-	if b := discoverBattery(env); b != nil {
-		return b
-	}
 	if i := discoverIPMI(env); i != nil {
 		return i
 	}
-	if h := discoverWholeSystemHwmon(env); h != nil {
-		return h
-	}
-	// Nothing on this host MEASURES whole-platform power. This function ends
-	// here by design: the modelled backend is not a candidate in this chain
-	// and cannot be reached from it. attachPowerEstimate considers it only
-	// after this has returned nil AND every other domain has come up empty
-	// too, so no ordering mistake inside this function can promote a model
-	// over a counter.
+	// Nothing on this host MEASURES whole-platform power, so nothing is
+	// reported for it. There is no modelled fallback to reach.
 	return nil
 }
 
@@ -195,106 +227,23 @@ func probeCounterLive(s powerSource, env powerEnv) bool {
 	return ok
 }
 
-// --- battery ---
-
-// batterySampler reads genuine whole-system discharge power from the
-// power_supply class. While a pack discharges, its output IS what the
-// machine is consuming, which is the same quantity a wall meter would show
-// (minus charger losses that are not happening). While charging or full it
-// measures charge current instead, which is not system power, so the backend
-// reports nothing.
-type batterySampler struct {
-	dirs []string
-	read func(string) ([]byte, error)
-}
-
-func (b *batterySampler) source() string { return powerhistory.SourceBattery }
-
-// discoverBattery finds system batteries: type Battery, and scope System (or
-// unset). scope Device is a peripheral's pack — a wireless mouse or keyboard
-// — and has nothing to do with this machine's power.
-func discoverBattery(env powerEnv) *batterySampler {
-	entries, err := os.ReadDir(env.supplyRoot)
-	if err != nil {
-		return nil
-	}
-	names := make([]string, 0, len(entries))
-	for _, e := range entries {
-		names = append(names, e.Name())
-	}
-	sort.Strings(names)
-	var dirs []string
-	for _, name := range names {
-		dir := filepath.Join(env.supplyRoot, name)
-		if !sysfsStringIs(env.read, filepath.Join(dir, "type"), "Battery") {
-			continue
-		}
-		if scope, err := env.read(filepath.Join(dir, "scope")); err == nil &&
-			!strings.EqualFold(strings.TrimSpace(string(scope)), "System") {
-			continue
-		}
-		if _, ok := batteryWatts(env.read, dir); !ok {
-			// Present but with no usable power reading at all (no power_now
-			// and no current/voltage pair, or unreadable). Not a backend.
-			continue
-		}
-		dirs = append(dirs, dir)
-	}
-	if len(dirs) == 0 {
-		return nil
-	}
-	return &batterySampler{dirs: dirs, read: env.read}
-}
-
-// sample sums every discharging system battery. A pack that is charging or
-// full contributes nothing; when none is discharging there is no reading.
-// A battery whose files have vanished (removed pack, permission change)
-// makes the whole backend unavailable for that tick rather than turning a
-// two-pack machine into a silent one-pack undercount.
-func (b *batterySampler) sample(time.Time) (float64, bool) {
-	total, discharging := 0.0, false
-	for _, dir := range b.dirs {
-		raw, err := b.read(filepath.Join(dir, "status"))
-		if err != nil {
-			return 0, false
-		}
-		if !strings.EqualFold(strings.TrimSpace(string(raw)), "Discharging") {
-			continue
-		}
-		w, ok := batteryWatts(b.read, dir)
-		if !ok {
-			return 0, false
-		}
-		total += w
-		discharging = true
-	}
-	if !discharging || total < powerSystemMinWatts || total > powerBatteryMaxWatts {
-		return 0, false
-	}
-	return total, true
-}
-
-// batteryWatts prefers power_now (µW) and falls back to current_now (µA) ×
-// voltage_now (µV), which the charge-reporting drivers expose instead. Both
-// are magnitudes: some drivers sign discharge negative, and the caller has
-// already established the direction from status.
-func batteryWatts(read func(string) ([]byte, error), dir string) (float64, bool) {
-	if v, ok := readSysInt(read, filepath.Join(dir, "power_now")); ok {
-		if w := math.Abs(float64(v)) / 1e6; w > 0 {
-			return w, true
-		}
-	}
-	cur, curOK := readSysInt(read, filepath.Join(dir, "current_now"))
-	volt, voltOK := readSysInt(read, filepath.Join(dir, "voltage_now"))
-	if !curOK || !voltOK {
-		return 0, false
-	}
-	w := math.Abs(float64(cur)) * math.Abs(float64(volt)) / 1e12
-	if w <= 0 {
-		return 0, false
-	}
-	return w, true
-}
+// --- battery: removed as a power source ---
+//
+// A discharging pack's output IS the machine's draw, but only while the
+// machine runs on that pack alone. On AC, or with one pack charging while
+// another discharges, the packs supply part of the load and nothing available
+// here says which part — the old code summed the discharging subset and
+// labelled it whole-system power.
+//
+// Two narrower defects fell out of the same path: discovery dropped a pack
+// with no usable reading before the sampler was built, so a two-pack machine
+// silently became a one-pack undercount; and a sibling that was charging or
+// full contributed nothing while the reading still counted as a system total.
+//
+// Establishing when a battery IS the whole supply needs inputs this code does
+// not have, so generation is removed rather than patched. powerhistory.
+// SourceBattery stays: rows already recorded still decode, and agents that
+// predate this change still report.
 
 // --- generic hwmon ---
 
@@ -318,25 +267,6 @@ func (h *hwmonSampler) sample(time.Time) (float64, bool) {
 		return 0, false
 	}
 	return w, true
-}
-
-func discoverWholeSystemHwmon(env powerEnv) *hwmonSampler {
-	for _, dir := range sortedSubdirs(env.hwmonRoot, powerHwmonDirRe) {
-		raw, err := env.read(filepath.Join(dir, "name"))
-		if err != nil {
-			continue
-		}
-		chip := strings.TrimSpace(string(raw))
-		if !powerHwmonWholeSystem[chip] {
-			continue
-		}
-		path, ok := hwmonPowerChannel(env.read, dir)
-		if !ok {
-			continue
-		}
-		return &hwmonSampler{id: powerhistory.SourceHwmonPrefix + sanitizePowerID(chip), path: path, read: env.read}
-	}
-	return nil
 }
 
 // hwmonPowerChannel picks the readable power1 channel, preferring the
@@ -373,7 +303,18 @@ func (i *ipmiSampler) sample(now time.Time) (float64, bool) {
 	}
 	i.next = now.Add(i.interval)
 	w, ok := i.read(i.tool)
-	if !ok || w < powerSystemMinWatts || w > powerRateMaxWatts {
+	// A DIRECT reading is not an energy counter, and the two need different
+	// rules. powerSystemMinWatts exists to catch a RAPL zone a vendor exposes
+	// but never advances — a frozen counter is indistinguishable from a
+	// board drawing nothing, so the floor breaks the tie. Here there is no tie
+	// to break: the BMC says the reading is ACTIVE, so an active zero is the
+	// BMC's answer, not an absence of one. Applying the counter's floor threw
+	// it away, which would have made the project's promise about real zeros
+	// untrue exactly where it is most literal.
+	//
+	// The range is still bounded on both ends; only the lower bound moves to
+	// where it belongs for a direct reading.
+	if !ok || w < 0 || w > powerRateMaxWatts {
 		return 0, false
 	}
 	return w, true
@@ -400,11 +341,54 @@ func discoverIPMI(env powerEnv) *ipmiSampler {
 	return &ipmiSampler{tool: tool, read: env.ipmiRead, interval: powerIPMIInterval}
 }
 
-var ipmiDCMIRe = regexp.MustCompile(`(?i)instantaneous power reading:\s*([0-9]+(?:\.[0-9]+)?)`)
+// ipmiDCMIRe matches the WHOLE reading line, units included.
+//
+// A numeric prefix is not a reading. Anchored loosely, "212garbage Watts"
+// yields 212 and "1e6 Watts" yields 1 — a malformed line silently becoming a
+// plausible wattage is worse than no line at all, because nothing downstream
+// can tell the difference.
+var ipmiDCMIRe = regexp.MustCompile(`(?im)^[ \t]*instantaneous power reading:[ \t]*([0-9]+(?:\.[0-9]+)?)[ \t]+watts[ \t]*\r?$`)
+
+// ipmiDCMIStateRe captures the reading state ipmitool prints beneath the value,
+// as a whole line for the same reason.
+var ipmiDCMIStateRe = regexp.MustCompile(`(?im)^[ \t]*power reading state is:[ \t]*(\S+)[ \t]*\r?$`)
+
+// parseIPMIDCMIWatts turns one `ipmitool dcmi power reading` into watts.
+//
+// The STATE LINE is not optional. ipmitool prints the numeric value and exits
+// zero even when the BMC reports "Power reading state is: deactivated"
+// (lib/ipmi_dcmi.c, ipmi_dcmi_pwr_rd), so a number plus a successful exit is
+// not evidence that anything is being measured. Reading only the value turned
+// a deactivated sensor into fresh measured whole-system watts.
+//
+// Absent is refused as firmly as deactivated: this is the one line that says
+// the reading means something, and output that does not contain it is output
+// this function does not understand.
+func parseIPMIDCMIWatts(out []byte) (float64, bool) {
+	states := ipmiDCMIStateRe.FindAllSubmatch(out, -1)
+	if len(states) != 1 || !strings.EqualFold(string(states[0][1]), "activated") {
+		// Zero states is output this function does not understand. More than
+		// one is output it cannot resolve — two states in one response mean
+		// the reading they refer to is not identifiable, and picking the first
+		// would be a guess.
+		return 0, false
+	}
+	values := ipmiDCMIRe.FindAllSubmatch(out, -1)
+	if len(values) != 1 {
+		return 0, false
+	}
+	w, err := strconv.ParseFloat(string(values[0][1]), 64)
+	// The regex already excludes exponents, signs and NaN, but the range check
+	// is what keeps an absurd magnitude out of the fleet total.
+	if err != nil || math.IsNaN(w) || math.IsInf(w, 0) || w < 0 || w > powerRateMaxWatts {
+		return 0, false
+	}
+	return w, true
+}
 
 // readIPMIDCMIWatts runs one bounded `ipmitool dcmi power reading`. Any
-// failure — missing DCMI support, a busy BMC, a timeout, unparsable output —
-// is simply "no reading".
+// failure — missing DCMI support, a busy BMC, a timeout, unparsable output,
+// or a reading the BMC is not actually taking — is simply "no reading".
 func readIPMIDCMIWatts(tool string) (float64, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), powerIPMITimeout)
 	defer cancel()
@@ -414,15 +398,7 @@ func readIPMIDCMIWatts(tool string) (float64, bool) {
 	if err != nil {
 		return 0, false
 	}
-	m := ipmiDCMIRe.FindSubmatch(out)
-	if m == nil {
-		return 0, false
-	}
-	w, err := strconv.ParseFloat(string(m[1]), 64)
-	if err != nil {
-		return 0, false
-	}
-	return w, true
+	return parseIPMIDCMIWatts(out)
 }
 
 // --- DRM GPU hwmon (AMD, and any other non-NVIDIA DRM driver) ---

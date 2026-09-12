@@ -129,11 +129,24 @@ func TestRAPLSampleRatesAndWraps(t *testing.T) {
 	if !ok || w < 0.0999 || w > 0.1001 {
 		t.Fatalf("rate: ok=%v w=%v", ok, w)
 	}
-	r.set("intel-rapl:0", 25_000) // wrapped: 950000 → 1000000 → 25000 = +75 mJ
+	// A BACKWARD STEP IS UNAVAILABLE, even though this one looks exactly like
+	// a wrap. A rollover and a counter reset (suspend/resume, a driver reload)
+	// are indistinguishable from two reads, and assuming wrap invents up to a
+	// whole max_energy_range_uj of energy that may never have been consumed —
+	// at a rate the aggregate ceiling would happily accept. One missed sample
+	// at rollover is the cheaper error.
+	r.set("intel-rapl:0", 25_000) // 950000 → wrapped, or reset; nothing can tell
 	r.set("intel-rapl:1", 175_000)
-	w, ok = s.sample(base.Add(2 * time.Second))
+	if w, ok := s.sample(base.Add(2 * time.Second)); ok {
+		t.Fatalf("a backward counter step must not be guessed as a wrap: %v W", w)
+	}
+	// And it recovers on its own: the next interval measures from the new
+	// baseline with no intervention.
+	r.set("intel-rapl:0", 75_000)
+	r.set("intel-rapl:1", 225_000)
+	w, ok = s.sample(base.Add(3 * time.Second))
 	if !ok || w < 0.0999 || w > 0.1001 {
-		t.Fatalf("wrap: ok=%v w=%v", ok, w)
+		t.Fatalf("recovery after a backward step: ok=%v w=%v", ok, w)
 	}
 	// Implausible interval (long stall) re-primes instead of reporting.
 	r.set("intel-rapl:0", 30_000)
@@ -149,6 +162,10 @@ func TestRAPLSampleRatesAndWraps(t *testing.T) {
 	if _, ok := s.sample(base.Add(62 * time.Second)); ok {
 		t.Fatal("sample right after a read error must only prime")
 	}
+	// Both counters advance: EVERY participating zone has to move, so a
+	// resuming sample cannot be produced by one busy zone alone.
+	r.set("intel-rapl:0", 80_000)
+	r.set("intel-rapl:1", 275_000)
 	if _, ok := s.sample(base.Add(63 * time.Second)); !ok {
 		t.Fatal("rate must resume after re-priming")
 	}
@@ -235,5 +252,143 @@ func TestPsysPreferredForSystemAndPackagesStillReportCPU(t *testing.T) {
 	}
 	if cpuW < 3.99 || cpuW > 4.01 {
 		t.Fatalf("cpu watts %v", cpuW)
+	}
+}
+
+// EVERY participating counter has to advance, on its own account.
+//
+// Summing first and judging the total let one busy socket certify a frozen
+// sibling: the sum stayed plausible and shipped as the whole domain, which is
+// an undercount wearing a measurement's label.
+func TestAFrozenZoneIsNotCertifiedByABusySibling(t *testing.T) {
+	r := newFakeRAPL(t)
+	r.zone("intel-rapl:0", "package-0", 1_000_000, 1<<40)
+	r.zone("intel-rapl:1", "package-1", 2_000_000, 1<<40)
+	_, pkg, _ := discoverRAPL(r.root, r.read)
+	if pkg == nil {
+		t.Fatal("discovery failed")
+	}
+	base := time.Now()
+	if _, ok := pkg.sample(base); ok {
+		t.Fatal("first sample primes")
+	}
+
+	// CONTROL: with BOTH advancing, this fixture does produce a rate — so the
+	// assertion below is about the frozen zone and not about a sampler that
+	// never reports anything.
+	r.set("intel-rapl:0", 11_000_000)
+	r.set("intel-rapl:1", 12_000_000)
+	if w, ok := pkg.sample(base.Add(time.Second)); !ok || w < 19.99 || w > 20.01 {
+		t.Fatalf("control: two advancing zones must yield 20 W, got ok=%v w=%v", ok, w)
+	}
+
+	// Package 1 stops. The sum is still large and still plausible.
+	r.set("intel-rapl:0", 21_000_000)
+	if w, ok := pkg.sample(base.Add(2 * time.Second)); ok {
+		t.Fatalf("a frozen zone was certified by its busy sibling: %v W", w)
+	}
+}
+
+// With minWatts 0, an entirely frozen group produced 0.0 W and PASSED — a
+// running CPU reported as drawing nothing, which is worse than silence
+// because it is indistinguishable from a real idle measurement.
+func TestAnEntirelyFrozenGroupIsUnavailableNotZeroWatts(t *testing.T) {
+	for _, domain := range []struct {
+		name  string
+		build func(r *fakeRAPL) *raplSampler
+	}{
+		{"package", func(r *fakeRAPL) *raplSampler { _, p, _ := discoverRAPL(r.root, r.read); return p }},
+		{"dram", func(r *fakeRAPL) *raplSampler { _, _, d := discoverRAPL(r.root, r.read); return d }},
+	} {
+		t.Run(domain.name, func(t *testing.T) {
+			r := newFakeRAPL(t)
+			r.zone("intel-rapl:0", "package-0", 5_000_000, 1<<40)
+			r.zone("intel-rapl:0:0", "dram", 3_000_000, 1<<40)
+			s := domain.build(r)
+			if s == nil {
+				t.Fatal("discovery failed")
+			}
+			if s.minWatts != 0 {
+				t.Fatalf("this test is about the minWatts==0 domains; %s has %v", domain.name, s.minWatts)
+			}
+			base := time.Now()
+			s.sample(base)
+			if w, ok := s.sample(base.Add(time.Second)); ok {
+				t.Fatalf("a frozen %s group reported %v W as a measurement", domain.name, w)
+			}
+		})
+	}
+}
+
+// A counter outside its own declared range is not arithmetic to perform.
+func TestARangeViolationIsRefusedBeforeSubtraction(t *testing.T) {
+	r := newFakeRAPL(t)
+	const maxRange = 1_000_000
+	r.zone("intel-rapl:0", "package-0", 500_000, maxRange)
+	_, pkg, _ := discoverRAPL(r.root, r.read)
+	base := time.Now()
+	pkg.sample(base)
+	r.set("intel-rapl:0", maxRange+1)
+	if w, ok := pkg.sample(base.Add(time.Second)); ok {
+		t.Fatalf("a value above max_energy_range_uj was used: %v W", w)
+	}
+	// Recovers from a sane pair afterwards.
+	r.set("intel-rapl:0", 600_000)
+	pkg.sample(base.Add(2 * time.Second))
+	r.set("intel-rapl:0", 700_000)
+	if _, ok := pkg.sample(base.Add(3 * time.Second)); !ok {
+		t.Fatal("the sampler must recover once the counter is sane again")
+	}
+}
+
+// A zone whose NAME cannot be read is not a zone that is absent: it matched
+// the powercap naming, so it exists, and only its domain is unknown.
+//
+// Skipping it was how a partial sum became a domain total — on a two-socket
+// board where package-1's name is unreadable, the CPU domain reported one
+// socket as if it were the machine.
+func TestAnUnreadableZoneNameWithholdsTheDomainsItCouldBelongTo(t *testing.T) {
+	build := func(t *testing.T, hide string) (psys, pkg, dram *raplSampler) {
+		r := newFakeRAPL(t)
+		r.zone("intel-rapl:0", "package-0", 1_000_000, 1<<40)
+		r.zone("intel-rapl:1", "package-1", 2_000_000, 1<<40)
+		r.zone("intel-rapl:2", "psys", 3_000_000, 1<<40)
+		r.zone("intel-rapl:0:0", "dram", 4_000_000, 1<<40)
+		// Named sub-zones that are legitimately not dram. These must NOT be
+		// mistaken for missing dram contributors.
+		r.zone("intel-rapl:0:1", "core", 5_000_000, 1<<40)
+		r.zone("intel-rapl:1:0", "uncore", 6_000_000, 1<<40)
+		if hide != "" {
+			r.fail[filepath.Join(r.root, hide, "name")] = true
+		}
+		return discoverRAPL(r.root, r.read)
+	}
+
+	// CONTROL: with every name readable, all three domains exist — so the
+	// withholding below is caused by the unreadable name and nothing else.
+	psys, pkg, dram := build(t, "")
+	if psys == nil || pkg == nil || dram == nil {
+		t.Fatalf("control: all three domains must exist: psys=%v pkg=%v dram=%v", psys, pkg, dram)
+	}
+
+	// A TOP-LEVEL zone could be a package or psys, so it compromises both.
+	psys, pkg, dram = build(t, "intel-rapl:1")
+	if pkg != nil {
+		t.Fatal("the cpu domain reported a partial package sum")
+	}
+	if psys != nil {
+		t.Fatal("the system domain was reported while a sibling zone was unidentifiable")
+	}
+	if dram == nil {
+		t.Fatal("dram is unaffected by an unreadable TOP-LEVEL name and must survive")
+	}
+
+	// A SUB-ZONE can only have been dram, so only dram is compromised.
+	psys, pkg, dram = build(t, "intel-rapl:0:0")
+	if dram != nil {
+		t.Fatal("the dram domain reported a sum with an unidentifiable sub-zone present")
+	}
+	if pkg == nil || psys == nil {
+		t.Fatalf("cpu and system are unaffected by an unreadable SUB-ZONE name: pkg=%v psys=%v", pkg, psys)
 	}
 }

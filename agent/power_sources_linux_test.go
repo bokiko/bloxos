@@ -73,129 +73,89 @@ func setEnergy(t *testing.T, dir string, energyUJ uint64) {
 	}
 }
 
-// --- battery ---
+// --- backends removed because they could not establish SCOPE ---
 
-func TestBatteryDischargeIsWholeSystemPower(t *testing.T) {
+// A discharging pack's output is the machine's draw only while the machine
+// runs on that pack ALONE. On AC, or with one pack charging while another
+// discharges, the packs supply part of the load and nothing here says which
+// part — the old code summed the discharging subset and called it
+// whole-system power.
+func TestABatteryIsNoLongerASystemPowerSource(t *testing.T) {
 	env := newFakePowerEnv(t)
-	bat := writeSysfs(t, filepath.Join(env.supplyRoot, "BAT0"), map[string]string{
+	writeSysfs(t, filepath.Join(env.supplyRoot, "BAT0"), map[string]string{
 		"type": "Battery", "scope": "System", "status": "Discharging", "power_now": "23500000",
 	})
-	// An AC adapter is not a battery, and a mouse pack is not this machine.
-	writeSysfs(t, filepath.Join(env.supplyRoot, "ACAD"), map[string]string{"type": "Mains", "online": "1"})
-	writeSysfs(t, filepath.Join(env.supplyRoot, "hidpp_battery_0"), map[string]string{
-		"type": "Battery", "scope": "Device", "status": "Discharging", "power_now": "500000",
-	})
-
-	s := discoverBattery(env)
-	if s == nil || len(s.dirs) != 1 {
-		t.Fatalf("want exactly the system battery, got %+v", s)
-	}
-	if s.source() != powerhistory.SourceBattery {
-		t.Fatalf("source %q", s.source())
-	}
-	w, ok := s.sample(time.Now())
-	if !ok || w < 23.49 || w > 23.51 {
-		t.Fatalf("discharge watts: ok=%v w=%v (the peripheral pack must not be added in)", ok, w)
-	}
-
-	// On AC the pack measures charge current, not system draw: report nothing.
-	for _, status := range []string{"Charging", "Full", "Not charging", "Unknown"} {
-		writeSysfs(t, bat, map[string]string{"status": status})
-		if w, ok := s.sample(time.Now()); ok {
-			t.Fatalf("status %q must not report system power, got %v W", status, w)
-		}
-	}
-}
-
-func TestBatteryFallsBackToCurrentTimesVoltage(t *testing.T) {
-	env := newFakePowerEnv(t)
-	// 2.5 A at 12.3 V = 30.75 W, reported as magnitudes (this driver signs
-	// discharge current negative).
 	writeSysfs(t, filepath.Join(env.supplyRoot, "BAT1"), map[string]string{
-		"type": "Battery", "status": "Discharging",
-		"current_now": "-2500000", "voltage_now": "12300000",
+		"type": "Battery", "scope": "System", "status": "Charging", "power_now": "5000000",
 	})
-	s := discoverBattery(env)
-	if s == nil {
-		t.Fatal("a pack with only current/voltage must still be a backend")
-	}
-	w, ok := s.sample(time.Now())
-	if !ok || w < 30.74 || w > 30.76 {
-		t.Fatalf("ok=%v w=%v", ok, w)
+	if set := detectPowerSources(env); set.system != nil {
+		t.Fatalf("a battery became a system backend again: %s", set.system.source())
 	}
 }
 
-func TestBatteryUnusableOrVanishedIsUnavailableNeverPartial(t *testing.T) {
-	env := newFakePowerEnv(t)
-	// No power channel at all: not a backend.
-	writeSysfs(t, filepath.Join(env.supplyRoot, "BAT0"), map[string]string{
-		"type": "Battery", "status": "Discharging", "capacity": "88",
-	})
-	if s := discoverBattery(env); s != nil {
-		t.Fatalf("a pack with no power reading must not become a backend: %+v", s)
-	}
-
-	// Two packs; one is pulled mid-run. Reporting the survivor alone would
-	// silently halve the machine's measured draw.
-	env2 := newFakePowerEnv(t)
-	a := writeSysfs(t, filepath.Join(env2.supplyRoot, "BAT0"), map[string]string{
-		"type": "Battery", "status": "Discharging", "power_now": "10000000",
-	})
-	b := writeSysfs(t, filepath.Join(env2.supplyRoot, "BAT1"), map[string]string{
-		"type": "Battery", "status": "Discharging", "power_now": "5000000",
-	})
-	s := discoverBattery(env2)
-	if w, ok := s.sample(time.Now()); !ok || w < 14.99 || w > 15.01 {
-		t.Fatalf("two discharging packs must sum: ok=%v w=%v", ok, w)
-	}
-	if err := os.RemoveAll(b); err != nil {
-		t.Fatal(err)
-	}
-	if w, ok := s.sample(time.Now()); ok {
-		t.Fatalf("a vanished pack must make the backend unavailable, got %v W", w)
-	}
-
-	// Malformed and zero readings are unavailable, never zero watts.
-	writeSysfs(t, a, map[string]string{"power_now": "n/a"})
-	writeSysfs(t, b, map[string]string{"type": "Battery", "status": "Discharging", "power_now": "5000000"})
-	if w, ok := s.sample(time.Now()); ok {
-		t.Fatalf("malformed value must be unavailable, got %v W", w)
-	}
-	writeSysfs(t, a, map[string]string{"power_now": "0"})
-	if w, ok := s.sample(time.Now()); ok {
-		t.Fatalf("zero from a discharging pack is a broken driver, not 0 W: %v", w)
+// A chip name is evidence that something MEASURES. It is not evidence of WHAT
+// it measures: a shunt reports whatever rail it sits on, and ACPI's own
+// documentation gives power*_is_battery and the measures/ symlinks precisely
+// because power_meter alone does not say either.
+func TestGenericHwmonIsNoLongerASystemPowerSource(t *testing.T) {
+	for _, chip := range []string{"power_meter", "ina226", "ina219", "ina260"} {
+		t.Run(chip, func(t *testing.T) {
+			env := newFakePowerEnv(t)
+			writeSysfs(t, filepath.Join(env.hwmonRoot, "hwmon0"), map[string]string{
+				"name": chip, "power1_average": "98000000",
+			})
+			if set := detectPowerSources(env); set.system != nil {
+				t.Fatalf("%s was inferred to be whole-system power: %s", chip, set.system.source())
+			}
+		})
 	}
 }
 
-// --- hwmon ---
-
-func TestHwmonAcceptsOnlyCrediblyWholeSystemChips(t *testing.T) {
+// CONTROL for both of the above: the harness CAN produce a system backend, so
+// those negatives are about the backends and not about a detector that never
+// finds anything in this fixture.
+func TestAnActiveBMCIsStillASystemPowerSource(t *testing.T) {
 	env := newFakePowerEnv(t)
-	// Listed first so a wrong implementation would pick it: a GPU chip is
-	// not the board, however plausible its power channel looks.
-	writeSysfs(t, filepath.Join(env.hwmonRoot, "hwmon0"), map[string]string{
-		"name": "amdgpu", "power1_average": "45000000",
-	})
-	writeSysfs(t, filepath.Join(env.hwmonRoot, "hwmon1"), map[string]string{
-		"name": "k10temp", "temp1_input": "42000",
-	})
-	writeSysfs(t, filepath.Join(env.hwmonRoot, "hwmon2"), map[string]string{
-		"name": "power_meter", "power1_average": "98000000",
-	})
-	s := discoverWholeSystemHwmon(env)
-	if s == nil || s.source() != powerhistory.SourceHwmonPrefix+"power_meter" {
-		t.Fatalf("hwmon backend: %+v", s)
+	env.statDev = func(string) bool { return true }
+	env.lookPath = func(string) (string, error) { return "/usr/bin/ipmitool", nil }
+	env.ipmiRead = func(string) (float64, bool) { return 118, true }
+	set := detectPowerSources(env)
+	if set.system == nil {
+		t.Fatal("control: an answering BMC must still provide system power")
 	}
-	w, ok := s.sample(time.Now())
-	if !ok || w < 97.99 || w > 98.01 {
-		t.Fatalf("ok=%v w=%v", ok, w)
+	if set.system.source() != powerhistory.SourceIPMIDCMI {
+		t.Fatalf("system backend is %q", set.system.source())
 	}
-	// The channel disappearing is unavailability, not a zero reading.
-	if err := os.Remove(s.path); err != nil {
-		t.Fatal(err)
+}
+
+// An ACTIVE zero is the BMC's answer, not the absence of one. The energy
+// counter's floor exists to catch a zone that never advances; a direct
+// reading has no such ambiguity to resolve, and applying that floor here
+// discarded exactly the real zero this project promises to show.
+func TestAnActiveZeroFromTheBMCSurvivesToTheSampler(t *testing.T) {
+	const activeZero = "Instantaneous power reading: 0 Watts\nPower reading state is: activated\n"
+	w, ok := parseIPMIDCMIWatts([]byte(activeZero))
+	if !ok || w != 0 {
+		t.Fatalf("parser dropped an active zero: w=%v ok=%v", w, ok)
 	}
-	if w, ok := s.sample(time.Now()); ok {
-		t.Fatalf("removed channel must be unavailable, got %v W", w)
+	env := newFakePowerEnv(t)
+	env.statDev = func(string) bool { return true }
+	env.lookPath = func(string) (string, error) { return "/usr/bin/ipmitool", nil }
+	env.ipmiRead = func(string) (float64, bool) { return parseIPMIDCMIWatts([]byte(activeZero)) }
+	set := detectPowerSources(env)
+	if set.system == nil {
+		t.Fatal("an active zero must not make the backend disappear")
+	}
+	w, ok = set.system.sample(time.Now())
+	if !ok || w != 0 {
+		t.Fatalf("the sampler discarded an active zero: w=%v ok=%v", w, ok)
+	}
+	// CONTROL: the sampler still rejects what is genuinely out of range.
+	env.ipmiRead = func(string) (float64, bool) { return -1, true }
+	if s := detectPowerSources(env).system; s != nil {
+		if w, ok := s.sample(time.Now()); ok {
+			t.Fatalf("a negative reading was accepted: %v", w)
+		}
 	}
 }
 
@@ -255,27 +215,108 @@ func TestIPMIOnlyProbedBehindARealBMCInterface(t *testing.T) {
 	}
 }
 
+// ipmitool prints the instantaneous value and EXITS ZERO even when the BMC
+// says the reading is deactivated (lib/ipmi_dcmi.c, ipmi_dcmi_pwr_rd). A
+// number plus a successful exit is therefore not evidence that anything is
+// being measured, and the agent was turning those into fresh measured
+// whole-system watts.
+//
+// This drives the PRODUCTION parser. The previous version ran ipmiDCMIRe
+// directly, so it could not have failed for any change made to
+// readIPMIDCMIWatts or to the gate around it — the regex still matches the
+// deactivated output, which is exactly the point.
 func TestIPMIDCMIParsing(t *testing.T) {
+	const deactivated = `    Instantaneous power reading:                   212 Watts
+    IPMI timestamp:                           Thu Sep 11 09:00:00 2026
+    Sampling period:                          00000001 Seconds.
+    Power reading state is:                   deactivated
+`
+	const activated = `    Instantaneous power reading:                   212 Watts
+    IPMI timestamp:                           Thu Sep 11 09:00:00 2026
+    Sampling period:                          00000001 Seconds.
+    Power reading state is:                   activated
+`
 	for _, tc := range []struct {
+		name string
 		out  string
 		want float64
 		ok   bool
 	}{
-		{"    Instantaneous power reading:                   212 Watts\n", 212, true},
-		{"Instantaneous power reading: 98.5 Watts", 98.5, true},
-		{"DCMI request failed because of reserved bits", 0, false},
-		{"", 0, false},
+		{"activated", activated, 212, true},
+		{"deactivated", deactivated, 0, false},
+		// The state line is the one line that says the number means anything.
+		{"no state line", "    Instantaneous power reading:  212 Watts\n", 0, false},
+		{"unknown state", "Instantaneous power reading: 212 Watts\nPower reading state is: unknown\n", 0, false},
+		{"activated, fractional", "Instantaneous power reading: 98.5 Watts\nPower reading state is: activated\n", 98.5, true},
+		{"state but no value", "Power reading state is: activated\n", 0, false},
+		{"unsupported", "DCMI request failed because of reserved bits", 0, false},
+		{"empty", "", 0, false},
+
+		// A numeric PREFIX is not a reading. Loosely anchored, each of these
+		// yielded a plausible wattage from a line nothing could interpret.
+		{"trailing garbage", "Instantaneous power reading: 212garbage Watts\nPower reading state is: activated\n", 0, false},
+		{"exponent", "Instantaneous power reading: 1e6 Watts\nPower reading state is: activated\n", 0, false},
+		{"no units", "Instantaneous power reading: 212\nPower reading state is: activated\n", 0, false},
+		{"wrong units", "Instantaneous power reading: 212 Amps\nPower reading state is: activated\n", 0, false},
+		{"negative", "Instantaneous power reading: -5 Watts\nPower reading state is: activated\n", 0, false},
+		{"absurd magnitude", "Instantaneous power reading: 999999 Watts\nPower reading state is: activated\n", 0, false},
+
+		// Two answers in one response name no single reading, and taking the
+		// first would be a guess about which one the state line describes.
+		{"conflicting values", "Instantaneous power reading: 212 Watts\n" +
+			"Instantaneous power reading: 40 Watts\nPower reading state is: activated\n", 0, false},
+		{"conflicting states", "Instantaneous power reading: 212 Watts\n" +
+			"Power reading state is: activated\nPower reading state is: deactivated\n", 0, false},
+		// CRLF, because a BMC-fed pipe is not guaranteed to be Unix-clean.
+		{"crlf", "Instantaneous power reading: 212 Watts\r\nPower reading state is: activated\r\n", 212, true},
 	} {
-		m := ipmiDCMIRe.FindStringSubmatch(tc.out)
-		if (m != nil) != tc.ok {
-			t.Fatalf("%q: match=%v want %v", tc.out, m != nil, tc.ok)
-		}
-		if tc.ok {
-			got, err := strconv.ParseFloat(m[1], 64)
-			if err != nil || got != tc.want {
-				t.Fatalf("%q: got %v err %v", tc.out, got, err)
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := parseIPMIDCMIWatts([]byte(tc.out))
+			if ok != tc.ok {
+				t.Fatalf("ok=%v want %v for %q", ok, tc.ok, tc.out)
 			}
+			if ok && got != tc.want {
+				t.Fatalf("got %v want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// And the command boundary itself, because the gate has to survive the exec:
+// ipmitool's exit status is zero in the deactivated case, so nothing before
+// the parser can catch it.
+func TestIPMIDCMICommandBoundary(t *testing.T) {
+	write := func(t *testing.T, body string) string {
+		t.Helper()
+		dir := t.TempDir()
+		tool := filepath.Join(dir, "ipmitool")
+		if err := os.WriteFile(tool, []byte(body), 0o755); err != nil {
+			t.Fatalf("write fake ipmitool: %v", err)
 		}
+		return tool
+	}
+
+	// CONTROL: the harness really does produce a reading when the BMC is
+	// taking one. Without this, the negative below could pass because the
+	// fake tool never ran at all.
+	live := write(t, `#!/bin/sh
+echo "    Instantaneous power reading:                   212 Watts"
+echo "    Power reading state is:                   activated"
+exit 0
+`)
+	if w, ok := readIPMIDCMIWatts(live); !ok || w != 212 {
+		t.Fatalf("control: an activated BMC must report 212W, got %v ok=%v", w, ok)
+	}
+
+	// Exit zero, a real number, and a BMC that is not measuring.
+	dead := write(t, `#!/bin/sh
+echo "    Instantaneous power reading:                   212 Watts"
+echo "    IPMI timestamp:                           Thu Sep 11 09:00:00 2026"
+echo "    Power reading state is:                   deactivated"
+exit 0
+`)
+	if w, ok := readIPMIDCMIWatts(dead); ok {
+		t.Fatalf("a deactivated reading became measured system power: %vW", w)
 	}
 }
 
@@ -312,18 +353,31 @@ func TestSystemPreferenceOrderPsysBatteryIPMIHwmon(t *testing.T) {
 		}
 		return detectPowerSources(env)
 	}
+	// Two backends measure whole-platform power with a defensible scope, and
+	// the presence of a battery or a shunt changes nothing: they are not
+	// candidates, however plausible their numbers look.
 	for _, tc := range []struct {
 		name                       string
 		psys, battery, ipmi, hwmon bool
 		want                       string
 	}{
 		{"all present", true, true, true, true, powerhistory.SourceRAPLPsys},
-		{"no psys", false, true, true, true, powerhistory.SourceBattery},
-		{"no psys or battery", false, false, true, true, powerhistory.SourceIPMIDCMI},
-		{"hwmon only", false, false, false, true, powerhistory.SourceHwmonPrefix + "ina226"},
+		{"no psys", false, true, true, true, powerhistory.SourceIPMIDCMI},
+		{"no psys or ipmi", false, true, false, true, ""},
+		{"battery only", false, true, false, false, ""},
+		{"hwmon only", false, false, false, true, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			set := build(t, tc.psys, tc.battery, tc.ipmi, tc.hwmon)
+			if tc.want == "" {
+				if set.system != nil {
+					t.Fatalf("a host with no scope-bearing backend reported %s", set.system.source())
+				}
+				if set.cpu == nil || set.cpu.source() != powerhistory.SourceRAPLPackage {
+					t.Fatalf("cpu backend must stay the package sum: %+v", set.cpu)
+				}
+				return
+			}
 			if set.system == nil || set.system.source() != tc.want {
 				t.Fatalf("system backend %+v, want %s", set.system, tc.want)
 			}
@@ -336,19 +390,51 @@ func TestSystemPreferenceOrderPsysBatteryIPMIHwmon(t *testing.T) {
 	}
 }
 
-func TestStuckPsysFallsBackToBattery(t *testing.T) {
+func TestStuckPsysFallsBackToTheBMC(t *testing.T) {
 	env := newFakePowerEnv(t)
 	writeRAPLZone(t, env.raplRoot, "intel-rapl:0", "package-0", 0)
 	writeRAPLZone(t, env.raplRoot, "intel-rapl:1", "psys", 12345) // never advances
-	writeSysfs(t, filepath.Join(env.supplyRoot, "BAT0"), map[string]string{
-		"type": "Battery", "status": "Discharging", "power_now": "18000000",
-	})
+	env.statDev = func(p string) bool { return p == "/dev/ipmi0" }
+	env.lookPath = func(string) (string, error) { return "/usr/bin/ipmitool", nil }
+	env.ipmiRead = func(string) (float64, bool) { return 205, true }
 	set := detectPowerSources(env)
-	if set.system == nil || set.system.source() != powerhistory.SourceBattery {
-		t.Fatalf("a psys zone that never advances must not shadow the battery: %+v", set.system)
+	if set.system == nil || set.system.source() != powerhistory.SourceIPMIDCMI {
+		t.Fatalf("a psys zone that never advances must not shadow the BMC: %+v", set.system)
 	}
-	if w, ok := set.system.sample(time.Now()); !ok || w < 17.99 || w > 18.01 {
+	if w, ok := set.system.sample(time.Now()); !ok || w != 205 {
 		t.Fatalf("ok=%v w=%v", ok, w)
+	}
+}
+
+// A guest's RAPL counters describe the host's silicon, shared with tenants
+// the guest cannot see, so none of the three domains is about this machine.
+// A virtualization HOST keeps all of them.
+func TestAVMGuestWithholdsEveryRAPLDomain(t *testing.T) {
+	build := func(t *testing.T, guest bool) powerSourceSet {
+		env := newFakePowerEnv(t)
+		env.inGuest = func() bool { return guest }
+		writeRAPLZone(t, env.raplRoot, "intel-rapl:0", "package-0", 0)
+		writeRAPLZone(t, env.raplRoot, "intel-rapl:0:0", "dram", 0)
+		dir := writeRAPLZone(t, env.raplRoot, "intel-rapl:1", "psys", 0)
+		tick := env.sleep
+		env.sleep = func(d time.Duration) {
+			setEnergy(t, dir, 10_000_000)
+			tick(d)
+		}
+		return detectPowerSources(env)
+	}
+
+	// CONTROL: a host — including a KVM host, which gopsutil reports as role
+	// "host" — keeps every counter.
+	host := build(t, false)
+	if host.system == nil || host.cpu == nil || host.dram == nil {
+		t.Fatalf("control: a virtualization host must keep all RAPL domains: %+v", host)
+	}
+
+	guest := build(t, true)
+	if guest.system != nil || guest.cpu != nil || guest.dram != nil {
+		t.Fatalf("a guest reported RAPL: system=%v cpu=%v dram=%v",
+			guest.system, guest.cpu, guest.dram)
 	}
 }
 
