@@ -93,15 +93,39 @@ def platform_image(image, platform):
     return image.split("@", 1)[0] + "@" + matches[0]
 
 
-def export(image, platform, source, destination, revision):
-    image = platform_image(image, platform)
-    subprocess.run(["docker", "pull", "--platform", platform, image], check=True)
-    actual_platform = run(["docker", "image", "inspect", "--format", '{{.Os}}/{{.Architecture}}', image])
+def verify_image_identity(image, platform, revision):
+    """Resolve an index to one platform's child and prove what that child is.
+
+    Two independent checks, neither implying the other. The platform check
+    catches a classic-store collision handing back a different image than the
+    index entry names. The revision label is the only thing tying published
+    bytes to the source a release claims — a recorded image pair that matches
+    this run's tag and sha says nothing about what the image it REFERENCES was
+    built from, so that has to be read off the image itself.
+
+    Returns the immutable per-platform ref, so callers operate on the child
+    they verified rather than re-resolving the index.
+    """
+    ref = platform_image(image, platform)
+    # `docker pull` writes progress to STDOUT. This function's callers include
+    # a CLI whose stdout is captured into a shell variable, so inheriting it
+    # would splice download progress into the resolved reference. The progress
+    # is still shown — on stderr, where it belongs.
+    progress = subprocess.run(["docker", "pull", "--platform", platform, ref],
+                              check=True, stdout=subprocess.PIPE, text=True)
+    sys.stderr.write(progress.stdout)
+    actual_platform = run(["docker", "image", "inspect", "--format", '{{.Os}}/{{.Architecture}}', ref])
     if actual_platform != platform:
-        raise ValueError("Published image platform does not match requested platform")
-    actual = run(["docker", "image", "inspect", "--format", '{{index .Config.Labels "org.opencontainers.image.revision"}}', image])
+        raise ValueError(f"Published image {ref} is {actual_platform}, expected {platform}")
+    actual = run(["docker", "image", "inspect", "--format", '{{index .Config.Labels "org.opencontainers.image.revision"}}', ref])
     if actual != revision:
-        raise ValueError("Published image revision does not match release")
+        raise ValueError(f"Published image {ref} was built from {actual or 'no recorded revision'}, "
+                         f"expected {revision}")
+    return ref
+
+
+def export(image, platform, source, destination, revision):
+    image = verify_image_identity(image, platform, revision)
     container = run(["docker", "create", "--platform", platform, "--network", "none", image])
     if not re.fullmatch(r"[0-9a-f]{64}", container):
         raise ValueError("Invalid export container ID")

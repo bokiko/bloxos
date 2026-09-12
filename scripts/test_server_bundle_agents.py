@@ -379,5 +379,67 @@ class ServerBundleAgentTests(unittest.TestCase):
         subprocess.run([sys.executable, str(built[0])], check=True)
 
 
+class ImageIdentityCliTests(unittest.TestCase):
+    """The helper is invoked as `ref=$(... --revision ...)`, so its STDOUT is a
+    reference. A return-value test cannot see that boundary: `docker pull`
+    writes progress to stdout, and inheriting it splices download chatter into
+    the variable the workflow then passes to docker.
+    """
+
+    INDEX = {"manifests": [
+        {"platform": {"os": "linux", "architecture": "amd64"}, "digest": "sha256:" + "1" * 64},
+        {"platform": {"os": "linux", "architecture": "arm64", "variant": "v8"},
+         "digest": "sha256:" + "2" * 64},
+    ]}
+    IMAGE = "ghcr.io/bokiko/bloxos-dashboard@sha256:" + "d" * 64
+    REVISION = "a" * 40
+
+    def fake_docker(self, revision):
+        """A docker that is deliberately NOISY on stdout, as the real one is."""
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        script = directory / "docker"
+        script.write_text(f"""#!/usr/bin/env python3
+import sys
+argv = sys.argv[1:]
+if argv[0] == "manifest":
+    print({json.dumps(self.INDEX)!r}, end="")
+elif argv[0] == "pull":
+    # Real docker prints progress here, on STDOUT.
+    print("latest: Pulling from bokiko/bloxos-dashboard")
+    print("Digest: sha256:" + "9" * 64)
+elif argv[0] == "image":
+    fmt = argv[argv.index("--format") + 1]
+    print("linux/amd64" if ".Os" in fmt else {revision!r})
+""")
+        script.chmod(0o755)
+        return directory
+
+    def run_cli(self, revision, platform="linux/amd64"):
+        environment = dict(os.environ)
+        environment["PATH"] = str(self.fake_docker(revision)) + os.pathsep + environment["PATH"]
+        return subprocess.run(
+            [sys.executable, str(REPO / "scripts" / "image_platform.py"),
+             "--image", self.IMAGE, "--platform", platform, "--revision", self.REVISION],
+            text=True, capture_output=True, env=environment)
+
+    def test_stdout_is_exactly_the_resolved_reference(self):
+        result = self.run_cli(self.REVISION)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.strip(),
+                         "ghcr.io/bokiko/bloxos-dashboard@sha256:" + "1" * 64,
+                         "stdout must carry the reference and nothing else; the workflow "
+                         "captures it into a shell variable it then passes to docker")
+        self.assertNotIn("Pulling from", result.stdout)
+        # The progress is not discarded, just moved.
+        self.assertIn("Pulling from", result.stderr)
+
+    def test_a_dashboard_image_from_another_revision_is_refused(self):
+        result = self.run_cli("b" * 40)
+        self.assertNotEqual(result.returncode, 0,
+                            "an image built from a different source must not validate")
+        self.assertIn("was built from", result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
