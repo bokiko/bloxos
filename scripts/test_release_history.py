@@ -5,10 +5,12 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from release_history import CATALOG_ASSET, HistoryError, catalog_of, gather, persist, upload
+from release_history import (BUILD_ASSET, CATALOG_ASSET, HistoryError, build_record, catalog_of,
+                             gather, lookup_build, persist, persist_build, upload)
 
 PLATFORMS = ("linux/amd64", "linux/arm64", "windows/amd64")
 
@@ -207,6 +209,163 @@ class BinaryAssetTests(unittest.TestCase):
         self.assertNotEqual(reformatted, body)
         with self.assertRaises(HistoryError):
             persist("owner/repo", "v2.0.0", path, releases, fetcher_bytes({1: reformatted}))
+
+
+
+# ---------------------------------------------------------------- build intent
+#
+# A publish retry rebuilds both images, and an image build is not reproducible:
+# the rebuild lands on a different index digest. Without a record of the pair
+# the first attempt verified, a retry promotes tags that disagree with the
+# catalog already published under the same release — a state nothing can
+# recover from, because a published catalog is never overwritten.
+
+REVISION = "f" * 40
+HUB_REF = "ghcr.io/bokiko/bloxos-hub@sha256:" + "a" * 64
+DASHBOARD_REF = "ghcr.io/bokiko/bloxos-dashboard@sha256:" + "b" * 64
+OTHER_HUB_REF = "ghcr.io/bokiko/bloxos-hub@sha256:" + "c" * 64
+
+
+def build_asset(asset_id, extra=None):
+    assets = [{"name": BUILD_ASSET, "id": asset_id}]
+    if extra:
+        assets.extend(extra)
+    return {"tag": "v1.2.3", "draft": True, "assets": assets}
+
+
+def recorded(version="v1.2.3", revision=REVISION, hub=HUB_REF, dashboard=DASHBOARD_REF):
+    return build_record(version, revision, hub, dashboard)
+
+
+def raw(record):
+    return (json.dumps(record, indent=2, sort_keys=True) + "\n").encode()
+
+
+class BuildIntentTests(unittest.TestCase):
+    def test_a_fresh_release_reports_absence_so_the_images_are_built(self):
+        # No release at all, and a release with other assets but no record.
+        self.assertIsNone(lookup_build("owner/repo", "v1.2.3", "v1.2.3", REVISION, [], fetcher_bytes({})))
+        listing = [{"tag": "v1.2.3", "draft": True, "assets": [{"name": CATALOG_ASSET, "id": 5}]}]
+        self.assertIsNone(lookup_build("owner/repo", "v1.2.3", "v1.2.3", REVISION,
+                                       listing, fetcher_bytes({})))
+
+    def test_a_matching_record_is_reused_and_keeps_both_refs(self):
+        record = recorded()
+        found = lookup_build("owner/repo", "v1.2.3", "v1.2.3", REVISION,
+                             [build_asset(11, [{"name": "bloxos-update", "id": 9}])],
+                             fetcher_bytes({11: raw(record)}))
+        self.assertIsNotNone(found)
+        # BOTH refs are retained. Recovering only the hub would leave the
+        # dashboard to be rebuilt, and the pair would no longer be the pair
+        # anything was verified against.
+        self.assertEqual(found["images"]["hub"], HUB_REF)
+        self.assertEqual(found["images"]["dashboard"], DASHBOARD_REF)
+
+    def test_a_record_from_a_different_source_fails_closed(self):
+        for field, record in (("revision", recorded(revision="1" * 40)),
+                              ("version", recorded(version="v1.2.4"))):
+            with self.subTest(field=field):
+                with self.assertRaises(HistoryError) as caught:
+                    lookup_build("owner/repo", "v1.2.3", "v1.2.3", REVISION,
+                                 [build_asset(11)], fetcher_bytes({11: raw(record)}))
+                self.assertIn("DIFFERENT", str(caught.exception))
+
+    def test_a_fetch_failure_is_never_read_as_absence(self):
+        # The dangerous misreading: a transient download error would rebuild
+        # the images and promote a digest the published catalog disagrees with.
+        with self.assertRaises(HistoryError):
+            lookup_build("owner/repo", "v1.2.3", "v1.2.3", REVISION,
+                         [build_asset(11)], fetcher_bytes({}))
+
+    def test_an_unreadable_or_wrong_schema_record_fails_closed(self):
+        cases = {
+            "truncated": b'{"schema": 1, "version"',
+            "not an object": b'[]',
+            "future schema": raw({"schema": 2, "version": "v1.2.3", "revision": REVISION,
+                                  "images": {"hub": HUB_REF, "dashboard": DASHBOARD_REF}}),
+            "no images": raw({"schema": 1, "version": "v1.2.3", "revision": REVISION}),
+            # True == 1 in Python, so a bare equality check accepts this.
+            "boolean schema": raw({"schema": True, "version": "v1.2.3", "revision": REVISION,
+                                   "images": {"hub": HUB_REF, "dashboard": DASHBOARD_REF}}),
+            # A non-string where a string belongs must not reach `re`.
+            "numeric revision": raw({"schema": 1, "version": "v1.2.3", "revision": 12345,
+                                     "images": {"hub": HUB_REF, "dashboard": DASHBOARD_REF}}),
+            "null version": raw({"schema": 1, "version": None, "revision": REVISION,
+                                 "images": {"hub": HUB_REF, "dashboard": DASHBOARD_REF}}),
+            "list ref": raw({"schema": 1, "version": "v1.2.3", "revision": REVISION,
+                             "images": {"hub": [HUB_REF], "dashboard": DASHBOARD_REF}}),
+            # A tag-shaped ref is the one that would silently resolve later.
+            "moving ref": raw({"schema": 1, "version": "v1.2.3", "revision": REVISION,
+                               "images": {"hub": "ghcr.io/bokiko/bloxos-hub:1.2.3",
+                                          "dashboard": DASHBOARD_REF}}),
+        }
+        for label, body in cases.items():
+            with self.subTest(case=label):
+                with self.assertRaises(HistoryError):
+                    lookup_build("owner/repo", "v1.2.3", "v1.2.3", REVISION,
+                                 [build_asset(11)], fetcher_bytes({11: body}))
+
+    def test_a_record_is_never_overwritten(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / BUILD_ASSET
+            path.write_bytes(raw(recorded()))
+            # Identical: a no-op, and nothing is uploaded.
+            message = persist_build("owner/repo", "v1.2.3", path,
+                                    [build_asset(11)], fetcher_bytes({11: raw(recorded())}))
+            self.assertIn("nothing to do", message)
+            # Conflicting: an error, never a replacement.
+            with self.assertRaises(HistoryError):
+                persist_build("owner/repo", "v1.2.3", path, [build_asset(11)],
+                              fetcher_bytes({11: raw(recorded(hub=OTHER_HUB_REF))}))
+
+    def test_a_crash_between_the_record_and_the_catalog_is_recoverable(self):
+        """The window the record exists for.
+
+        The first attempt persisted the image pair and died before the catalog.
+        The retry must find that pair, skip the builds, and then be free to
+        persist the catalog — which is still absent.
+        """
+        listing = [build_asset(11)]  # record present, no catalog
+        found = lookup_build("owner/repo", "v1.2.3", "v1.2.3", REVISION,
+                             listing, fetcher_bytes({11: raw(recorded())}))
+        self.assertEqual(found["images"]["hub"], HUB_REF)
+        with tempfile.TemporaryDirectory() as directory:
+            catalog_path = Path(directory) / CATALOG_ASSET
+            catalog_path.write_bytes(json.dumps(catalog(9, 0xaa)).encode())
+            with unittest.mock.patch("release_history.gh") as upload_call:
+                message = persist("owner/repo", "v1.2.3", catalog_path,
+                                  listing, fetcher_bytes({11: raw(recorded())}))
+            self.assertIn("persisted", message)
+            upload_call.assert_called_once()
+
+    def test_a_crash_after_promotion_still_reuses_the_same_pair(self):
+        """Images already live. The retry must not build a second pair.
+
+        This is the unrecoverable case if absence were guessed: the promoted
+        tags point at the first pair, and a rebuild would promote a different
+        one over a catalog that can never be rewritten to match.
+        """
+        listing = [build_asset(11, [{"name": CATALOG_ASSET, "id": 12}])]
+        bodies = {11: raw(recorded()), 12: json.dumps(catalog(9, 0xaa)).encode()}
+        found = lookup_build("owner/repo", "v1.2.3", "v1.2.3", REVISION, listing,
+                             fetcher_bytes(bodies))
+        self.assertEqual(found["images"], {"hub": HUB_REF, "dashboard": DASHBOARD_REF})
+        # And the identical catalog is recognised, so the retry uploads nothing.
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / CATALOG_ASSET
+            path.write_bytes(bodies[12])
+            with unittest.mock.patch("release_history.gh") as upload_call:
+                message = persist("owner/repo", "v1.2.3", path, listing, fetcher_bytes(bodies))
+            self.assertIn("matches", message)
+            upload_call.assert_not_called()
+
+    def test_the_record_itself_refuses_a_ref_that_could_move(self):
+        for hub in ("ghcr.io/bokiko/bloxos-hub:latest",
+                    "ghcr.io/bokiko/bloxos-dashboard@sha256:" + "a" * 64,
+                    "ghcr.io/someone/bloxos-hub@sha256:" + "a" * 64, ""):
+            with self.subTest(hub=hub):
+                with self.assertRaises(HistoryError):
+                    build_record("v1.2.3", REVISION, hub, DASHBOARD_REF)
 
 
 if __name__ == "__main__":

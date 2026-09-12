@@ -1,21 +1,76 @@
 #!/usr/bin/env python3
 """Package the exact published server images and updater into release assets."""
 import argparse
+import gzip
 import hashlib
+import io
 import json
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
 import tempfile
-import zipapp
+import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import agent_bundle  # noqa: E402  (same directory; the canonical payload checker)
 
 AGENT_DIR = "agents"
+
+# Release assets must be a function of their CONTENT, not of when or where they
+# were built.
+#
+# Two builds of the same revision produced different bytes, and every one of
+# the causes was metadata:
+#
+#   - the gzip header carries the compression time AND the output filename, so
+#     the same tar compressed a second later, or written to a differently named
+#     temporary path, differed in its first sixteen bytes;
+#   - tar members carry mtime, uid/gid and uname/gname, so the staging
+#     directory's creation time and the build account leaked into the archive.
+#     `stage_agents` writes its files fresh, so those mtimes were always "now";
+#   - zipapp entries carry each source file's mtime and mode.
+#
+# Nothing here changes what the archives CONTAIN. It fixes the metadata at the
+# serialisation boundary, which is also why the staging tree's own timestamps
+# and path stop mattering: they are normalised on the way out rather than
+# controlled on the way in.
+ARCHIVE_EPOCH = 1577836800  # 2020-01-01T00:00:00Z, fixed and arbitrary
+# Zip cannot represent a date before 1980, so it gets its own constant rather
+# than a conversion that would silently clamp.
+ZIP_DATE = (2020, 1, 1, 0, 0, 0)
+
+
+def normalized_member(member, size_source=None):
+    """Strip build-environment identity from one tar member.
+
+    Mode keeps only the distinction that matters — whether the file is
+    executable — because the rest of it is the build account's umask. Ownership
+    is dropped entirely: an archive that records `runner:docker` is describing
+    the machine that built it, not the release.
+
+    mtime is set to an INTEGER. A float mtime makes tarfile emit a pax header
+    to carry the fraction, so the member's encoded length would depend on the
+    filesystem's timestamp resolution.
+    """
+    member.mtime = ARCHIVE_EPOCH
+    member.uid = 0
+    member.gid = 0
+    member.uname = ""
+    member.gname = ""
+    member.pax_headers = {}
+    if member.isdir():
+        member.mode = 0o755
+    elif member.issym():
+        member.mode = 0o777
+    else:
+        member.mode = 0o755 if member.mode & 0o111 else 0o644
+    if size_source is not None:
+        member.size = size_source
+    return member
 
 
 def run(args):
@@ -38,15 +93,39 @@ def platform_image(image, platform):
     return image.split("@", 1)[0] + "@" + matches[0]
 
 
-def export(image, platform, source, destination, revision):
-    image = platform_image(image, platform)
-    subprocess.run(["docker", "pull", "--platform", platform, image], check=True)
-    actual_platform = run(["docker", "image", "inspect", "--format", '{{.Os}}/{{.Architecture}}', image])
+def verify_image_identity(image, platform, revision):
+    """Resolve an index to one platform's child and prove what that child is.
+
+    Two independent checks, neither implying the other. The platform check
+    catches a classic-store collision handing back a different image than the
+    index entry names. The revision label is the only thing tying published
+    bytes to the source a release claims — a recorded image pair that matches
+    this run's tag and sha says nothing about what the image it REFERENCES was
+    built from, so that has to be read off the image itself.
+
+    Returns the immutable per-platform ref, so callers operate on the child
+    they verified rather than re-resolving the index.
+    """
+    ref = platform_image(image, platform)
+    # `docker pull` writes progress to STDOUT. This function's callers include
+    # a CLI whose stdout is captured into a shell variable, so inheriting it
+    # would splice download progress into the resolved reference. The progress
+    # is still shown — on stderr, where it belongs.
+    progress = subprocess.run(["docker", "pull", "--platform", platform, ref],
+                              check=True, stdout=subprocess.PIPE, text=True)
+    sys.stderr.write(progress.stdout)
+    actual_platform = run(["docker", "image", "inspect", "--format", '{{.Os}}/{{.Architecture}}', ref])
     if actual_platform != platform:
-        raise ValueError("Published image platform does not match requested platform")
-    actual = run(["docker", "image", "inspect", "--format", '{{index .Config.Labels "org.opencontainers.image.revision"}}', image])
+        raise ValueError(f"Published image {ref} is {actual_platform}, expected {platform}")
+    actual = run(["docker", "image", "inspect", "--format", '{{index .Config.Labels "org.opencontainers.image.revision"}}', ref])
     if actual != revision:
-        raise ValueError("Published image revision does not match release")
+        raise ValueError(f"Published image {ref} was built from {actual or 'no recorded revision'}, "
+                         f"expected {revision}")
+    return ref
+
+
+def export(image, platform, source, destination, revision):
+    image = verify_image_identity(image, platform, revision)
     container = run(["docker", "create", "--platform", platform, "--network", "none", image])
     if not re.fullmatch(r"[0-9a-f]{64}", container):
         raise ValueError("Invalid export container ID")
@@ -182,23 +261,82 @@ def pack_tree(tree, archive):
     for entry in tree.rglob("*"):
         if entry.is_symlink() and not entry.resolve().is_relative_to(root):
             raise ValueError("Bundle symlink escapes exported server tree")
+    def safe_member(member):
+        size = None
+        if member.islnk():
+            member.type = tarfile.REGTYPE
+            member.linkname = ""
+            size = (tree / member.name).stat().st_size
+        if member.issym():
+            if Path(member.linkname).is_absolute():
+                raise ValueError("Bundle contains an absolute symlink")
+        elif not (member.isfile() or member.isdir()):
+            raise ValueError("Bundle contains a non-regular filesystem entry")
+        return normalized_member(member, size)
+
+    # The gzip stream is built explicitly rather than through "w:gz".
+    #
+    # tarfile's convenience mode hands the OUTPUT PATH to gzip, which writes
+    # both the current time and that filename into the gzip header — so the
+    # same tar bytes, compressed a second later or staged under a different
+    # temporary directory, produced a different asset. mtime=0 is the format's
+    # own "no timestamp", and an empty filename omits the FNAME field entirely.
+    #
+    # Member ORDER needs no intervention: tarfile.add walks each directory in
+    # sorted order, so the sequence follows the tree rather than the
+    # filesystem's readdir.
+    #
     # Node resolves modules from their REAL path. Dereferencing pnpm links
     # changes that path and breaks dependency lookup. Preserve validated local
     # relative links, including links to packages pruned by Next's tracer.
-    with tarfile.open(archive, "w:gz", dereference=False) as target:
-        def safe_member(member):
-            if member.islnk():
-                member.type = tarfile.REGTYPE
-                member.linkname = ""
-                member.size = (tree / member.name).stat().st_size
-            if member.issym():
-                if Path(member.linkname).is_absolute():
-                    raise ValueError("Bundle contains an absolute symlink")
-            elif not (member.isfile() or member.isdir()):
-                raise ValueError("Bundle contains a non-regular filesystem entry")
-            return member
-        for directory in ("hub", "dashboard"):
-            target.add(tree / directory, arcname=directory, filter=safe_member)
+    with open(archive, "wb") as raw:
+        with gzip.GzipFile(filename="", mode="wb", compresslevel=9,
+                           fileobj=raw, mtime=0) as compressed:
+            with tarfile.open(fileobj=compressed, mode="w",
+                              format=tarfile.PAX_FORMAT, dereference=False) as target:
+                for directory in ("hub", "dashboard"):
+                    target.add(tree / directory, arcname=directory, filter=safe_member)
+
+
+def pack_zipapp(source, target, interpreter, main_spec):
+    """Build the updater zipapp with fixed entry metadata.
+
+    zipapp.create_archive is otherwise exactly right — it already walks the
+    source in sorted order — but it writes each entry with the SOURCE FILE's
+    mtime and mode, both of which come from `shutil.copyfile` into a temporary
+    directory moments earlier. Two builds therefore differed in every local
+    header.
+
+    The layout is the one zipapp produces and the interpreter line is written
+    the same way, so this changes the asset's metadata and nothing else.
+    Entries are stored uncompressed, as zipapp does by default, which also
+    means the bytes do not depend on the zlib build.
+    """
+    module, _, function = main_spec.partition(":")
+    main_py = "# -*- coding: utf-8 -*-\nimport {}\n{}.{}()\n".format(module, module, function)
+
+    def entry(name, data, mode):
+        info = zipfile.ZipInfo(name, date_time=ZIP_DATE)
+        info.compress_type = zipfile.ZIP_STORED
+        info.external_attr = (mode & 0xFFFF) << 16
+        info.create_system = 3  # Unix, so the mode above is meaningful
+        return info, data
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:
+        for child in sorted(source.rglob("*")):
+            if child.is_dir():
+                continue
+            if not child.is_file() or child.is_symlink():
+                raise ValueError("Updater package contains a non-regular file: " + str(child))
+            name = child.relative_to(source).as_posix()
+            info, data = entry(name, child.read_bytes(), 0o644)
+            archive.writestr(info, data)
+        info, data = entry("__main__.py", main_py.encode("utf-8"), 0o644)
+        archive.writestr(info, data)
+
+    target.write_bytes(b"#!" + interpreter.encode("utf-8") + b"\n" + buffer.getvalue())
+    target.chmod(target.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
 
 def main():
@@ -248,7 +386,8 @@ def main():
         package.mkdir()
         for source in (Path(__file__).parent / "updater").glob("*.py"):
             shutil.copyfile(source, package / source.name)
-        zipapp.create_archive(directory, args.output / "bloxos-update", interpreter="/usr/bin/python3", main="updater.cli:entrypoint")
+        pack_zipapp(Path(directory), args.output / "bloxos-update",
+                    "/usr/bin/python3", "updater.cli:entrypoint")
     subprocess.run(["python3", str(args.output / "bloxos-update"), "--help"], check=True)
 
 

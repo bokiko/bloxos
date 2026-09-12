@@ -89,10 +89,11 @@ jobs:
       # This form proves the gate is wired and reachable. It does NOT verify
       # the release build sets the marker — the flag is supplied here. The
       # image-built hub is covered by the Compose smoke job.
-      - name: Test release identity gate and history
+      - name: Test release identity gate, history and workflow wiring
         run: |
           python3 ../scripts/test_release_identity.py
           python3 ../scripts/test_release_history.py
+          python3 ../scripts/test_release_workflow.py
 
       - name: Hub delivery boot gate (source build)
         run: sudo -E env "PATH=$PATH" BLOXOS_BOOT_SMOKE_REQUIRE_ROOT=1 python3 ../scripts/test_hub_bundle_boot.py

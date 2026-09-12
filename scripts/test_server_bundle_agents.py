@@ -33,6 +33,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -175,9 +176,12 @@ class ServerBundleAgentTests(unittest.TestCase):
     # skipped arm64. Both server architectures must carry all three agent
     # platforms — an arm64 hub that cannot serve a Windows machine is exactly
     # the kind of gap that only shows up on the one board nobody tested.
-    def test_main_packs_every_agent_into_both_server_archives(self):
-        output = self.root / "release-assets"
-        hub_image = HUB_IMAGE
+    def run_main(self, output):
+        """Drive the REAL entrypoint with Docker stubbed out.
+
+        Everything after extraction — staging, verification, packing, the
+        manifest and the zipapp — is the production code path.
+        """
         dashboard_image = "ghcr.io/bokiko/bloxos-dashboard@sha256:" + "c" * 64
 
         def fake_export(image, platform, source, destination, revision):
@@ -189,14 +193,17 @@ class ServerBundleAgentTests(unittest.TestCase):
             else:
                 shutil.copytree(self.tree / "dashboard", destination, dirs_exist_ok=True)
 
-        argv = ["export-server-bundle.py", "--hub", hub_image, "--dashboard", dashboard_image,
+        argv = ["export-server-bundle.py", "--hub", HUB_IMAGE, "--dashboard", dashboard_image,
                 "--revision", SOURCE_SHA, "--version", VERSION,
                 "--output", str(output), "--agents", str(self.agents)]
         with mock.patch.object(export_server_bundle, "export", fake_export), \
                 mock.patch.object(export_server_bundle.subprocess, "run"), \
-                mock.patch.object(export_server_bundle.zipapp, "create_archive"), \
                 mock.patch.object(sys, "argv", argv):
             export_server_bundle.main()
+        return output
+
+    def test_main_packs_every_agent_into_both_server_archives(self):
+        output = self.run_main(self.root / "release-assets")
 
         published = json.loads((output / "update-manifest.json").read_text())
         self.assertEqual(sorted(published["native"]), ["amd64", "arm64"])
@@ -272,6 +279,166 @@ class ServerBundleAgentTests(unittest.TestCase):
                     export_server_bundle.verify_packed_agents(archive, manifest)
                 for name, body in original.items():
                     (packed / name).write_bytes(body)
+
+
+    # A release asset must be a function of its CONTENT.
+    #
+    # Two builds of the same revision produced different bytes, and the causes
+    # were all metadata: the gzip header carries the compression time and the
+    # output filename; tar members carry mtime, uid/gid and uname/gname; zipapp
+    # entries carry each source file's mtime and mode. `stage_agents` writes its
+    # files fresh, so those mtimes were always "now" — which means the archives
+    # could never have been reproducible, and a publish retry could never have
+    # been proven to re-produce what it was retrying.
+    #
+    # This runs the REAL entrypoint twice, with everything that leaked
+    # deliberately made to differ: the clock, the staging tree's timestamps, the
+    # umask the files are created under, and every path involved (the staging
+    # tree is a fresh mkdtemp each time, and the outputs go to different
+    # directories). ALL output bytes must match — both archives, the updater
+    # zipapp and the manifest.
+    def test_two_exports_of_the_same_release_are_byte_identical(self):
+        real_pack = export_server_bundle.pack_tree
+        standalone = {p.name: p.read_bytes() for p in sorted(self.agents.iterdir())}
+
+        def export_at(name, clock, stamp, umask):
+            def stamping_pack(tree, archive):
+                # The staging tree's own timestamps, set to something different
+                # on each run. Deepest first, so stamping a directory is not
+                # undone by writing inside it afterwards.
+                for path in sorted(tree.rglob("*"), reverse=True):
+                    os.utime(path, (stamp, stamp), follow_symlinks=False)
+                os.utime(tree, (stamp, stamp))
+                return real_pack(tree, archive)
+
+            # The published inputs are stamped too: nothing the packer reads
+            # may reach the output as a timestamp.
+            for path in sorted(self.agents.rglob("*")) + sorted(self.tree.rglob("*")):
+                os.utime(path, (stamp, stamp), follow_symlinks=False)
+
+            previous = os.umask(umask)
+            try:
+                with mock.patch.object(export_server_bundle, "pack_tree", stamping_pack), \
+                        mock.patch.object(time, "time", lambda: clock):
+                    return self.run_main(self.root / name)
+            finally:
+                os.umask(previous)
+
+        first = export_at("assets-first", 1_600_000_000.0, 1_600_000_000, 0o022)
+        second = export_at("assets-second", 1_900_000_123.5, 1_900_000_123, 0o077)
+
+        names = sorted(p.name for p in first.iterdir())
+        self.assertEqual(names, sorted(p.name for p in second.iterdir()),
+                         "the two exports produced different sets of assets")
+        self.assertIn("bloxos-update", names)
+        self.assertIn("update-manifest.json", names)
+        for arch in ("amd64", "arm64"):
+            self.assertIn(f"bloxos-server-linux-{arch}.tar.gz", names)
+
+        for name in names:
+            self.assertEqual(
+                hashlib.sha256((first / name).read_bytes()).hexdigest(),
+                hashlib.sha256((second / name).read_bytes()).hexdigest(),
+                f"{name} is not reproducible: two exports of the same revision differ")
+
+        # The standalone agent assets are inputs, not outputs. Packing must not
+        # have touched the bytes that are published beside the archives.
+        self.assertEqual({p.name: p.read_bytes() for p in sorted(self.agents.iterdir())},
+                         standalone, "packing modified the published agent payloads")
+
+        # Determinism must not have been bought by breaking transport: the
+        # unchanged updater still has to carry the second run's archive.
+        destination = self.root / "extracted-deterministic"
+        engine.safe_extract_tar(str(second / "bloxos-server-linux-amd64.tar.gz"), str(destination))
+        packed = destination / "hub" / "agents"
+        for name in [bundle.MANIFEST, *bundle.FILES.values()]:
+            self.assertEqual((packed / name).read_bytes(), (self.agents / name).read_bytes(),
+                             f"{name} did not survive transport from a deterministic archive")
+        digest = (self.agents / "agent-manifest.sha256").read_text().split()[0]
+        self.assertEqual(bundle.check(packed, digest)["agent_release"], RELEASE)
+
+    # The zipapp is an asset too, and its entries carried source mtimes.
+    def test_the_updater_zipapp_is_reproducible_and_still_runs(self):
+        built = []
+        for index, stamp in enumerate((1_600_000_000, 1_900_000_123)):
+            source = self.root / f"zipapp-source-{index}"
+            (source / "updater").mkdir(parents=True)
+            for name, body in (("__init__.py", b""), ("cli.py", b"def entrypoint():\n    pass\n")):
+                path = source / "updater" / name
+                path.write_bytes(body)
+                os.utime(path, (stamp, stamp))
+            target = self.root / f"bloxos-update-{index}"
+            export_server_bundle.pack_zipapp(source, target, "/usr/bin/python3", "updater.cli:entrypoint")
+            built.append(target)
+
+        self.assertEqual(built[0].read_bytes(), built[1].read_bytes(),
+                         "the updater zipapp is not reproducible")
+        # CONTROL: it is still an executable zipapp, not merely identical bytes.
+        self.assertTrue(built[0].read_bytes().startswith(b"#!/usr/bin/python3\n"))
+        self.assertTrue(os.access(built[0], os.X_OK))
+        subprocess.run([sys.executable, str(built[0])], check=True)
+
+
+class ImageIdentityCliTests(unittest.TestCase):
+    """The helper is invoked as `ref=$(... --revision ...)`, so its STDOUT is a
+    reference. A return-value test cannot see that boundary: `docker pull`
+    writes progress to stdout, and inheriting it splices download chatter into
+    the variable the workflow then passes to docker.
+    """
+
+    INDEX = {"manifests": [
+        {"platform": {"os": "linux", "architecture": "amd64"}, "digest": "sha256:" + "1" * 64},
+        {"platform": {"os": "linux", "architecture": "arm64", "variant": "v8"},
+         "digest": "sha256:" + "2" * 64},
+    ]}
+    IMAGE = "ghcr.io/bokiko/bloxos-dashboard@sha256:" + "d" * 64
+    REVISION = "a" * 40
+
+    def fake_docker(self, revision):
+        """A docker that is deliberately NOISY on stdout, as the real one is."""
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        script = directory / "docker"
+        script.write_text(f"""#!/usr/bin/env python3
+import sys
+argv = sys.argv[1:]
+if argv[0] == "manifest":
+    print({json.dumps(self.INDEX)!r}, end="")
+elif argv[0] == "pull":
+    # Real docker prints progress here, on STDOUT.
+    print("latest: Pulling from bokiko/bloxos-dashboard")
+    print("Digest: sha256:" + "9" * 64)
+elif argv[0] == "image":
+    fmt = argv[argv.index("--format") + 1]
+    print("linux/amd64" if ".Os" in fmt else {revision!r})
+""")
+        script.chmod(0o755)
+        return directory
+
+    def run_cli(self, revision, platform="linux/amd64"):
+        environment = dict(os.environ)
+        environment["PATH"] = str(self.fake_docker(revision)) + os.pathsep + environment["PATH"]
+        return subprocess.run(
+            [sys.executable, str(REPO / "scripts" / "image_platform.py"),
+             "--image", self.IMAGE, "--platform", platform, "--revision", self.REVISION],
+            text=True, capture_output=True, env=environment)
+
+    def test_stdout_is_exactly_the_resolved_reference(self):
+        result = self.run_cli(self.REVISION)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.strip(),
+                         "ghcr.io/bokiko/bloxos-dashboard@sha256:" + "1" * 64,
+                         "stdout must carry the reference and nothing else; the workflow "
+                         "captures it into a shell variable it then passes to docker")
+        self.assertNotIn("Pulling from", result.stdout)
+        # The progress is not discarded, just moved.
+        self.assertIn("Pulling from", result.stderr)
+
+    def test_a_dashboard_image_from_another_revision_is_refused(self):
+        result = self.run_cli("b" * 40)
+        self.assertNotEqual(result.returncode, 0,
+                            "an image built from a different source must not validate")
+        self.assertIn("was built from", result.stderr)
 
 
 if __name__ == "__main__":

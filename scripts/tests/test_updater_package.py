@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import json
 from pathlib import Path
 import tarfile
@@ -36,21 +37,59 @@ class PackageTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     bundle.platform_image("ghcr.io/bokiko/bloxos-hub@sha256:" + "d" * 64, "linux/arm64")
 
+    @staticmethod
+    def pulled(stdout="latest: Pulling from bokiko/bloxos-hub\n"):
+        """What subprocess.run actually returns for the pull.
+
+        A bare MagicMock is not good enough any more: the pull's stdout is
+        captured and re-emitted on stderr, because `docker pull` writes
+        progress to STDOUT and the helper is invoked as `ref=$(...)` — so
+        inheriting it would splice progress into the resolved reference.
+        Mocking it as a MagicMock made that write a TypeError.
+        """
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout)
+
     def test_export_uses_child_for_pull_inspect_and_create(self):
         child = "ghcr.io/bokiko/bloxos-hub@sha256:" + "b" * 64
+        progress = "latest: Pulling from bokiko/bloxos-hub\nDigest: sha256:beef\n"
+        captured = io.StringIO()
         with patch.object(bundle, "platform_image", return_value=child), \
              patch.object(bundle, "run", side_effect=["linux/arm64", "revision", "c" * 64]) as run, \
-             patch.object(bundle.subprocess, "run") as command:
+             patch.object(bundle.sys, "stderr", captured), \
+             patch.object(bundle.subprocess, "run", return_value=self.pulled(progress)) as command:
             bundle.export("index", "linux/arm64", "/binary", Path("/out"), "revision")
             self.assertEqual(command.call_args_list[0].args[0], ["docker", "pull", "--platform", "linux/arm64", child])
+            # Captured, not inherited, and not discarded.
+            self.assertEqual(command.call_args_list[0].kwargs.get("stdout"), subprocess.PIPE)
+            self.assertEqual(captured.getvalue(), progress)
             self.assertEqual(run.call_args_list[-1].args[0], ["docker", "create", "--platform", "linux/arm64", "--network", "none", child])
 
     def test_wrong_child_platform_is_rejected_before_create(self):
         with patch.object(bundle, "platform_image", return_value="child"), \
              patch.object(bundle, "run", return_value="linux/amd64"), \
-             patch.object(bundle.subprocess, "run") as command:
-            with self.assertRaisesRegex(ValueError, "platform"):
+             patch.object(bundle.subprocess, "run", return_value=self.pulled()) as command:
+            with self.assertRaises(ValueError) as caught:
                 bundle.export("index", "linux/arm64", "/binary", Path("/out"), "revision")
+            # The message has to name what was found AND what was wanted: a
+            # bare "platform" regex passed for any wording and would pass for
+            # a message that named neither.
+            message = str(caught.exception)
+            self.assertIn("linux/amd64", message)
+            self.assertIn("linux/arm64", message)
+            self.assertIn("child", message)
+            # Only the pull ran. Nothing was created from the wrong image.
+            self.assertEqual(command.call_count, 1)
+
+    def test_a_wrong_revision_is_rejected_before_create(self):
+        """The same protection for the other half of image identity."""
+        with patch.object(bundle, "platform_image", return_value="child"), \
+             patch.object(bundle, "run", side_effect=["linux/arm64", "b" * 40]), \
+             patch.object(bundle.subprocess, "run", return_value=self.pulled()) as command:
+            with self.assertRaises(ValueError) as caught:
+                bundle.export("index", "linux/arm64", "/binary", Path("/out"), "a" * 40)
+            message = str(caught.exception)
+            self.assertIn("b" * 40, message)
+            self.assertIn("a" * 40, message)
             self.assertEqual(command.call_count, 1)
 
     @unittest.skipUnless(shutil.which("node"), "Node runtime required")
