@@ -20,6 +20,7 @@ on:
       - "scripts/image_platform.py"
       - "scripts/test_release_identity.py"
       - "scripts/test_release_history.py"
+      - "scripts/test_release_workflow.py"
       - "scripts/test_server_bundle_agents.py"
       - "scripts/test_hub_bundle_boot.py"
       - "scripts/updater/**"
