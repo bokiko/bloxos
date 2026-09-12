@@ -31,6 +31,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import pwd
 import shutil
 import socket
 import subprocess
@@ -47,9 +48,6 @@ import agent_bundle as bundle
 from test_agent_bundle import fixture
 
 REPO = Path(__file__).resolve().parent.parent
-# Root-owned and not group/other writable on every supported runner, which the
-# trusted-path rule requires of every ancestor of a payload.
-FIXTURE_PARENT = Path("/opt")
 RELEASE = 12
 READY_TIMEOUT = 60.0
 
@@ -91,6 +89,34 @@ def unavailable():
     return reason
 
 
+def fixture_parent():
+    """A directory whose whole ancestry already satisfies the trusted-path rule.
+
+    /opt was the obvious choice and the wrong one: on a GitHub runner it is
+    mode 0777, so the trusted-path check refused a PERFECTLY VALID bundle and
+    the three negative cases passed for a reason that had nothing to do with
+    the gate. Root's own home is root-owned and not group/other writable.
+
+    The ancestry is VERIFIED rather than assumed, and never relaxed by
+    chmod'ing a shared directory — loosening a system path to make a test pass
+    is how a test starts changing the machine it runs on.
+    """
+    home = Path(pwd.getpwuid(0).pw_dir)
+    current = home.resolve()
+    while True:
+        try:
+            info = current.stat()
+        except OSError as error:
+            raise AssertionError(f"cannot inspect {current}: {error}")
+        if info.st_uid != 0:
+            raise AssertionError(f"{current} is owned by uid {info.st_uid}, want root")
+        if info.st_mode & 0o022:
+            raise AssertionError(f"{current} mode {info.st_mode & 0o7777:04o} is group- or other-writable")
+        if current.parent == current:
+            return home
+        current = current.parent
+
+
 def free_port():
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
@@ -112,7 +138,7 @@ class HubBootGateTests(unittest.TestCase):
         # A unique directory, created by this run and removed by it. Never a
         # fixed path: a test that rmtree's a predictable location on entry will
         # eventually delete something an operator put there.
-        cls.root = Path(tempfile.mkdtemp(prefix="bloxos-boot-smoke-", dir=FIXTURE_PARENT))
+        cls.root = Path(tempfile.mkdtemp(prefix="bloxos-boot-smoke-", dir=fixture_parent()))
         cls.root.chmod(0o755)
         cls.scratch = tempfile.mkdtemp(prefix="bloxos-boot-scratch-")
 
@@ -180,13 +206,29 @@ class HubBootGateTests(unittest.TestCase):
             process.kill()
             return process.communicate()[0] or ""
 
-    def refuses(self, hub):
-        """Run a hub expected to die at the gate; assert it did, before the DB."""
+    def refuses(self, hub, *expected):
+        """Run a hub expected to die at the gate; assert it did, for the RIGHT reason.
+
+        `expected` names substrings specific to the defect under test. A
+        generic "agent delivery" match is not enough: every refusal carries it,
+        so any one of these cases could pass while the hub was actually
+        rejecting something else entirely. That is not hypothetical — all three
+        negative cases were passing on a runner where the FIXTURE PATH was the
+        real complaint.
+        """
         process, workdir, _ = self.start(hub)
         output = self.drain(process)
         self.assertIsNotNone(process.poll(), "the hub must exit, not start")
         self.assertNotEqual(process.returncode, 0, output[-2000:])
         self.assertIn("agent delivery", output, output[-2000:])
+        for fragment in expected:
+            self.assertIn(fragment, output,
+                          f"expected the gate to complain about {fragment!r}; got:\n{output[-2000:]}")
+        # The trusted-path rule must never be what failed: that would mean the
+        # fixture, not the payload, is what the hub objected to.
+        self.assertNotIn("group- or other-writable", output,
+                         "the fixture path was refused, so this case proves nothing about "
+                         "the defect it names")
         self.assertFalse((workdir / "bloxos.db").exists(),
                          "the database was created before the gate refused; a rejected "
                          "candidate must not mutate installation state")
@@ -226,12 +268,13 @@ class HubBootGateTests(unittest.TestCase):
         """The case that needs the build-time marker to be set at all."""
         hub = self.release_tree("missing")
         shutil.rmtree(hub / "agents")
-        self.refuses(hub)
+        self.refuses(hub, "requires a managed agent bundle", "none is present")
 
     def test_a_corrupt_payload_stops_the_process_before_the_database(self):
         hub = self.release_tree("corrupt")
         (hub / "agents" / bundle.FILES["linux/arm64"]).write_bytes(b"corrupted in transit")
-        self.refuses(hub)
+        # Truncation trips the size check before the hash is ever computed.
+        self.refuses(hub, "linux/arm64", "manifest says")
 
     def test_a_payload_for_the_wrong_architecture_stops_the_process(self):
         """Only reading the image header can catch this one.
@@ -256,7 +299,8 @@ class HubBootGateTests(unittest.TestCase):
         (agents / bundle.MANIFEST).write_text(json.dumps(catalog, sort_keys=True, indent=2) + "\n")
         (agents / bundle.MANIFEST).chmod(0o644)
 
-        self.refuses(hub)
+        # Size and sha256 both agree; only the ELF machine field disagrees.
+        self.refuses(hub, "linux/arm64", "binary, not arm64")
 
 
 if __name__ == "__main__":

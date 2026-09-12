@@ -67,27 +67,40 @@ RUN apk add --no-cache ca-certificates \
 # agents sit at the resolver's per-architecture defaults,
 # /usr/local/lib/bloxos/linux/<arch>/bloxos-agent.
 COPY --from=build --chown=root:root --chmod=0755 /out/bloxos-hub /usr/local/bin/bloxos-hub
-# The managed bundle, beside the hub executable. This is the SAME hub-relative
-# layout the native server archive uses (<release>/hub/agents), so both deploy
-# modes resolve agents the same way and the one production hub build can
-# require a bundle in either.
-COPY --from=catalog --chown=root:root --chmod=0755 /out/agents/ /usr/local/bin/agents/
-# Backward compatibility for the pre-per-architecture paths, which an existing
-# BLOXOS_AGENT_BINARY may still point at explicitly.
+# The managed bundle and the backward-compatible per-architecture paths, all
+# created inside ONE layer.
 #
-# HARD LINKS, for two reasons. They are regular files, so the trusted-binary
-# resolver accepts them where it rejects a symlinked final path. And they are
-# the same inode, so these paths cannot drift from the managed payloads the way
-# a second COPY of the same bytes silently could — there is one set of agent
-# bytes in this image, reachable under several names.
-RUN set -eu \
- && mkdir -p /usr/local/lib/bloxos/linux/amd64 /usr/local/lib/bloxos/linux/arm64 /usr/local/lib/bloxos/windows \
- && ln /usr/local/bin/agents/bloxos-agent-linux-amd64     /usr/local/lib/bloxos/linux/amd64/bloxos-agent \
- && ln /usr/local/bin/agents/bloxos-agent-linux-arm64     /usr/local/lib/bloxos/linux/arm64/bloxos-agent \
- && ln /usr/local/bin/agents/bloxos-agent-linux-amd64     /usr/local/lib/bloxos/linux/bloxos-agent \
+# agents/ sits beside the hub executable, the SAME hub-relative layout the
+# native server archive uses (<release>/hub/agents), so both deploy modes
+# resolve agents the same way and the one production hub build can require a
+# bundle in either.
+#
+# The compatibility paths are HARD LINKS, not symlinks: the trusted-binary
+# resolver rejects a symlinked final path but accepts a regular file. Sharing an
+# inode also means those paths cannot drift from the managed payloads the way a
+# second copy of the same bytes silently could.
+#
+# The single RUN is what makes the links survive. Copying the payloads in one
+# layer and linking them in another put the file and its links on opposite
+# sides of a layer boundary; the copy-up and diff then materialised them as
+# separate files, and CI measured a link count of 1 — the duplication this was
+# meant to avoid, silently. A bind mount supplies the bytes read-only without
+# committing a second copy of them to any layer.
+RUN --mount=type=bind,from=catalog,source=/out/agents,target=/tmp/agent-input,ro \
+    set -eu \
+ && mkdir -p /usr/local/bin/agents /usr/local/lib/bloxos/linux/amd64 \
+             /usr/local/lib/bloxos/linux/arm64 /usr/local/lib/bloxos/windows \
+ && cp /tmp/agent-input/bloxos-agent-linux-amd64 /tmp/agent-input/bloxos-agent-linux-arm64 \
+       /tmp/agent-input/bloxos-agent-windows-amd64.exe /tmp/agent-input/agent-manifest.json \
+       /usr/local/bin/agents/ \
+ && ln /usr/local/bin/agents/bloxos-agent-linux-amd64       /usr/local/lib/bloxos/linux/amd64/bloxos-agent \
+ && ln /usr/local/bin/agents/bloxos-agent-linux-arm64       /usr/local/lib/bloxos/linux/arm64/bloxos-agent \
+ && ln /usr/local/bin/agents/bloxos-agent-linux-amd64       /usr/local/lib/bloxos/linux/bloxos-agent \
  && ln /usr/local/bin/agents/bloxos-agent-windows-amd64.exe /usr/local/lib/bloxos/windows/bloxos-agent.exe \
- && chown -R root:root /usr/local/lib/bloxos \
- && chmod -R go-w /usr/local/lib/bloxos /usr/local/bin/agents
+ && chown -R root:root /usr/local/bin/agents /usr/local/lib/bloxos \
+ && chmod 0755 /usr/local/bin/agents/bloxos-agent-* \
+ && chmod 0644 /usr/local/bin/agents/agent-manifest.json \
+ && chmod -R go-w /usr/local/bin/agents /usr/local/lib/bloxos
 # State lives in one volume: bloxos.db in the working directory, secrets,
 # setup token and signing key under $HOME/.bloxos.
 ENV HOME=/data \
