@@ -6,8 +6,9 @@ import {
   domainOf,
   fleetPowerChartRows,
   fleetPowerCost,
-  fleetPowerMode,
-  fleetPowerSeries,
+  domainSeries,
+  resolveDomainChoice,
+  availableDomains,
   fleetPowerWarnings,
   formatKWh,
   formatMoney,
@@ -119,7 +120,7 @@ test("measured and estimated stay two numbers, never one", () => {
   assert.equal(system.buckets[1].estimated, 18);
   // Nothing in the module produces 160. The two series are addressed
   // separately all the way to the chart rows.
-  const series = fleetPowerSeries(history);
+  const series = domainSeries(history, "system");
   assert.deepEqual(
     series.map((s) => s.kind),
     ["measured", "estimated"],
@@ -133,7 +134,7 @@ test("measured and estimated stay two numbers, never one", () => {
   // apart by stroke colour.
   assert.deepEqual(
     series.map((s) => s.label),
-    ["Measured", "Estimated"],
+    ["Measured", "Modelled"],
   );
 });
 
@@ -152,7 +153,7 @@ test("a fleet with no estimates charts one line, not an empty second one", () =>
       ],
     }),
   );
-  const series = fleetPowerSeries(history);
+  const series = domainSeries(history, "system");
   assert.equal(series.length, 1);
   assert.equal(series[0].kind, "measured");
 });
@@ -172,10 +173,10 @@ test("an all-estimated fleet is charted, and never as a measurement", () => {
       ],
     }),
   );
-  const series = fleetPowerSeries(history);
+  const series = domainSeries(history, "system");
   assert.equal(series.length, 1);
   assert.equal(series[0].kind, "estimated");
-  assert.equal(series[0].label, "Estimated");
+  assert.equal(series[0].label, "Modelled");
   assert.equal(latestReading(history, "system", "measured"), null, "there is no measurement to report");
   assert.equal(latestReading(history, "system", "estimated").watts, 36);
 });
@@ -199,8 +200,10 @@ test("with no whole-machine counter anywhere, components are charted separately"
       ],
     }),
   );
-  assert.equal(fleetPowerMode(history), "component");
-  const series = fleetPowerSeries(history);
+  // With no whole-machine counter, the default lands on a MEASURED component
+  // domain rather than an empty system one.
+  assert.equal(resolveDomainChoice(history, null), "cpu");
+  const series = [...domainSeries(history, "cpu"), ...domainSeries(history, "gpu")];
   assert.deepEqual(
     series.map((s) => s.domain),
     ["cpu", "gpu"],
@@ -212,7 +215,7 @@ test("with no whole-machine counter anywhere, components are charted separately"
   assert.equal(rows.length, 1);
 });
 
-test("system wins over components whenever any machine has a real counter", () => {
+test("one machine reporting system power does NOT take over the chart", () => {
   const history = normalizeFleetPower(
     response({
       domains: [
@@ -231,18 +234,33 @@ test("system wins over components whenever any machine has a real counter", () =
       ],
     }),
   );
-  assert.equal(fleetPowerMode(history), "system");
+  // The old rule handed the whole chart to `system` whenever ANY machine had
+  // it, hiding the five machines reporting CPU. Worse, once a MODELLED system
+  // reading could appear, one estimating board would have evicted the measured
+  // history of the entire fleet.
+  //
+  // Every domain with data is now offered, and the default prefers a measured
+  // component domain over a one-machine system reading.
+  assert.deepEqual(availableDomains(history), ["system", "cpu"]);
+  assert.equal(resolveDomainChoice(history, null), "cpu");
+  // An explicit choice is always honoured.
+  assert.equal(resolveDomainChoice(history, "system"), "system");
+  // Even for a domain with no data at all: a reader watching DRAM is asking to
+  // watch DRAM, and moving them would hide the very fact they selected it for.
+  assert.equal(resolveDomainChoice(history, "dram"), "dram");
 });
 
-test("an empty response is a mode of its own, not an empty chart", () => {
-  assert.equal(fleetPowerMode(normalizeFleetPower(response())), "none");
-  assert.equal(fleetPowerMode(null), "none");
-  assert.deepEqual(fleetPowerSeries(normalizeFleetPower(response())), []);
+test("an empty response offers no domains and charts no lines", () => {
+  const empty = normalizeFleetPower(response());
+  assert.deepEqual(availableDomains(empty), []);
+  assert.deepEqual(domainSeries(empty, "system"), []);
+  // A deterministic fallback, so the shape never depends on what arrived.
+  assert.equal(resolveDomainChoice(empty, null), "cpu");
 });
 
 test("a bucket nobody covered stays null so the line breaks", () => {
   const history = mixedFleet();
-  const series = fleetPowerSeries(history);
+  const series = domainSeries(history, "system");
   const rows = fleetPowerChartRows(history, series);
   assert.equal(rows.length, 3);
   assert.equal(rows[2]["system:measured"], null, "an unobserved bucket is not zero watts");
@@ -358,7 +376,7 @@ test("a gapped bucket marks its chart row", () => {
       ],
     }),
   );
-  const rows = fleetPowerChartRows(history, fleetPowerSeries(history));
+  const rows = fleetPowerChartRows(history, domainSeries(history, "system"));
   assert.equal(rows[0].gap, false);
   assert.equal(rows[1].gap, true);
   assert.equal(rows[1]["system:measured"], 100, "a gap flag does not blank the reading beside it");
@@ -588,8 +606,12 @@ test("the tariff is set in Settings and only displayed on the pane", () => {
   assert.doesNotMatch(PANE, /<input/, "no field on the pane");
   assert.doesNotMatch(PANE, /<select/, "no currency picker on the pane");
   assert.doesNotMatch(PANE, /onRateChange/, "the pane cannot write the rate at all");
-  assert.match(PANE, /formatMoney\(/, "it still shows what the energy cost");
-  assert.match(PANE, /Set a rate/, "and points at where the rate is set");
+  // Energy and cost are withheld in this release: sampled power cannot be
+  // extrapolated into measured energy. The pane must say so rather than print
+  // a figure, and must never print a zero in place of a missing accounting.
+  assert.doesNotMatch(PANE, /At least/, "the lower-bound claim is withdrawn");
+  assert.match(PANE, /Energy and cost unavailable/, "it says what it does not know");
+  assert.doesNotMatch(PANE, /formatMoney\(/, "no money figure while accounting is withheld");
 
   // Both halves of it moved, to the one place that owns it, and it is mounted.
   assert.match(settings, /POWER_CURRENCIES/, "currency moved too, not just the number");
@@ -601,3 +623,42 @@ test("the tariff is set in Settings and only displayed on the pane", () => {
 function count(source, pattern) {
   return (source.match(pattern) ?? []).length;
 }
+
+// --- integration contract ---
+//
+// These assert the PANE actually uses the honest helpers. Without them a helper
+// can be written, tested in isolation, and never wired up — which is exactly
+// how the automatic-mode defect survived: the pure functions were fine and the
+// component called the wrong ones.
+
+test("the pane drives its domain from explicit selection, not automatic mode", () => {
+  assert.match(PANE, /resolveDomainChoice\(/, "the reader's choice resolves the domain");
+  assert.match(PANE, /domainSeries\(/, "series come from the selected domain");
+  assert.doesNotMatch(PANE, /fleetPowerMode\(/, "the automatic mode is gone");
+  assert.doesNotMatch(PANE, /fleetPowerSeries\(/, "and so is the series function built on it");
+  assert.match(PANE, /aria-label="Power domain"/, "there is a control to change it");
+});
+
+test("the pane's current readouts come from the snapshot, never from history", () => {
+  assert.match(PANE, /currentReading\(/, "readouts read the current snapshot");
+  assert.match(PANE, /api\/fleet\/power\/current/, "which is its own request");
+  assert.doesNotMatch(PANE, /latestReading\(/, "the history walk-back must not drive a current value");
+});
+
+test("the pane states what its number is, and what is missing from it", () => {
+  assert.match(PANE, /sum of sample means/, "the figure is qualified in visible copy");
+  assert.match(PANE, /freshnessNote\(/, "a value that is not current carries its age");
+  assert.match(PANE, /unrecognised backend/, "unknown provenance is explained, not hidden");
+  assert.match(PANE, /Excluded:/, "and so are stale, skewed and unreadable contributors");
+});
+
+test("the pane reads stored preferences after mount, never during render", () => {
+  // localStorage in a useState initialiser renders differently on the server
+  // and in the browser, which React reports as a hydration mismatch.
+  assert.doesNotMatch(
+    PANE,
+    /useState<string \| null>\(\(\) => readStoredDomain\(\)\)/,
+    "storage must not be read in the initialiser",
+  );
+  assert.match(PANE, /useEffect\(\(\) => \{\n\s*if \(latched\.current\) return;/, "it is read in an effect");
+});
