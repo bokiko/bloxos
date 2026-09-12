@@ -74,6 +74,61 @@ type agentBinaryResolver struct {
 	// it to verifyELFArch so a binary is only ever served for the
 	// architecture it actually is.
 	archMatch func(path, arch string) error
+	// bundle is the validated managed bundle shipped beside the hub, or nil on
+	// a source build with none. See hub/agent_bundle.go.
+	bundle *agentBundle
+	// deliveryMode is agentDeliveryAuto or agentDeliveryExternal.
+	deliveryMode string
+	// getenv is injectable so precedence can be tested without touching the
+	// process environment.
+	getenv func(string) string
+}
+
+func (r agentBinaryResolver) env(name string) string {
+	if r.getenv != nil {
+		return r.getenv(name)
+	}
+	return os.Getenv(name)
+}
+
+// managedWins reports whether the managed bundle outranks the project's own
+// shipped default for this platform.
+//
+// THE EXCEPTION, stated precisely. scripts/systemd/bloxos-hub.service ships
+// BLOXOS_AGENT_BINARY=/usr/local/lib/bloxos/linux/bloxos-agent. That value is
+// the PROJECT'S OWN DEFAULT, not an operator's choice — but the resolver cannot
+// tell the two apart by inspection, and as the authoritative first candidate it
+// pins every standard native install to a path no release ever refreshes.
+//
+// So a value EXACTLY equal to that shipped default is treated as legacy default
+// configuration and the managed bundle wins. Any other value is a genuine
+// operator pin and stays authoritative and fail-closed. Nothing on disk is
+// rewritten: no unit file is edited, no environment is mutated.
+//
+// An operator who deliberately manages binaries at that exact path sets
+// BLOXOS_AGENT_DELIVERY=external, which restores the full legacy resolver.
+func (r agentBinaryResolver) managedWins(platform agentPlatform) (string, bool) {
+	if r.bundle == nil || r.deliveryMode == agentDeliveryExternal {
+		return "", false
+	}
+	path, ok := r.bundle.pathFor(platform)
+	if !ok {
+		return "", false
+	}
+	envName := agentBinaryEnvName(platform)
+	value := strings.TrimSpace(r.env(envName))
+	if value == "" {
+		return path, true // no override at all
+	}
+	// EXACT string comparison, deliberately. filepath.Clean would also exempt
+	// an operator path that merely normalises to the default — something like
+	// /usr/local/lib/bloxos/linux/../linux/bloxos-agent — and that is somebody's
+	// deliberate configuration, not the project's shipped line. Only the literal
+	// value this project ships yields to the bundle.
+	if envName == "BLOXOS_AGENT_BINARY" && value == linuxAgentBinaryDefault {
+		return path, true
+	}
+	return "", false
 }
 
 var (
@@ -93,11 +148,65 @@ func newAgentBinaryStates() map[string]agentBinaryState {
 }
 
 func productionAgentBinaryResolver() agentBinaryResolver {
-	return agentBinaryResolver{
+	r := agentBinaryResolver{
 		executablePath: os.Executable,
 		validate:       validateTrustedAgentBinary,
 		archMatch:      verifyELFArch,
+		deliveryMode:   agentDeliveryAuto,
 	}
+	if mode, err := resolveAgentDeliveryMode(os.Getenv); err == nil {
+		r.deliveryMode = mode
+	}
+	if dir, err := r.hubExecutableDir(); err == nil {
+		if bundle, err := loadAgentBundle(dir, validateTrustedAgentBinary); err == nil {
+			r.bundle = bundle
+		}
+	}
+	return r
+}
+
+// checkManagedAgentBundle is the STARTUP gate for a packaged hub.
+//
+// It runs before anything is announced, and it fails closed. A packaged build
+// that declares a required bundle but cannot produce a valid one must not start
+// serving: if it did, it would fall through to the frozen system defaults and
+// report perfect health while handing out whatever binaries happened to be
+// sitting on disk. Failing here is what lets the existing updater's build-info
+// readiness check reject the candidate and roll back.
+//
+// A source or development build (no build-time marker) is unaffected: a missing
+// bundle is normal there and legacy discovery still applies. What is NOT
+// tolerated in either case is a bundle that exists and is broken.
+func checkManagedAgentBundle() error {
+	mode, err := resolveAgentDeliveryMode(os.Getenv)
+	if err != nil {
+		return err // an unreadable delivery mode is visible, never guessed
+	}
+
+	r := agentBinaryResolver{executablePath: os.Executable}
+	dir, err := r.hubExecutableDir()
+	if err != nil {
+		if agentBundleIsRequired() {
+			return fmt.Errorf("packaged build cannot locate its own directory: %w", err)
+		}
+		return nil
+	}
+
+	bundle, err := loadAgentBundle(dir, validateTrustedAgentBinary)
+	if err != nil {
+		// Present but invalid is fatal regardless of build kind and regardless
+		// of delivery mode: a corrupt bundle is evidence something is wrong
+		// with this install, not a reason to quietly use older binaries.
+		return fmt.Errorf("managed agent bundle is unusable: %w", err)
+	}
+	if bundle == nil && agentBundleIsRequired() && mode != agentDeliveryExternal {
+		// The whole directory is missing from a build that must carry one.
+		// Without the build-time marker this case is indistinguishable from a
+		// legitimate source build, which is exactly why the marker exists.
+		return fmt.Errorf("packaged build requires a managed agent bundle at %s, and none is present",
+			filepath.Join(dir, agentBundleDirName))
+	}
+	return nil
 }
 
 // elfMachineByArch maps a GOARCH to the ELF e_machine value its binaries
@@ -246,7 +355,10 @@ type agentBinaryCandidate struct {
 // different architecture.
 func (r agentBinaryResolver) candidatesFor(platform agentPlatform) ([]agentBinaryCandidate, error) {
 	if platform.OS == "windows" {
-		if v := strings.TrimSpace(os.Getenv("BLOXOS_AGENT_BINARY_WINDOWS")); v != "" {
+		if managed, ok := r.managedWins(platform); ok {
+			return []agentBinaryCandidate{{Path: managed, Source: "managed-bundle"}}, nil
+		}
+		if v := strings.TrimSpace(r.env("BLOXOS_AGENT_BINARY_WINDOWS")); v != "" {
 			return []agentBinaryCandidate{{Path: v, Source: "environment:BLOXOS_AGENT_BINARY_WINDOWS", Env: "BLOXOS_AGENT_BINARY_WINDOWS"}}, nil
 		}
 		executable, err := r.hubExecutableDir()
@@ -259,8 +371,24 @@ func (r agentBinaryResolver) candidatesFor(platform agentPlatform) ([]agentBinar
 		}, nil
 	}
 
+	// A non-default arch has no dedicated override variable, so an operator
+	// points a native source build at the generic BLOXOS_AGENT_BINARY. That is a
+	// real custom choice and must keep outranking the managed bundle. It stays
+	// non-authoritative and ELF-gated, so a wrong-architecture path simply falls
+	// through to the bundle rather than failing the platform closed.
+	var preManaged []agentBinaryCandidate
+	if platform.Arch != defaultAgentArch {
+		if v := strings.TrimSpace(r.env("BLOXOS_AGENT_BINARY")); v != "" && v != linuxAgentBinaryDefault {
+			preManaged = append(preManaged, agentBinaryCandidate{
+				Path: v, Source: "environment:BLOXOS_AGENT_BINARY (arch-verified)"})
+		}
+	}
+	if managed, ok := r.managedWins(platform); ok {
+		return append(preManaged, agentBinaryCandidate{Path: managed, Source: "managed-bundle"}), nil
+	}
+
 	perArchEnv := agentBinaryEnvName(platform)
-	if v := strings.TrimSpace(os.Getenv(perArchEnv)); v != "" {
+	if v := strings.TrimSpace(r.env(perArchEnv)); v != "" {
 		return []agentBinaryCandidate{{Path: v, Source: "environment:" + perArchEnv, Env: perArchEnv}}, nil
 	}
 
@@ -272,7 +400,7 @@ func (r agentBinaryResolver) candidatesFor(platform agentPlatform) ([]agentBinar
 		// systemd unit). Honor it ahead of the packaged per-arch default so an
 		// explicit operator choice wins. Non-authoritative and ELF-gated: a
 		// wrong architecture just skips to the next candidate.
-		if v := strings.TrimSpace(os.Getenv("BLOXOS_AGENT_BINARY")); v != "" {
+		if v := strings.TrimSpace(r.env("BLOXOS_AGENT_BINARY")); v != "" {
 			candidates = append(candidates, agentBinaryCandidate{Path: v, Source: "environment:BLOXOS_AGENT_BINARY (arch-verified)"})
 		}
 	}

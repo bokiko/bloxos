@@ -1,0 +1,275 @@
+package main
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+// The MANAGED AGENT BUNDLE: agent payloads that travel with the hub release, so
+// upgrading the hub upgrades what the fleet is offered.
+//
+// WHY THIS EXISTS. Agent binaries were served from fixed system paths that
+// nothing in the release ever refreshed. `bloxos-update` replaces the hub and
+// the dashboard and deliberately does not touch agent files, so a hub could run
+// v1.7.1 while handing out agents built weeks earlier. Every machine then
+// reported "matches offered build" — correctly, because it matched what the hub
+// offered. The offer was simply stale, and that single fact accounted for
+// missing power on ARM boards, absent source labels, and wrong CPU inventory.
+//
+// WHY PLACEMENT ALONE WOULD NOT HAVE FIXED IT. The resolver already had a
+// `hub-executable-directory` candidate — and it sits LAST, behind the system
+// defaults. Worse, the project's own systemd unit sets BLOXOS_AGENT_BINARY,
+// which for amd64 is the authoritative, fail-closed first candidate. Dropping
+// files beside the hub binary would therefore have changed nothing on a standard
+// native install: a fix that looks right and is inert. The precedence contract
+// below is the actual mechanism; the packaging is only its transport.
+//
+// WHAT IS DELIBERATELY NOT HERE. No new manifest schema for the updater to
+// understand, no updater install logic, no self-refresh. The existing archive
+// checksum, safe extraction and copy already carry arbitrary files; the NEW hub
+// consumes and verifies its own bundle. That keeps delivery logic in one
+// component and avoids a two-step rollout.
+
+// agentBundleDirName is the bundle's directory, a direct child of the hub
+// executable's own directory.
+//
+// A direct child, not a sibling reached through "..": every path this file
+// touches is then a plain join under a directory we already trust, and no
+// traversal component ever enters a filesystem call.
+const agentBundleDirName = "agents"
+
+// agentBundleManifestName reuses the manifest scripts/agent_bundle.py already
+// produces, rather than inventing a parallel catalog format.
+const agentBundleManifestName = "agent-manifest.json"
+
+// agentBundleRequiredPlatforms is every platform a packaged bundle must carry.
+// Both server architectures ship all three, so a hub can serve any agent.
+var agentBundleRequiredPlatforms = []string{"linux/amd64", "linux/arm64", "windows/amd64"}
+
+const (
+	agentBundleManifestMaxBytes = 64 << 10
+	agentBundlePayloadMaxBytes  = 256 << 20
+)
+
+// agentBundleRequired is set at build time (-ldflags) on packaged hub builds.
+//
+// It is a plain marker and NOT a content hash on purpose. The obvious
+// alternative — embedding the manifest's SHA — cannot work: that manifest
+// includes the hub image digest, so the hub binary would have to contain a hash
+// of a document that contains a hash of the hub binary. A build-time flag
+// distinguishes "packaged, a bundle is mandatory" from "source build, a bundle
+// is optional" with no cycle.
+//
+// Empty means a development or source build: a missing bundle is then normal
+// and legacy discovery still applies.
+var agentBundleRequired = ""
+
+// agentBundleIsRequired reports whether this build must have a valid bundle.
+func agentBundleIsRequired() bool {
+	return strings.TrimSpace(agentBundleRequired) != ""
+}
+
+// agentDeliveryMode selects how agent binaries are resolved.
+const (
+	// agentDeliveryAuto is the default: a valid managed bundle takes precedence
+	// over the project's own shipped default path.
+	agentDeliveryAuto = "auto"
+	// agentDeliveryExternal preserves the FULL legacy resolver, including an
+	// intentional override that happens to equal the shipped default path. It
+	// is the escape hatch for an operator who really does manage agent binaries
+	// themselves at that location.
+	agentDeliveryExternal = "external"
+)
+
+const agentDeliveryEnv = "BLOXOS_AGENT_DELIVERY"
+
+// resolveAgentDeliveryMode reads the mode, failing closed on anything it does
+// not recognise. A misspelled mode must be visible, not silently treated as the
+// default — an operator who typed "externl" meant to change behaviour.
+func resolveAgentDeliveryMode(getenv func(string) string) (string, error) {
+	raw := strings.ToLower(strings.TrimSpace(getenv(agentDeliveryEnv)))
+	switch raw {
+	case "":
+		return agentDeliveryAuto, nil
+	case agentDeliveryAuto, agentDeliveryExternal:
+		return raw, nil
+	default:
+		return "", fmt.Errorf("%s=%q is not a known delivery mode (want %q or %q)",
+			agentDeliveryEnv, raw, agentDeliveryAuto, agentDeliveryExternal)
+	}
+}
+
+// agentBundleArtifact is one platform's payload as the manifest declares it.
+type agentBundleArtifact struct {
+	File   string `json:"file"`
+	Size   int64  `json:"size"`
+	SHA256 string `json:"sha256"`
+}
+
+// agentBundleManifest is the subset of agent-manifest.json this hub reads.
+type agentBundleManifest struct {
+	Schema       int                            `json:"schema"`
+	Version      string                         `json:"version"`
+	Source       string                         `json:"source"`
+	AgentRelease uint64                         `json:"agent_release"`
+	Artifacts    map[string]agentBundleArtifact `json:"artifacts"`
+}
+
+// agentBundle is a validated bundle: every declared artifact has been checked.
+type agentBundle struct {
+	Dir      string
+	Manifest agentBundleManifest
+	// paths maps "<os>/<arch>" to the verified absolute payload path.
+	paths map[string]string
+}
+
+// pathFor returns the verified payload for a platform, if the bundle declares
+// one. A bundle that does not declare a platform is not an error — it simply
+// has nothing to offer there, and legacy discovery continues.
+func (b *agentBundle) pathFor(platform agentPlatform) (string, bool) {
+	if b == nil {
+		return "", false
+	}
+	p, ok := b.paths[platform.OS+"/"+platform.Arch]
+	return p, ok
+}
+
+// loadAgentBundle reads and fully validates the bundle beside the hub executable.
+//
+// Validation is all-or-nothing by design. A bundle that is PRESENT BUT INVALID
+// must fail closed rather than fall through to the frozen system defaults:
+// falling through is precisely how a hub ends up quietly serving months-old
+// agents while reporting success. The caller decides what a missing bundle
+// means, via agentBundleIsRequired.
+func loadAgentBundle(executableDir string, validate func(string) (string, error)) (*agentBundle, error) {
+	dir := filepath.Join(executableDir, agentBundleDirName)
+	manifestPath := filepath.Join(dir, agentBundleManifestName)
+
+	// "No bundle at all" and "a bundle with its manifest missing" are different
+	// answers. The first is a source build; the second is a broken install, and
+	// treating it as absent would fall through to the frozen system defaults —
+	// the exact silent staleness this whole mechanism exists to end.
+	if _, err := os.Stat(dir); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("stat agent bundle directory: %w", err)
+	}
+
+	info, err := os.Stat(manifestPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("agent bundle directory %s has no %s", dir, agentBundleManifestName)
+		}
+		return nil, fmt.Errorf("stat agent bundle manifest: %w", err)
+	}
+	// Bound the manifest before reading it: it is attacker-shaped input in the
+	// sense that a corrupt install should not be able to exhaust memory here.
+	if info.Size() > agentBundleManifestMaxBytes {
+		return nil, fmt.Errorf("agent bundle manifest is %d bytes, over the %d limit",
+			info.Size(), agentBundleManifestMaxBytes)
+	}
+
+	raw, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return nil, fmt.Errorf("read agent bundle manifest: %w", err)
+	}
+
+	var manifest agentBundleManifest
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		return nil, fmt.Errorf("agent bundle manifest is not valid JSON: %w", err)
+	}
+	if manifest.Schema != 1 {
+		return nil, fmt.Errorf("agent bundle manifest schema %d is not supported", manifest.Schema)
+	}
+	if manifest.AgentRelease == 0 {
+		return nil, fmt.Errorf("agent bundle manifest declares no agent release")
+	}
+	// Every server archive carries every agent platform. A bundle short of one
+	// would let a platform quietly keep resolving to a frozen system default
+	// while the feature reported success for the others.
+	for _, required := range agentBundleRequiredPlatforms {
+		if _, ok := manifest.Artifacts[required]; !ok {
+			return nil, fmt.Errorf("agent bundle manifest does not declare %s", required)
+		}
+	}
+
+	bundle := &agentBundle{Dir: dir, Manifest: manifest, paths: map[string]string{}}
+
+	for platform, artifact := range manifest.Artifacts {
+		osName, arch, ok := strings.Cut(platform, "/")
+		if !ok {
+			return nil, fmt.Errorf("agent bundle declares malformed platform %q", platform)
+		}
+		if _, err := agentPlatformFor(osName, arch); err != nil {
+			return nil, fmt.Errorf("agent bundle declares unsupported platform %q: %w", platform, err)
+		}
+
+		// The manifest is data, not a path source. A file name carrying a
+		// separator or a parent reference would otherwise let a crafted bundle
+		// point the hub at a file outside its own directory.
+		if artifact.File == "" || artifact.File != filepath.Base(artifact.File) ||
+			strings.ContainsAny(artifact.File, `/\`) || artifact.File == "." || artifact.File == ".." {
+			return nil, fmt.Errorf("agent bundle artifact %q has an unsafe file name %q", platform, artifact.File)
+		}
+		if len(artifact.SHA256) != 64 {
+			return nil, fmt.Errorf("agent bundle artifact %q has no usable sha256", platform)
+		}
+		// A declared size is mandatory and bounded: zero would make the size
+		// check vacuous, and an absurd value signals a corrupt manifest.
+		if artifact.Size <= 0 || artifact.Size > agentBundlePayloadMaxBytes {
+			return nil, fmt.Errorf("agent bundle artifact %q declares an implausible size %d",
+				platform, artifact.Size)
+		}
+
+		payload := filepath.Join(dir, artifact.File)
+
+		// Reuse the SAME trust check every other candidate goes through: root
+		// ownership, no group/other write anywhere on the path, a regular file.
+		verified, err := validate(payload)
+		if err != nil {
+			return nil, fmt.Errorf("agent bundle artifact %q is not trusted: %w", platform, err)
+		}
+
+		payloadInfo, err := os.Stat(verified)
+		if err != nil {
+			return nil, fmt.Errorf("agent bundle artifact %q: %w", platform, err)
+		}
+		if payloadInfo.Size() != artifact.Size {
+			return nil, fmt.Errorf("agent bundle artifact %q is %d bytes, manifest says %d",
+				platform, payloadInfo.Size(), artifact.Size)
+		}
+
+		sum, err := fileSHA256(verified)
+		if err != nil {
+			return nil, fmt.Errorf("agent bundle artifact %q: %w", platform, err)
+		}
+		if !strings.EqualFold(sum, artifact.SHA256) {
+			return nil, fmt.Errorf("agent bundle artifact %q sha256 %s does not match manifest %s",
+				platform, sum, artifact.SHA256)
+		}
+
+		bundle.paths[osName+"/"+arch] = verified
+	}
+
+	return bundle, nil
+}
+
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
